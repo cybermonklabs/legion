@@ -21,6 +21,13 @@ import (
 // somewhere from that add to its checkout's end, so it removes the workspace
 // (resetUnfinishedWorkspace, step workspace-reset) and adds it again from nothing. Without the
 // marker, a workspace whose sparse patterns an agent cleared keeps its untracked files.
+//
+// A stop between the checkout's end and the marker's removal leaves the marker on a whole
+// workspace, which no role may start in while the marker is there, or an agent's later sparse
+// clear would read as a stopped checkout: Provision removes it from a workspace CheckedOut finds
+// whole, an issue pod runs Provision at every start, and a tmux launch sends a whole workspace that
+// still carries the marker through Provision (HasCheckoutMarker; the daemon's
+// outbox.unprovisioned) before its pane starts.
 const checkoutMarkerFile = "legion-checkout"
 
 // writeCheckoutMarker creates or truncates `.jj/legion-checkout` in dir through openJJ and
@@ -41,9 +48,11 @@ func writeCheckoutMarker(dir string) error {
 	return nil
 }
 
-// hasCheckoutMarker reports whether `.jj/legion-checkout` exists as a regular file in dir, opened
-// through openJJ and rolefile.OpenRegular without following a link or blocking on a special file.
-func hasCheckoutMarker(dir string) (bool, error) {
+// HasCheckoutMarker reports whether `.jj/legion-checkout` (checkoutMarkerFile) exists as a regular
+// file in dir, opened through openJJ and rolefile.OpenRegular without following a link or blocking
+// on a special file. Provision asks it of a workspace with no sparse pattern, and a tmux launch of
+// one CheckedOut finds whole, which still needs a provision to remove the marker when it is there.
+func HasCheckoutMarker(dir string) (bool, error) {
 	jj, err := openJJ(dir, nil)
 	if err != nil {
 		return false, fmt.Errorf("read checkout marker of workspace %s: %w", dir, err)
@@ -78,17 +87,17 @@ func removeCheckoutMarker(dir string) error {
 	return nil
 }
 
-// resetUnfinishedWorkspace removes the workspace Provision found marked (checkoutMarkerFile) with
-// no sparse pattern, under the store lock, so the provision adds it again from nothing
+// resetUnfinishedWorkspace takes away the workspace Provision found marked (checkoutMarkerFile)
+// with no sparse pattern, under the store lock, so the provision adds it again from nothing
 // (createWorkspace). The provision that added it stopped somewhere from its `jj workspace add` to
-// its checkout's end, and no role starts in a workspace before its provision returns, so nothing
-// there is anyone's work: the directory holds at most what a cut-short checkout wrote, and the
-// shared clone the workspace's registration, its empty working-copy commit and, for an issue
-// GitHub had no branch of, the bookmark that provision set on that commit. The steps are Remove's,
-// without its abandon of the workspace's own commits (a marked workspace has none but that empty
-// commit, which the forget abandons) and with the deletion of the issue's bookmark from the
-// working-copy commit:
-//   - A directory a kill left renamed aside before its delete (removingPath) is cleared.
+// its checkout's end, and no role starts in a workspace before its provision returns, nor in a
+// whole one before a provision has removed a marker left there, so nothing there is anyone's work:
+// the directory holds at most what a cut-short checkout wrote, and the shared clone the
+// workspace's registration, its empty working-copy commit and, for an issue GitHub had no branch
+// of, the bookmark that provision set on that commit. The steps are the ones Remove takes under
+// the store lock, without its abandon of the workspace's own commits (a marked workspace has none
+// but that empty commit, which the forget abandons) and with the deletion of the issue's bookmark
+// from the working-copy commit:
 //   - Where the issue's bookmark is on the workspace's working-copy commit, it is deleted, so the
 //     workspace added again starts where a first provision starts: at the default branch, with the
 //     bookmark on its new working-copy commit, or at origin's branch where GitHub has made one
@@ -96,20 +105,23 @@ func removeCheckoutMarker(dir string) error {
 //     which has no description, so jj would refuse every push of the issue's branch. The deletion
 //     goes before the rename, so a kill between them leaves a marked workspace that the next
 //     provision resets again.
-//   - The directory is renamed aside, in one atomic rename, so a kill partway through the delete,
-//     whose time follows what the checkout wrote, leaves no half-deleted workspace at its own path:
-//     a kill after the rename leaves the registered-but-missing workspace that the next provision
-//     adds again, deleting the directory left aside before createWorkspace forgets and adds it.
+//   - The directory is renamed aside (removingPath), in one atomic rename. Provision cleared that
+//     path before it took the store lock, so the rename finds nothing there.
 //   - The workspace is forgotten in the shared clone, which abandons its working-copy commit, empty,
 //     undescribed and carrying no bookmark.
 //   - Its git worktree entry, which jj's forget leaves for a directory already gone, is removed.
-//   - The directory renamed aside is deleted.
+//
+// The directory renamed aside is not deleted here. That delete's time follows what the checkout
+// wrote, and it touches nothing of the clone's, so Provision runs it once it has let the store lock
+// go (step workspace-delete), as Remove does, and the provisions and removals of the repository's
+// other issues do not wait for it. A stop anywhere after the rename and before that delete ends
+// leaves the directory aside, which the next provision deletes before it takes the store lock (step
+// workspace-delete too). A stop before the registration after this reset ended leaves no workspace
+// at its own path, which the next provision adds again, createWorkspace forgetting it first where
+// it is still registered; a stop after it leaves the new workspace marked, which the next provision
+// resets again.
 func resetUnfinishedWorkspace(ctx context.Context, run Runner, workspace Workspace) error {
 	cloneDir, workspaceName := workspace.Clone, filepath.Base(workspace.Dir)
-	aside := removingPath(workspace.Dir)
-	if err := rolefile.RemoveTree(aside); err != nil {
-		return fmt.Errorf("reset workspace %s: clear a stale removal-in-progress directory: %w", workspace.Dir, err)
-	}
 	registered, err := workspaceRegistered(ctx, run, cloneDir, workspaceName)
 	if err != nil {
 		return err
@@ -125,7 +137,7 @@ func resetUnfinishedWorkspace(ctx context.Context, run Runner, workspace Workspa
 			}
 		}
 	}
-	if err := os.Rename(workspace.Dir, aside); err != nil {
+	if err := os.Rename(workspace.Dir, removingPath(workspace.Dir)); err != nil {
 		return fmt.Errorf("reset workspace %s: rename it aside before removing it: %w", workspace.Dir, err)
 	}
 	if registered {
@@ -133,11 +145,5 @@ func resetUnfinishedWorkspace(ctx context.Context, run Runner, workspace Workspa
 			return err
 		}
 	}
-	if err := removeGitWorktree(cloneDir, workspace.Dir); err != nil {
-		return err
-	}
-	if err := rolefile.RemoveTree(aside); err != nil {
-		return fmt.Errorf("reset workspace %s: remove its directory: %w", workspace.Dir, err)
-	}
-	return nil
+	return removeGitWorktree(cloneDir, workspace.Dir)
 }

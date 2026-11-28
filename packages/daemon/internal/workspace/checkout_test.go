@@ -162,21 +162,7 @@ var markedCheckoutTree = map[string]string{"alpha.txt": "alpha content\n", "half
 // markedCheckoutTree whole and leaving no marker.
 func requireCutShortCheckoutRedone(t *testing.T, run *recordingRunner, req Request) {
 	t.Helper()
-	partial := t.TempDir()
-	if err := os.WriteFile(filepath.Join(partial, "half.txt"), []byte("first half\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	record := filepath.Join(t.TempDir(), "marker.txt")
-	realTools := run.tools
-	run.tools = cutShortCheckoutTools(t, record, partial)
-	_, err := Provision(context.Background(), run, req)
-	run.tools = realTools
-	if err == nil {
-		t.Fatal("the Provision whose checkout was cut short succeeded")
-	}
-	if got := readCheckoutRecord(t, record); got != "present" {
-		t.Fatalf("the cut-short checkout recorded .jj/%s as %q, want present", checkoutMarkerFile, got)
-	}
+	cutShortCheckout(t, run, req)
 
 	var steps []string
 	again := req
@@ -407,9 +393,10 @@ func requireWholeTree(t *testing.T, working Workspace, tree map[string]string) {
 // issue whose branch GitHub has, whether or not the branch moves before the next provision, and
 // for one GitHub has no branch of, whether or not GitHub makes one before the next provision.
 //
-// The next provision logs its workspace-reset between its checkout-check and its registration. It
-// removes the old workspace whole: a file planted in its .jj is gone, its working-copy commit is
-// abandoned, nothing is left renamed aside, and nothing outside it is removed through the link. It
+// The next provision logs its workspace-reset between its checkout-check and its registration, and
+// its workspace-delete after its configuration, once it has let the store lock go. It removes the
+// old workspace whole: a file planted in its .jj is gone, its working-copy commit is abandoned,
+// nothing is left renamed aside, and nothing outside it is removed through the link. It
 // ends with the whole tree of GitHub's tip of the issue's branch, or of main for an issue with
 // none, checked out on that commit and unchanged; with the issue's bookmark there, tracking
 // origin's, or on the working-copy commit for an issue with no branch, as a first provision leaves
@@ -555,7 +542,7 @@ func TestProvisionAddsAgainAWorkspaceWhoseProvisionStoppedBeforeItsCheckoutEnded
 					t.Fatalf("the Provision after the one stopped %s: %v", stop.name, err)
 				}
 
-				want := []string{"checkout-check", "workspace-reset", "workspace-registration", "configuration"}
+				want := []string{"checkout-check", "workspace-reset", "workspace-registration", "configuration", "workspace-delete"}
 				if names := stepNames(steps); len(names) < len(want) || !slices.Equal(names[len(names)-len(want):], want) {
 					t.Errorf("the Provision after the stop logged the steps %q, want %q last", names, want)
 				}
@@ -645,6 +632,207 @@ func TestProvisionClearsWhatAStoppedWorkspaceResetLeftAside(t *testing.T) {
 	requireWholeTree(t, working, markedCheckoutTree)
 	if _, err := os.Lstat(aside); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("after the provision that followed a stopped workspace-reset, %s lstat = %v, want ErrNotExist", aside, err)
+	}
+}
+
+// cutShortCheckout provisions req's workspace with a checkout cut short after writing the first
+// half of half.txt (cutShortCheckoutTools), so the workspace is left registered, marked and holding
+// no sparse pattern: the workspace a workspace-reset takes away.
+func cutShortCheckout(t *testing.T, run *recordingRunner, req Request) {
+	t.Helper()
+	partial := t.TempDir()
+	if err := os.WriteFile(filepath.Join(partial, "half.txt"), []byte("first half\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "marker.txt")
+	realTools := run.tools
+	run.tools = cutShortCheckoutTools(t, record, partial)
+	_, err := Provision(context.Background(), run, req)
+	run.tools = realTools
+	if err == nil {
+		t.Fatal("the Provision whose checkout was cut short succeeded")
+	}
+	if got := readCheckoutRecord(t, record); got != "present" {
+		t.Fatalf("the cut-short checkout recorded .jj/%s as %q, want present", checkoutMarkerFile, got)
+	}
+}
+
+// workspace-reset can itself stop, on a failure or a kill, at each of its own steps, and a
+// provision stopped there must leave one after it that ends where a first provision ends. Each row
+// makes a real marked workspace whose checkout was cut short (cutShortCheckout), for an issue whose
+// branch GitHub has and for one GitHub has no branch of, whose bookmark the cut-short provision set
+// on the workspace's working-copy commit. It then has the next provision's real workspace-reset stop
+// at one of its own points, with a jj that fails one command:
+//   - at its jj bookmark delete, which only the issue with no branch reaches, before the rename:
+//     the workspace stays where it was, marked, with the bookmark on its working-copy commit;
+//   - at its jj workspace forget, after the bookmark's deletion and the rename aside: the directory
+//     is aside and the workspace still registered;
+//   - after the reset ended and before its directory aside is deleted (workspace-delete), at the
+//     registration's jj workspace add: the directory is aside and the workspace forgotten.
+//
+// The provision after the stop, with the real jj, deletes a directory left aside before it takes
+// the store lock (workspace-delete, its first step) and adds the workspace again, or resets the
+// workspace still marked (workspace-reset, then workspace-delete once the lock is let go). It ends
+// with the whole tree of GitHub's tip of the issue's branch, or of main for an issue with none,
+// checked out on that commit and unchanged, never on the old workspace's empty working-copy commit,
+// which is abandoned; with the issue's bookmark alone on the working-copy commit for an issue with
+// no branch, or on origin's tip tracking origin's; with its creation recorded no earlier than it
+// began; and with no marker and nothing left aside.
+func TestProvisionRecoversFromAStoppedWorkspaceReset(t *testing.T) {
+	t.Parallel()
+	// pushed is what pushRemoteBranch writes into the file it adds.
+	const pushed = "pushed from another clone\n"
+	failing := func(command string) string {
+		return "*' " + command + " '*) echo 'the test fails jj " + command + "' >&2; exit 1 ;;\n"
+	}
+	stops := []struct {
+		name string
+		// command is the jj command that fails, and in the step it fails in.
+		command, in string
+		// branchless is a stop only the issue GitHub has no branch of reaches.
+		branchless bool
+		// aside is whether the stop leaves the workspace's directory renamed aside, and registered
+		// whether it leaves the workspace registered in the shared clone.
+		aside, registered bool
+	}{
+		{name: "at its jj bookmark delete", command: "bookmark delete", in: "workspace-reset", branchless: true, registered: true},
+		{name: "at its jj workspace forget", command: "workspace forget", in: "workspace-reset", aside: true, registered: true},
+		{name: "after it ended and before its workspace-delete", command: "workspace add", in: "workspace-registration", aside: true},
+	}
+	for _, branch := range []struct {
+		name string
+		// file is the file a commit on the issue's branch adds on GitHub; "" for no branch.
+		file string
+	}{
+		{"a branch on GitHub", "branch.txt"},
+		{"no branch on GitHub", ""},
+	} {
+		for _, stop := range stops {
+			if stop.branchless && branch.file != "" {
+				continue
+			}
+			t.Run(branch.name+", stopped "+stop.name, func(t *testing.T) {
+				t.Parallel()
+				ctx := context.Background()
+				run := newLocalRunner(t)
+				pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
+				req := provisionRequest(t)
+				location, err := Location(req.StateDir, req.Repo, req.Issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				aside, name := removingPath(location.Dir), filepath.Base(location.Dir)
+				tree := maps.Clone(markedCheckoutTree)
+				var tip string
+				if branch.file != "" {
+					tip = pushRemoteBranch(t, run.remote, location.Bookmark, branch.file)
+					tree[branch.file] = pushed
+				}
+				cutShortCheckout(t, run, req)
+				oldCommit := commitOf(t, location.Clone, name+"@")
+				if branch.file == "" {
+					if on := commitOf(t, location.Clone, `bookmarks(exact:"`+location.Bookmark+`")`); on != oldCommit {
+						t.Fatalf("after the cut-short provision, bookmark %s is on %q, want the workspace's working-copy commit %s", location.Bookmark, on, oldCommit)
+					}
+				}
+
+				// The next provision, its workspace-reset stopped.
+				var stoppedSteps []string
+				stopped := req
+				stopped.Steps = NewSteps(newTestClock(), func(line string) { stoppedSteps = append(stoppedSteps, line) })
+				realTools := run.tools
+				run.tools = jjTools(t, failing(stop.command))
+				_, err = Provision(ctx, run, stopped)
+				run.tools = realTools
+				if err == nil || !strings.Contains(err.Error(), stop.command) {
+					t.Fatalf("the Provision whose jj %s failed = %v, want that command's failure", stop.command, err)
+				}
+				stopped.Steps.Fail()
+				if names := stepNames(stoppedSteps); !slices.Contains(names, "workspace-reset") || names[len(names)-1] != stop.in {
+					t.Fatalf("the stopped Provision logged the steps %q, want its workspace-reset and its failure in %s", names, stop.in)
+				}
+				_, dirErr := os.Lstat(location.Dir)
+				_, asideErr := os.Lstat(aside)
+				if (dirErr == nil) == stop.aside || (asideErr == nil) != stop.aside {
+					t.Fatalf("after the stop, %s lstat = %v and %s lstat = %v; want the directory renamed aside: %t", location.Dir, dirErr, aside, asideErr, stop.aside)
+				}
+				listed := runSetup(t, location.Clone, "jj", "workspace", "list", "--ignore-working-copy", "-R", location.Clone)
+				if registered := strings.Contains(listed, name+":"); registered != stop.registered {
+					t.Fatalf("after the stop, the shared clone's workspaces are %q; want %s registered: %t", listed, name, stop.registered)
+				}
+				if !stop.aside {
+					if _, err := os.Lstat(filepath.Join(location.Dir, ".jj", checkoutMarkerFile)); err != nil {
+						t.Fatalf("after the stop, .jj/%s lstat = %v, want the marker there", checkoutMarkerFile, err)
+					}
+				}
+				rows, err := readBookmark(ctx, run, location, location.Bookmark)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch {
+				case branch.file != "" && (!rows.local.present || rows.local.conflict || rows.local.added[0] != tip):
+					t.Fatalf("after the stop, bookmark %s is %+v, want it on origin's tip %s, where no reset deletes it", location.Bookmark, rows.local, tip)
+				case branch.file == "" && stop.command == "bookmark delete" && (!rows.local.present || rows.local.conflict || rows.local.added[0] != oldCommit):
+					t.Fatalf("after the stop, bookmark %s is %+v, want it still on the old working-copy commit %s", location.Bookmark, rows.local, oldCommit)
+				case branch.file == "" && stop.command != "bookmark delete" && rows.local.present:
+					t.Fatalf("after the stop, bookmark %s is %+v, want it deleted, as the reset deletes it before its rename", location.Bookmark, rows.local)
+				}
+
+				// The provision after the stop, with the real jj.
+				var steps []string
+				retry := req
+				retry.Steps = NewSteps(newTestClock(), func(line string) { steps = append(steps, line) })
+				retried := time.Now()
+				working, err := Provision(ctx, run, retry)
+				if err != nil {
+					t.Fatalf("the Provision after the stopped workspace-reset: %v", err)
+				}
+				names := stepNames(steps)
+				if stop.aside {
+					if len(names) < 2 || !slices.Equal(names[:2], []string{"inputs", "workspace-delete"}) || slices.Contains(names, "workspace-reset") {
+						t.Errorf("the Provision after the stop logged the steps %q, want workspace-delete first, before the store lock, and no workspace-reset", names)
+					}
+				} else if want := []string{"checkout-check", "workspace-reset", "workspace-registration", "configuration", "workspace-delete"}; len(names) < len(want) || !slices.Equal(names[len(names)-len(want):], want) {
+					t.Errorf("the Provision after the stop logged the steps %q, want %q last", names, want)
+				}
+
+				requireWholeTree(t, working, tree)
+				fromGitHub := tip != ""
+				if !fromGitHub {
+					tip = commitOf(t, location.Clone, "main@origin")
+				}
+				if parent := commitOf(t, working.Dir, "@-"); parent != tip {
+					t.Errorf("after the Provision, @- is %s, want %s (the old working-copy commit is %s)", parent, tip, oldCommit)
+				}
+				visible := strings.Fields(runSetup(t, location.Clone, "jj", "log", "-r", "all()", "--no-graph", "-T", `commit_id ++ "\n"`, "--ignore-working-copy"))
+				if slices.Contains(visible, oldCommit) {
+					t.Errorf("after the Provision, the old workspace's working-copy commit %s is still visible", oldCommit)
+				}
+				bookmarked := tip
+				if !fromGitHub {
+					bookmarked = commitOf(t, working.Dir, "@")
+				}
+				rows, err = readBookmark(ctx, run, working, working.Bookmark)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if local := rows.local; !local.present || local.conflict || local.added[0] != bookmarked {
+					t.Errorf("after the Provision, bookmark %s is %+v, want it on %s alone", working.Bookmark, local, bookmarked)
+				}
+				if origin := rows.origin; fromGitHub != (origin.present && origin.tracked && !origin.conflict && origin.added[0] == tip) {
+					t.Errorf("after the Provision, %s@origin is %+v, want it tracked at %s: %t", working.Bookmark, origin, tip, fromGitHub)
+				}
+				if at, ok, err := Created(working.Dir); err != nil || !ok || at.Before(retried) {
+					t.Errorf("Created after the Provision = %s, %t, %v; want a record no earlier than %s", at, ok, err, retried)
+				}
+				if _, err := os.Lstat(filepath.Join(working.Dir, ".jj", checkoutMarkerFile)); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("after the Provision, .jj/%s lstat = %v, want ErrNotExist", checkoutMarkerFile, err)
+				}
+				if _, err := os.Lstat(aside); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("after the Provision, %s lstat = %v, want ErrNotExist", aside, err)
+				}
+			})
+		}
 	}
 }
 
@@ -762,8 +950,8 @@ func TestProvisionCheckoutMarkerHelpersRefuseALinkedJJ(t *testing.T) {
 	if err := writeCheckoutMarker(badWS); !errors.Is(err, errLinkedJJ) {
 		t.Errorf("writeCheckoutMarker over linked .jj = %v, want errLinkedJJ", err)
 	}
-	if _, err := hasCheckoutMarker(badWS); !errors.Is(err, errLinkedJJ) {
-		t.Errorf("hasCheckoutMarker over linked .jj = %v, want errLinkedJJ", err)
+	if _, err := HasCheckoutMarker(badWS); !errors.Is(err, errLinkedJJ) {
+		t.Errorf("HasCheckoutMarker over linked .jj = %v, want errLinkedJJ", err)
 	}
 	if err := removeCheckoutMarker(badWS); !errors.Is(err, errLinkedJJ) {
 		t.Errorf("removeCheckoutMarker over linked .jj = %v, want errLinkedJJ", err)

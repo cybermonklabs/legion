@@ -4583,16 +4583,21 @@ func (r *outbox) provisionWorkspace(ctx context.Context, issue record.Issue) err
 	return r.provisionIn(ctx, issue.Key, repo, issue.DefaultBranch, false)
 }
 
-// ensureWorkspace provisions key's workspace when a launch finds it missing or not checked out on
-// the daemon's host (the launch's spec, specs.ensureWorkspace): a claim resumed, relaunched or
-// recovered rather than created, whose workspace this host never had — its issue ran in another
-// runtime's pods before — or no longer has, or whose checkout failed or was cut short (a provision
-// registers a workspace with no files and checks it out after, workspace.Provision), where the pane
-// would start in an empty working copy. A whole workspace is left as it is. Provisioning checks out
-// the issue's branch legion/<KEY> when GitHub has it, and starts at defaultBranch otherwise; on a
-// workspace already there it finishes the checkout (workspace.Provision). The workspace is read
-// under the issue's turn (provisionIn), so a launch never reads one the issue's provision is still
-// making.
+// ensureWorkspace provisions key's workspace when a launch finds it missing, not checked out, or
+// whole with a checkout marker left on it on the daemon's host (the launch's spec,
+// specs.ensureWorkspace): a claim resumed, relaunched or recovered rather than created, whose
+// workspace this host never had — its issue ran in another runtime's pods before — or no longer
+// has, or whose checkout failed or was cut short (a provision registers a workspace with no files
+// and checks it out after, workspace.Provision), where the pane would start in an empty working
+// copy, or whose provision stopped after its checkout ended and before it removed the workspace's
+// checkout marker (workspace.HasCheckoutMarker). A pane must not start beside that marker: an
+// agent's later clear of the workspace's sparse patterns would then read to the next provision as a
+// checkout that never finished, which it resets, the agent's files and the issue's bookmark with
+// it. A whole workspace with no marker is left as it is. Provisioning checks out the issue's branch
+// legion/<KEY> when GitHub has it, and starts at defaultBranch otherwise; on a workspace already
+// there it finishes the checkout, or removes the marker a whole one still carries
+// (workspace.Provision). The workspace is read under the issue's turn (provisionIn), so a launch
+// never reads one the issue's provision is still making.
 func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch string) error {
 	if r.podsProvision() {
 		return nil
@@ -4601,8 +4606,11 @@ func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Re
 }
 
 // unprovisioned is why key's workspace, working, needs a provision before a launch works in it, or
-// "" when it is whole: its directory is absent from the daemon's host ("missing"), or its checkout
-// never finished ("not checked out", checkedOut).
+// "" when it is whole and carries no checkout marker: its directory is absent from the daemon's host
+// ("missing"), its checkout never finished ("not checked out", checkedOut), or its checkout
+// finished and the marker its provision removes after that is still there ("checkout marker left",
+// workspace.HasCheckoutMarker), which the provision then removes before the pane starts, as an
+// issue pod's provision at each pod start removes it.
 func (r *outbox) unprovisioned(ctx context.Context, key string, working workspace.Workspace) (string, error) {
 	if _, err := os.Stat(working.Dir); errors.Is(err, os.ErrNotExist) {
 		return "missing", nil
@@ -4613,22 +4621,30 @@ func (r *outbox) unprovisioned(ctx context.Context, key string, working workspac
 	if err != nil {
 		return "", fmt.Errorf("read whether the workspace of %s finished its checkout: %w", key, err)
 	}
-	if whole {
-		return "", nil
+	if !whole {
+		return "not checked out", nil
 	}
-	return "not checked out", nil
+	marked, err := workspace.HasCheckoutMarker(working.Dir)
+	if err != nil {
+		return "", fmt.Errorf("read whether the workspace of %s kept a checkout marker: %w", key, err)
+	}
+	if marked {
+		return "checkout marker left", nil
+	}
+	return "", nil
 }
 
 // provisionIn provisions key's workspace in repo, at defaultBranch for an issue with no branch, as
-// the implement App for repo's owner; with onlyMissing, only when the workspace is still missing or
-// not checked out once this provision's turn comes (unprovisioned), so two launches that both need
-// it provision it once. Provisions of one issue take turns; once it has its turn, a provision runs
-// beside other issues' provisions, handed its repository's store lock (provisionLocks.stores) and
-// the wait for one of the provisionConcurrency checkout places (provisionLocks.slot), which
-// workspace.Provision takes for the checkout alone, once it has let the store lock go. The order is
-// issue turn, store lock, checkout place, and nothing that holds a place waits on a store lock, so
-// the three never wait in a cycle, and a provision waiting on its repository's store lock holds no
-// place another repository's checkout needs.
+// the implement App for repo's owner; with onlyMissing, only when the workspace is still missing,
+// not checked out, or whole with a checkout marker left on it once this provision's turn comes
+// (unprovisioned), so two launches that both need it provision it once, and the provision removes
+// a leftover marker before the launch's pane starts. Provisions of one issue take turns; once it
+// has its turn, a provision runs beside other issues' provisions, handed its repository's store
+// lock (provisionLocks.stores) and the wait for one of the provisionConcurrency checkout places
+// (provisionLocks.slot), which workspace.Provision takes for the checkout alone, once it has let
+// the store lock go. The order is issue turn, store lock, checkout place, and nothing that holds a
+// place waits on a store lock, so the three never wait in a cycle, and a provision waiting on its
+// repository's store lock holds no place another repository's checkout needs.
 func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch string, onlyMissing bool) error {
 	located, err := workspace.Location(r.stateDir, repo, key)
 	if err != nil {
@@ -4643,7 +4659,7 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 		if err != nil || found == "" {
 			return err
 		}
-		r.log.Warn("provisioning the workspace a claim's launch found missing or not checked out", "issue", key, "repository", repo.String(), "found", found)
+		r.log.Warn("provisioning the workspace a claim's launch found missing, not checked out or still marked", "issue", key, "repository", repo.String(), "found", found)
 	}
 	if r.tokens == nil {
 		return errors.New("supervise executor has no GitHub App token manager")

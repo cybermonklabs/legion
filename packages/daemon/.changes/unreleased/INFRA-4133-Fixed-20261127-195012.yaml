@@ -4,19 +4,25 @@ body: |-
   stopped between `jj workspace add` and the checkout's end, is now redone from nothing on the next
   provision, for a workspace this release registers. `Provision` writes a link-safe marker
   (`.jj/legion-checkout`) right after `jj workspace add` registers a fresh workspace, before any
-  later step of the provision, and removes it once a checkout finishes (and removes any leftover
-  marker when a later provision finds the workspace already checked out). No role starts in a
-  workspace before its provision succeeds, so a retry that finds no sparse patterns and that
-  marker removes the workspace under the store lock (`workspace-init` logs this as step
-  `workspace-reset`, between `checkout-check` and `workspace-registration`): it deletes the issue's
-  bookmark `legion/<KEY>` where the stopped provision set it on the workspace's working-copy
-  commit, renames the workspace directory aside, forgets the workspace in the shared clone,
-  removes its git worktree entry and deletes the directory without following a link. It then adds
-  the workspace again as a first provision does, at origin's `legion/<KEY>` as GitHub has it then,
-  or at the default branch with `legion/<KEY>` set on its working-copy commit, with a new creation
-  record, so a creation record that is missing, empty, unreadable or no regular file, a bookmark
-  the stopped provision never set and a half-written checkout all go with the old workspace. A
-  workspace whose sparse patterns an agent cleared carries no marker, so its untracked files stay
+  later step of the provision, and removes it once a checkout finishes. A stop between the
+  checkout's end and that removal leaves the marker on a whole workspace, which the next provision
+  removes and nothing else: an issue pod provisions at every start, and a tmux launch now
+  provisions a whole workspace that still carries the marker before its pane starts, so no role
+  works beside a marker. No role starts in a workspace before its provision succeeds, so a retry
+  that finds no sparse patterns and that marker takes the workspace away under the store lock
+  (`workspace-init` logs this as step `workspace-reset`, between `checkout-check` and
+  `workspace-registration`): it deletes the issue's bookmark `legion/<KEY>` where the stopped
+  provision set it on the workspace's working-copy commit, renames the workspace directory aside
+  to `<dir>.removing`, forgets the workspace in the shared clone and removes its git worktree
+  entry. It then adds the workspace again as a first provision does, at origin's `legion/<KEY>` as
+  GitHub has it then, or at the default branch with `legion/<KEY>` set on its working-copy commit,
+  with a new creation record, so a creation record that is missing, empty, unreadable or no
+  regular file, a bookmark the stopped provision never set and a half-written checkout all go with
+  the old workspace. With the store lock released, and before the checkout, it deletes
+  `<dir>.removing` without following a link (step `workspace-delete`), so on the tmux runtime no
+  other issue's provision or removal of the repository waits for that delete; a `<dir>.removing` a
+  stopped reset or removal left is deleted the same way before the next provision takes the lock.
+  A workspace whose sparse patterns an agent cleared carries no marker, so its untracked files stay
   untouched. A workspace an earlier release registered, such as one on a tmux host or on a microVM
   pod's kept volume, carries no marker either, so its next provision checks out over whatever a
   cut-short checkout of it left, as before.

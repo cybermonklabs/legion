@@ -264,13 +264,16 @@ var keptCloneSteps = []string{"jj-configuration", "github-delta", "ref-pruning",
 // failed in, and its error follows as the last line of its log. Each row is one path through the
 // provision and names its steps in the order it runs them: a new clone from GitHub alone (a), from
 // a repository cache's /tar where it serves no /packs (b), from its bucket (c), from /tar after the
-// bucket's download failed (d) or after the bucket's pack failed its check (d2); a kept clone with
-// no workspace of the issue's (e0, another issue's provision on the volume), with the issue's
-// workspace checked out (e), with that workspace's sparse patterns cleared and no marker (e1), and
-// with a checkout Legion started and that was cut short (f), whose workspace is removed and added
-// again (workspace-reset); and a fetch from GitHub that fails after its retries (g). The steps'
-// durations add up to the total within 0.1 s for each, and the total is no more than the run's wall
-// time. A refusal before the volume (h) prints nothing on stdout.
+// bucket's download failed (d) or after the bucket's pack failed its check (d2); a new clone on a
+// volume where a stopped removal left the issue's workspace directory renamed aside (a2), which is
+// deleted before anything else of the provision (workspace-delete); a kept clone with no workspace
+// of the issue's (e0, another issue's provision on the volume), with the issue's workspace checked
+// out (e), with that workspace's sparse patterns cleared and no marker (e1), and with a checkout
+// Legion started and that was cut short (f), whose workspace is taken away and added again
+// (workspace-reset), its old directory deleted before the checkout (workspace-delete); and a fetch
+// from GitHub that fails after its retries (g). The steps' durations add up to the total within
+// 0.1 s for each, and the total is no more than the run's wall time. A refusal before the volume (h)
+// prints nothing on stdout.
 func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 	t.Parallel()
 	// fromCache names the repository cache at cache to the volume's provision, with its token.
@@ -295,6 +298,19 @@ func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 		{
 			path:  "a. a new clone with no repository cache",
 			steps: slices.Concat([]string{"inputs", "stale-locks", "clone-stage"}, freshCloneSteps),
+		},
+		{
+			path: "a2. a new clone where a stopped removal left the workspace's directory aside",
+			prepare: func(t *testing.T, v *issueVolume) {
+				aside := v.workspace("LEGION-42") + ".removing"
+				if err := os.MkdirAll(filepath.Join(aside, ".jj"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(aside, "half.txt"), []byte("partial"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			steps: slices.Concat([]string{"inputs", "stale-locks", "workspace-delete", "clone-stage"}, freshCloneSteps),
 		},
 		{
 			path:    "b. a new clone from a repository cache's /tar, which serves no /packs",
@@ -349,7 +365,7 @@ func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 				}
 				v.env["WINIT_CUT_CHECKOUT"] = ""
 			},
-			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "workspace-reset", "workspace-registration", "configuration", "checkout"}),
+			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "workspace-reset", "workspace-registration", "configuration", "workspace-delete", "checkout"}),
 		},
 		{
 			path: "g. a fetch from GitHub that fails after its retries",
