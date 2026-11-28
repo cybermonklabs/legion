@@ -7,62 +7,75 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A send whose publish went out and was never acknowledged may be stored: the send route answers
 // 503 with the code that says so (listenerwire.CodeMaybeStored), and Dispatch's client reads it as
 // dispatchenvoy.ErrStoreUnconfirmed, a send that may have landed, and not as one that stored
-// nothing. The server is frozen as the send's connection probe reaches the target's stand-in, so the
-// publish goes out into the frozen connection, as sender_limit_test.go's row of the same name does.
-// The control is a 503 that sent nothing: the listener's server stopped and its connection waiting
-// to reconnect, so the publish waits out the route's deadline before any send (bus.ErrUnacknowledged
-// does not wrap it), as sender_limit_test.go's reconnect row shows; it carries no code and is no
-// ErrStoreUnconfirmed.
+// nothing. The relay sees the publish leave the listener's NATS connection but withholds it,
+// so no acknowledgement can arrive. The control disconnects that connection before the send:
+// the client waits to reconnect and never publishes. The send budget ends both waits.
 func TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored(t *testing.T) {
 	t.Parallel()
+	open := func(t *testing.T, url string) (*listenerDeps, *listenerRelay, *clocktest.Fake) {
+		t.Helper()
+		relay := startListenerRelay(t, url)
+		fake := clocktest.New(time.Unix(0, 0))
+		client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(fake))
+		if err != nil {
+			t.Fatalf("connect the listener through the relay: %v", err)
+		}
+		t.Cleanup(client.Close)
+		return budgetRouteDeps(t, client, fake), relay, fake
+	}
 	t.Run("the publish went out and was never acknowledged: 503 maybe_stored, ErrStoreUnconfirmed", func(t *testing.T) {
-		rig, server := newSenderLimitRigOnServer(t)
+		t.Parallel()
+		uri := testnats.URL(t)
+		state, relay, fake := open(t, uri)
 		const target = "ses_maybe_stored_target"
-		rig.register(t, target, nil)
-		thaws := make(chan func(), 1)
-		t.Cleanup(func() {
-			select {
-			case thaw := <-thaws:
-				thaw()
-			default:
-			}
-		})
-		var freeze sync.Once
-		plugin := testnats.Connect(t, rig.url)
+		if err := state.sessions.Put(target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Delivery: session.DeliveryConsumer}); err != nil {
+			t.Fatalf("register %s: %v", target, err)
+		}
+		plugin := testnats.Connect(t, uri)
 		t.Cleanup(plugin.Close)
+		probed := make(chan error, 1)
 		if _, err := plugin.Subscribe(bus.DeliverSubject(target), func(msg *natsgo.Msg) {
 			if msg.Header.Get(bus.ConnectionProbeHeader) != "" {
-				freeze.Do(func() { thaws <- server.Freeze(t) })
+				probed <- msg.Respond([]byte("done"))
 			}
 		}); err != nil {
 			t.Fatalf("subscribe %s's relay subject: %v", target, err)
 		}
-		if err := plugin.Flush(); err != nil {
+		ctx, cancel := clock.WithShownDeadline(testwait.Context(t))
+		defer cancel()
+		if err := plugin.FlushWithContext(ctx); err != nil {
 			t.Fatalf("flush the relay subscription: %v", err)
 		}
-		status, body, err := sendThroughDispatch(t, rig.mux, target)
-		select {
-		case thaw := <-thaws:
-			thaw()
-		default:
-			t.Fatalf("the send probed nothing, so its publish met no frozen server; answer %d %s", status, body)
-		}
+		relay.arm(contracts.LegacyAgentSubject(target)+" ", 1)
+		deadline := fake.Now().Add(sendRequestBudget)
+		status, body, err := sendThroughDispatch(t, sendHandler(state, logging.New("test")), target, func() {
+			fake.AwaitArmedAt(t, "the send request budget", deadline)
+			if err := testwait.Receive(t, "the target's plug-in to answer the connection probe", probed); err != nil {
+				t.Fatalf("answer %s's connection probe: %v", target, err)
+			}
+			testwait.Receive(t, "the relay to see and withhold the send's stored publish", relay.swallowed)
+			fake.Set(deadline)
+		})
 		var refusal listenerwire.APIError
 		if status != http.StatusServiceUnavailable || json.Unmarshal([]byte(body), &refusal) != nil || refusal.Code != listenerwire.CodeMaybeStored {
 			t.Fatalf("the send whose publish was never acknowledged was answered %d %s; want 503 with code %q", status, body, listenerwire.CodeMaybeStored)
@@ -73,19 +86,30 @@ func TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored(t *testing.T) 
 	})
 
 	t.Run("control: a 503 that sent nothing carries no code and is no ErrStoreUnconfirmed", func(t *testing.T) {
-		rig, server := newSenderLimitRigOnServer(t)
+		t.Parallel()
+		state, relay, fake := open(t, testnats.URL(t))
 		const target = "ses_maybe_stored_control"
-		rig.register(t, target, nil)
-		client := rig.harness.client
-		server.Stop(t)
-		t.Cleanup(func() { server.Start(t) })
-		waitFor(t, "the listener's connection to reconnect after its server stopped", func() bool {
-			return !client.Connected() && client.Connection().IsReconnecting()
+		if err := state.sessions.Put(target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+			t.Fatalf("register %s: %v", target, err)
+		}
+		relay.cut()
+		testwait.Until(t, "the listener's connection to wait for a reconnect after the link is cut", func() (natsgo.Status, bool) {
+			status := state.client.Connection().Status()
+			return status, status == natsgo.RECONNECTING
 		})
-		status, body, err := sendThroughDispatch(t, rig.mux, target)
+		started := fake.Now()
+		status, body, err := sendThroughDispatch(t, sendHandler(state, logging.New("test")), target, func() {
+			deadline := started.Add(sendRequestBudget)
+			fake.AwaitArmedAt(t, "the send request budget", deadline)
+			armed := fake.AwaitArmed(t, "the route budget and publish acknowledgement bound during reconnect", 2)
+			if len(armed) != 2 || !armed[0].Equal(deadline) || !armed[1].After(deadline) {
+				t.Fatalf("armed deadlines = %v, want the route deadline %v followed by the publish acknowledgement bound", armed, deadline)
+			}
+			fake.Set(deadline)
+		})
 		var refusal listenerwire.APIError
 		if status != http.StatusServiceUnavailable || json.Unmarshal([]byte(body), &refusal) != nil || refusal.Code != "" {
-			t.Fatalf("the send that met a frozen server before its read was answered %d %s; want a 503 with no code", status, body)
+			t.Fatalf("the send that could not reconnect was answered %d %s; want a 503 with no code", status, body)
 		}
 		if errors.Is(err, dispatchenvoy.ErrStoreUnconfirmed) || !errors.Is(err, dispatchenvoy.ErrUnavailable) {
 			t.Fatalf("Dispatch's client read it as %v; want ErrUnavailable and not ErrStoreUnconfirmed", err)
@@ -95,35 +119,38 @@ func TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored(t *testing.T) 
 
 // sendThroughDispatch sends one message to target with Dispatch's own client through mux, the
 // listener's routes, and returns the route's status and body as the client met them, and the
-// client's error.
-func sendThroughDispatch(t *testing.T, mux http.Handler, target string) (int, string, error) {
+// client's error. drive advances the listener while the client's own clock stays still.
+func sendThroughDispatch(t *testing.T, mux http.Handler, target string, drive func()) (int, string, error) {
 	t.Helper()
-	var (
-		mu     sync.Mutex
+	type answer struct {
 		status int
 		body   string
-	)
+	}
+	answered := make(chan answer, 1)
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, r)
-		mu.Lock()
-		status, body = recorder.Code, recorder.Body.String()
-		mu.Unlock()
+		answered <- answer{recorder.Code, recorder.Body.String()}
 		for key, values := range recorder.Header() {
 			w.Header()[key] = values
 		}
 		w.WriteHeader(recorder.Code)
 		_, _ = w.Write(recorder.Body.Bytes())
 	}))
-	t.Cleanup(listener.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_, err := dispatchenvoy.New(listener.URL, dispatchenvoy.WithTimeout(20*time.Second)).Send(ctx, dispatchenvoy.SendInput{
-		TargetSession: target, Message: "may be stored", Payload: json.RawMessage(`{}`), IdempotencyKey: "maybe-stored-" + target,
+	t.Cleanup(func() {
+		testwait.Returns(t, "the HTTP listener to close after the send request ends", listener.Close)
 	})
-	mu.Lock()
-	defer mu.Unlock()
-	return status, body, err
+	clientDone := make(chan error, 1)
+	go func() {
+		_, err := dispatchenvoy.New(listener.URL, dispatchenvoy.WithClock(clocktest.Held())).Send(t.Context(), dispatchenvoy.SendInput{
+			TargetSession: target, Message: "may be stored", Payload: json.RawMessage(`{}`), IdempotencyKey: "maybe-stored-" + target,
+		})
+		clientDone <- err
+	}()
+	drive()
+	err := testwait.Receive(t, "Dispatch's send to "+target+" to return the listener's answer", clientDone)
+	got := testwait.Receive(t, "the HTTP listener to record the send's answer", answered)
+	return got.status, got.body, err
 }
 
 // A publish whose first send went unanswered and whose resend the full stream refused is both
@@ -145,11 +172,19 @@ func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T
 	// process on every send until the request's context ends.
 	inProcessUntilEnded := func() error {
 		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", bus.PublishDedupePrefix+uuid.NewString())
-		ctx, cancel := context.WithTimeout(context.Background(), 4*inProcessPause)
-		defer cancel()
-		_, err := publishHeld(ctx, nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
-			return bus.StoredAck{}, inProcess
-		}, &requestRecord{}, requestSender{}, &item)
+		var err error
+		testwait.Bubble(t, func(t testing.TB) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			sends := 0
+			_, err = publishHeld(ctx, nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
+				sends++
+				if sends == 2 {
+					cancel()
+				}
+				return bus.StoredAck{}, inProcess
+			}, &requestRecord{}, requestSender{}, &item)
+		})
 		return err
 	}
 	// unread is the error publishHeld answers a duplicate verdict at sequence 7, a resend's where

@@ -15,6 +15,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -22,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -29,31 +32,25 @@ import (
 type sendHoldKey struct{}
 
 // sendHold is what a test does at each send of one request's stored publish: the request's context
-// carries it, and the rig listener's acknowledgement clock (heldSendClock) calls started as each
-// send begins, before anything is sent, and ended once that send has returned its answer, each
-// with the send's number from 1. A route's publish makes one send per call of
-// bus.Client.PublishStoredAck, which takes its acknowledgement bound from that clock.
+// carries it, and the rig listener's acknowledgement clock (heldSendClock) calls ended once
+// that send has returned its answer, with the send's number from 1.
 type sendHold struct {
-	sends   atomic.Int32
-	started func(n int32)
-	ended   func(n int32)
+	clock *clocktest.Fake
+	sends atomic.Int32
+	ended func(n int32)
 }
 
-// heldSendClock is the rig listener's acknowledgement clock (bus.WithPublishAcknowledgementClock):
-// the bound every send takes, as the wall clock gives it, and the hold of a request whose context
-// carries one (sendHold).
+// heldSendClock uses each timed request's fake for its acknowledgement bounds. It also
+// marks when each send has returned, before the caller can retry.
 type heldSendClock struct{}
 
 func (heldSendClock) WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(parent, timeout)
 	hold, _ := parent.Value(sendHoldKey{}).(*sendHold)
 	if hold == nil {
-		return ctx, cancel
+		return clock.Real().WithTimeout(parent, timeout)
 	}
+	ctx, cancel := hold.clock.WithTimeout(parent, timeout)
 	n := hold.sends.Add(1)
-	if hold.started != nil {
-		hold.started(n)
-	}
 	return ctx, func() {
 		cancel()
 		if hold.ended != nil {
@@ -87,6 +84,7 @@ type inProcessRig struct {
 
 func newInProcessRig(t *testing.T) *inProcessRig {
 	t.Helper()
+	started := time.Now()
 	cluster := testnats.StartCluster(t, 3)
 	owner, err := bus.ConnectOwningStream(cluster.URLs(), bus.WithReplicas(3))
 	if err != nil {
@@ -99,6 +97,7 @@ func newInProcessRig(t *testing.T) *inProcessRig {
 	if leader < 0 {
 		t.Fatalf("the stream's leader %q is no member of the cluster", leaderName)
 	}
+	t.Logf("three-member cluster and stream ready in %s", time.Since(started))
 	client, err := bus.ConnectOwningStream([]string{cluster.Servers[leader].URL()}, bus.WithReplicas(3),
 		bus.WithPublishAcknowledgementClock(heldSendClock{}))
 	if err != nil {
@@ -198,7 +197,9 @@ func (rig *inProcessRig) hear(t *testing.T, subject string) *natsgo.Subscription
 		t.Fatalf("subscribe to %s on the leader: %v", subject, err)
 	}
 	t.Cleanup(func() { _ = heard.Unsubscribe() })
-	if err := rig.watch.Flush(); err != nil {
+	ctx, cancel := clock.WithShownDeadline(testwait.Context(t))
+	defer cancel()
+	if err := rig.watch.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	return heard
@@ -210,13 +211,19 @@ func awaitHanded(t *testing.T, heard *natsgo.Subscription, n int) []*natsgo.Msg 
 	t.Helper()
 	handed := make([]*natsgo.Msg, 0, n)
 	for i := range n {
-		msg, err := heard.NextMsg(10 * time.Second)
-		if err != nil {
-			t.Fatalf("the leader was handed %d of the %d publishes: %v", i, n, err)
-		}
+		msg := nextInProcessMessage(t, heard, fmt.Sprintf("the leader's publish %d of %d on %s", i+1, n, heard.Subject))
 		handed = append(handed, msg)
 	}
 	return handed
+}
+
+func nextInProcessMessage(t *testing.T, sub *natsgo.Subscription, what string) *natsgo.Msg {
+	t.Helper()
+	msg, err := sub.NextMsgWithContext(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("receive %s: %v", what, err)
+	}
+	return msg
 }
 
 // serve sends body to route, the publish route or the send route, under ctx, and returns its
@@ -245,7 +252,9 @@ func (rig *inProcessRig) attempt(ctx context.Context, route, body string) <-chan
 // answer.
 func (rig *inProcessRig) copies(t *testing.T, subject string) uint64 {
 	t.Helper()
-	info, err := rig.js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
+	ctx, cancel := clock.WithShownDeadline(testwait.Context(t))
+	defer cancel()
+	info, err := rig.js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject}, natsgo.Context(ctx))
 	if err != nil {
 		t.Fatalf("read the stream's copies on %s: %v", subject, err)
 	}
@@ -256,7 +265,10 @@ func (rig *inProcessRig) copies(t *testing.T, subject string) uint64 {
 // the row read before it sent anything, and fails on any other count.
 func (rig *inProcessRig) requireOneCopy(t *testing.T, subject string, before uint64) {
 	t.Helper()
-	waitFor(t, "the stream to store the message on "+subject, func() bool { return rig.copies(t, subject) > before })
+	testwait.Until(t, "the stream to store the message on "+subject, func() (uint64, bool) {
+		got := rig.copies(t, subject)
+		return got, got > before
+	})
 	if got := rig.copies(t, subject) - before; got != 1 {
 		t.Fatalf("the stream stored %d copies on %s, want 1: both attempts carry one message id", got, subject)
 	}
@@ -338,8 +350,8 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsSt
 			thaw := rig.cluster.FreezeRoutes(t)
 			t.Cleanup(thaw)
 			answers := []<-chan *httptest.ResponseRecorder{
-				rig.attempt(context.Background(), path.route, body),
-				rig.attempt(context.Background(), path.route, body),
+				rig.attempt(t.Context(), path.route, body),
+				rig.attempt(t.Context(), path.route, body),
 			}
 			handed := awaitHanded(t, heard, 2)
 			if first, second := handed[0].Header.Get(natsgo.MsgIdHdr), handed[1].Header.Get(natsgo.MsgIdHdr); first == "" || first != second {
@@ -347,7 +359,7 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsSt
 			}
 			thaw()
 			for _, answer := range answers {
-				if answer := <-answer; answer.Code != http.StatusOK {
+				if answer := testwait.Receive(t, "the publish attempt to answer after thaw", answer); answer.Code != http.StatusOK {
 					t.Errorf("an attempt was answered %d %s; want 200: its earlier attempt was still in process, and is stored", answer.Code, strings.TrimSpace(answer.Body.String()))
 				}
 			}
@@ -418,18 +430,13 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	body := messageJSON(t, path.body(sender, key), nil)
 	thaw := rig.cluster.FreezeRoutes(t)
 	t.Cleanup(thaw)
-	earlier := rig.attempt(context.Background(), path.route, body)
+	earlier := rig.attempt(t.Context(), path.route, body)
 	awaitHanded(t, heard, 1)
-	resend := rig.attempt(context.Background(), path.route, body)
-	var firstForward ended
-	select {
-	case firstForward = <-first:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the resend's first forward did not end")
-	}
+	resend := rig.attempt(t.Context(), path.route, body)
+	firstForward := testwait.Receive(t, "the resend's first forward to end", first)
 	thaw()
 	for name, answer := range map[string]<-chan *httptest.ResponseRecorder{"the earlier send": earlier, "the resend": resend} {
-		if answer := <-answer; answer.Code != http.StatusOK {
+		if answer := testwait.Receive(t, name+" to answer", answer); answer.Code != http.StatusOK {
 			t.Errorf("%s was answered %d %s; want 200", name, answer.Code, strings.TrimSpace(answer.Body.String()))
 		}
 	}
@@ -463,13 +470,11 @@ const inProcessBudget = time.Second
 // for the send and the topic publish, 504 for a role send, charged.
 //
 // What the resend costs turns on its own sends. A resend whose every send was answered, the last
-// one refused, before its budget ended stored nothing of its own and costs nothing: the rig holds
-// its sends (sendHold) and ends its context once its second send has returned its refusal. A
-// resend whose last send went out unanswered may have stored the copy itself, since a stream
-// leader change drops the ids in process and the next send under one is stored, so it costs one:
-// the rig freezes the leader's client relay as its second send begins, and the request's deadline
-// ends that send. A role send whose window ends while its forward is still in process costs one,
-// as main charges its 504 (sendToRole).
+// one refused, before its budget ended stored nothing of its own and costs nothing: the rig ends
+// its request once its second send has returned its refusal. A resend whose last send went out
+// unanswered may have stored the copy itself, so it costs one: a separate relay sees and withholds
+// that send, then the test ends the request on its clock. A role send whose window ends while its
+// forward is still in process costs one, as main charges its 504 (sendToRole).
 func TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMaybeStored(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
@@ -479,73 +484,87 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMa
 	}
 	role := "in-process-budget-" + id.New()[:8]
 	claimRoleFor(t, rig.harness.registry, rig.harness.sessions, holder, role, nil)
-	// A resend's case is the context it is sent under, which ends its budget, the answer and
-	// outcome of the earlier attempt, and what the resend costs.
-	type resendCase struct {
-		name    string
-		context func(t *testing.T, thaws *[]func()) context.Context
-		cost    string
-	}
-	betweenSends := resendCase{"its every send answered", func(t *testing.T, _ *[]func()) context.Context {
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		return context.WithValue(ctx, sendHoldKey{}, &sendHold{ended: func(n int32) {
-			if n == 2 {
-				cancel()
-			}
-		}})
-	}, "free"}
-	lastUnanswered := resendCase{"its last send unanswered", func(t *testing.T, thaws *[]func()) context.Context {
-		ctx, cancel := context.WithTimeout(context.Background(), inProcessBudget)
-		t.Cleanup(cancel)
-		leader := rig.cluster.Servers[rig.leader]
-		return context.WithValue(ctx, sendHoldKey{}, &sendHold{started: func(n int32) {
-			if n == 2 {
-				*thaws = append(*thaws, leader.Freeze(t))
-			}
-		}})
-	}, "charged"}
-	windowEnds := resendCase{"its window ends with its forward in process", func(t *testing.T, _ *[]func()) context.Context {
-		ctx, cancel := context.WithTimeout(context.Background(), inProcessBudget)
-		t.Cleanup(cancel)
-		return ctx
-	}, "charged"}
 	type row struct {
-		path   inProcessPath
-		resend resendCase
+		path inProcessPath
+		mode string
+		cost string
 	}
+	const everyAnswered = "its every send answered"
+	const lastUnanswered = "its last send unanswered"
 	var rows []row
 	for _, path := range inProcessPaths(target) {
-		rows = append(rows, row{path, betweenSends}, row{path, lastUnanswered})
+		rows = append(rows, row{path, everyAnswered, "free"}, row{path, lastUnanswered, "charged"})
 	}
-	rows = append(rows, row{roleInProcessPath(role, holder), windowEnds})
+	rows = append(rows, row{roleInProcessPath(role, holder), "its window ends with its forward in process", "charged"})
 	for _, row := range rows {
-		t.Run(row.path.name+"/"+row.resend.name, func(t *testing.T) {
+		t.Run(row.path.name+"/"+row.mode, func(t *testing.T) {
 			rig.requireLeader(t)
 			heard, before := rig.hear(t, row.path.subject), rig.copies(t, row.path.subject)
 			sender := "ses_in_process_budget_" + id.New()[:8]
 			body := messageJSON(t, row.path.body(sender, id.New()), nil)
-			thaws := []func(){rig.cluster.FreezeRoutes(t)}
-			t.Cleanup(func() {
-				for _, thaw := range thaws {
-					thaw()
+			var relay *listenerRelay
+			resender := *rig
+			resendDeps := *rig.d
+			resender.d = &resendDeps
+			if row.mode == lastUnanswered {
+				relay = startListenerRelay(t, rig.cluster.Servers[rig.leader].URL())
+				client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(3),
+					bus.WithPublishAcknowledgementClock(heldSendClock{}))
+				if err != nil {
+					t.Fatalf("connect the resend's publisher through the relay: %v", err)
 				}
-			})
-			earlierCtx, cancel := context.WithTimeout(context.Background(), inProcessBudget)
-			defer cancel()
+				t.Cleanup(client.Close)
+				resendDeps.client = client
+				relay.arm(row.path.subject+" ", 2)
+			}
+			thaw := rig.cluster.FreezeRoutes(t)
+			t.Cleanup(thaw)
+
+			// Role forwards still use the wall clock inside the bus, not the acknowledgement
+			// clock used by PublishStoredAck. Keep that row on the real forward path.
+			newAttemptClock := func(hold *sendHold) (context.Context, context.CancelFunc, func()) {
+				if row.path.role {
+					ctx, cancel := context.WithTimeout(t.Context(), inProcessBudget)
+					return ctx, cancel, func() {}
+				}
+				hold.clock = clocktest.New(time.Unix(0, 0))
+				ctx, cancel := hold.clock.WithTimeout(t.Context(), inProcessBudget)
+				return context.WithValue(ctx, sendHoldKey{}, hold), cancel, func() { hold.clock.Advance(inProcessBudget) }
+			}
+			earlierCtx, cancelEarlier, expireEarlier := newAttemptClock(&sendHold{})
+			defer cancelEarlier()
 			first := rig.attempt(earlierCtx, row.path.route, body)
 			awaitHanded(t, heard, 1)
-			later := rig.attempt(row.resend.context(t, &thaws), row.path.route, body)
-			resend, earlier := <-later, <-first
-			for _, thaw := range slices.Backward(thaws) {
-				thaw()
+			hold := &sendHold{}
+			laterCtx, cancelLater, expireLater := newAttemptClock(hold)
+			defer cancelLater()
+			if row.mode == everyAnswered {
+				hold.ended = func(n int32) {
+					if n == 2 {
+						expireLater()
+					}
+				}
 			}
+			later := resender.attempt(laterCtx, row.path.route, body)
+			if relay != nil {
+				testwait.Receive(t, "the resend's second publish to leave the client and meet the relay", relay.swallowed)
+				expireLater()
+			}
+			resend := testwait.Receive(t, "the resend to answer while the earlier publish is in process", later)
+			expireEarlier()
+			earlier := testwait.Receive(t, "the earlier attempt to answer without an acknowledgement", first)
+			thaw()
 			earlierStatus, earlierOutcome := http.StatusServiceUnavailable, outcomeBusUnavailable
 			if row.path.role {
 				earlierStatus, earlierOutcome = http.StatusGatewayTimeout, outcomeDeliveryFailed
 			}
 			if earlier.Code != earlierStatus {
 				t.Errorf("the earlier attempt was answered %d %s, want %d", earlier.Code, strings.TrimSpace(earlier.Body.String()), earlierStatus)
+			} else if !row.path.role {
+				var refusal listenerwire.APIError
+				if err := json.Unmarshal(earlier.Body.Bytes(), &refusal); err != nil || refusal.Code != listenerwire.CodeMaybeStored {
+					t.Errorf("the earlier attempt answered %s, want code %q: it was sent but never acknowledged", earlier.Body.String(), listenerwire.CodeMaybeStored)
+				}
 			}
 			var body503 listenerwire.APIError
 			if err := json.Unmarshal(resend.Body.Bytes(), &body503); err != nil {
@@ -559,7 +578,7 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMa
 				t.Errorf("the resend's error is %q, want it to open with %q", body503.Error, earlierAttemptInProcessPrefix)
 			}
 			rig.requireOneCopy(t, row.path.subject, before)
-			rig.requireOutcomes(t, row.path, sender, string(earlierOutcome)+" charged", string(outcomeEarlierAttemptInProcess)+" "+row.resend.cost)
+			rig.requireOutcomes(t, row.path, sender, string(earlierOutcome)+" charged", string(outcomeEarlierAttemptInProcess)+" "+row.cost)
 		})
 	}
 }
@@ -585,17 +604,20 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 		}
 		return harness.client.PublishStoredAck(ctx, subject, envelope, msgID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
-	defer cancel()
-	if err := keepTakenRoleFrame(ctx, cfg, role, item, seq); err != nil {
+	if err := keepTakenRoleFrame(testwait.Context(t), cfg, role, item, seq); err != nil {
 		t.Fatalf("a takeover copy whose first two publishes were refused as in process: %v; want it copied by the third", err)
 	}
 	msgID := takenFrameMsgID(strings.TrimPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix), role, seq)
 	if !slices.Equal(ids, []string{msgID, msgID, msgID}) {
 		t.Fatalf("the copy was published under %v, want %s three times: the in-process refusal is retried under the id it refused", ids, msgID)
 	}
-	if stored, _, ok := readKeptRoleCopy(t, harness.client, role); !ok || stored.EventID != item.EventID {
-		t.Fatalf("the lane holds %+v (held: %t), want event %s", stored, ok, item.EventID)
+	stored, err := harness.client.LastStoredMessage(testwait.Context(t), bus.KeptRoleSubject(role))
+	if err != nil {
+		t.Fatalf("read the kept copy of role %s: %v", role, err)
+	}
+	var kept contracts.Envelope
+	if err := json.Unmarshal(stored.Data, &kept); err != nil || kept.EventID != item.EventID {
+		t.Fatalf("the lane holds %s (%v), want event %s", stored.Data, err, item.EventID)
 	}
 }
 
@@ -607,6 +629,7 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 // role routes' 503 and the agent subject give-up's NAK. The earlier attempt is handed off as no
 // duplicate, and the stream holds one hand-off.
 func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	handoff := rig.stoppedAgentHandoff(t)
 	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
@@ -618,7 +641,7 @@ func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t 
 	attempt := func() <-chan handedOff {
 		answer := make(chan handedOff, 1)
 		go func() {
-			handed, err := handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
+			handed, err := handoff.handOffToLegion(t.Context(), legionHandoffTarget{envelope: item, session: handoffAgent})
 			answer <- handedOff{handed, err}
 		}()
 		return answer
@@ -632,10 +655,10 @@ func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t 
 	resend := attempt()
 	awaitHanded(t, heard, 1)
 	thaw()
-	if got := <-earlier; got.err != nil || got.handed == nil || got.handed.ack.Duplicate {
+	if got := testwait.Receive(t, "the earlier hand-off to answer", earlier); got.err != nil || got.handed == nil || got.handed.ack.Duplicate {
 		t.Errorf("the earlier hand-off = %+v, %v; want it handed off, no duplicate", got.handed, got.err)
 	}
-	if got := <-resend; got.err != nil || got.handed == nil || !got.handed.ack.Duplicate {
+	if got := testwait.Receive(t, "the hand-off resend to answer", resend); got.err != nil || got.handed == nil || !got.handed.ack.Duplicate {
 		t.Errorf("the resend's hand-off = %+v, %v; want the earlier attempt's copy, answered duplicate: its first publish was refused as in process, and that attempt is stored",
 			got.handed, got.err)
 	}
@@ -652,8 +675,7 @@ func (rig *inProcessRig) stoppedAgentHandoff(t *testing.T) *legionHandoff {
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := agents.Put(ctx, legionagents.Entry{
 		SessionID: handoffAgent, LegionProject: "infra", Issue: "INFRA-204", Role: "implementer",
 		RoleToken: "legion-infra-infra-204-implementer", Title: "Legion implementer · INFRA-204", Harness: "omp",
@@ -677,9 +699,9 @@ func (rig *inProcessRig) stoppedAgentHandoff(t *testing.T) *legionHandoff {
 // The window is that context: the give-up returns once it ends, records the failed hand-off (its
 // line and its count) and NAKs the message to be tried again, rather than publishing again for as
 // long as the earlier attempt is not stored, which a stream that lost its quorum may never store.
-// The window is shortened to a second here, on the rig's own copy of the configuration; the row's
-// own bound, ten seconds past it, is what fails a give-up that does not stop.
+// The rig keeps this window short so the frozen cluster keeps its leader until the thaw.
 func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	cfg := rig.harness.config
 	cfg.handoff = rig.stoppedAgentHandoff(t)
@@ -705,10 +727,7 @@ func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t 
 	if err := conn.PublishMsg(&natsgo.Msg{Subject: carrierSubject, Reply: nakInbox, Data: marshalListenerEnvelope(t, item)}); err != nil {
 		t.Fatalf("publish the message: %v", err)
 	}
-	carried, err := carrier.NextMsg(5 * time.Second)
-	if err != nil {
-		t.Fatalf("receive the message: %v", err)
-	}
+	carried := nextInProcessMessage(t, carrier, "the carrier for the durable message")
 	message := deliveryMessage{data: carried.Data, mode: durableDelivery, msg: carried}
 
 	rig.requireLeader(t)
@@ -717,24 +736,17 @@ func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t 
 	t.Cleanup(thaw)
 	earlier := make(chan error, 1)
 	go func() {
-		_, err := cfg.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
+		_, err := cfg.handoff.handOffToLegion(t.Context(), legionHandoffTarget{envelope: item, session: handoffAgent})
 		earlier <- err
 	}()
 	awaitHanded(t, heard, 1)
 
 	window := cfg.handoffGiveUpWindow
-	bound := window + 10*time.Second
 	started := time.Now()
 	answered := make(chan bool, 1)
 	go func() { answered <- offerAgentDeliveryToLegion(cfg, message, item, handoffAgent) }()
-	select {
-	case owned := <-answered:
-		if !owned {
-			t.Fatalf("the give-up answered that the hand-off was not the message's outcome; want it to own the failed hand-off:\n%s", rig.harness.logs.String())
-		}
-	case <-time.After(bound):
-		t.Fatalf("the give-up had not returned %s after it began, %s past its %s window: its hand-off is still publishing again while the earlier attempt is in process",
-			bound, bound-window, window)
+	if owned := testwait.Receive(t, "the give-up to stop retrying the in-process hand-off", answered); !owned {
+		t.Fatalf("the give-up answered that the hand-off was not the message's outcome; want it to own the failed hand-off:\n%s", rig.harness.logs.String())
 	}
 	if elapsed := time.Since(started); elapsed < window {
 		t.Errorf("the give-up returned after %s, inside its %s window: it was to publish again until the window ended", elapsed, window)
@@ -746,8 +758,8 @@ func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t 
 	if !strings.Contains(rig.harness.logs.String(), errEarlierAttemptInProcess.Error()) {
 		t.Errorf("the failed hand-off does not say it ended while the earlier attempt was in process (%q):\n%s", errEarlierAttemptInProcess, rig.harness.logs.String())
 	}
-	if nak, err := naks.NextMsg(5 * time.Second); err != nil || !strings.HasPrefix(string(nak.Data), "-NAK") {
-		t.Errorf("the message's reply subject read %v, %v; want the give-up's NAK", nak, err)
+	if nak := nextInProcessMessage(t, naks, "the give-up's reply"); !strings.HasPrefix(string(nak.Data), "-NAK") {
+		t.Errorf("the message's reply subject read %q; want the give-up's NAK", nak.Data)
 	}
 	body := metricsBody(t, rig.harness)
 	for _, series := range []string{`test_messages_naked 1`, `test_messages_delivered{delivery_status="failed"} 1`} {
@@ -757,11 +769,7 @@ func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t 
 	}
 
 	thaw()
-	select {
-	case <-earlier:
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the earlier hand-off had not returned 15 s after the thaw")
-	}
+	testwait.Receive(t, "the earlier hand-off to return after the thaw", earlier)
 }
 
 // A delivery exception is published under no Nats-Msg-Id (publishDeliveryException), so a
@@ -825,21 +833,20 @@ func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t 
 				defer close(applied)
 				applyDeliveryOutcome(cfg, item, outcome)
 			}()
-			for n := range 2 {
-				msg, err := heard.NextMsg(10 * time.Second)
-				if err != nil {
-					t.Fatalf("the leader was handed %d of the 2 publishes: %v", n, err)
-				}
+			for _, msg := range awaitHanded(t, heard, 2) {
 				if msgID := msg.Header.Get(natsgo.MsgIdHdr); msgID != "" {
 					t.Errorf("an exception was published under Nats-Msg-Id %q, want none", msgID)
 				}
 			}
 			thaw()
-			if err := <-other; err != nil {
+			if err := testwait.Receive(t, "the other listener's publish of the exception", other); err != nil {
 				t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
 			}
-			<-applied
-			waitFor(t, "the stream to store both exceptions on "+lane, func() bool { return rig.copies(t, lane) >= before+2 })
+			testwait.Receive(t, "the delivery outcome to finish applying", applied)
+			testwait.Until(t, "the stream to store both exceptions on "+lane, func() (uint64, bool) {
+				got := rig.copies(t, lane)
+				return got, got >= before+2
+			})
 			if got := rig.copies(t, lane) - before; got != 2 {
 				t.Fatalf("the stream stored %d copies on %s, want 2: each exception is an event of its own", got, lane)
 			}

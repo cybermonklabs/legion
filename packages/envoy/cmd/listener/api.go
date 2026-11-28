@@ -1434,9 +1434,8 @@ var publisherLanes = []struct{ prefix, publisher string }{
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()
-		// The topic publish's budget counts from its arrival on the route's clock (d.clk(), the
-		// real clock in production), which a test moves past the budget; a role publish's delivery
-		// (sendToRole) keeps its deadlines on the wall clock from arrived.
+		// The topic publish and the role publish's first resolution count from arrival on
+		// the route's clock. The role delivery window still bounds wall-clock forwards.
 		budgetArrived := d.clk().Now()
 		record := &requestRecord{logger: logger, line: "listener publish", laneKey: "topic"}
 		if r.Method != http.MethodPost {
@@ -1602,7 +1601,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// route's give-up (roleSend.noHolder) rather than to the envelope, which travels on to
 			// the holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request, role, arrived, warnings)
+			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request, role, budgetArrived, warnings)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -2954,7 +2953,7 @@ func roleGetHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		role, _ := d.registry.ReadRole(name, roles.Valid)
-		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
+		ctx, cancel := clock.WithShownTimeout(d.clk(), r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		scope := edgeScopeOf(r, nil)
 		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)

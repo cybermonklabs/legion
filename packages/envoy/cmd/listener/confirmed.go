@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -260,7 +261,7 @@ func (s *roleSend) settle(outcome sendOutcome) {
 		slog.String("reason", string(outcome)),
 		slog.String("dedupe_key", s.item.DedupeKey),
 		slog.Int("attempts", s.attempts),
-		slog.String("elapsed", time.Since(s.arrived).String()))
+		slog.String("elapsed", s.d.clk().Now().Sub(s.arrived).String()))
 }
 
 // delivered answers 200 with the envelope, the holder it was stored for and the state that
@@ -834,10 +835,12 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
 	// reads the same stamp this send's own 202 names.
 	send.item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
-	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(listenerSendRequestBudget))
+	budget, cancelBudget := d.clk().WithDeadline(ctx, arrived.Add(listenerSendRequestBudget))
+	firstCtx, cancelFirst := clock.WithShownDeadline(budget)
 	resolvedAt := d.delivery.now()
 	first, err := send.resolve(firstCtx)
 	cancelFirst()
+	cancelBudget()
 	if err != nil {
 		send.unresolved(err)
 		return
