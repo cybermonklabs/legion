@@ -43,7 +43,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 	t.Run("the broker's refusal", func(t *testing.T) {
 		local := awstest.NewLocal()
 		startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonProjectUnchecked} })
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 		useStdin(t, "stored-value")
 		stdout, stderr, code := runSecret("create", "PRIV_KEY", "--owner", "me", "--tier", "agent", "--project", "PRIV")
 		if code != 1 || !strings.Contains(stdout, "reason="+policy.ReasonProjectUnchecked) || !strings.Contains(stderr, policy.ReasonProjectUnchecked) {
@@ -100,7 +100,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 	plain := awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
 	local := awstest.NewLocal(tagged, plain)
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 
 	for _, tc := range []struct {
 		name, printed string
@@ -191,7 +191,7 @@ func TestAMalformedProjectIsRefusedBeforeAnyWrite(t *testing.T) {
 	local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	writes := &countingTagWrites{Local: local}
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 	for _, args := range [][]string{
 		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--project", "priv"},
 		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--project", "PRIV PUB"},

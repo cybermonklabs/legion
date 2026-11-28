@@ -73,7 +73,7 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 				t.Errorf("the other writer's retag: %v", err)
 			}
 		}
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		_, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "none")
 		for _, said := range []string{
 			"another write changed the secret after this retag read it",
@@ -173,7 +173,7 @@ func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 				local = awstest.NewLocal(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 			}
 			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
-			useAWS(t, local, testAccount, adaSignIn)
+			awstest.Use(t, local, testAccount, adaSignIn)
 			stdout, stderr, code := runSecret(append([]string{"retag", "LOGIN_KEY"}, row.args...)...)
 			if code != row.code {
 				t.Fatalf("retag %v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", row.args, row.served, code, stdout, stderr, row.code)

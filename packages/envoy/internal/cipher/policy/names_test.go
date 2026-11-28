@@ -23,3 +23,20 @@ func TestNameSlugRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestDisplayNameIsTheNameASessionAsksFor: a store name under the prefix whose slug maps back to
+// a NAME displays as that NAME, on either store's shape of name; one whose slug maps to none
+// (an underscore, an uppercase letter, two hyphens) displays as the store's whole name.
+func TestDisplayNameIsTheNameASessionAsksFor(t *testing.T) {
+	for _, c := range []struct{ prefix, id, want string }{
+		{"dev/agent-secrets/", "dev/agent-secrets/deel-api-key", "DEEL_API" + "_KEY"},
+		{"projects/1/secrets/agent-secrets-", "projects/1/secrets/agent-secrets-a-b", "A_B"},
+		{"dev/agent-secrets/", "dev/agent-secrets/deel_api_key", "dev/agent-secrets/deel_api_key"},
+		{"dev/agent-secrets/", "dev/agent-secrets/Deel-key", "dev/agent-secrets/Deel-key"},
+		{"dev/agent-secrets/", "dev/agent-secrets/a--b", "dev/agent-secrets/a--b"},
+	} {
+		if got := policy.DisplayName(c.prefix, c.id); got != c.want {
+			t.Errorf("DisplayName(%q, %q) = %q, want %q", c.prefix, c.id, got, c.want)
+		}
+	}
+}

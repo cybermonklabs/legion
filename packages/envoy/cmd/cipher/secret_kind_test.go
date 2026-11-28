@@ -36,7 +36,7 @@ func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
 
 	stdout, stderr, code := runSecret("create", "APP_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "Acme-Org", "--requesters", "ada@example.com", "--max-grant", "1h")
@@ -191,7 +191,7 @@ func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, "stored-value")
 	for _, args := range [][]string{
 		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", "other"},
@@ -269,7 +269,7 @@ func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	base := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--max-grant", "1h", "--requesters", "ada@example.com"}
 	for _, tc := range []struct {
 		flag, value, want string
@@ -302,7 +302,7 @@ func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
 	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 	for _, owners := range []string{"none ada", "ada NONE", "None  acme-org"} {
 		useStdin(t, "stored-value")
 		_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", owners)
@@ -333,7 +333,7 @@ func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *tes
 	local := awstest.NewLocal(commas)
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 	_, stderr, code := runSecret("retag", "APP_KEY", "--tier", "human")
 	if code != exitUsageError || !strings.Contains(stderr, policy.ReasonGitHubOwnersMalformed) || strings.Contains(stderr, policy.ReasonGitHubOwnersMissing) {
 		t.Fatalf("retag --tier human: exit %d stderr %q; want a usage error naming %s, not %s", code, stderr, policy.ReasonGitHubOwnersMalformed, policy.ReasonGitHubOwnersMissing)
@@ -365,7 +365,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 		local := awstest.NewLocal(awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp)), typeTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		for _, args := range refusals {
 			_, stderr, code := runSecret(args...)
 			if code != exitUsageError || !strings.Contains(stderr, "github") {
@@ -444,7 +444,7 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 	local := awstest.NewLocal(listed)
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 	for _, tc := range []struct {
 		want string
 		args []string
@@ -528,7 +528,7 @@ func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *test
 	local := awstest.NewLocal(held)
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 	for _, tc := range []struct{ requesters, want string }{
 		{"ada@example.com", `name group:approvers@example.com once and no person, not "ada@example.com": write --requesters "group:approvers@example.com"`},
 		{"ada@example.com " + groupOwner, `write --requesters "group:approvers@example.com"`},
@@ -561,7 +561,7 @@ func TestOwnerGroupWithAnUppercaseAddressIsAUsageError(t *testing.T) {
 	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 	const says = "--owner group:EMAIL names a group by its lowercase email"
 	for _, owner := range []string{"group:Approvers@example.com", "GROUP:approvers@example.com"} {
 		for _, args := range [][]string{
@@ -595,7 +595,7 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 	useStdin(t, "stored-value")
 	for _, args := range [][]string{
 		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org,ada"},
@@ -637,7 +637,7 @@ func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
 		local := awstest.NewLocal()
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 		for _, owner := range owners {
 			useStdin(t, "stored-value")
 			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", owner)
@@ -709,13 +709,13 @@ func typeTaggedSecret(t *testing.T, name string) awstest.LocalSecret {
 // UntagResource and nothing else, so IAM refusing it leaves every tag as it was, and a retag that
 // both removes and sets tags is refused before any read or write, since it would take two calls.
 // Each retag reads the secret's tags once, to build the tags it will leave and check them, and a
-// write that lands reads them once more, to find a concurrent writer's (awsBackend.readBack).
+// write that lands reads them once more, to find a concurrent writer's (the AWS writer's readBack).
 func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 
 	for _, args := range [][]string{
 		{"retag", "APP_KEY", "--type", "none", "--tier", "human"},
@@ -772,7 +772,7 @@ func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.
 	shared.Tags[policy.TagOwner] = policy.OwnerShared
 	local := awstest.NewLocal(shared)
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, &countingTagWrites{Local: local, refuseUntag: true}, testAccount, adaSignIn)
+	awstest.Use(t, &countingTagWrites{Local: local, refuseUntag: true}, testAccount, adaSignIn)
 	_, stderr, code := runSecret("retag", "SHARED_APP_KEY", "--type", "none")
 	if code != 1 || !strings.Contains(stderr, "UntagResource") || strings.Contains(stderr, "administrator") {
 		t.Fatalf("refused removal on a shared secret: exit %d stderr %q; want 1 with the cloud's refusal alone", code, stderr)
@@ -786,7 +786,7 @@ func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
 		local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--max-grant", "2h"); code != 0 {
 			t.Fatalf("retag --max-grant 2h: exit %d, stderr %q", code, stderr)
 		}
@@ -1013,7 +1013,7 @@ func typeArgs(secretType string) []string {
 }
 
 // typeStore is a store the secret forms write, as these tests set it up and read it back: Secrets
-// Manager (a awstest.Local behind useAWS) or Secret Manager (a fakeSecretManager).
+// Manager (a awstest.Local behind awstest.Use) or Secret Manager (a fakeSecretManager).
 type typeStore interface {
 	// put holds the secret name with tags and value, as a writer other than this client stores it.
 	put(t *testing.T, name string, tags map[string]string, value string)
@@ -1044,7 +1044,7 @@ func onEachStore(t *testing.T, test func(t *testing.T, store typeStore, broker *
 	t.Run("aws", func(t *testing.T) {
 		reads := &valueReads{Local: awstest.NewLocal()}
 		broker := startSecretBroker(t, servedBy(reads.Local))
-		useAWS(t, reads, testAccount, adaSignIn)
+		awstest.Use(t, reads, testAccount, adaSignIn)
 		test(t, awsTypeStore{reads}, broker)
 	})
 	t.Run("gcp", func(t *testing.T) {
@@ -1404,7 +1404,7 @@ func TestSecretSetRefusesASecretWhoseTypeTagNamesNoType(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:751).
 	local := awstest.NewLocal(awstest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	refuseValueReads(t)
 	_, stderr, code := runSecret("set", "ODD_KEY")
 	if code != exitUsageError || !strings.Contains(stderr, `type tag "other"`) || !strings.Contains(stderr, policy.ReasonTypeUnknown) {

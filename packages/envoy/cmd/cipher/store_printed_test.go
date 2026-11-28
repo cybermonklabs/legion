@@ -86,7 +86,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
-			useAWS(t, echoingList{Local: local, code: row.code, message: row.message}, testAccount, adaSignIn)
+			awstest.Use(t, echoingList{Local: local, code: row.code, message: row.message}, testAccount, adaSignIn)
 			_, stderr, code := runSecret("list")
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
@@ -221,7 +221,7 @@ func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 				if !clean {
 					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
 				}
-				useAWS(t, local, testAccount, adaSignIn)
+				awstest.Use(t, local, testAccount, adaSignIn)
 				useStdin(t, "v2")
 				stdout, stderr, code := runSecret("set", "HELD_KEY")
 				if code != 1 {

@@ -200,7 +200,7 @@ func TestACreateOrSetExitsOneWhileTheBrokerServesAnotherType(t *testing.T) {
 				args = append([]string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent"}, row.args...)
 			}
 			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
-			useAWS(t, local, testAccount, adaSignIn)
+			awstest.Use(t, local, testAccount, adaSignIn)
 			useStdin(t, login)
 			stdout, stderr, code := runSecret(args...)
 			if code != row.code {

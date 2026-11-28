@@ -58,7 +58,7 @@ func TestATypedWriteOnALapsedSignInRegistersItAgainAndIsChecked(t *testing.T) {
 			broker.rereadAnswer = servedBy(local)
 			registered := broker.enrollments
 			broker.mu.Unlock()
-			useAWS(t, local, testAccount, adaSignIn)
+			awstest.Use(t, local, testAccount, adaSignIn)
 			args := typedWrite(t, local, form)
 
 			stdout, stderr, code := runSecret(args...)

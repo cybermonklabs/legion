@@ -1,7 +1,7 @@
 // packages/envoy/cmd/cipher/secret.go
 //
 // The secret forms: a person or an agent reads and writes agent secrets in the broker's own secret
-// store - AWS Secrets Manager (secret_aws.go) or GCP Secret Manager (secret_gcp.go), chosen by the
+// store - AWS Secrets Manager (secretstore/aws) or GCP Secret Manager (secret_gcp.go), chosen by the
 // broker's `store` setting - under the cloud credential its environment gives it, whatever kind of
 // identity that is, then asks the broker to reread each one written, so the change is served at
 // once. The broker is asked only for its settings (GET /v1/settings: the namespace, key and which
@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -749,10 +750,15 @@ type tagValueChecker interface {
 }
 
 // checkTagValues refuses, before any write, a tag value w's store would refuse, naming the tag
-// and the store's limit; tags is every tag the write sends.
+// and the store's limit; tags is every tag the write sends. A refusal is a usage error: the value
+// a flag named is what the store would refuse.
 func checkTagValues(w secretstore.Writer, tags map[string]string) error {
-	if checker, ok := w.(tagValueChecker); ok {
-		return checker.CheckTagValues(tags)
+	checker, ok := w.(tagValueChecker)
+	if !ok {
+		return nil
+	}
+	if err := checker.CheckTagValues(tags); err != nil {
+		return usageErr{err}
 	}
 	return nil
 }
@@ -850,14 +856,11 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 func openSecretBackend(ctx context.Context, settings Settings) (secretstore.Writer, error) {
 	switch settings.Store {
 	case "", aws.Name:
-		if err := checkSettingsKeyARN(settings); err != nil {
-			return nil, err
-		}
-		sm, st, sources, err := awsClients(ctx, settings.AWSRegion)
+		backend, err := backends.Lookup(aws.Name)
 		if err != nil {
 			return nil, err
 		}
-		return newAWSBackend(settings, sm, st, sources), nil
+		return backend.(writerBackend).OpenWriter(ctx, settings.store(), secretstore.WriterOptions{Run: runChild})
 	case gcp.Name:
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
@@ -868,17 +871,9 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretstore.Writ
 	}
 }
 
-// displayName is the NAME a session asks for the secret named id, or id itself when its name
-// under the prefix maps to none (the broker refuses such a secret as name-malformed). Both
-// backends share it (awsBackend.displayName, gcpBackend.displayName): their store-side name
-// differs, but it maps back to NAME the same way, from settings.SecretsPrefix alone.
-func displayName(prefix, id string) string {
-	slug := strings.TrimPrefix(id, prefix)
-	name := policy.SlugToName(slug)
-	if back, err := policy.NameToSlug(name); err != nil || back != slug {
-		return id
-	}
-	return name
+// writerBackend is a registry entry that opens the CLI's writer of its store.
+type writerBackend interface {
+	OpenWriter(ctx context.Context, s secretstore.Settings, opts secretstore.WriterOptions) (secretstore.Writer, error)
 }
 
 // rereadAfter asks the broker to reread name after a form's write that leaves no type to check,
@@ -1172,7 +1167,7 @@ func (v secretView) withTags(tags map[string]string) secretView {
 // where the store answered one, and the versions as listed, which only show asks for.
 func viewOf(l secretstore.Listing, prefix string) secretView {
 	return secretView{
-		Name: displayName(prefix, l.ID), SecretName: l.ID, HasValue: l.HasCurrentValue,
+		Name: policy.DisplayName(prefix, l.ID), SecretName: l.ID, HasValue: l.HasCurrentValue,
 		Created: timeOrNil(l.Created), LastChanged: timeOrNil(l.LastChanged),
 		Deleted: timeOrNil(l.Deleted), EarliestPurge: timeOrNil(l.EarliestPurge),
 		Versions: l.Versions,

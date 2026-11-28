@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -146,7 +147,7 @@ var gcpCallPermissions = map[string][]string{
 
 // gcpPermissions are the IAM permissions a message names by name (gcpMissingPermission): every one
 // some call of gcpCallPermissions needs, and no other.
-var gcpPermissions = permissionsOf(gcpCallPermissions)
+var gcpPermissions = secretstore.PermissionsOf(gcpCallPermissions)
 
 // gcpMissingPermission is the IAM permission message, Google's own text, says is denied, where it
 // names one in Google's shape (gcpPermission), else "": the permission where it is one this
@@ -162,7 +163,7 @@ func gcpMissingPermission(message string) string {
 	case gcpPermissions[match[1]]:
 		return match[1]
 	}
-	return permissionNotNamed
+	return secretstore.PermissionNotNamed
 }
 
 // storeTokens is the token source the Secret Manager client signs its calls with, which keeps its

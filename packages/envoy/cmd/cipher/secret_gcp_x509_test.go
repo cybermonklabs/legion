@@ -20,6 +20,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"math/big"
@@ -386,6 +387,31 @@ func TestNoStoreCredentialThatRepeatsAKeyStartsASigner(t *testing.T) {
 		t.Fatalf("control: Google's library started the signer for none of %d inputs, so this probe cannot see one run", len(inputs))
 	}
 	t.Logf("%d inputs; Google's library alone started the signer for %d of them", len(inputs), reached)
+}
+
+// captureStderr is what fn writes to the process's stderr, os.Stderr itself, while it runs.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	read := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		read <- string(b)
+	}()
+	saved := os.Stderr
+	os.Stderr = w
+	func() {
+		defer func() {
+			os.Stderr = saved
+			_ = w.Close()
+		}()
+		fn()
+	}()
+	return <-read
 }
 
 // TestAnExternalAccountStoreSignInPrintsNoToken: GOOGLE_SDK_GO_LOGGING_LEVEL=debug makes Google's

@@ -73,7 +73,7 @@ func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 			}
 			local := awstest.NewLocal(secret)
 			startSecretBroker(t, servedBy(local))
-			useAWS(t, refusingTags{local}, testAccount, adaSignIn)
+			awstest.Use(t, refusingTags{local}, testAccount, adaSignIn)
 			_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, strings.Fields(c.args)...)...)
 			if code != 1 || !strings.Contains(stderr, "the removal stands") {
 				t.Fatalf("retag %s with the rewrite refused: exit %d stderr %q; want exit 1 and the removal standing", c.args, code, stderr)
@@ -95,7 +95,7 @@ func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 // lostAnswer, as a call the store carried out and whose answer was lost. A refused write is
 // countingTagWrites' (refuseUntag) or refusingTags'.
 type raceOnTag struct {
-	secretsAPI
+	awsstore.WriterAPI
 	racing, failReadBack, loseAnswer string
 	readBackErr                      error
 	raced, tagged, untagged          bool
@@ -110,7 +110,7 @@ func (r *raceOnTag) race() {
 		return
 	}
 	r.raced = true
-	if _, err := r.secretsAPI.TagResource(context.Background(), &secretsmanager.TagResourceInput{
+	if _, err := r.WriterAPI.TagResource(context.Background(), &secretsmanager.TagResourceInput{
 		SecretId: aws.String(policytest.ID("API_KEY")), Tags: awsstore.TagList(map[string]string{policy.TagType: policy.TypeGitHubApp}),
 	}); err != nil {
 		panic(err)
@@ -122,7 +122,7 @@ func (r *raceOnTag) TagResource(ctx context.Context, in *secretsmanager.TagResou
 		r.race()
 	}
 	r.tagged = true
-	out, err := r.secretsAPI.TagResource(ctx, in, o...)
+	out, err := r.WriterAPI.TagResource(ctx, in, o...)
 	if err == nil && r.loseAnswer == "tag" {
 		return nil, lostAnswer
 	}
@@ -134,7 +134,7 @@ func (r *raceOnTag) UntagResource(ctx context.Context, in *secretsmanager.UntagR
 		r.race()
 	}
 	r.untagged = true
-	out, err := r.secretsAPI.UntagResource(ctx, in, o...)
+	out, err := r.WriterAPI.UntagResource(ctx, in, o...)
 	if err == nil && r.loseAnswer == "untag" {
 		return nil, lostAnswer
 	}
@@ -148,11 +148,11 @@ func (r *raceOnTag) DescribeSecret(ctx context.Context, in *secretsmanager.Descr
 		}
 		return nil, errors.New("DescribeSecret lost for this test")
 	}
-	return r.secretsAPI.DescribeSecret(ctx, in, o...)
+	return r.WriterAPI.DescribeSecret(ctx, in, o...)
 }
 
 // TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded: on AWS a tag write is made first and checked
-// after (awsBackend.readBack), so a removal retag's two writes can fail after they landed. The
+// after (the AWS writer's readBack), so a removal retag's two writes can fail after they landed. The
 // secret keeps a dispatch-project tag whose requesters list lacks the rollback guard, and
 // `--max-grant none` removes the max-grant, then writes the list with the guard after it.
 //   - The rewrite raced, or its read-back failed: the rewrite landed. The requesters tag holds the
@@ -175,38 +175,42 @@ func TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded(t *testing.T) {
 	notMade := "its second write, API_KEY's requesters as " + `"` + rewrite + `"` + ", was not made"
 	for _, c := range []struct {
 		name            string
-		store           func(*awstest.Local) secretsAPI
+		store           func(*awstest.Local) awsstore.WriterAPI
 		want, notWant   []string
 		requesters      string
 		removed, reread bool
 	}{
 		{
 			name:       "the rewrite raced",
-			store:      func(l *awstest.Local) secretsAPI { return &raceOnTag{secretsAPI: l, racing: "tag"} },
+			store:      func(l *awstest.Local) awsstore.WriterAPI { return &raceOnTag{WriterAPI: l, racing: "tag"} },
 			want:       []string{written, "this retag's write landed beside another writer's", "(reason=" + policy.ReasonGitHubOwnersMissing + ")"},
 			requesters: rewrite, removed: true, reread: true,
 		},
 		{
-			name:       "the rewrite's read-back failed",
-			store:      func(l *awstest.Local) secretsAPI { return &raceOnTag{secretsAPI: l, failReadBack: "tag"} },
+			name: "the rewrite's read-back failed",
+			store: func(l *awstest.Local) awsstore.WriterAPI {
+				return &raceOnTag{WriterAPI: l, failReadBack: "tag"}
+			},
 			want:       []string{written, "reading its tags back failed"},
 			requesters: rewrite, removed: true, reread: true,
 		},
 		{
 			name:       "the removal raced",
-			store:      func(l *awstest.Local) secretsAPI { return &raceOnTag{secretsAPI: l, racing: "untag"} },
+			store:      func(l *awstest.Local) awsstore.WriterAPI { return &raceOnTag{WriterAPI: l, racing: "untag"} },
 			want:       []string{"this retag's write landed beside another writer's", notMade, "agent-secrets secret show API_KEY", "(reason=" + policy.ReasonGitHubOwnersMissing + ")"},
 			requesters: "ada@example.com", removed: true, reread: true,
 		},
 		{
-			name:       "the removal's read-back failed",
-			store:      func(l *awstest.Local) secretsAPI { return &raceOnTag{secretsAPI: l, failReadBack: "untag"} },
+			name: "the removal's read-back failed",
+			store: func(l *awstest.Local) awsstore.WriterAPI {
+				return &raceOnTag{WriterAPI: l, failReadBack: "untag"}
+			},
 			want:       []string{"reading its tags back failed", notMade, "agent-secrets secret show API_KEY"},
 			requesters: "ada@example.com", removed: true, reread: true,
 		},
 		{
 			name:       "the removal was refused",
-			store:      func(l *awstest.Local) secretsAPI { return &countingTagWrites{Local: l, refuseUntag: true} },
+			store:      func(l *awstest.Local) awsstore.WriterAPI { return &countingTagWrites{Local: l, refuseUntag: true} },
 			want:       []string{"secretsmanager:UntagResource"},
 			notWant:    []string{"the removal landed", "the removal stands"},
 			requesters: "ada@example.com", removed: false, reread: false,
@@ -219,7 +223,7 @@ func TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded(t *testing.T) {
 			secret.Tags[policy.TagMaxGrant] = "1h"
 			local := awstest.NewLocal(secret)
 			broker := startSecretBroker(t, servedBy(local))
-			useAWS(t, c.store(local), testAccount, adaSignIn)
+			awstest.Use(t, c.store(local), testAccount, adaSignIn)
 			_, stderr, code := runSecret("retag", "API_KEY", "--max-grant", "none")
 			if code != 1 {
 				t.Fatalf("retag --max-grant none, %s: exit %d stderr %q; want 1", c.name, code, stderr)
@@ -257,7 +261,7 @@ func TestALandedRetagOfASharedSecretIsNotCalledRefused(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal(awstest.Secret("API_KEY", policy.OwnerShared, policy.TierAgent, "v1"))
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, &raceOnTag{secretsAPI: local, failReadBack: "tag", readBackErr: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:DescribeSecret"}}, testAccount, adaSignIn)
+	awstest.Use(t, &raceOnTag{WriterAPI: local, failReadBack: "tag", readBackErr: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:DescribeSecret"}}, testAccount, adaSignIn)
 	_, stderr, code := runSecret("retag", "API_KEY", "--tier", "human")
 	if code != 1 || !strings.Contains(stderr, "reading its tags back failed") {
 		t.Fatalf("retag --tier human of a shared secret whose read-back IAM refused: exit %d stderr %q; want 1, saying the read-back failed", code, stderr)
@@ -480,7 +484,7 @@ func TestAnAWSTagWriteIsJudgedByItsAttempts(t *testing.T) {
 			local := awstest.NewLocal(secret)
 			sm, st := startSDKServer(t, local, c.script)
 			broker := startSecretBroker(t, servedBy(local))
-			useAWS(t, sdkTags{Local: local, sm: sm}, testAccount, adaSignIn)
+			awstest.Use(t, sdkTags{Local: local, sm: sm}, testAccount, adaSignIn)
 			_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, c.args...)...)
 			tags := awsstore.TagMap(describe(t, local, "API_KEY").Tags)
 			rereads, _ := broker.recorded()
@@ -524,18 +528,18 @@ func TestTheUncheckedLineFollowsOnlyALandedWrite(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, c := range []struct {
 		name          string
-		store         func(*valueReads) secretsAPI
+		store         func(*valueReads) awsstore.WriterAPI
 		landed, typed bool
 	}{
-		{"a refused write", func(v *valueReads) secretsAPI { return refusingTags{v} }, false, false},
-		{"a write whose answer was lost", func(v *valueReads) secretsAPI { return &raceOnTag{secretsAPI: v, loseAnswer: "tag"} }, false, true},
-		{"a landed write whose read-back failed (control)", func(v *valueReads) secretsAPI { return &raceOnTag{secretsAPI: v, failReadBack: "tag"} }, true, true},
+		{"a refused write", func(v *valueReads) awsstore.WriterAPI { return refusingTags{v} }, false, false},
+		{"a write whose answer was lost", func(v *valueReads) awsstore.WriterAPI { return &raceOnTag{WriterAPI: v, loseAnswer: "tag"} }, false, true},
+		{"a landed write whose read-back failed (control)", func(v *valueReads) awsstore.WriterAPI { return &raceOnTag{WriterAPI: v, failReadBack: "tag"} }, true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			refused := &valueReads{Local: local, refuse: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue"}}
-			useAWS(t, c.store(refused), testAccount, adaSignIn)
+			awstest.Use(t, c.store(refused), testAccount, adaSignIn)
 			_, stderr, code := runSecret("retag", "API_KEY", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org")
 			typed := awsstore.TagMap(describe(t, local, "API_KEY").Tags)[policy.TagType] == policy.TypeGitHubApp
 			said := strings.Contains(stderr, "the tags are written, but API_KEY's value was not checked")
@@ -616,7 +620,7 @@ func TestALandedRetagWhoseValueWasNotCheckedSaysSo(t *testing.T) {
 	local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	refused := &valueReads{Local: local, refuse: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue"}}
-	useAWS(t, &raceOnTag{secretsAPI: refused, failReadBack: "tag"}, testAccount, adaSignIn)
+	awstest.Use(t, &raceOnTag{WriterAPI: refused, failReadBack: "tag"}, testAccount, adaSignIn)
 	_, stderr, code := runSecret("retag", "API_KEY", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org")
 	if code != 1 || !strings.Contains(stderr, "reading its tags back failed") {
 		t.Fatalf("retag to github-app whose value read was denied and whose read-back failed: exit %d stderr %q; want 1, saying the read-back failed", code, stderr)
@@ -713,7 +717,7 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 			if c.rereadFails {
 				broker.failRereads(http.StatusServiceUnavailable)
 			}
-			useAWS(t, &raceOnTag{secretsAPI: local, loseAnswer: c.lose}, testAccount, adaSignIn)
+			awstest.Use(t, &raceOnTag{WriterAPI: local, loseAnswer: c.lose}, testAccount, adaSignIn)
 			_, stderr, code := runSecret(append([]string{"retag", "API_KEY"}, c.args...)...)
 			if code != 1 {
 				t.Fatalf("%s: exit %d stderr %q; want 1", c.name, code, stderr)

@@ -4,7 +4,7 @@
 //
 // The built agent-secrets binary against moto's AWS (Secrets Manager, STS and IAM), with no AWS
 // account: the AWS SDK's own profile and credential-chain resolution, which the in-process tests
-// replace (useAWS), decides the sign-in, and moto's IAM checks decide what it may do. moto ignores
+// replace (awstest.Use), decides the sign-in, and moto's IAM checks decide what it may do. moto ignores
 // a policy's conditions, so no IAM policy is proved here (the decision
 // "AWS is proved without an AWS account"). packages/envoy/scripts/aws-moto-check.sh starts moto
 // and runs this test:

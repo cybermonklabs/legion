@@ -33,7 +33,7 @@ func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 		local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
 		broker := startSecretBroker(t, servedBy(local))
 		broker.failRereads(http.StatusServiceUnavailable)
-		useAWS(t, &raceOnTag{secretsAPI: local, loseAnswer: "tag"}, testAccount, adaSignIn)
+		awstest.Use(t, &raceOnTag{WriterAPI: local, loseAnswer: "tag"}, testAccount, adaSignIn)
 		_, stderr, code := runSecret("retag", "API_KEY", "--tier", policy.TierAgent)
 		printed := regexp.MustCompile("ask for the reread with `([^`]*)`").FindStringSubmatch(stderr)
 		if code != 1 || printed == nil || printed[1] != rereadCommand("API_KEY") {

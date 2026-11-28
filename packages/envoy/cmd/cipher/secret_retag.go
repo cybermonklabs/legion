@@ -31,7 +31,7 @@ func (s *secretSession) githubOwnersCheck(id string, held secretstore.HeldTags) 
 		if _, err := policy.GitHubOwnersFor(secretType, owners); err == nil {
 			return nil
 		}
-		name := displayName(s.settings.SecretsPrefix, id)
+		name := policy.DisplayName(s.settings.SecretsPrefix, id)
 		return fmt.Errorf("%w, leaving type %q with github-owners %q, which the broker refuses; this retag's write landed beside another writer's, and nothing was restored. This retag read %s and found %s. Give that type its owners with `%s`, or drop the type with `%s`",
 			secretstore.ErrTagsChanged, secretType, owners, tagPairs(held.Tags), tagPairs(now),
 			secretstore.Command(s.backend.RerunPrefix(), "secret", "retag", name, "--type", secretType, "--github-owners", "LOGINS"),

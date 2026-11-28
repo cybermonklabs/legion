@@ -88,7 +88,7 @@ func TestCreateSignalHelper(t *testing.T) {
 			fmt.Println("REREAD", name)
 			return served(name)
 		})
-		useAWS(t, announcedCreate{Local: local, held: held == "CreateSecret", hold: hold}, testAccount, adaSignIn)
+		awstest.Use(t, announcedCreate{Local: local, held: held == "CreateSecret", hold: hold}, testAccount, adaSignIn)
 	} else {
 		fake := newFakeSecretManager()
 		switch os.Getenv("AGENT_SECRETS_CREATE_ADD") {

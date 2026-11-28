@@ -784,7 +784,9 @@ func (b *gcpBackend) secretID(slug string) string {
 	return strings.TrimPrefix(b.id(slug), b.parent()+"/secrets/")
 }
 
-func (b *gcpBackend) displayName(id string) string { return displayName(b.settings.SecretsPrefix, id) }
+func (b *gcpBackend) displayName(id string) string {
+	return policy.DisplayName(b.settings.SecretsPrefix, id)
+}
 
 // RequireAccount is a no-op for GCP, unlike AWS's: every call this backend makes already names
 // projects/<gcp_project>/... explicitly in the resource, so a wrong-project sign-in gets a real
