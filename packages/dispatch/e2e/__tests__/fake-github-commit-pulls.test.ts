@@ -110,7 +110,9 @@ test("a commit the repository does not hold answers 422 over REST and null in th
     const absent = "d".repeat(40);
     const rest = await Bun.fetch(`${fake.origin}/repos/${repository}/commits/${absent}/pulls`);
     expect(rest.status).toBe(422);
-    const token = await Bun.fetch(`${fake.origin}/app/installations/4209/access_tokens`, { method: "POST" });
+    const token = await Bun.fetch(`${fake.origin}/app/installations/4209/access_tokens`, {
+      method: "POST",
+    });
     const { token: bearer } = (await token.json()) as { token: string };
     const answer = await Bun.fetch(`${fake.origin}/graphql`, {
       body: JSON.stringify({
@@ -126,7 +128,9 @@ test("a commit the repository does not hold answers 422 over REST and null in th
     });
     expect(answer.status).toBe(200);
     const body = (await answer.json()) as {
-      data: { repository: Record<string, { associatedPullRequests: { totalCount: number } } | null> };
+      data: {
+        repository: Record<string, { associatedPullRequests: { totalCount: number } } | null>;
+      };
       errors?: unknown[];
     };
     expect(body.errors).toBeUndefined();
