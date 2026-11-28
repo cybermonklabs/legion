@@ -1336,7 +1336,24 @@ func TestTheCountsLoopRecountsAtLeastEveryElevenMinutes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			database := storetest.Open(t)
-			states := seedEveryCoverageState(t, database)
+			// The seed holds only what the two writes need, not every state an item can be in
+			// (seedEveryCoverageState): TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff
+			// compares every state after the same recount (CountsDeps.recount), and this check is
+			// for a loop whose recount misses a write made with triggers off. The seed is an issue
+			// embedded at its title by the configured identity, whose title the drive writes with
+			// the trigger off, and the architecture the component the drive writes needs. A recount
+			// that misses the component leaves the counts with no component, and one that misses
+			// the title leaves the issue current for the configured identity, where main's
+			// statements, which requireMainsAnswer compares the counts with, read one component and
+			// the issue lacking. With the queue beside the loop, its coverage pass can rewrite the
+			// issue's row at its new title before the recount does, so there the component is the
+			// write that only a recount follows. An issue and a window that wait for their first
+			// vector give the queue (Run) rows to embed beside the loop.
+			const titled = "ORCL-1"
+			seedIssue(t, database, "ORCL", titled, "A title written again with its trigger off")
+			embedRowAs(t, database.Pool, "issue", titled, configuredIdentity)
+			seedIssue(t, database, "ORCL", "ORCL-2", "An issue waiting for its first vector")
+			enqueueWindow(t, database.Pool, "document_block", "document_block/loop", "b1", "A window waiting for its first vector", "b1")
 			seedComponentsArchitecture(t, database.Pool, "ORCL", 902)
 			fillCounts(t, database)
 			records := &logtest.Recorder{}
@@ -1356,7 +1373,7 @@ func TestTheCountsLoopRecountsAtLeastEveryElevenMinutes(t *testing.T) {
 						insertComponent(t, q, "ORCL", "written-with-its-triggers-off", 902)
 					})
 					withTableTriggersOff(t, database, "issues", func(q querier) {
-						mustExec(t, q, `update issues set title = 'A title written with its trigger off' where key = $1`, states.titleEdited)
+						mustExec(t, q, `update issues set title = 'A title written with its trigger off' where key = $1`, titled)
 					})
 					written = len(records.Records())
 					return false
