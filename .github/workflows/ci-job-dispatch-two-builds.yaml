@@ -178,7 +178,7 @@ jobs:
       - name: Resolve the previous build's commit
         id: previous
         run: |
-          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --commit 93092ac3bb707caedd773bb6f618fc1f936a962a --resolve)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
       # Restored only: .github/workflows/ci-caches.yaml's dispatch-builds job builds this release on
       # a push to main and saves it in main's scope, which every pull request and merge group reads.
