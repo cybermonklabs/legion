@@ -51,15 +51,17 @@ type dispatchNATSCredential struct {
 
 // newDispatchNATSCredential prepares the pods' NATS credential once both ServiceAccounts are
 // registered: the app's, <hostname>, whose uid is appUID, and listenerAccount, <hostname>-listener.
+// secrets is mountedSecrets' list, which holds natsSeedSecret exactly without natsAudience, and
+// the credential is the seed exactly while it does.
 //
-// Without natsAudience it is the seed, as it always was: natsSeedSecret, which mountedSecrets
-// lists first, so newDispatchKubernetes registers its SecretProviderClass <hostname>-nats-seed
-// right after this, mounted through the CSI driver as the file NATS_NKEY_SEED_FILE names
-// (natsSeedEnv), which a pod reads only once its own account's principal holds
-// roles/secretmanager.secretAccessor on the secret. Each of the two accounts holds it by name
-// (newDispatchDatabase's two grants) and by uid (newDispatchSeedGrantByUID, registered here from
-// each account's uid), and each Deployment waits for its own account's two grants rather than
-// racing IAM on the first deployment.
+// Without natsAudience it is the seed, as it always was: natsSeedSecret, which secrets lists
+// first, so newDispatchKubernetes registers its SecretProviderClass <hostname>-nats-seed right
+// after this, mounted through the CSI driver, in the volume built from its entry (csiVolume), as
+// the file NATS_NKEY_SEED_FILE names (natsSeedEnv), which a pod reads only once its own account's
+// principal holds roles/secretmanager.secretAccessor on the secret. Each of the two accounts holds
+// it by name (newDispatchDatabase's two grants) and by uid (newDispatchSeedGrantByUID, registered
+// here from each account's uid), and each Deployment waits for its own account's two grants
+// rather than racing IAM on the first deployment.
 //
 // With natsAudience it is each pod's projected token of its own ServiceAccount for that audience,
 // the app's <hostname> and the listener's <hostname>-listener, which the kubelet mints into the pod
@@ -70,13 +72,11 @@ type dispatchNATSCredential struct {
 // lists no natsSeedSecret, and no grant by name or by uid, so neither account can read a seed and
 // no Deployment waits on a grant; the listener's uid, which only its grant by uid reads, is not
 // read at all.
-func newDispatchNATSCredential(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase,
+func newDispatchNATSCredential(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, secrets dispatchMountedSecrets, cloud *dispatchCluster, database *dispatchDatabase,
 	appUID pulumi.StringOutput, listenerAccount *corev1.ServiceAccount,
 ) (dispatchNATSCredential, error) {
 	var nats dispatchNATSCredential
-	if s.natsAudience != "" {
-		nats.env, nats.volume = natsTokenCredential(s.natsAudience)
-	} else {
+	if seed, seeded := secrets.byVolume(natsSeedFile); seeded {
 		dispatch := dispatchType + " " + name
 		listenerName := s.hostname + "-listener"
 		appGrantByUID, err := newDispatchSeedGrantByUID(ctx, comp, name, args, cloud, database, s.hostname, appUID)
@@ -88,11 +88,11 @@ func newDispatchNATSCredential(ctx *pulumi.Context, comp *Dispatch, name string,
 			return dispatchNATSCredential{}, err
 		}
 		nats.env = natsSeedEnv()
-		nats.volume = corev1.VolumeArgs{Name: pulumi.String(natsSeedFile), Csi: &corev1.CSIVolumeSourceArgs{
-			Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(s.secretClassName(natsSeedFile))},
-		}}
+		nats.volume = seed.csiVolume(s)
 		nats.appGrants = []pulumi.Resource{database.seedAccessor, appGrantByUID}
 		nats.listenerGrants = []pulumi.Resource{database.listenerSeedAccessor, listenerGrantByUID}
+	} else {
+		nats.env, nats.volume = natsTokenCredential(s.natsAudience)
 	}
 	return nats, nil
 }

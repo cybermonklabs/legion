@@ -572,12 +572,15 @@ func MachineIDToken(id string) bool {
 	})
 }
 
-// ServiceMachineID is whether id can be a BROKER_NATS_SERVICES entry's machine id, the one an
-// entry <kind>/<machine id>/<scope>=<account> names: an id MachineIDToken takes, holding neither
-// '/' nor '=', at which the entry's own form is split, and not "-", which an entry writes for no
-// machine id. The auth service reads each entry's machine id by it (internal/cipher/config), and
-// envoy-infra holds by it the machine id of a clustered hub's listener that connects by a service
-// token, which the auth service admits by its entry listener/<machine id>.
+// ServiceMachineID is the part of the rule for a BROKER_NATS_SERVICES entry's machine id that the
+// entry's own form makes, the machine id an entry <kind>/<machine id>/<scope>=<account> names:
+// an id MachineIDToken takes, holding neither '/' nor '=', at which the entry's form is split, and
+// not "-", which an entry writes for no machine id. bus.CheckListenerMachineID is the other part:
+// it refuses an id holding '%' or whose durable is over NATS's limit for a consumer name, which
+// this takes. The auth service reads each entry's machine id by both (internal/cipher/config).
+// envoy-infra holds by this one the machine id of a clustered hub's listener that connects by a
+// service token, which the auth service admits by its entry listener/<machine id>, and by the
+// other part through its own core.CheckMachineID.
 func ServiceMachineID(id string) bool {
 	return MachineIDToken(id) && !strings.ContainsAny(id, "/=") && id != "-"
 }
@@ -701,14 +704,13 @@ const JSReadInbox = "_INBOX_legion_jsread"
 // its subjects and, asked with a subject filter, how many stored messages each subject holds; a
 // consumer's info names its filter and its position. It reads no message: it holds no direct get
 // (DIRECT.GET), no stored-message get (STREAM.MSG.GET) and no consumer create, which would deliver
-// a stream's messages to a subject of the creator's choosing. And it changes nothing: it holds no
-// create, update, delete or purge of any stream or consumer, and no publish outside the JetStream
-// API. As every grant that holds a JetStream API request, it can have the server publish a
-// JetStream answer on a reply subject of its choosing; operatorReleased's comment says what that
-// reaches. Subscribe: its own inbox prefix alone (JSReadInbox), never _INBOX.>, where other
-// clients' replies arrive. It has no deny list. Its lists are written here and not shared with
-// Measure, whose first seven publish entries are the same, so a change to either grant changes no
-// other's.
+// a stream's messages to a subject of the creator's choosing. It holds no create, update, delete
+// or purge of a stream or consumer, and publishes nothing outside the JetStream API. As every
+// grant that holds a JetStream API request, it can have the server publish a JetStream answer on
+// a reply subject of its choosing; operatorReleased's comment says what that reaches. Subscribe:
+// its own inbox prefix alone (JSReadInbox), never _INBOX.>, where other clients' replies arrive.
+// It has no deny list. Its lists are written here and not shared with Measure, whose first seven
+// publish entries are the same, so a change to either grant changes no other's.
 func JSRead() Permissions {
 	return Permissions{
 		Publish: []string{

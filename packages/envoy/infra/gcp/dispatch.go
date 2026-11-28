@@ -1836,9 +1836,10 @@ func refuseDispatchRegion(region string) error {
 // two of them equal whoever reads a CONNECT could present it at the other, and a token minted for
 // the other would be a bearer the auth service admits, since it matches a BROKER_NATS_SERVICES
 // entry by its account alone. Each refusal is a core.InputError naming natsAudience and, in its
-// message, the other input; it quotes no value but the public Azure default and the listener's own
-// address, which is no secret. It reads the resolved settings, so it runs once the namespace the
-// listener's address names is resolved, and it refuses nothing without natsAudience.
+// message, the other input, oidcIssuer's with the API server that takes its URL as an audience; it
+// quotes no value but the public Azure default and the listener's own address, which is no secret.
+// It reads the resolved settings, so it runs once the namespace the listener's address names is
+// resolved, and it refuses nothing without natsAudience.
 func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 	if s.natsAudience == "" {
 		return nil
@@ -1852,12 +1853,12 @@ func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 		{"agentSecretsAudience", s.agentSecretsAudience},
 		{"the listener's own audience, " + listenerURL, listenerURL},
 		{"oidcAudience", s.oidcAudience},
-		{"oidcIssuer", s.oidcIssuer},
+		{"oidcIssuer, whose URL a cluster's API server takes as an audience", s.oidcIssuer},
 		{azureInput, s.azure.audience},
 	} {
 		if other.audience == s.natsAudience {
 			return core.InputErrorf("natsAudience", "natsAudience is also %s: a token minted for that audience would be a bearer the NATS auth service admits, "+
-				"and the NATS token, which crosses every CONNECT, would be spendable wherever that audience is taken, as a cluster's API server takes its issuer's URL, "+
+				"and the NATS token, which crosses every CONNECT, would be spendable wherever that audience is taken, "+
 				"so give natsAudience an audience of its own", other.input)
 		}
 	}

@@ -389,8 +389,8 @@ the hub renders no user for it: `auth.conf` holds no `listener "<l.machineId>"` 
 user of `users` whose machine id gives that durable is still refused. Its machine id names no NATS
 user, so a dotted one is taken, as the auth service takes it, while one holding a space, `*`,
 `>`, `/`, `=` or a control character, or the id `-`, is refused, since no `BROKER_NATS_SERVICES`
-entry can name it: the broker cuts an entry at its first `=` and splits the rest into three parts
-at `/`, and reads a machine id of `-` as none. The auth service admits the listener as
+entry can name it: the broker cuts an entry at its first `=` and splits the part before it into
+three parts at `/`, and reads a machine id of `-` as none. The auth service admits the listener as
 `listener/<l.machineId>`, with the listener's grant for that machine id, only where four things
 hold:
 
@@ -406,7 +406,11 @@ hold:
   listener receives its callers' tokens for that audience and the auth service admits a token by
   its account alone, and one equal to `<l>.oidcIssuer`, since on GKE the cluster's API server takes
   its issuer's URL as an audience, so the NATS token would be spendable there and a token minted
-  for the API server would be a bearer the auth service admits;
+  for the API server would be a bearer the auth service admits. The component does not compare
+  `<l>.natsAudience` with the hub cluster's own issuer, which is not an input, unless
+  `<l>.oidcIssuer` is that issuer, and a `tailnet.listener` with no `clientNamespaces` takes no
+  `<l>.oidcIssuer`: do not give the cluster's own issuer as `<l>.natsAudience` either, since on GKE
+  its API server takes that URL as an audience too;
 - the broker's `BROKER_K8S_OIDC_ISSUER` is the issuer of the cluster the hub runs in, which GKE
   gives as `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster name>`.
   The auth service picks the verifier of a token by the token's own `iss`, and its one Kubernetes

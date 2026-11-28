@@ -245,7 +245,7 @@ func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 			a.NatsAudience = "http://example-dispatch-listener.example-namespace.svc.cluster.local:9020"
 		}},
 		{"oidcAudience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchNatsAudience }},
-		{"oidcIssuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
+		{"oidcIssuer", "oidcIssuer, whose URL a cluster's API server takes as an audience", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer
 			a.NatsAudience = dispatchOidcIssuer
 		}},

@@ -271,15 +271,12 @@ const advancedDatapath = "ADVANCED_DATAPATH"
 // certificate, which the component's Kubernetes provider reaches and trusts it by; one with no
 // Workload Identity pool, where the pods' principal lives, and without natsAudience the NATS seed's
 // grant to it too; one with the Secret Manager add-on off while a pod mounts a Secret Manager
-// secret through the add-on's CSI driver (mountedSecrets), as every pod mounts the NATS seed
-// without natsAudience, and as with natsAudience the app's pod alone mounts azureEmbedKeySecret,
-// with the Azure embedder's key form, and chatTokenSecret, with the endpoint answerer, so with
-// natsAudience and neither of those a cluster with the add-on off is taken; and one that enforces
-// no NetworkPolicy (neither Dataplane V2 nor network policy on), since the component's
-// NetworkPolicies are its only fence. NewDispatch calls it after the providers checks and before
-// it registers anything, so a refused cluster leaves nothing registered. Whether the cluster runs
-// on the component's network can be judged only once that network's name resolves, so
-// newDispatchExistingCluster judges it.
+// secret through the add-on's CSI driver, which is while mountedSecrets lists one, naming what it
+// lists; and one that enforces no NetworkPolicy (neither Dataplane V2 nor network policy on),
+// since the component's NetworkPolicies are its only fence. NewDispatch calls it after the
+// providers checks and before it registers anything, so a refused cluster leaves nothing
+// registered. Whether the cluster runs on the component's network can be judged only once that
+// network's name resolves, so newDispatchExistingCluster judges it.
 func lookupDispatchCluster(ctx *pulumi.Context, s dispatchSettings, gcpProvider pulumi.ProviderResource) (*dispatchLookedUpCluster, error) {
 	existing := s.existingCluster
 	cluster, err := container.LookupCluster(ctx, &container.LookupClusterArgs{Name: existing.Name, Location: pulumi.StringRef(existing.Location)}, pulumi.Provider(gcpProvider))
@@ -291,18 +288,16 @@ func lookupDispatchCluster(ctx *pulumi.Context, s dispatchSettings, gcpProvider 
 	}
 	// What the pool holds and what the add-on mounts, in the refusals' words. The add-on's CSI
 	// driver mounts each secret mountedSecrets lists, the list newDispatchKubernetes registers a
-	// SecretProviderClass for each of, so the add-on is needed exactly while it lists one: the NATS
-	// seed, first, which every pod mounts, as it always did, and otherwise azureEmbedKeySecret or
-	// chatTokenSecret, which the app's pod mounts, named in the list's order. No
-	// SecretProviderClass syncs a Kubernetes Secret: the GitHub App's key is a Secret GKE's Secret
-	// Sync makes, a feature of its own, which the lookup does not judge.
+	// SecretProviderClass for each of, so the add-on is needed exactly while it lists one, and the
+	// refusal names what it lists: the NATS seed without natsAudience, as it always did, and with
+	// natsAudience each input it lists, in its order. No SecretProviderClass syncs a Kubernetes
+	// Secret: the GitHub App's key is a Secret GKE's Secret Sync makes, a feature of its own, which
+	// the lookup does not judge.
+	secrets := s.mountedSecrets()
 	pool := "the pods' principal, and the NATS seed's grant to it, live in that pool"
+	mounted := "every pod mounts the NATS seed through it"
 	if s.natsAudience != "" {
 		pool = "the pods' principal lives in that pool"
-	}
-	secrets := s.mountedSecrets()
-	mounted := "every pod mounts the NATS seed through it"
-	if len(secrets) > 0 && secrets[0].input != "natsSeedSecret" {
 		inputs := make([]string, 0, len(secrets))
 		for _, secret := range secrets {
 			inputs = append(inputs, secret.input)
