@@ -32,11 +32,12 @@ export default {
     },
     ANSWER_LINES: {
       /** What the history in Details says while the issue's log is read, which Details opening
-       *  asks for, and when it could not be; and what its Show more says while the next page of
-       *  the log, which its press reads, is out (`IssueHistory.tsx`): the Activity tab's words. */
+       *  asks for, and when it could not be, in the Activity tab's words; and what its Show more
+       *  says while the next page of the log, which its press reads, is out, in the spec's words
+       *  (`IssueHistory.tsx`). */
       loading_history: "Loading activity…",
       history_unreadable: "Could not load the activity.",
-      loading_older: "Loading…",
+      loading_older: "Loading older",
       /** What Details' list of the runs of the issue's steps says while its read, which Details
        *  opening asks for, is out, and when it could not be read (`DetailsSteps.tsx`). */
       loading_steps: "Loading steps…",

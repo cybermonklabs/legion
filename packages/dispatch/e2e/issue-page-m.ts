@@ -43,7 +43,7 @@ import { settledState } from "./settled";
  *   Under the last entry drawn stands one control, Show more, "Show more (<n> left)" while entries
  *   read are left to draw, its count `[data-history-left]` and "<n>+" while an older page of the
  *   log is unread; a press that would leave no entry read and not drawn reads that page first,
- *   the control reading `loading_older`, "Loading…", meanwhile, and the control goes once the
+ *   the control reading `loading_older`, "Loading older", meanwhile, and the control goes once the
  *   whole log is drawn.
  * - **The facts** `[data-testid="focused-node-facts"]`, carrying `data-focused-node` with the
  *   focused node's id, or the issue's key with no node focused (`FocusedNodeFacts.tsx`); its

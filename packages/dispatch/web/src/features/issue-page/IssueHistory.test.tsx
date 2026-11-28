@@ -1016,7 +1016,7 @@ test("Show more says + while an older page is unread, and a press that would lea
     ).toHaveLength(PAGE_SIZE);
     await waitFor(() => expect(olderReads()).toBe(1));
     expect(more.getAttribute("aria-busy")).toBe("true");
-    expect(more.textContent).toBe(ANSWER_LINES.loading_older);
+    expect(more.textContent).toBe("Loading older");
 
     await act(async () => older.resolve([...olderPage]));
     await waitFor(() =>
@@ -1128,6 +1128,67 @@ test("a history whose first page holds exactly 20 entries reads the older page b
     expect(olderReads()).toBe(1);
   } finally {
     restore();
+  }
+});
+
+// Show more is never drawn bare while an older page of the log is unread: where every entry read
+// is drawn it says "0+". A refetch of the log that fails over the pages held, as a live event's
+// can, draws no line, stops the reading on, and takes the failure of the next page, and its Retry
+// in Show more's place, with it, which leaves Show more under the entries to read on. Found by
+// the goal's red team on e74723b8: with the history's first page holding 20 entries, all drawn,
+// and the read of the older page failed, a refetch of the log that failed drew a bare "Show more".
+test("a refetch of the log that fails with every entry read drawn and an older page unread leaves Show more saying 0+, never bare", async () => {
+  const firstPage = pageOf(PAGE_SIZE, 400);
+  let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+      if (options?.before !== undefined) throw new Error("the next page is down");
+      return readLog();
+    }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    // The history read the older page before it drew, and that read failed: it draws the 20
+    // entries it holds, with the next page's Retry in Show more's place.
+    await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    expect(screen.queryByRole("button", { name: SHOW_MORE })).toBeNull();
+
+    readLog = async () => {
+      throw new Error("the log is down");
+    };
+    await act(async () => {
+      await drawn.queryClient.refetchQueries({ queryKey: HISTORY_LOG });
+    });
+    expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.status, "the refetch did not fail").toBe(
+      "error"
+    );
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the next page's Retry stayed once a refetch of the log failed after it"
+    ).toBeNull();
+    expect(drawnEntries(), "the failed refetch took entries away").toHaveLength(PAGE_SIZE);
+    const more = screen.getByRole("button", { name: SHOW_MORE });
+    expect(
+      more.getAttribute("aria-busy"),
+      "Show more reads busy though the failed refetch stopped the reading on"
+    ).toBeNull();
+    expect(
+      more.querySelector("[data-history-left]")?.textContent,
+      `Show more is drawn with no "+" count while an older page is unread (it reads "${more.textContent}")`
+    ).toBe("0+");
+    expect(more.textContent).toBe(
+      `${CONTROL_LABELS.show_more} (0+ ${CONTROL_LABELS.show_more_left})`
+    );
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
   }
 });
 
@@ -1878,7 +1939,7 @@ test("the next page's Retry whose last page adds no entry hands the focus to the
     expect(drawnEntries()).toHaveLength(PAGE_SIZE);
     expect(
       screen.queryByRole("button", { name: SHOW_MORE }),
-      "Show more stands beside the next page's Retry with every entry read drawn, and says no number"
+      "Show more stands beside the next page's Retry with every entry read drawn"
     ).toBeNull();
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = [...list.querySelectorAll("a[href], button")];

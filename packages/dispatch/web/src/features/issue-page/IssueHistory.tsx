@@ -648,7 +648,7 @@ export function IssueHistory({
   // (`standsFailed`). A failed next page is said where Show more is, below the pages held, and
   // its Retry reads that page again; that line stays while the page is read again, since the log
   // keeps that failure meanwhile. Where every entry read is drawn, the Retry stands in Show
-  // more's place and Show more is not drawn, as it would say no number there.
+  // more's place and Show more is not drawn: a press of either reads that page.
   const logFailed = standsFailed(log);
   const saysFailure = logFailed || log.isFetchNextPageError;
   const failed = saysFailure ? (
@@ -779,14 +779,15 @@ export function IssueHistory({
             ANSWER_LINES.loading_older
           ) : (
             // The count is of the entries read and not drawn, with "+" while an older page of
-            // the log is unread, and none once every entry read is drawn.
+            // the log is unread: "0+" where every entry read is drawn, as after a refetch that
+            // failed over the pages held, which stops the reading on. The control stands only
+            // while an entry read is left to draw or an older page is unread, so it always says
+            // a count, and it goes once the log has ended with every entry drawn.
             <ShowMoreWords
               count={
-                drawn.left === 0 ? undefined : (
-                  <span data-history-left="" {...authorText}>
-                    {log.hasNextPage ? `${drawn.left}+` : drawn.left}
-                  </span>
-                )
+                <span data-history-left="" {...authorText}>
+                  {log.hasNextPage ? `${drawn.left}+` : drawn.left}
+                </span>
               }
             />
           )}
