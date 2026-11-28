@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/tlstimeout"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // tlsTimeoutCurl, tlsTimeoutStampDir and tlsTimeoutBound are the seams of the record `legion gh`
@@ -26,10 +28,11 @@ var (
 // Go's `<Method> "<URL>": net/http: TLS handshake timeout` and exited non-zero (runGhChild), with
 // that gh's CPU as childCPU; and where the leak guard's own gh read met one
 // (leakguard.Options.OnTLSTimeout), once the call is over, with no child CPU, since the gh that
-// failed was the guard's, which `legion gh` did not wait for.
+// failed was the guard's, which `legion gh` did not wait for. Its curl starts through
+// procgroup.NoReaper: `legion gh` reaps no child it did not start.
 func ghTLSTimeouts(stderr io.Writer, childCPU func() (user, sys time.Duration, ok bool)) *tlstimeout.Recorder {
 	return &tlstimeout.Recorder{
-		Client: "legion-gh", Stderr: stderr, ChildCPU: childCPU,
+		Client: "legion-gh", Stderr: stderr, Start: procgroup.NoReaper, ChildCPU: childCPU,
 		Curl: tlsTimeoutCurl, StampDir: tlsTimeoutStampDir, Bound: tlsTimeoutBound,
 	}
 }

@@ -10,6 +10,15 @@
 // record changes nothing of the call that failed: not its error, its response or its status, and
 // not what the leak guard allows.
 //
+// Each caller names how the record's curl starts (Recorder.Start), and this package names no
+// start of its own: the pod's launcher, its container's PID 1, reaps every exited child it does
+// not hold, so its curl starts through the launcher's guard. A Recorder with no Start runs no
+// curl, and its line writes `-` for each curl figure.
+//
+// A record is made on a unix system alone: on any other, windows among them (agent-secrets builds
+// for it), Record writes nothing and returns, since the stamp its rate limit keeps needs flock and
+// a file's owner, and the process's CPU getrusage, which such a system lacks.
+//
 // It is public so that the Legion daemon (packages/daemon, module github.com/sjawhar/legion/daemon),
 // which Go's internal rule bars from this module's internal packages, records as agent-secrets
 // does, as githubrate and httpoutage are.

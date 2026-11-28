@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // The rate reading logs, for each installation GitHub lists for each App the daemon holds a key
@@ -77,10 +78,11 @@ const rateReadingStarts = "github rate reading: reading the GitHub rate counters
 // tlsTimeouts is the record the daemon writes to its standard error when a GitHub call through its
 // REST client (countingTokens) meets `net/http: TLS handshake timeout` (tlstimeout.Recorder.Record):
 // the host, the phases of a fresh Go handshake and a curl handshake to it, this process's CPU and
-// the cgroup's, at most once a minute. The Dispatch client records none: its own 10 s bound on each
+// the cgroup's, at most once a minute. Its curl starts through procgroup.NoReaper: the daemon
+// reaps no child it did not start. The Dispatch client records none: its own 10 s bound on each
 // request (dispatch's requestTimeout) ends a call before http.DefaultTransport's 10 s handshake
 // timer, which starts only once the connection is made, could. A test replaces it.
-var tlsTimeouts = &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr}
+var tlsTimeouts = &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr, Start: procgroup.NoReaper}
 
 // countingTokens is the daemon's own token manager for apps at the GitHub root githubAPI (empty is
 // api.github.com) and the rate counter it counts on: the process's REST client is put on the

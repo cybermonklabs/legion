@@ -38,6 +38,7 @@ import (
 
 	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // Google's security token service exchanges a projected ServiceAccount token for a federated
@@ -89,6 +90,12 @@ type Config struct {
 	// it dials the instance's private IP with automatic IAM database authentication, and signs in
 	// as the signer's account, or as the pod itself when the signer names no account.
 	NewDialer func(ctx context.Context, signer Signer) (Dialer, error)
+	// StartCurl starts the curl of the record of a TLS handshake timeout that the writer token's
+	// clients write (connectorOptions, tlstimeout.Recorder.Start). The proxy runs in the launcher's
+	// process, its container's PID 1, which reaps every exited child it does not hold, so the
+	// launcher passes its pidGuard's, which holds curl out of that reaper until curl's wait has
+	// read its exit. Nil runs no curl. A NewDialer of the caller's is not handed it.
+	StartCurl procgroup.Starter
 	// ProofTimeout bounds Start's proof dial, the one upstream connection that proves the
 	// credential path before Start returns. It must be positive: an instance that never answers,
 	// an unreachable address or a peer that stalls its handshake, would otherwise hold Start for as
@@ -223,7 +230,9 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 
 	newDialer := cfg.NewDialer
 	if newDialer == nil {
-		newDialer = newConnectorDialer
+		newDialer = func(ctx context.Context, signer Signer) (Dialer, error) {
+			return newConnectorDialer(ctx, signer, cfg.StartCurl)
+		}
 	}
 	// The serving context outlives ctx: it carries ctx's values and nothing of its cancellation, and
 	// only Close ends it.
@@ -481,9 +490,10 @@ func (c connectorDialer) Dial(ctx context.Context, instance string) (net.Conn, e
 func (c connectorDialer) Close() error { return c.dialer.Close() }
 
 // newConnectorDialer builds the dialer a pod uses, with connectorOptions and Google's own
-// endpoints. It signs in as the signer's account, or as the pod itself when the signer names none.
-func newConnectorDialer(ctx context.Context, signer Signer) (Dialer, error) {
-	opts, err := connectorOptions(ctx, signer, googleEndpoints{})
+// endpoints, its record's curl started through startCurl (Config.StartCurl). It signs in as the
+// signer's account, or as the pod itself when the signer names none.
+func newConnectorDialer(ctx context.Context, signer Signer, startCurl procgroup.Starter) (Dialer, error) {
+	opts, err := connectorOptions(ctx, signer, googleEndpoints{}, startCurl)
 	if err != nil {
 		return nil, err
 	}
@@ -529,13 +539,6 @@ type googleEndpoints struct {
 	stsURL string
 }
 
-// tlsTimeouts is the record the session proxy writes to its standard error when a call of the
-// writer token's clients meets `net/http: TLS handshake timeout` (tlstimeout.Recorder.Record): the
-// host, the phases of a fresh Go handshake and a curl handshake to it, this process's CPU and the
-// cgroup's, at most once a minute (connectorOptions). One record serves both clients, so both
-// share its rate limit.
-var tlsTimeouts = &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr}
-
 // connectorOptions are the Cloud SQL connector's options for a pod. The connector uses automatic
 // IAM database authentication, which puts a login token in the ephemeral-certificate exchange. It
 // dials the instance's private IP, which is the only address a pod's network reaches. Its built-in
@@ -566,10 +569,14 @@ var tlsTimeouts = &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr}
 // Each source refreshes its one-hour token by itself when the connector next asks for one.
 //
 // The writer token's two clients, the exchange's and the IAM Credentials client's, each send over
-// http.DefaultTransport (or google.iam) with a record of each TLS handshake timeout they meet
-// (tlsTimeouts), which hands the call the transport's own error. The client the library builds
-// from the pod's own credentials for an account alone is the library's, and records nothing.
-func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints) ([]cloudsqlconn.Option, error) {
+// http.DefaultTransport (or google.iam) with a record of each TLS handshake timeout they meet,
+// which hands the call the transport's own error. The record writes to the proxy's standard error:
+// the host, the phases of a fresh Go handshake and a curl handshake to it, this process's CPU and
+// the cgroup's, at most once a minute (tlstimeout.Recorder.Record), its curl started through
+// startCurl (Config.StartCurl, nil for none). One record serves both clients, so both share its
+// rate limit. The client the library builds from the pod's own credentials for an account alone is
+// the library's, and records nothing.
+func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints, startCurl procgroup.Starter) ([]cloudsqlconn.Option, error) {
 	opts := make([]cloudsqlconn.Option, 0, 4)
 	opts = append(opts,
 		cloudsqlconn.WithIAMAuthN(),
@@ -583,6 +590,7 @@ func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints
 	var iam []option.ClientOption
 	switch {
 	case signer.WriterAudience != "":
+		tlsTimeouts := &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr, Start: startCurl}
 		// The exchange takes its HTTP client from the context (oauth2.HTTPClient), as the
 		// metadata endpoint's does, so the bound reaches it there.
 		exchange := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: writerCallTimeout, Transport: tlstimeout.Transport(http.DefaultTransport, tlsTimeouts)})

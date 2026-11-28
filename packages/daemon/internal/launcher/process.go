@@ -142,8 +142,9 @@ func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
 // drain). A pid is recorded as its process starts, under the lock every reap holds for its whole
 // pass, so no pass can read /proc between a child's start and its record. Every child the
 // launcher's process starts and waits for itself, but a generation, starts here: the test
-// database's script (runTestPG), the leak-check install's run of the check (checkInstall) and each
-// cache trimmer sweep's deleter (startContainedRemover).
+// database's script (runTestPG), the leak-check install's run of the check (checkInstall), each
+// cache trimmer sweep's deleter (startContainedRemover) and the curl of a TLS handshake timeout's
+// record (tlstimeout.Recorder.Start), the metadata endpoint's and the session proxy's.
 // TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
 // reaches.
 type pidGuard struct {
@@ -175,7 +176,9 @@ func (g *pidGuard) done(pid int) {
 
 // starter is start and done as a procgroup.Starter, for the launcher's own children that run
 // through a package that takes one: the leak-check install's run of the check
-// (leakguard.InstallServed). Its start takes the guard's lock alone, as start does.
+// (leakguard.InstallServed), and the curl of a TLS handshake timeout's record
+// (tlstimeout.Recorder.Start: newMetadataServer, sessionproxy.Config.StartCurl). Its start takes
+// the guard's lock alone, as start does.
 func (g *pidGuard) starter() procgroup.Starter {
 	return func(cmd *exec.Cmd) (func(), error) {
 		pid, err := g.start(cmd)

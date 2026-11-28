@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -121,9 +122,12 @@ func ghGuardRead(env map[string]string) func(slug string, environ []string) (lea
 		return nil
 	}
 	return func(slug string, environ []string) (leakguard.GhReadChild, error) {
+		// The slug is the guard's, which only a repository ghTargetOf routed reaches; one that
+		// names none is refused without the parse's words, which quote it, as
+		// visibilityReadRepository leaves the shared check's read with none.
 		repo, err := ghrepo.Parse(leakguard.VisibilityReadVar, slug)
 		if err != nil {
-			return leakguard.GhReadChild{}, fmt.Errorf("the guard's visibility read names no repository GitHub could serve: %w", err)
+			return leakguard.GhReadChild{}, errors.New("the guard's visibility read names no repository GitHub could serve")
 		}
 		readEnv := environmentOf(environ)
 		if err := ghUnsetRefusal(readEnv); err != nil {

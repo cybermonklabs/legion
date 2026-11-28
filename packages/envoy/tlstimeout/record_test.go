@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -131,8 +132,13 @@ func parseRecord(t *testing.T, written string) (client string, keys []string, va
 	return client, keys, values
 }
 
-// recordRig is a Recorder whose every seam is the test's: a stand-in curl, stamps in a directory of
-// the test's own, a cgroup tree of the test's, a bound of a second and a fixed time.
+// startPlain is a test process's Start (Recorder.Start): cmd.Start, with nothing to do once the
+// wait is over, since a test process reaps no child it did not start.
+func startPlain(cmd *exec.Cmd) (func(), error) { return func() {}, cmd.Start() }
+
+// recordRig is a Recorder whose every seam is the test's: a stand-in curl started by startPlain,
+// stamps in a directory of the test's own, a cgroup tree of the test's, a bound of a second and a
+// fixed time.
 type recordRig struct {
 	r               *Recorder
 	stderr          *logtest.Buffer
@@ -147,6 +153,7 @@ func newRecordRig(t *testing.T, curl string) *recordRig {
 	rig.r = &Recorder{
 		Client:     "agent-secrets",
 		Stderr:     rig.stderr,
+		Start:      startPlain,
 		Curl:       rig.curl,
 		StampDir:   filepath.Join(t.TempDir(), "stamps"),
 		Bound:      time.Second,
@@ -289,6 +296,45 @@ func TestARecordWritesADashForEachFigureItCouldNotRead(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A record starts its curl through Start, and calls the done Start answered once curl's wait has
+// read its exit, which is how a process that reaps children it does not hold (the pod's launcher)
+// keeps curl's exit for that wait. A Recorder with no Start starts no curl, and the line's curl
+// figures are `-`.
+func TestARecordStartsItsCurlThroughItsStart(t *testing.T) {
+	t.Run("a start", func(t *testing.T) {
+		rig := newRecordRig(t, curlTimesOut)
+		var starts, dones int
+		var waited bool
+		rig.r.Start = func(cmd *exec.Cmd) (func(), error) {
+			starts++
+			if err := cmd.Start(); err != nil {
+				return nil, err
+			}
+			return func() { dones, waited = dones+1, cmd.ProcessState != nil }, nil
+		}
+		rig.r.Record(testport.Refused(t))
+		_, _, values := parseRecord(t, rig.stderr.String())
+		if starts != 1 || dones != 1 || !waited || curlRuns(t, rig.curl) != 1 || values["curl_exit"] != "28" {
+			t.Errorf("Start ran %d times and its done %d times (after curl's wait: %t), curl ran %d times and curl_exit=%q; want one start, one done after the wait, one curl and 28",
+				starts, dones, waited, curlRuns(t, rig.curl), values["curl_exit"])
+		}
+	})
+	t.Run("no start", func(t *testing.T) {
+		rig := newRecordRig(t, curlTimesOut)
+		rig.r.Start = nil
+		rig.r.Record(testport.Refused(t))
+		_, _, values := parseRecord(t, rig.stderr.String())
+		if runs := curlRuns(t, rig.curl); runs != 0 {
+			t.Errorf("a Recorder with no Start ran curl %d times, want none", runs)
+		}
+		for _, key := range []string{"curl_namelookup_s", "curl_connect_s", "curl_appconnect_s", "curl_total_s", "curl_exit"} {
+			if values[key] != "-" {
+				t.Errorf("%s=%q, want -", key, values[key])
+			}
+		}
+	})
 }
 
 // Check c-tls-timeout-recorded, point 2: a record carries nothing of the call it records but its

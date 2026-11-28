@@ -186,7 +186,7 @@ func newMetadataRig(t *testing.T) *metadataRig {
 	t.Cleanup(cancel)
 	g.server = newMetadataServer(ctx, MetadataConfig{
 		WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider, tokenFile: g.tokenFile, tokenURL: sts.URL,
-	}, func(format string, args ...any) { _, _ = fmt.Fprintf(g.log, format+"\n", args...) })
+	}, nil, func(format string, args ...any) { _, _ = fmt.Fprintf(g.log, format+"\n", args...) })
 	g.server.now = g.now
 	endpoint := httptest.NewServer(g.server)
 	t.Cleanup(endpoint.Close)
@@ -854,7 +854,7 @@ func serveBoundedMetadata(t *testing.T, readTimeout, idleTimeout time.Duration) 
 	stopped, address := serveMetadata(ctx, Config{RolesDir: t.TempDir(), Metadata: &MetadataConfig{
 		WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider,
 		address: "127.0.0.1:0", readTimeout: readTimeout, idleTimeout: idleTimeout,
-	}}, func(format string, args ...any) { _, _ = fmt.Fprintf(log, format+"\n", args...) })
+	}}, nil, func(format string, args ...any) { _, _ = fmt.Fprintf(log, format+"\n", args...) })
 	if address == "" {
 		cancel()
 		t.Fatalf("the endpoint did not listen: %s", log.String())
