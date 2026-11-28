@@ -127,10 +127,11 @@ func (c IdleClaim) SuspensionHolds() bool {
 // WorkHeld is whether the work hold stopped this claim (`gates.hold: work`,
 // supervise.SuspendedByHold): the claim keeps its session, its phase and its pending task until the
 // hold's opening starts it again, so the pod it ran in holds work the release would take with the
-// disk. It reads the two columns as OperatorSuspended does; a stop of the hold still held for the
-// claim's turn is a live claim, which holds the pod through the rule's own live-claim conjunct.
+// disk. It reads the two columns through supervise.HoldStopped, the one statement of "stopped by
+// the hold"; a stop of the hold still held for the claim's turn is a live claim, which holds the pod
+// through the rule's own live-claim conjunct.
 func (c IdleClaim) WorkHeld() bool {
-	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByHold
+	return supervise.HoldStopped(c.State, c.SuspendedBy)
 }
 
 // IdleRoot is the tree root of the issue the idle rule is deciding, read with it.

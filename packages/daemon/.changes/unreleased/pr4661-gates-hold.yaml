@@ -35,7 +35,8 @@ body: |-
   served such an issue with no `why`. While the hold stands, no architect is told to start its own
   acceptance: the notice that an issue waits in `accepting` waits for the opening, the
   `awaiting-children` notice of an issue that comes back to `accepting` from its wait on its
-  children among them, and every other notice goes. When the gate opens again, the daemon starts each
+  children and a `merge-holds-changed` notice of an issue in `accepting` among them, and every
+  other notice goes. When the gate opens again, the daemon starts each
   claim it stopped with one task, which names the version that closed the gate and tells the worker
   to check what its turn already did. The daemon builds that task when the start runs, so a start
   that waits through a second close and opening names the later version and the later approval.
@@ -48,7 +49,9 @@ body: |-
   A claim can keep a task that an operator gave it before the hold stopped it, where no turn took
   that task. The opening never retires that task: the daemon sends it first, then the opening's
   task, and then the task of a phase start that came after the opening, where the opening's start
-  carries no phase work or had already ended the hold. Where no start of the
+  carries no phase work. A later phase start of the same role takes the place of an opening's start
+  that carries phase work and keeps the opening's sentences in front of its own work, so the worker
+  gets one task after the operator's, and is told the opening once. Where no start of the
   opening is queued for that claim, because its stop was made after the opening read it or a newer
   stop or run undid that start, a phase start ends the hold instead: the worker is not told that
   the hold stopped its turn, and is told the gate's open message only where its issue's holder was

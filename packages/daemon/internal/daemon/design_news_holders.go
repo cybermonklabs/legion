@@ -331,8 +331,9 @@ func holdsUntakenTask(held *record.RoleClaim) bool {
 // as a phase worker's carries its news (dispatch://INFRA-2614); it has not ended (claimEnded),
 // since a failed or retired claim is revived by its phase's own repair, whose start carries the
 // news; and no suspension that holds is over its agent and the work hold did not stop it
-// (stopped). A suspension that holds is the operator's or the controller's
-// (supervise.SuspendSource.Holds), which no start the daemon queues gets past. A claim an idle pod
+// (stopped: a suspension no rule may lift, supervise.SuspendSource.RuleMayLift). A suspension that
+// holds is the operator's or the controller's (supervise.SuspendSource.Holds), which no start the
+// daemon queues gets past. A claim an idle pod
 // release suspended takes the news, and the start that carries it wakes the claim as any start
 // wakes one. A claim the work hold stopped takes none: a news-only start that reached it would end
 // the hold, and its one task would carry news and no work. The start that ends the hold is the
@@ -350,8 +351,7 @@ func recordedClaimTakesNews(held *record.RoleClaim, entry int64) bool {
 	if held == nil {
 		return false
 	}
-	stopped := held.State == supervise.StateSuspended &&
-		(held.SuspendedBy.Holds() || held.SuspendedBy == supervise.SuspendedByHold)
+	stopped := held.State == supervise.StateSuspended && !held.SuspendedBy.RuleMayLift()
 	return newsClaimTakes(held.GivenEntry, entry, held.State, stopped)
 }
 
@@ -366,7 +366,7 @@ func newsOnlyRefusal(machine *supervise.Machine, found bool, entry int64) string
 		return "no claim holds the role"
 	}
 	held := machine.Claim()
-	stopped := stoppedByHold(held)
+	stopped := held.StoppedByHold()
 	if newsClaimTakes(held.GivenEntry, entry, held.State, held.RuleHolds() || stopped) {
 		return ""
 	}

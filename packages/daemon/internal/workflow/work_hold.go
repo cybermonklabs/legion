@@ -184,24 +184,29 @@ func workHoldStands(ctx context.Context, tx pgx.Tx, store record.Store, root *re
 
 // TellsOwnersAcceptance is whether notice, of issue as the record holds it now, tells issue's
 // architect that issue waits in its own acceptance, the owner's place, of an issue that stands in
-// accepting: a phase-finished notice, and the notice of a return out of awaiting_children into
+// accepting: a phase-finished notice; the notice of a return out of awaiting_children into
 // accepting, which tells the architect that the issue waits on its sign_off in place of the
-// phase-finished notice the wait replaced (ReturnFromChildren). That return's notice is the one of
-// its kind that names awaiting_children as the phase the issue left (record.Notice.Phase); the
-// notice of a move into the wait names the phase the issue left for it, and tells no acceptance. In
-// this release accepting is always the owner's place, the step `acceptance:owner` of a plan and the
-// accepting of today's line that an issue with no plan rows walks (plan.Supported takes acceptance
-// with the key owner alone), and the phase-finished notice of the step before it is what tells the
-// architect to accept (prompts/go/architect-common.md). Under `work` the outbox holds such a notice
-// while the tree's standing gate is closed, and lets every later notice of the architect pass it
-// (internal/daemon's deliverNotice and earlierNoticeFor). The notice is read against the issue at
-// each attempt, so one whose issue has left accepting since, by the architect's own sign-off or move
-// back, tells nothing of the kind.
+// phase-finished notice the wait replaced (ReturnFromChildren); and a merge-holds-changed notice
+// (mergeHoldsChanged), whose text tells the architect to sign off where no line of the merge holds
+// document holds its sign-off (record.MergeHoldsChangedReason), and which wakes a released
+// architect to do it. That return's notice is the one of its kind that names awaiting_children as
+// the phase the issue left (record.Notice.Phase); the notice of a move into the wait names the
+// phase the issue left for it, and tells no acceptance. In this release accepting is always the
+// owner's place, the step `acceptance:owner` of a plan and the accepting of today's line that an
+// issue with no plan rows walks (plan.Supported takes acceptance with the key owner alone), and the
+// phase-finished notice of the step before it is what tells the architect to accept
+// (prompts/go/architect-common.md). Under `work` the outbox holds such a notice while the tree's
+// standing gate is closed, and lets every later notice of the architect pass it (internal/daemon's
+// deliverNotice and earlierNoticeFor), and one still waiting at the gate's opening tells the
+// acceptance in place of the notice the opening would queue (tellOwnersAcceptance). The notice is
+// read against the issue at each attempt, so one whose issue has left accepting since, by the
+// architect's own sign-off or move back, tells nothing of the kind.
 func TellsOwnersAcceptance(issue record.Issue, notice record.Notice) bool {
 	if issue.Phase != phase.Accepting {
 		return false
 	}
-	return notice.Kind == "phase-finished" || (notice.Kind == AwaitingChildrenNoticeKind && notice.Phase == phase.AwaitingChildren)
+	return notice.Kind == "phase-finished" || notice.Kind == "merge-holds-changed" ||
+		(notice.Kind == AwaitingChildrenNoticeKind && notice.Phase == phase.AwaitingChildren)
 }
 
 // holdReason is the reason a stop of the hold logs on the claim it stops.
@@ -519,10 +524,11 @@ func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.
 // notice and no catch-up asked an architect for its own acceptance (TellsOwnersAcceptance,
 // QueueCatchUp), so an architect launched again during the hold with a session that lost what it
 // read before would otherwise learn of it from nothing. A member with a notice of its own
-// acceptance still waiting in the outbox (TellsOwnersAcceptance: a phase-finished notice, or the
-// notice of its return out of awaiting_children into accepting) is told by that notice, which goes
-// once the gate is open, and gets no second. An architect that knew already reads the notice again,
-// which tells it nothing new.
+// acceptance still waiting in the outbox (TellsOwnersAcceptance: a phase-finished notice, the
+// notice of its return out of awaiting_children into accepting, or a merge-holds-changed notice
+// written while it stood in accepting) is told by that notice, which goes once the gate is open,
+// and gets no second. An architect that knew already reads the notice again, which tells it
+// nothing new.
 func (e *Engine) tellOwnersAcceptance(ctx context.Context, tx pgx.Tx, root record.Issue) error {
 	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
 	if err != nil {

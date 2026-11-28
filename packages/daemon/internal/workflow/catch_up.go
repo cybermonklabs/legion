@@ -147,8 +147,8 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // architect is told to start its own acceptance (the owner's place), and the catch-up says the rest
 // as ever (TreeCatchUp). Nothing else of it names that acceptance: its issues state each issue's
 // phase and status, and no field asks for a step. The gate can close after this, before the outbox
-// delivers the row, so the outbox asks again then: its composition again reads the hold
-// (TreeCatchUp), and its strip reads the gate (CatchUpWithoutAcceptance).
+// delivers the row, so the outbox composes the reason again then (TreeCatchUp), from the record and
+// from the gate its delivery reads.
 func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now time.Time) error {
 	return queueCatchUp(ctx, tx, store, steps, issue, launch, relaunch, now, nil)
 }
@@ -164,7 +164,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // is written on a catch-up no pacing holds, which reports no wait, having had none.
 func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, issue record.Issue, launch uint64,
 	relaunch string, now time.Time, hold func(id int64, issue string)) error {
-	tree, reason, err := TreeCatchUp(ctx, tx, records, steps, issue)
+	tree, reason, err := TreeCatchUp(ctx, tx, records, steps, issue, false)
 	if err != nil {
 		return err
 	}
@@ -199,38 +199,11 @@ func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 	return nil
 }
 
-// acceptanceWaitsLead and acceptanceWaitsTail are the two fixed parts of the clause of a
-// catch-up's reason that names the issues waiting in accepting for its architect's acceptance
-// (acceptanceWaits), by which CatchUpWithoutAcceptance finds it.
-const (
-	acceptanceWaitsLead = "; in accepting, waiting for your acceptance, which no worker gives: "
-	acceptanceWaitsTail = " (read the evidence, then sign_off or request_backward_move)"
-)
-
 // acceptanceWaits is the clause of a catch-up's reason that names awaiting, the keys of the issues
 // waiting in accepting for its architect's acceptance (awaitingAcceptance).
 func acceptanceWaits(awaiting []string) string {
-	return acceptanceWaitsLead + strings.Join(awaiting, ", ") + acceptanceWaitsTail
-}
-
-// CatchUpWithoutAcceptance is reason, the reason of a catch-up (QueueCatchUp), without the clause
-// that asks its architect to accept the issues waiting in accepting (acceptanceWaits), and reason
-// itself where it holds no such clause. The outbox delivers a catch-up so while the tree's standing
-// gate stands closed under `work` (internal/daemon's deliverNotice), and strips the reason it
-// composed again at that delivery (TreeCatchUp), which leaves the clause out already where the
-// record's work hold stands (workHoldStands). So the strip holds the clause back only where the
-// gate stands closed under `work` and no hold record exists yet: no architect is told to start its
-// own acceptance while the tree holds its work.
-func CatchUpWithoutAcceptance(reason string) string {
-	lead := strings.Index(reason, acceptanceWaitsLead)
-	if lead < 0 {
-		return reason
-	}
-	tail := strings.Index(reason[lead:], acceptanceWaitsTail)
-	if tail < 0 {
-		return reason
-	}
-	return reason[:lead] + reason[lead+tail+len(acceptanceWaitsTail):]
+	return "; in accepting, waiting for your acceptance, which no worker gives: " + strings.Join(awaiting, ", ") +
+		" (read the evidence, then sign_off or request_backward_move)"
 }
 
 // CatchUpReason is a catch-up's reason: the reason of the issues its architect owns
@@ -404,11 +377,15 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 // (the outbox's notice), and a child's went past its failed architect to the architect above it
 // (the owner walk). So an architect that comes back learns of the wait from its catch-up alone;
 // the reason names these keys so that the catch-up, which a revived architect reads as its issues
-// already running, says what is the architect's own to do. The clause is left out while the work
-// hold of the tree stands (workHoldStands, the record a close under `work` writes, read only when
-// some issue waits): then no architect is told to start its own acceptance (the owner's place),
-// and the reason says the rest as ever. It is written through acceptanceWaits, by which the
-// outbox's strip at delivery finds it (CatchUpWithoutAcceptance).
+// already running, says what is the architect's own to do. The clause is left out while the tree
+// holds its work, by one rule: where the caller read the tree's standing gate closed under `work`
+// (gateHoldsWork, which the outbox's delivery reads live, internal/daemon's readNoticeTree), or
+// where the work hold of the tree stands in the record (workHoldStands, the record a close under
+// `work` writes, read only when some issue waits and gateHoldsWork is false). Then no architect is
+// told to start its own acceptance (the owner's place), and the reason says the rest as ever. The
+// two reads part only where the gate stands closed under `work` before the boot has written the
+// hold's record (workHoldBooted), and the gate's read leaves the clause out there. The queueing
+// (QueueCatchUp) reads no gate and passes false; its delivery composes the reason again.
 //
 // The reason also names, for each listed issue still in the workflow, in key order, the roots
 // that rest on its approval and are still in the workflow (record.RestingRoots,
@@ -423,7 +400,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 // and where the outbox delivers it (the daemon's readNoticeTree, inside the delivery's own read of
 // the tree), so what the architect reads is the record at the moment of delivery rather than at
 // the moment the row was written (dispatch://INFRA-2819).
-func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUpTree, string, error) {
+func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue,
+	gateHoldsWork bool) (record.CatchUpTree, string, error) {
 	catchUp := record.CatchUpTree{Gates: []record.CatchUpGate{}}
 	root := claim.IsTreeRoot(issue.Key, issue.Tree)
 	if root {
@@ -503,18 +481,20 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		reason = fmt.Sprintf("the issues under %s, which you own, at generation %d as the daemon records them now; start or resume your issue as your role says", issue.Key, issue.Generation)
 	}
 	if len(awaiting) > 0 {
-		// The hold is read against the tree root: issue itself, or the member of this read
-		// (store.TreeIssues) whose key is the tree's, nil where the record does not hold it.
-		treeRoot := &issue
-		if !root {
-			treeRoot = nil
-			if i := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == issue.Tree }); i >= 0 {
-				treeRoot = &members[i]
+		held := gateHoldsWork
+		if !held {
+			// The hold is read against the tree root: issue itself, or the member of this read
+			// (store.TreeIssues) whose key is the tree's, nil where the record does not hold it.
+			treeRoot := &issue
+			if !root {
+				treeRoot = nil
+				if i := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == issue.Tree }); i >= 0 {
+					treeRoot = &members[i]
+				}
 			}
-		}
-		held, err := workHoldStands(ctx, tx, store, treeRoot)
-		if err != nil {
-			return record.CatchUpTree{}, "", err
+			if held, err = workHoldStands(ctx, tx, store, treeRoot); err != nil {
+				return record.CatchUpTree{}, "", err
+			}
 		}
 		if !held {
 			reason += acceptanceWaits(awaiting)

@@ -1003,9 +1003,11 @@ const (
 // its own carrying that creation time — and carries the later transition's task instead, so two
 // transitions before the slot start the worker once. The superseded role never starts, which is
 // right — the issue has left that phase, so that role never had work to do, while the role the
-// later transition names has it. Where there is no such row — the first start, or one the lane
-// has already leased because the slot came — the same statement writes the caller's own row,
-// which is what the daemon has always done for back-to-back transitions.
+// later transition names has it. A start of the work hold's opening that a later start of the same
+// role takes out hands that start its opening's sentences, so the role is given one task, and that
+// task tells the opening (record.Store.EnqueueStart). Where there is no such row — the first start,
+// or one the lane has already leased because the slot came — the same statement writes the
+// caller's own row, which is what the daemon has always done for back-to-back transitions.
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row

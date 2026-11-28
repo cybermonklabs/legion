@@ -516,6 +516,55 @@ func TestWorkHoldTellsTheArchitectOfItsOwnAcceptanceAtTheOpening(t *testing.T) {
 	}
 }
 
+// H45 beside #4065's merge holds: the root stands in accepting, its owner's place, and the gate
+// closes under `work`. A change of the project's merge holds document then queues its architect a
+// merge-holds-changed notice (workflow's mergeHoldsChanged), whose text says to sign off where no
+// line holds the sign-off (record.MergeHoldsChangedReason), so it is a notice of the architect's
+// own acceptance (workflow.TellsOwnersAcceptance). While the gate is closed it waits, and a later
+// notice of the architect passes it. At the opening it goes, once, and the opening tells the
+// architect of its acceptance no second time: no phase-finished notice follows it (workflow's
+// tellOwnersAcceptance).
+func TestWorkHoldHoldsAMergeHoldsChangeOfTheOwnersAcceptanceUntilTheOpening(t *testing.T) {
+	t.Parallel()
+	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.close(4)
+	r.drain()
+	r.apply("merge-holds", intake.MergeHoldsChanged{Project: r.tree.project, Event: "dispatch-71"})
+	if got := r.noticeRowsOf("merge-holds-changed"); got != 1 {
+		t.Fatalf("the merge holds change queued %d merge-holds-changed notices, want one for the architect of the root in accepting", got)
+	}
+	r.enqueue(record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: ownersChild + " is todo; it runs again under LEGION-208"})
+	r.drain()
+	told := r.noticesTo(claim.RoleArchitect)
+	if got := noticesAmong(told, "merge-holds-changed"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v with the gate closed, want the merge-holds-changed notice waiting: it asks for the architect's own acceptance", got)
+	}
+	if got := noticesAmong(told, "child-status"); len(got) != 1 {
+		t.Fatalf("the architect was told %d child-status notices with the gate closed, want the later notice delivered", len(got))
+	}
+	for _, notice := range told {
+		wantNoAcceptanceAsked(t, "the "+string(notice.Kind)+" notice the architect was told with the gate closed", notice)
+	}
+	if got := r.noticeRowsOf("merge-holds-changed"); got != 1 {
+		t.Fatalf("the outbox holds %d merge-holds-changed notices with the gate closed, want the one of the change, waiting", got)
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	told = r.noticesTo(claim.RoleArchitect)
+	if got := noticesAmong(told, "merge-holds-changed"); len(got) != 1 || got[0].Phase != phase.Accepting ||
+		got[0].Reason != record.MergeHoldsChangedReason(r.tree.project) {
+		t.Fatalf("the architect was told the merge-holds-changed notices %+v once the gate opened, want the change's, once", got)
+	}
+	if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v once the gate opened, want no phase-finished notice: the merge-holds-changed notice told the acceptance", got)
+	}
+	if got := r.noticeRowsOf("merge-holds-changed") + r.noticeRowsOf("phase-finished"); got != 0 {
+		t.Fatalf("the outbox holds %d notices of the acceptance once the gate opened, want none", got)
+	}
+}
+
 // Decision 13 beside H45: under `merge` nothing of this changes. The reviewer's handoff that moves
 // the root into its owner's place with the gate closed tells the architect at once.
 func TestMergeHoldTellsTheArchitectOfItsOwnAcceptanceAtOnce(t *testing.T) {
@@ -554,12 +603,12 @@ func specStated(t *testing.T, what string, catchUp record.Notice) record.CatchUp
 // delivered while the gate stands closed under `work` before the boot has written the hold's
 // record. It still states the root in accepting.
 //
-// The delivery composes the catch-up again from the record (readNoticeTree, workflow.TreeCatchUp),
-// which leaves the clause out while the hold's record stands (workHoldStands), and then strips
-// the clause while the live standing gate stands closed under `work` (deliverNotice,
-// workflow.CatchUpWithoutAcceptance). The two reads part only where the gate stands closed under
-// `work` with no hold record yet, which the third case builds: there the strip alone holds the
-// clause back.
+// The delivery composes the catch-up again from the record (readNoticeTree, workflow.TreeCatchUp)
+// by one rule: it leaves the clause out while the hold's record stands (workHoldStands) or while
+// the live standing gate, which the delivery reads in the same transaction, stands closed under
+// `work` (TreeCatchUp's gateHoldsWork, treeSnapshot.holdsWork). The two reads part only where the
+// gate stands closed under `work` with no hold record yet, which the third case builds: there the
+// live gate alone holds the clause back.
 func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 	t.Parallel()
 	t.Run("built at the architect's ready while the hold stands", func(t *testing.T) {
@@ -613,8 +662,8 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 	// under `merge` wrote no work hold row, and the boot's fact, which writes it
 	// (workflow.workHoldBooted), is applied beside the outbox, so a row can run before it
 	// (restartBeforeTheBoot). The catch-up queued under `merge` asks for the acceptance, and its
-	// delivery under `work` before the boot composes it again with the clause, since the record's
-	// hold does not stand; the strip of the live gate is what leaves the clause out.
+	// delivery under `work` before the boot composes it again with the gate it reads: the record's
+	// hold does not stand, and the live gate, closed under `work`, is what leaves the clause out.
 	t.Run("delivered while the gate stands closed and the boot has not yet applied the hold", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldMerge))
 		r.live(claim.RoleArchitect)

@@ -177,6 +177,16 @@ func (s SuspendSource) Holds() bool {
 	return s == SuspendedByOperator || s == SuspendedByController
 }
 
+// RuleMayLift is whether a daemon rule may lift a suspension by this source: every source but one
+// that holds (Holds), which only a resume lifts, and the work hold's (SuspendedByHold), which only
+// the hold's end (Machine.EndHold) or an operator's own resume or retry lifts. It is the one
+// statement of that chain, and three packages read it of a suspended claim: Claim.RuleMayResume,
+// admit's repair of a slotted worker that holds no task, and internal/daemon's news over a claim
+// as the record holds it (recordedClaimTakesNews).
+func (s SuspendSource) RuleMayLift() bool {
+	return !s.Holds() && s != SuspendedByHold
+}
+
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
 // for that phase goes with it (settle): a suspension of the daemon's own does — the workflow's (a
 // park, a linger, a close), a root's exit, and one recorded before sources existed (unknown, or
@@ -927,12 +937,13 @@ func (c Claim) MessageMarked() bool {
 	return !c.MessageMarkAt.IsZero() && c.MessageMarkAt.After(c.LastTurnStart)
 }
 
-// RuleMayResume says whether the rule may resume this suspended claim: every suspension but one
-// that holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, or for
-// the controller's suspension the controller's (HeldAgainst) — and the work hold's, which holds
-// until the hold ends (WorkHeld, Machine.EndHold).
+// RuleMayResume says whether the rule may resume this suspended claim: a suspension by a source
+// whose suspension a rule may lift (SuspendSource.RuleMayLift), so every suspension but one that
+// holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, or for the
+// controller's suspension the controller's (HeldAgainst) — and the work hold's, which holds until
+// the hold ends (WorkHeld, Machine.EndHold).
 func (c Claim) RuleMayResume() bool {
-	return c.State == StateSuspended && !c.SuspendedBy.Holds() && c.SuspendedBy != SuspendedByHold
+	return c.State == StateSuspended && c.SuspendedBy.RuleMayLift()
 }
 
 // PassedOverByRound is whether a pod update round passes over this claim by R1's rule, read of
@@ -1032,19 +1043,35 @@ func (c Claim) RuleHoldError() error {
 	}
 }
 
-// WorkHeld is whether the work hold holds the claim (SuspendedByHold): the hold suspended it, or the
-// hold's stop is held for its agent's turn, its compaction or its launch's ready. It is RuleHolds's
-// twin for the hold rather than an arm of it, because RuleHolds reads "a person holds this claim"
-// (the pod update round's wait, the stranded report), which the hold is not. A start of the claim
-// waits while it holds (StartedBy), and so does every request a rule makes that could start a turn
-// of a claim the hold suspended (Machine.fence), the project's controller's resume and retry
-// among them. Only the hold's end lifts it (Machine.EndHold), or an operator's own resume or
-// retry; an operator's suspension, the controller's and the daemon's own take it over.
+// WorkHeld is whether the work hold holds the claim (SuspendedByHold): the hold suspended it
+// (StoppedByHold), or the hold's stop is held for its agent's turn, its compaction or its launch's
+// ready. It is RuleHolds's twin for the hold rather than an arm of it, because RuleHolds reads "a
+// person holds this claim" (the pod update round's wait, the stranded report), which the hold is
+// not. A start of the claim waits while it holds (StartedBy), and so does every request a rule
+// makes that could start a turn of a claim the hold suspended (Machine.fence), the project's
+// controller's resume and retry among them. Only the hold's end lifts it (Machine.EndHold), or an
+// operator's own resume or retry; an operator's suspension, the controller's and the daemon's own
+// take it over.
 func (c Claim) WorkHeld() bool {
 	if c.SuspensionHeld {
 		return c.SuspensionHeldBy == SuspendedByHold
 	}
-	return c.State == StateSuspended && c.SuspendedBy == SuspendedByHold
+	return c.StoppedByHold()
+}
+
+// StoppedByHold is whether the work hold stopped the claim: it stands suspended by the hold
+// (SuspendedByHold), not a stop of it held for the agent's turn, which the hold's end drops rather
+// than starts (Machine.EndHold). It reads the claim's two columns through HoldStopped.
+func (c Claim) StoppedByHold() bool {
+	return HoldStopped(c.State, c.SuspendedBy)
+}
+
+// HoldStopped is whether a claim in state, suspended by by, stands stopped by the work hold. It is
+// the one statement of "stopped by the hold": Claim.StoppedByHold reads it, and through it WorkHeld
+// and internal/daemon's outbox of a claim its start or its news reaches, and so does
+// internal/pods' view of a claim, which carries the two columns and not a Claim (IdleClaim.WorkHeld).
+func HoldStopped(state ClaimState, by SuspendSource) bool {
+	return state == StateSuspended && by == SuspendedByHold
 }
 
 // WorkHoldError says why a start or a request waits: the work hold, which only the hold's end or

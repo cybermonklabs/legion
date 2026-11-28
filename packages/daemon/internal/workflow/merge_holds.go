@@ -17,6 +17,9 @@ import (
 // accepting, whose sign_off a line can hold, gets a merge-holds-changed notice. The merger of each
 // issue in merging, whose merge a line can hold, gets a row of its own (record.MergeHoldsChanged),
 // since a notice reaches only an architect. Both carry one text (record.MergeHoldsChangedReason).
+// The architect's notice tells it to sign off where no line holds its sign-off, so it is a notice
+// of its own acceptance (TellsOwnersAcceptance): under `work` it waits while the tree's standing
+// gate is closed, as the phase-finished notice of that acceptance waits, and goes at the opening.
 //
 // A role that a hold stopped ends its turn with a WAITING line and subscribes to nothing: under
 // `runtime: kubernetes` a Dispatch document event does not wake a released pod, and an outbox

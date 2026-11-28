@@ -538,7 +538,7 @@ func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
 	var reason string
 	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		state, reason, err = TreeCatchUp(ctx, tx, record.NewStore(), config.DesignGateRootIssues.Steps(), root)
+		state, reason, err = TreeCatchUp(ctx, tx, record.NewStore(), config.DesignGateRootIssues.Steps(), root, false)
 		return err
 	}); err != nil {
 		t.Fatalf("compose the tree in a read-only transaction: %v", err)

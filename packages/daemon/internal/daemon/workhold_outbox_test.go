@@ -4141,6 +4141,68 @@ func TestWorkHoldOpeningGivesTheOperatorsTaskFirstAndItsOwnTaskAfter(t *testing.
 	}
 }
 
+// The opening's start of a claim that holds its member's phase and that kept an operator's task
+// is a phase start, so a later phase start of the same role takes its row's place
+// (record.Store.EnqueueStart): here the operator's restart of the implementer's phase. That later
+// start keeps the opening's sentences (record.Store.EnqueueStart's keepOpening), so the role keeps
+// one start and one task, and the worker is told that the hold stopped its turn and that the gate
+// opened once, in front of the restart's work, after the operator's task. The opening settled the
+// holder's told row as told when it wrote its start, so nothing else would tell it. The restart is
+// queued in two places: while the opening's start, its first attempt past, waits behind the
+// operator's task with the hold ended (the later start goes on as that start's retry would,
+// continuesTheOpening), and before the opening's start's first attempt (the later start ends the
+// hold itself).
+func TestWorkHoldOpeningSentencesSurviveALaterStartOfTheSameRole(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// firstAttempt is whether the opening's start makes its first attempt before the restart is
+		// queued.
+		firstAttempt bool
+	}{
+		{name: "queued while the opening's start waits behind the operator's task", firstAttempt: true},
+		{name: "queued before the opening's start's first attempt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := heldWithAnOperatorsTask(t, legionTree(phase.Implementing, config.HoldWork), false)
+			token := r.token(claim.RoleImplementer)
+			r.approve(4, 12)
+			if tc.firstAttempt {
+				r.runOnce()
+				if c := r.machine(claim.RoleImplementer).Claim(); c.WorkHeld() || c.LastStartRow == 0 || !supervise.KeptOperatorTask(c.Pending) {
+					t.Fatalf("after the opening's first attempt the implementer is %s by %q at start row %d holding %+v, want the hold ended and the operator's task kept: the case's own premise",
+						c.State, c.SuspendedBy, c.LastStartRow, c.Pending)
+				}
+			}
+			r.apply("restart", intake.RestartPhase{Issue: r.tree.key, Role: claim.RoleImplementer})
+			var work string
+			for _, start := range startRequestsOf(t, r.pool, r.tree.key, "start") {
+				if start.Role == claim.RoleImplementer {
+					work = supervise.OpeningWork(start.Task, start.Opening)
+				}
+			}
+			if got := r.startsSince(claim.RoleImplementer, 0); got != 1 || !strings.Contains(work, "the operator retried this phase's worker") {
+				t.Fatalf("after the restart the outbox holds %d starts of the implementer, the last with the work %q, want the restart's start alone, in the opening's start's place",
+					got, work)
+			}
+			r.drain()
+			if c := r.machine(claim.RoleImplementer).Claim(); c.WorkHeld() || !supervise.KeptOperatorTask(c.Pending) || c.Pending.Task != heldOperatorTask {
+				t.Fatalf("the implementer is %s by %q holding %+v, want the hold ended and the operator's task first", c.State, c.SuspendedBy, c.Pending)
+			}
+			readyClaimAs(t, r.sup, token, claim.RoleImplementer, "ses-implementer")
+			r.wantPrompts("at its ready", heldOperatorTask)
+			r.takeTheTask(claim.RoleImplementer)
+			r.wantPrompts("after the operator's turn", heldOperatorTask, r.opening(4, 4)+"\n\n"+work)
+			if told := r.conn(claim.RoleImplementer).Prompts()[1].Message; strings.Count(told, r.openedMessage(4)) != 1 {
+				t.Fatalf("the restart's task tells the gate's open message %d times, want once:\n%s", strings.Count(told, r.openedMessage(4)), told)
+			}
+			if got := r.startsSince(claim.RoleImplementer, 0); got != 0 {
+				t.Fatalf("the outbox still holds %d starts of the implementer, want the restart's start finished", got)
+			}
+		})
+	}
+}
+
 // openingOwed is whether the told row of the root's phase holder owes the gate's opening
 // (record.DesignTold.OpeningOwed), false where no such row stands.
 func (r *workHoldRig) openingOwed() bool {

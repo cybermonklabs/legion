@@ -131,12 +131,12 @@ func (tree treeSnapshot) heldForTheOwner(issue record.Issue, notice record.Notic
 	return tree.holdsWork && workflow.TellsOwnersAcceptance(issue, notice)
 }
 
-// asksTheGate is whether the delivery of notice, of issue, reads holdsWork: the strip of a
-// catch-up's acceptance clause reads it (notice.CatchUp, deliverNotice), and heldForTheOwner reads
-// it of issue and of the issue of each earlier row (earlierNoticeFor), and is false of an issue
-// that does not stand in accepting (workflow.TellsOwnersAcceptance). So the tree's gate needs no
-// read where the notice is no catch-up and neither issue nor any earlier row's issue stands in
-// accepting.
+// asksTheGate is whether the delivery of notice, of issue, reads holdsWork: the composition of a
+// catch-up reads it, and leaves out the clause that asks for the architect's own acceptance while
+// the gate holds work (notice.CatchUp, workflow.TreeCatchUp), and heldForTheOwner reads it of issue
+// and of the issue of each earlier row (earlierNoticeFor), and is false of an issue that does not
+// stand in accepting (workflow.TellsOwnersAcceptance). So the tree's gate needs no read where the
+// notice is no catch-up and neither issue nor any earlier row's issue stands in accepting.
 func (tree treeSnapshot) asksTheGate(issue record.Issue, notice record.Notice) bool {
 	if notice.CatchUp != nil || issue.Phase == phase.Accepting {
 		return true
@@ -171,9 +171,11 @@ type recomposedCatchUp struct {
 // under it, so a child's architect is never told the whole tree), and what the architect is told
 // is the record at this read, the one the owner walk and the fence see, rather than at the moment
 // the row was queued: a gate registered between the two reached the architect at its old version
-// (dispatch://INFRA-2819). A child's catch-up claims no kept decision, so it carries no Kept and
-// Decided stays empty. The reason it composes keeps the sentence of what the architect's last
-// process ended that the row was queued with (record.CatchUp.Relaunch,
+// (dispatch://INFRA-2819). The composition is told the gate this read holds (holdsWork), so the
+// reason names no issue waiting for the architect's own acceptance while the tree holds its work,
+// whether or not the record's hold stands yet. A child's catch-up claims no kept decision, so it
+// carries no Kept and Decided stays empty. The reason it composes keeps the sentence of what the
+// architect's last process ended that the row was queued with (record.CatchUp.Relaunch,
 // workflow.CatchUpReason): that sentence is of what ended before the launch, which this read does
 // not restate. It writes Decided again from the decisions the row claimed (Kept), each asked of the
 // gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so a kept decision
@@ -207,7 +209,7 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, paylo
 		if payload.CatchUp == nil {
 			return nil
 		}
-		state, reason, err := workflow.TreeCatchUp(ctx, tx, r.records, r.gatedSteps, issue)
+		state, reason, err := workflow.TreeCatchUp(ctx, tx, r.records, r.gatedSteps, issue, tree.holdsWork)
 		if err != nil {
 			return err
 		}
