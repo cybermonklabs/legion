@@ -73,13 +73,15 @@ func branchBasis(branch, merge string) afterMergeBasis {
 // TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge: v-after-merge, cases 1, 2 and 3. An
 // `after_merge` check counts a result only at a commit of the branch that holds the merge, and the
 // newest that counts decides; a `default_branch` check of an issue with no merged pull request
-// counts any commit of the default branch.
+// counts any commit of the default branch. Case 1 records at C1 a fail and then a later pass, and
+// at C2, another commit of main that holds the merge, a pass and then a later fail: in either
+// order, a pass and a fail at one commit read as not known.
 func TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge(t *testing.T) {
 	t.Parallel()
 	rig := newAfterMergeRig(t)
 	issue := rig.issue(t, "A merged change", afterMergeChecks)
-	rig.github.carry("main", afterMergeC0, afterMergeM, afterMergeC1)
-	rig.github.hold(afterMergeM, afterMergeC1)
+	rig.github.carry("main", afterMergeC0, afterMergeM, afterMergeC1, afterMergeC2)
+	rig.github.hold(afterMergeM, afterMergeC1, afterMergeC2)
 	mergedSeventy(t, rig, issue, "main", afterMergeM)
 	k5 := func() afterMergeCheck { t.Helper(); return rig.read(t, issue)["k5"] }
 
@@ -105,6 +107,10 @@ func TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge(t *testing.T) {
 	wantStands(t, "a pass at C1 after that fail", k5().PassStands, "unknown", "pass_and_fail", []string{passAtC1, failAtC1}, afterMergeC1)
 	secondAtC1 := rig.record(t, issue, "k5", "reviewer", "pass", afterMergeC1)
 	wantStands(t, "a second pass at C1", k5().PassStands, "unknown", "pass_and_fail", []string{secondAtC1, failAtC1}, afterMergeC1)
+	passAtC2 := rig.record(t, issue, "k5", "tester", "pass", afterMergeC2)
+	wantStands(t, "a pass at C2, another commit of main that holds the merge", k5().PassStands, "yes", "", []string{passAtC2}, afterMergeC2)
+	failAtC2 := rig.record(t, issue, "k5", "tester", "fail", afterMergeC2)
+	wantStands(t, "a later fail at C2 after that pass", k5().PassStands, "unknown", "pass_and_fail", []string{passAtC2, failAtC2}, afterMergeC2)
 
 	// Case 2: a late observation names an old commit, not the program's current deploy.
 	liveIssue := rig.issue(t, "A live observation after its deploy", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"renderer\"}\nThe running program answers.\n:::\n")
