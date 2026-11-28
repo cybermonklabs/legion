@@ -15,7 +15,7 @@ package api
 // `kind` is no enumerated field: no plugin code reads it (`LEGION_ANSWER_READS`), so a reader takes
 // each member as optional and each word as a string, and a kind a later daemon adds is read rather
 // than refused. The record of a refusal is the table `branch_refusals` of migration
-// `20261127215416_branch_refusals`, which moves the daemon's own record and is no part of this
+// `20261128022327_branch_refusals`, which moves the daemon's own record and is no part of this
 // number.
 const branchRefusedContract = 20261127213144
 

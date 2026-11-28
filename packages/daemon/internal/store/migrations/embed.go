@@ -76,10 +76,10 @@ const StepRecordsRollForward = 20261117064152
 //   - 20261125023041_idle_release_declines_told_pod.up.sql
 //   - 20261125023100_pod_replacements.up.sql
 //   - 20261125163328_message_wake_pacing.up.sql
-//   - 20261126223725_done_by_checks.up.sql
-//   - 20261127135256_merged_new_work.up.sql
 //   - 20261127193428_claim_left.up.sql
-//   - 20261127215416_branch_refusals.up.sql
+//   - 20261128022325_done_by_checks.up.sql
+//   - 20261128022326_merged_new_work.up.sql
+//   - 20261128022327_branch_refusals.up.sql
 //
 // internal/textcheck's TestTheWayBackDocNamesEveryHeaderThatCarriesOne holds this list to the
 // headers by name: it reads each migration file name in this comment as a name of the list.

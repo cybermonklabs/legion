@@ -68,7 +68,7 @@ package api
 // `why.state` `waiting`, whose sentence names the first thing its close waits for; the word is
 // older than the floor, so no value moves.
 // The change ships no store migration: the `defects` table and the issues' wait columns are
-// `20261126223725_done_by_checks`'s, which moves the daemon's own record and is no part of this
+// `20261128022325_done_by_checks`'s, which moves the daemon's own record and is no part of this
 // number. The notice kind `defect-reported`, which tells the owning architect of a defect another
 // role reported, reaches an architect's session as text, as every notice kind does.
 const defectCallsContract = 20261127060758

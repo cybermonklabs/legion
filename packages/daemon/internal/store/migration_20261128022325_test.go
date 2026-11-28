@@ -19,7 +19,7 @@ import (
 
 // doneByChecksVersion is the version of the migration this file tests, so each test can migrate
 // through everything before it whatever lands beside it.
-const doneByChecksVersion = 20261126223725
+const doneByChecksVersion = 20261128022325
 
 // doneByChecksRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -470,15 +470,16 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 	})
 }
 
-// doneByChecksStandsAbove is the newest migration main carries: `20261126163320_state_events`,
-// the state events' kind list, which cybermonklabs/legion#4432 landed on main and the merge of
-// main `dc18a1fe` brought here. It names that migration and the change that wrote it, not
+// doneByChecksStandsAbove is the newest migration main carries: `20261127193428_claim_left`,
+// the record of why a claim release left an issue's Dispatch claim, which
+// cybermonklabs/legion#5908 (dispatch://INFRA-3144) landed on main and the merge of main
+// `eb994b92` brought here. It names that migration and the change that wrote it, not
 // whichever merge of main was this branch's last: a later merge that brings no migration leaves
 // this line true, and the line goes stale only when main lands a migration above this one, which
 // is the one event that asks the reader to act. The name is this file's own, since
 // migration_upgrade_from_main_test.go, which is main's, declares `mainsNewestMigration` in the
 // same package for main's newest at another merge.
-const doneByChecksStandsAbove = 20261126163320
+const doneByChecksStandsAbove = 20261127193428
 
 // This migration stands above every migration main carries. Migrate applies every
 // unrecorded migration in version order, so on a database main migrated, a migration of main

@@ -3907,7 +3907,7 @@ func validMergeReadProgress(progress MergeReadProgress) error {
 // (internal/daemon's permanentRefusal, finishRefused, branchRefusedNotice). The owning architect is
 // told once for each generation of the issue (Store.RefuseBranch). The reason names the branch,
 // whether the row created or moved it, the refusal's kind and the row's error, and that the roles
-// start without it. No earlier release decodes it, so the way back of migration 20261127215416
+// start without it. No earlier release decodes it, so the way back of migration 20261128022327
 // deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",

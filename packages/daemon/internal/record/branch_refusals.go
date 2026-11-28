@@ -36,7 +36,7 @@ const (
 // BranchRefusedNotice is the architect's notice of a branch row refused for good: the branch, the
 // write, the refusal's kind and the row's error, told once for each generation of the issue
 // (Store.RefuseBranch). No earlier release decodes it, so the way back of migration
-// 20261127215416 deletes its unsent rows.
+// 20261128022327 deletes its unsent rows.
 const BranchRefusedNotice NoticeKind = "branch-refused"
 
 // branchRefusalColumns is the columns of branch_refusals a read scans (scanBranchRefusal), in its

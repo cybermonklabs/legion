@@ -7,19 +7,19 @@ package textcheck
 import "testing"
 
 // The way back of the release that starts a next change for a request on a merged issue stands
-// in two files: the header of store migration 20261127135256_merged_new_work, which ships the block
+// in two files: the header of store migration 20261128022326_merged_new_work, which ships the block
 // with the migration, and a fenced block of docs/kubernetes.md, under "Rolling back the release
 // that starts a next change for a request on a merged issue", which is where an operator reads it
 // at a rollback. This test holds the guide's block to the header's, as the done-by-checks way back
 // is held (done_by_checks_way_back_doc_test.go).
 const (
 	// mergedNewWorkVersion is the migration whose header carries the block.
-	mergedNewWorkVersion = 20261127135256
+	mergedNewWorkVersion = 20261128022326
 	// mergedNewWorkWayBackSection is the heading of the guide's section that gives the way back.
 	mergedNewWorkWayBackSection = "Rolling back the release that starts a next change for a request on a merged issue"
 	// mergedNewWorkWayBackMark is the line that deletes the migration's version row, which no other
 	// rollback's block carries.
-	mergedNewWorkWayBackMark = "delete from schema_version where version = 20261127135256;"
+	mergedNewWorkWayBackMark = "delete from schema_version where version = 20261128022326;"
 )
 
 // The guide's way back of the release that starts a next change for a request on a merged issue is

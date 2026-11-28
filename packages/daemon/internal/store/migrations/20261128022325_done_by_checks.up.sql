@@ -1,4 +1,4 @@
--- 20261126223725_done_by_checks.up.sql — an issue whose work merged waits in the phase verifying
+-- 20261128022325_done_by_checks.up.sql — an issue whose work merged waits in the phase verifying
 -- until the checks of its goal pass, and the records that wait reads (record's Issue, Defect,
 -- CheckRead and the close read's and the close wait's outbox rows).
 --
@@ -91,8 +91,11 @@
 -- and closes there.
 --
 -- This migration was numbered 20261125004932 until the forward merge of 2026-11-26 brought in
--- 20261126110259, which stood above it. Its version stands above every migration main carries at
--- that merge and at the later ones, 20261126163320 among them, so each list and each function it
+-- 20261126110259, which stood above it, and 20261126223725 until the forward merge of 2026-11-28
+-- brought in 20261127193428_claim_left, which stood above it in turn; the two migrations after it,
+-- merged_new_work and branch_refusals, moved with it, in their order. Its version stands above
+-- every migration main carries at those merges, 20261126163320 among them, so each list and each
+-- function it
 -- writes is the last word on a fresh database and on a database main migrated alike: Migrate
 -- applies every unrecorded migration in version order, and a migration of main below this one that
 -- wrote outbox_kind_check, issues_phase_check or one of the four functions again would otherwise be
@@ -160,7 +163,7 @@
 -- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'merge_holds_changed', 'state_change', 'state_admission', 'state_boot'));
 -- alter table issues drop constraint if exists issues_phase_check;
 -- alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
--- delete from schema_version where version = 20261126223725;
+-- delete from schema_version where version = 20261128022325;
 -- commit;
 alter table issues drop constraint issues_phase_check;
 alter table issues add constraint issues_phase_check check (phase in (

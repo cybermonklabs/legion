@@ -1114,8 +1114,8 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 (design_changes),
 // dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the merge holds' 20261126110259
 // (merge_holds_changed), dispatch://INFRA-3931's state events' 20261126163320, the
-// done-by-checks migration's 20261126223725 (close_read and close_wait_publish) and the
-// merged-new-work migration's 20261127135256 (merge_read) do: the case of a
+// done-by-checks migration's 20261128022325 (close_read and close_wait_publish) and the
+// merged-new-work migration's 20261128022326 (merge_read) do: the case of a
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
@@ -1124,12 +1124,12 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) and the parent of a plan task (20261124022547) add a column to
 // 20261117034837's issue_plans and plan_tasks: applied as main's, before that table exists, each
-// fails on the missing table. The merged-new-work migration's 20261127135256
+// fails on the missing table. The merged-new-work migration's 20261128022326
 // is the last migration that writes outbox_kind_check: it stands above the done-by-checks
-// 20261126223725, the state events' 20261126163320, the merge holds' 20261126110259, main's
+// 20261128022325, the state events' 20261126163320, the merge holds' 20261126110259, main's
 // 20261122154643, the design news's 20261119203047 and main's 20261119003157, which write it too,
 // and main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write none.
-// 20261126223725 also replaces the design news's design_news_current, which it could not drop
+// 20261128022325 also replaces the design news's design_news_current, which it could not drop
 // before 20261119203047 made it. The
 // cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list
 // adds either, so neither is in the list. The project pause's 20261115194357 is in it as well,
@@ -1148,8 +1148,8 @@ var thisRelease = map[int]bool{
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124022547: true,
-	20261124033010: true, 20261126110259: true, 20261126163320: true, 20261126223725: true,
-	20261127135256: true,
+	20261124033010: true, 20261126110259: true, 20261126163320: true, 20261128022325: true,
+	20261128022326: true,
 }
 
 const idleRelease = 20261101222956
@@ -1176,7 +1176,7 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // it out, and the three state kinds would be, had the state events' 20261126163320 stood below the
 // merge holds' 20261126110259, whose list leaves them out. step_record, plan_record,
 // conflict_confirm, merge_forward, design_changes, the two basis seeds, merge_holds_changed and the
-// three state kinds are refused too, unless the done-by-checks list of 20261126223725, which runs
+// three state kinds are refused too, unless the done-by-checks list of 20261128022325, which runs
 // after each list that names them, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()

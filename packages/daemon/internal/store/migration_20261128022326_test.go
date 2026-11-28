@@ -9,7 +9,7 @@ import (
 
 // mergedNewWorkVersion is the version of the migration this file tests, so each test can migrate
 // through everything before it whatever lands beside it.
-const mergedNewWorkVersion = 20261127135256
+const mergedNewWorkVersion = 20261128022326
 
 // mergedNewWorkRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.

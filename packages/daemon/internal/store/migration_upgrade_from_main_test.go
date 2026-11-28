@@ -234,7 +234,7 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // pending_basis_seed and a reparent_seed for each read of a root's design-gate basis and of a
 // re-parented root (20261122154643). The upgrade applies this branch's kind lists with the merge
 // holds change (20261126110259), the state events (20261126163320) and the done-by-checks
-// migration (20261126223725) over those rows, and `ADD CONSTRAINT … CHECK` validates the rows the
+// migration (20261128022325) over those rows, and `ADD CONSTRAINT … CHECK` validates the rows the
 // table holds, so a list that left any of the eight kinds out would fail Migrate (SQLSTATE 23514)
 // and leave the daemon unable to boot. After the upgrade the outbox takes a merge_holds_changed
 // row, the kind 20261126110259 adds: every list above 20261122154643's names it, and the

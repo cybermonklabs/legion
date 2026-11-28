@@ -27,7 +27,7 @@ import (
 // The columns are every one the migrations give the repository an issue or its work is on now:
 // issues.repo and issues.github_repo (0047, 0048), pull_requests.repo (0004),
 // cleared_pull_requests.repo (20261120144241), production_checks.repo (0049),
-// repo_notes.resolved_repo (0047) and the merge snapshot's issues.merge_repo (20261126223725). No
+// repo_notes.resolved_repo (0047) and the merge snapshot's issues.merge_repo (20261128022325). No
 // other column holds one the pass writes. The claims' and
 // claim capabilities' locators name a tmux pane or a Sandbox, the outbox's payloads carry no
 // repository, and processed_events.event_id only embeds one in a dedupe key. Four more columns hold

@@ -1,4 +1,4 @@
--- 20261127215416_branch_refusals.up.sql — the refusal for good of an issue's branch row, which the
+-- 20261128022327_branch_refusals.up.sql — the refusal for good of an issue's branch row, which the
 -- state names and the issue's architect is told of once (record's BranchRefusal).
 --
 -- branch_refusals holds, for each issue and generation, the first issue_branch row that GitHub, or
@@ -10,13 +10,13 @@
 -- issue whose write GitHub takes deletes the issue's records. Every database the upgrade finds
 -- holds none: no release before this one ended a branch row on a refusal. It writes no list of a
 -- constraint: outbox_kind_check, defects_kind_check and issues_phase_check stay as
--- 20261127135256_merged_new_work wrote them, so that migration's lists stay the last word on any
+-- 20261128022326_merged_new_work wrote them, so that migration's lists stay the last word on any
 -- database although this one sorts above it. The notice kind branch-refused is a value of a notice
 -- row's payload, which no constraint lists.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack). Run it with every project's daemon on that
--- database stopped, before the way back of 20261127135256_merged_new_work. It deletes the unsent
+-- database stopped, before the way back of 20261128022326_merged_new_work. It deletes the unsent
 -- branch-refused notices, which the release before does not decode, drops the table, and deletes
 -- this migration's schema_version row, so the roll forward applies this file again. Each statement
 -- runs again with no error.
@@ -24,7 +24,7 @@
 -- begin;
 -- delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'branch-refused';
 -- drop table if exists branch_refusals;
--- delete from schema_version where version = 20261127215416;
+-- delete from schema_version where version = 20261128022327;
 -- commit;
 create table branch_refusals (
   issue text not null references issues (key) on delete cascade,
