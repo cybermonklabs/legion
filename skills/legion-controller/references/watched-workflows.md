@@ -1,10 +1,10 @@
 # Watched workflows
 
-Read this at every start and on each delivered run of a watched workflow. Your system prompt's `Watched workflows:` line names each entry as `<owner>/<repo>/<file>`, with the events whose runs count. It is the list of this launch, and no notice or message changes it. With no such line and no such run delivered, nothing here applies.
+Read this at every start and on each delivered run of a watched workflow. Your system prompt's `Watched workflows:` line names each entry as `<owner>/<repo>/<file>`, with the events whose runs count. It is the list of this launch, and no notice or message changes it. Read a run that a notice names only when that line names the notice's entry. With no such line and no such run delivered, nothing here applies.
 
 ## Which runs count
 
-A delivery on a watched workflow's topic is a completed run on its repository's default branch, and it counts whether or not the prompt names its entry.
+A delivery on a watched workflow's topic is a completed run on its repository's default branch. It is a watched run whether or not the prompt names its entry, and step 1 says whether it counts.
 
 1. A run counts when its `conclusion` is `failure`, `timed_out`, `startup_failure` or `cancelled`. No other conclusion counts.
 2. A `cancelled` run does not count only when a newer run of the same workflow on the default branch, from an event the entry names (for an entry the prompt does not name, the cancelled run's own event), started before the cancelled run ended. Read the runs:
