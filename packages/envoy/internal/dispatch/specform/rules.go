@@ -376,9 +376,12 @@ var standInOrigins = text.ServerOrigins(standInServer, nil, nil)
 // "../../projects/ACME/documents/terms-md" name the same document; from the spec of ACME-1,
 // "artifacts/notes-md", "decisions", "verification" and "#b-x1" name a document of ACME-1, its
 // decisions, its Verification tab and a block of the spec, and from its Artifacts page
-// "notes-md" and "../decisions" do too. "//" and the host of a served or a former origin of the
-// server (c.Origins) names the page as the canonical host does. A path that names no such page
-// from any base, and an address of another host, name none.
+// "notes-md" and "../decisions" do too. "//" and a host resolve under the scheme of the canonical
+// origin, as a page at the canonical origin resolves them. So "//" and the host of a served or a
+// former origin of the server (c.Origins) that has the canonical scheme names the page as the
+// canonical host does. The host of one with another scheme, such as an http former origin beside
+// an https canonical one, names none. A path that names no such page from any base, and an
+// address of another host, name none.
 func serverPage(c Context, address string) (text.Ref, bool) {
 	if written, err := url.Parse(address); err != nil || written.Scheme != "" {
 		return text.Ref{}, false

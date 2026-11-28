@@ -412,7 +412,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Docs == nil {
 		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
 	}
-	// The API and the form of The Spec read links against this one list of origins.
+	// The API reads links against this one list of origins, and so does the form of The Spec that
+	// NewDeps builds where input.SpecForm is nil. A form the caller passes (DepsInput.SpecForm)
+	// reads the list it was built with. The main of cmd/dispatch passes one, which it builds from
+	// the document service's own list.
 	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
 	specForm := input.SpecForm
 	if specForm == nil {

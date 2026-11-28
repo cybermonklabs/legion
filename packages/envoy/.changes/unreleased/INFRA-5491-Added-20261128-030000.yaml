@@ -19,9 +19,10 @@ body: |-
   page reads a Dispatch link, `rebuild-refs` and the API's URL parameters included, and the page
   opens it at its own origin. The server compares a link's scheme and host without regard to case,
   with the default port dropped, as the page compares them. Each entry is an origin written as a
-  browser writes it. The start, and `rebuild-refs`, refuse an entry spelt otherwise, two addresses
-  on one host name at any port, a former address on the host name of a `DISPATCH_PROOF_ORIGINS`
-  entry, either list without `DISPATCH_SERVER_URL`, and either list with `DISPATCH_DEV_SIGNIN=1`.
+  browser writes it. The start, `rebuild-refs`, `backfill-block-ids` and `backfill-anchor-blocks`
+  refuse an entry spelt otherwise, two addresses on one host name at any port, a former address
+  on the host name of a `DISPATCH_PROOF_ORIGINS` entry, either list without `DISPATCH_SERVER_URL`,
+  and either list with `DISPATCH_DEV_SIGNIN=1`.
 
   `GET /auth/whoami` and `GET /api/v1/whoami` name the server's origins in `origins`: the canonical
   address, each served address and each former address, in that order, and no `origins` where

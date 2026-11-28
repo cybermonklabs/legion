@@ -232,7 +232,7 @@ The start refuses each of these, naming the setting, with host names compared at
 
 - Either list with `DISPATCH_DEV_SIGNIN=1`, whose fence answers every other `Host` `421 HOST_MISMATCH`.
 
-`rebuild-refs` reads both lists and runs the same checks before it opens the database.
+`rebuild-refs`, `backfill-block-ids` and `backfill-anchor-blocks` read both lists and run the same checks before they open the database.
 A server with both lists empty answers as before, and its `GET /auth/whoami` and `GET /api/v1/whoami` name no `origins`.
 
 A deployment that moves from its tailnet address to a load balancer's address serves both addresses for a while, and then the load balancer's address alone:
