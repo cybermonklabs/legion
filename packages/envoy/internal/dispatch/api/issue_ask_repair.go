@@ -32,14 +32,17 @@ const issueAskRepairTimeout = 5 * time.Minute
 const issueAskRepairLease = "issue-ask-repair"
 
 // IssueAskRepair counts what one RepairIssueAsks pass changed: the asks it withdrew on closed
-// issues, the asks it restored on reopened ones, and the readable ask blocks with no ask row its
-// sweeps of closed issues' documents marked resolved, which only a sweep while another build
-// serves marks.
+// issues, the asks it restored on reopened ones, the approval requests it left resolved there for
+// the form of The Spec, and the readable ask blocks with no ask row its sweeps of closed issues'
+// documents marked resolved, which only a sweep while another build serves marks.
 type IssueAskRepair struct {
 	Withdrawn int
 	Restored  int
 	// kept for one release: roll-window-attributes
 	Swept int
+	// LeftResolved counts the withdrawn approval requests a restore left resolved, because a text
+	// of a document they name breaks the form of The Spec (prepareRestoration).
+	LeftResolved int
 }
 
 // Changed reports whether the pass changed anything.
@@ -48,7 +51,7 @@ func (r IssueAskRepair) Changed() bool {
 	if r.Swept > 0 {
 		return true
 	}
-	return r.Withdrawn > 0 || r.Restored > 0
+	return r.Withdrawn > 0 || r.Restored > 0 || r.LeftResolved > 0
 }
 
 // LogArgs are the counts as slog key-value pairs.
@@ -56,7 +59,7 @@ func (r IssueAskRepair) LogArgs() []any {
 	args := []any{"withdrawn", r.Withdrawn, "restored", r.Restored}
 	// kept for one release: roll-window-attributes
 	args = append(args, "swept", r.Swept)
-	return args
+	return append(args, "left_resolved", r.LeftResolved)
 }
 
 func (r *IssueAskRepair) add(other IssueAskRepair) {
@@ -64,6 +67,7 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 	r.Restored += other.Restored
 	// kept for one release: roll-window-attributes
 	r.Swept += other.Swept
+	r.LeftResolved += other.LeftResolved
 }
 
 // RepairIssueAsks brings every issue's asks to what its last close or reopen leaves them, for the
@@ -91,8 +95,10 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 // transaction of its own that holds the issue's owner lock and reads its state and asks again
 // under it, so two passes running at once serialise on that lock and the second finds nothing
 // left; a pass that finds nothing writes nothing and appends no event. One issue's failure is
-// logged and the pass goes on to the next; the returned error names how many failed. It reads
-// deps.Store, deps.Docs and deps.Events.
+// logged and the pass goes on to the next; the returned error names how many failed. A restore
+// judges an approval request's form as a reopen does (spec_form.go), so deps are the routes' own
+// (routes.AppContext.APIDeps in cmd/dispatch), roots of The Spec included, never a set built
+// beside them.
 func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (IssueAskRepair, error) {
 	s := &server{deps: deps}
 	repair, _, _, err := s.repairIssueAsks(ctx, markedSince, nil)
@@ -315,14 +321,17 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 				"issue", issueKey, "withdrawn_asks", withdrawn)
 			return repair, nil
 		}
-		restored, err := s.prepareRestoration(documentCtx, tx, issueKey, reopener)
+		// A withdrawn approval request whose text breaks the form of The Spec is left resolved,
+		// as a reopen leaves it (prepareRestoration), and counted apart.
+		restore, err := s.prepareRestoration(documentCtx, tx, issueKey, reopener)
 		if err != nil {
 			return repair, err
 		}
-		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restored, reopener); err != nil {
+		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restore, reopener); err != nil {
 			return repair, err
 		}
-		repair.Restored = len(restored.asks)
+		repair.Restored = len(restore.restored)
+		repair.LeftResolved = len(restore.leftResolved)
 	default:
 		return repair, nil
 	}

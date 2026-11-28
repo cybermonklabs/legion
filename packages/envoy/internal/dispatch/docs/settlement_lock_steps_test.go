@@ -50,6 +50,9 @@ func TestEverySettlementWriterTakesTheStoreLockOrder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
+	// The carry's path writes only through a form gate; formKept finds no break, so the carry
+	// decides by the carry's rules alone.
+	service.SetFormGate(formKept)
 	rig := &docsWriterRig{database: database, service: service}
 	for _, writer := range []docsWriter{rig.settledRetraction(), rig.settledCopy(t, ctx), rig.settledInvalidAsk(), rig.settledCarry()} {
 		t.Run(writer.name, func(t *testing.T) {

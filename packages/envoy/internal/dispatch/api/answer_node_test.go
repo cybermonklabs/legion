@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -19,7 +22,8 @@ import (
 // node's answer_state, its answer's words, selection and time, its answered_by and decided_by, and
 // its resolution read what the row reads, the answer_state carrying the event that write appended
 // as its cause. The writers: the answer route, a change of the answer, the resolve route, the
-// decline route, an issue's close (its withdrawal) and its reopen, the approval carry's answer of an
+// decline route, an issue's close (its withdrawal) and its reopen, the reopen's resolution of an
+// approval request whose documents break the form of The Spec, the approval carry's answer of an
 // open approval request, and settlement's retraction of an ask whose block left its document and
 // its restoration when the block comes back.
 func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
@@ -59,6 +63,41 @@ func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
 		}
 		requireTheAnswerOnTheNode(t, database, "an issue's reopen", withdrawn.ID, "ask.opened")
 		requireTheAnswerOnTheNode(t, database, "the answered ask beside the reopen", answered.ID, "ask.answered")
+	})
+
+	t.Run("a reopen that leaves an approval request resolved for the form of The Spec", func(t *testing.T) {
+		// The request opens over a clean spec, and a browser edit breaks the form of the spec while
+		// the issue is closed, at version 2. The reopen judges the request at version 2 and leaves
+		// it resolved, with the findings as its reason, in the reopener's name
+		// (prepareRestoration): its node holds that resolution under the reopen's ask.resolved,
+		// and no answer.
+		fault := formFaults[0]
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", documentSocket: true, settle: 20 * time.Millisecond})
+		documents := tree.deps.Docs.(*docs.Service)
+		issue := createFormIssue(t, tree.handler, tree.root, "A request the reopen leaves resolved", fault.document(fault.clean))
+		request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)).Ask.ID
+		peer := connectBrowserPeer(t, documents, issue.PrimaryArtifactID)
+		closeIssueThroughPatch(t, tree.handler, tree.database, issue.Key)
+		closed := closedEditFixture{handler: tree.handler, database: tree.database, documents: documents, spec: issue.PrimaryArtifactID, peer: peer}
+		if version := settleClosedEdit(t, closed, func(document *pmdoc.Node) error {
+			pmdoc.Walk(document, func(node *pmdoc.Node) bool {
+				if node.Type != "requirement" {
+					return true
+				}
+				node.Children[0].Children[0].Text = fault.broken
+				return false
+			})
+			return nil
+		}); version != 2 {
+			t.Fatalf("the closed issue's settlement wrote version %d, want version 2", version)
+		}
+		seq := lastIssueSeq(t, tree.database, issue.Key)
+		if response := dispatchRequest(t, tree.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
+			map[string]any{"status": "todo"}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("reopen the issue: status=%d body=%s", response.Code, response.Body.String())
+		}
+		requireLeftResolved(t, tree.handler, tree.database, issue.Key, seq, request, strings.Join(fault.lines(2), "\n"), model.Actor{Kind: "user", ID: "alice"})
+		requireTheAnswerOnTheNode(t, tree.database, "a reopen's resolution of an approval request for the form", request, "ask.resolved")
 	})
 
 	t.Run("the approval carry", func(t *testing.T) {

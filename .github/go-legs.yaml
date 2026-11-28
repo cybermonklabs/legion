@@ -32,7 +32,8 @@
 # safety off (#5515, 2026-11-25 14:32Z-16:27Z: runs 45634905903, 45640650357, 45646796488 and
 # 45651378097, daemon-go jobs 139278625735, 139299288707, 139321421329, 139337574002 and
 # daemon-go-race jobs 139278625746, 139299288812, 139321421627, 139337574008); a package with none
-# ran under a second or has no test.
+# ran under a second or has no test. internal/ghroute had run in no merge group when it was listed,
+# so its time is one pull-request run's, 45683245721 (daemon-go job 139449902589).
 # Rebalance from the times the legs' own runs print, `ok <package> <seconds>s`.
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 packages/daemon:
@@ -73,9 +74,11 @@ packages/daemon:
       - internal/blockers                       # 2 s
       - internal/rolefile                       # 2 s
       - internal/testpg/testdb                  # 2 s
+      - internal/ghroute                        # 2 s
       - internal/testpg                         # 1 s
       - internal/projection                     # 1 s
       - internal/config
+      - internal/ghroute/ghroutetest
       - internal/ghconfig
       - internal/dispatch
       - internal/prompts
@@ -262,6 +265,7 @@ packages/envoy:
     3:
       - internal/dispatch/legion                # 617 s (run 46059758378, its read-rule seeds beside each other)
       - cmd/dispatch                            # 316 s
+      - internal/dispatch/specform              # 84 s (a dev box's run, not CI's)
       - cmd/dispatch-seed                       # 83 s
       - internal/dispatch/duty                  # 31 s
       - internal/dispatch/architecture          # 31 s
@@ -288,6 +292,7 @@ packages/envoy:
       - dispatchblocks
       - internal/dispatch/legion/legiontest
       - internal/dispatch/legionfacts/independent
+      - internal/dispatch/specform/ste
     # Dispatch's heavier packages.
     4:
       - internal/dispatch/outbox                # 320 s

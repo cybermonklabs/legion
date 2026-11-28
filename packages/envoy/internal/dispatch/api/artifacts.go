@@ -1074,12 +1074,13 @@ func (s *server) storeArtifact(
 		// It carries the document's newest approval as every version the document service writes
 		// does (docs.carryApproval): when its text is the approved text again, or when every
 		// difference from it is a carry case - the server-owned ask attributes an upload drops -
-		// and its ask blocks agree with their nodes. It runs where the route's other document work
-		// runs, so the open approval request and the ask rows it reads are as this transaction's
-		// own queued writes leave them, its own writes join the queue, and its events reach the
-		// ledger beside the move's.
+		// and its ask blocks agree with their nodes, unless its text breaks the form of The Spec
+		// (carryBreaksForm). It runs where the route's other document work runs, so the open
+		// approval request and the ask rows it reads are as this transaction's own queued writes
+		// leave them, its own writes join the queue, and its events reach the ledger beside the
+		// move's.
 		if err := docs.CarryUploadedApproval(
-			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
+			documentCtx, tx, s.deps.Events, s.deps.SpecForm.carryBreaksForm, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1567,7 +1568,6 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			// The download is the Markdown file itself, not the JSON that wraps it: the text the
 			// JSON's `markdown` field holds, with no display tree read.
 			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
 			w.Header().Set("Cache-Control", downloadCacheControl)
 			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))

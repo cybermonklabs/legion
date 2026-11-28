@@ -39,6 +39,7 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import { refusalWithCode } from "./failures";
 import {
   OPEN_BLOCK_ASK_THE_HUMAN,
   OPEN_BLOCK_WAIVED,
@@ -54,6 +55,7 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import { approvalFormLines } from "./spec-form";
 import {
   artifactTextCheck,
   documentFileBytes,
@@ -507,11 +509,14 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
     ...APPROVAL_REQUEST_OPEN_BLOCKS,
   });
   const includeVerification = optionalBoolean(args, "include_verification") === true;
-  const result = await client.requestApproval(resolved.artifact.id, {
-    actor,
-    summary: stringArg(args, "summary"),
-    ...(includeVerification ? { include_verification: true } : {}),
-  });
+  // A refusal keeps its code: 409 SPEC_FORM names each text that breaks the form, with its rule.
+  const result = await client
+    .requestApproval(resolved.artifact.id, {
+      actor,
+      summary: stringArg(args, "summary"),
+      ...(includeVerification ? { include_verification: true } : {}),
+    })
+    .catch((error: unknown) => Promise.reject(refusalWithCode(error)));
   // One line per requirement of the spec with no check, or the one line saying the spec
   // marks none, as Dispatch names them; never a missing plan task, since the plan comes
   // after the approval. A gap refuses nothing: the request is recorded, and a spec every
@@ -527,11 +532,12 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
       : [
           `Coverage of ${resolved.artifact.name}: ${gaps.map((gap) => `${gap}.`).join(" ")} Mark each requirement the spec states with a requirement block and write a check that serves it, in the issue's Verification document, before the work starts.`,
         ];
+  const trailing = [...approvalFormLines(result, resolved.artifact.name), ...coverageLines];
   if (result.ask === null) {
     return {
       text: [
         `${resolved.artifact.name} (document id ${resolved.artifact.id}) is already approved at version ${result.version} by ${result.approval.by?.id ?? "unknown"}; no new request was opened. A change outside the ask blocks after approval makes it stale, so request again only for such a version, once the human has agreed to every point in it, with a --summary naming what changed since version ${result.version}. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when, and the approval carries across it. The version carries the approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.`,
-        ...coverageLines,
+        ...trailing,
       ].join("\n"),
       details: {
         ...(resolved.owner.kind === "project"
@@ -554,7 +560,7 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   return {
     text: [
       `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the ask blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when: an approval carries across it, and this request stays with whoever holds its turn. The version carries an approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.`,
-      ...coverageLines,
+      ...trailing,
     ].join("\n"),
     details: { ...details, artifact: resolved.artifact.id, version: result.version },
   };
