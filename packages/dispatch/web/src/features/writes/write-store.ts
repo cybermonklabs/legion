@@ -69,9 +69,6 @@ export interface WriteBase<D = unknown> {
   readonly keyed: boolean;
   readonly label: string;
   readonly presentation: Presentation;
-  /** Whether the surface that made it shows its refusal itself, so the store lets a refused one
-   *  go: a form the reader is still in front of, holding their draft. */
-  readonly inline: boolean;
   readonly target: string | undefined;
   readonly pressedAt: number;
   /** Its place in its target's line, in the order writes joined it; a Retry joins at the back. */
@@ -104,12 +101,11 @@ export function isLive(write: Write): boolean {
 
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
-  const { detail, id, inline, joined, key, keyed, kind, label, login, presentation } = write;
+  const { detail, id, joined, key, keyed, kind, label, login, presentation } = write;
   const { pressedAt, retried, sent, signingOutElsewhere, target, uploaded } = write;
   return {
     detail,
     id,
-    inline,
     joined,
     key,
     keyed,
@@ -272,7 +268,10 @@ interface WriteSpecBase<D, K> {
   readonly detail: D;
   readonly label: string;
   readonly presentation: Presentation;
-  readonly inline?: boolean;
+  /** Whether the surface that made it shows its refusal itself - a form the reader is still in
+   *  front of, holding their draft - so a refused one goes at once rather than staying with
+   *  Retry and Discard: every refusal, or each one the function picks. */
+  readonly inline?: boolean | ((refusal: Error) => boolean);
   /** Writes to one target go out in press order: a later one waits while an earlier one is still
    *  being tried. A write of a kind that is made again from its request (no `resume`) is made
    *  from its `request` alone when it names a target. */
@@ -368,6 +367,9 @@ interface Entry {
    *  write landed. */
   outdated: boolean;
   readonly endsWithSession: boolean;
+  /** `WriteSpec.inline`: whether its surface shows a refusal of it itself. A reload has no
+   *  surface, so a write it takes up shows every refusal in the indicator. */
+  readonly inline: boolean | ((refusal: Error) => boolean);
 }
 
 const NO_WRITES: readonly Write[] = Object.freeze([]);
@@ -526,6 +528,7 @@ export class Writes {
       expiry: undefined,
       file: spec.file,
       held: false,
+      inline: spec.inline ?? false,
       keeping: undefined,
       outdated: false,
       press,
@@ -536,7 +539,6 @@ export class Writes {
       write: {
         detail: spec.detail,
         id: this.#nextId(),
-        inline: spec.inline ?? false,
         joined: this.#nextJoin(),
         key,
         keyed: spec.keyed ?? goesUnderKey(request === undefined ? spec.method : request.method),
@@ -733,6 +735,7 @@ export class Writes {
       expiry: undefined,
       file: undefined,
       held: false,
+      inline: false,
       keeping: undefined,
       outdated: false,
       press: undefined,
@@ -744,7 +747,6 @@ export class Writes {
         claimed: true,
         detail: spec.detail,
         id: this.#nextId(),
-        inline: false,
         joined: this.#nextJoin(),
         key: newSendKey(),
         keyed: goesUnderKey(request.method),
@@ -1028,6 +1030,7 @@ export class Writes {
       expiry: undefined,
       file,
       held: false,
+      inline: false,
       keeping: undefined,
       outdated: false,
       press: undefined,
@@ -1038,7 +1041,6 @@ export class Writes {
       write: {
         detail,
         id: this.#nextId(),
-        inline: false,
         joined: this.#nextJoin(),
         key: kept.key,
         keyed: kept.keyed,
@@ -1316,7 +1318,8 @@ export class Writes {
       void askSignInAgain(this.#client);
       return;
     }
-    const stays = !entry.write.inline && entry.write.presentation !== "quiet";
+    const inline = typeof entry.inline === "function" ? entry.inline(refusal) : entry.inline;
+    const stays = !inline && entry.write.presentation !== "quiet";
     const refused: Write = { ...baseOf(entry.write), claimed: false, refusal, status: "refused" };
     const write: Write = stays ? { ...refused, claimed: this.#claimed(refused, refusal) } : refused;
     if (stays) this.#update(entry, write);
