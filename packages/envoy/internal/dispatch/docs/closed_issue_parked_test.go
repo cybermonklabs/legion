@@ -6,14 +6,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -40,27 +37,7 @@ func TestParkedBytesTheClosedIssuesGateRefusesCloseTheirRoomForItsIssue(t *testi
 	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	held := &heldStore{
-		VersionedStore: NewPgVersioned(database),
-		room:           artifactID,
-		entered:        make(chan struct{}),
-		release:        make(chan struct{}),
-	}
-	service := New(Deps{
-		Store:       database,
-		Persistence: held,
-		Events:      events.NewBroker(),
-		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
-	})
-	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
-	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker the hold parks.
-	testcleanup.Add(t, held.let)
+	service, held := closedIssueRoomService(t, database, artifactID)
 	server := newTestServer(t, service)
 
 	// decided closes once the room has failed (beforeFailedEviction) or begun its close for its
@@ -104,9 +81,7 @@ func TestParkedBytesTheClosedIssuesGateRefusesCloseTheirRoomForItsIssue(t *testi
 
 	// Alice's first keystroke reaches the store and is held there, so the room's persistence
 	// worker, which makes one call at a time, takes the paragraph's append only once it is let go.
-	held.armed.Store(true)
-	typeOver(t, alice, "before", "typed first")
-	testwait.Receive(t, "the room's append of alice's first keystroke to reach the store", held.entered)
+	holdOneRoomUpdate(t, held, func() { typeOver(t, alice, "before", "typed first") })
 
 	// Alice's update: a paragraph the room takes, and another client's edit that waits for a
 	// predecessor the room never received, which the room parks.

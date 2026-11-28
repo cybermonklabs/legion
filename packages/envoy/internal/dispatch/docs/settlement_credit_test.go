@@ -499,7 +499,7 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 // sendAsBrowser sends the room the edit editAsBrowser sends and returns at once, with the channel
 // editAsBrowser waits on - closed once the room's update observer has run for that update - and
 // what removes that observer.
-func sendAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) (recorded <-chan struct{}, unsubscribe func()) {
+func sendAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) (<-chan struct{}, func()) {
 	t.Helper()
 	// These take the copy's lock themselves, so they are read before the transaction that holds it.
 	fragment := browser.Doc.GetXmlFragment(fragmentName)
@@ -509,11 +509,11 @@ func sendAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 	if room == nil {
 		t.Fatal("the room is not resident while its browser is connected")
 	}
-	applied := make(chan struct{})
+	recorded := make(chan struct{})
 	var once sync.Once
-	unsubscribe = room.OnUpdate(func([]byte, any) {
+	unsubscribe := room.OnUpdate(func([]byte, any) {
 		if room.StateVector().Clock(client) > sentFrom {
-			once.Do(func() { close(applied) })
+			once.Do(func() { close(recorded) })
 		}
 	})
 	var changeErr error
@@ -533,7 +533,7 @@ func sendAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 		unsubscribe()
 		t.Fatalf("send the browser's edit: %v %v", err, changeErr)
 	}
-	return applied, unsubscribe
+	return recorded, unsubscribe
 }
 
 // roomWait bounds a wait on a document room's own work - sending a browser the document,

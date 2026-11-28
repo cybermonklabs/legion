@@ -250,10 +250,9 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // a class, it runs a batch (AppendRoomFlush, flushRun): one transaction under the document's
 // advisory lock over the run of the same room instance's updates whose classes are not marked
 // stored, recorded up to the position its batch runs through (roomBatchThrough), in the room's
-// commit order, each with the in-flight credit and the class its observer recorded. On a closed
-// issue the gate stores only the prefix of that run it admits (room_appends.go, "The gate"). So
-// the order of the calls does not decide the order the updates are stored in. A nil return does
-// not mean the update is durable (room_appends.go, "A nil return").
+// commit order, each with the in-flight credit and the class its observer recorded. So the order
+// of the calls does not decide the order the updates are stored in. A nil return does not mean
+// the update is durable (room_appends.go, "A nil return").
 //
 // Unless something waits on the room, the call lingers for the room's queue to fill before its
 // batch goes, at most roomAppendLinger from the update's recording (room_appends.go).
@@ -289,8 +288,6 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // leaves its instance's unstored updates.
 func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room string, update []byte) error {
 	if a.service.roomFailed(room) {
-		// The failed room's update is not stored. The class consumeUpdateClass finds for it, if any,
-		// is taken all the same, so the work the record counts for it ends here (dropUpdate).
 		a.dropUpdate(room, update)
 		return nil
 	}
@@ -325,12 +322,7 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 			Observed:       class.observed,
 		}}
 		if _, err := a.store.AppendUpdatesWithCredit(withRoomCursor(ctx, class.cursor), room, updates); err != nil {
-			if errors.Is(err, ErrIssueClosed) {
-				a.service.refuseClosedIssueAppend(room, class.instance)
-				return nil
-			}
-			a.service.failRoom(room, err)
-			return err
+			return a.service.appendFailed(room, class.instance, err)
 		}
 		return nil
 	}
@@ -363,12 +355,7 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	}
 	flush := &RoomFlush{service: a.service, room: room, cursor: class.cursor}
 	if _, err := a.store.AppendRoomFlush(ctx, room, flush, through, class.credit); err != nil {
-		if errors.Is(err, ErrIssueClosed) {
-			a.service.refuseClosedIssueAppend(room, class.instance)
-			return nil
-		}
-		a.service.failRoom(room, err)
-		return err
+		return a.service.appendFailed(room, class.instance, err)
 	}
 	if flush.storedContentChange() {
 		a.service.scheduleSettleAfterAppend(room)
@@ -376,13 +363,22 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	if class.cursor.takeReplaced() {
 		a.service.closeRoomOnReplacedHistory(room, class.instance)
 	}
-	// When the gate cut this call's own update from the run it stored (RoomFlush.cut), the update
-	// is not stored: this call calls refuseClosedIssueAppend for its room instance, as it does when
-	// the gate refuses the whole run.
 	if slices.Contains(flush.cut, class) {
 		a.service.refuseClosedIssueAppend(room, class.instance)
 	}
 	return nil
+}
+
+// appendFailed answers err, a failed append of room's updates made in instance: a refusal for a
+// closed issue (ErrIssueClosed) calls refuseClosedIssueAppend for instance and returns nil, and any
+// other error fails the room and is returned.
+func (s *Service) appendFailed(room string, instance *roomInstance, err error) error {
+	if errors.Is(err, ErrIssueClosed) {
+		s.refuseClosedIssueAppend(room, instance)
+		return nil
+	}
+	s.failRoom(room, err)
+	return err
 }
 
 // Compact is ygo's room-close compaction: its persistence worker calls it as it exits, the server's
@@ -900,11 +896,7 @@ func (s *Service) storeParked(room string) {
 		}
 		ctx := withRoomCursor(context.Background(), &next.instance.cursor)
 		if _, err := s.persistence.AppendParkedUpdate(ctx, room, next.update); err != nil {
-			if errors.Is(err, ErrIssueClosed) {
-				s.refuseClosedIssueAppend(room, next.instance)
-				continue
-			}
-			s.failRoom(room, fmt.Errorf("store the parked bytes of a document update: %w", err))
+			s.appendFailed(room, next.instance, fmt.Errorf("store the parked bytes of a document update: %w", err))
 		}
 	}
 }

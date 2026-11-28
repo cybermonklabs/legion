@@ -121,26 +121,18 @@ func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []
 // (queueAppendGate); the gate read again under a prune checkpoint's ceiling when the first read
 // finds one; the reads gateAppend makes of a replaced history (storedHistoryHolds); and, once
 // gateAppend has passed the run where a room cursor gates it, a pipeline of the writes
-// (appendWrites) and the commit. It takes no pg_advisory_xact_lock: the session holds
-// the document's lock already.
+// (appendWrites) and the commit. It takes no pg_advisory_xact_lock: the session holds the
+// document's lock already.
 //
 // Once the writes pipeline and its commit have returned without error, before the unlock, it
 // records what it stored: for a flush, the run and its cut on flush (RoomFlush.appendedRun,
 // RoomFlush.cut), the versions on the instance's cursor, the stored classes marked stored with
 // each credit held and landed (RoomFlush.markStored), the room's shadow dropped if drained
-// (dropDrainedShadowLocked) and the batch counted
-// (committed); for given updates, their credits held and the versions on ctx's room cursor. Then
-// finish, which runs once the opening pipeline was sent unless that pipeline failed with a
-// context error, lands the credits, attempts a rollback of a transaction still open and calls
-// freeRoomLock; holdRoom's release gives up the in-process lock; and a committed transaction
-// notes its last version for compaction (PgVersioned.noted).
+// (dropDrainedShadowLocked) and the batch counted (committed); for given updates, their credits
+// held and the versions on ctx's room cursor.
 //
 // On an error it returns zero and the error of holdRoom, a pipeline, the gate read, gateAppend
 // (ErrIssueClosed when it admits no update of the run, ErrRoomBehindHead) or appendWrites.
-//
-// The prune's deletes go in the writes pipeline, not between the gate reads: a delete assigns the
-// transaction an id, and there it would hold the id across the gate's decode (storedHistoryHolds,
-// INFRA-636). The opening pipeline's lock, begin and reads assign none.
 func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit, given []BrowserUpdate, owes bool) (first persistence.Version, err error) {
 	conn, ctx, release, err := p.holdRoom(ctx, room, true, func(ctx context.Context) (*pgxpool.Conn, error) {
 		appends, err := p.store.Pool.RoomAppends()
@@ -239,8 +231,8 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	if read.pruneCeiling != nil {
 		// A crash left a prune half done. Its deletes are queued with the writes below, since a
 		// delete here would assign the transaction an id before the gate's decode
-		// (storedHistoryHolds). This pipeline reads the gate again under the checkpoint's ceiling,
-		// the history those deletes leave.
+		// (storedHistoryHolds, INFRA-636). This pipeline reads the gate again under the
+		// checkpoint's ceiling, the history those deletes leave.
 		pruneCeiling = read.pruneCeiling
 		rereading := &pgx.Batch{}
 		gate = queueAppendGate(rereading, room, pruneCeiling)
@@ -274,14 +266,8 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 			p.markRunReplaced(room, roomCursorFrom(ctx), flush)
 		}
 	}
-	// A closed issue's gate admits a prefix of the run (gateAppend). For a flush, the cut classes
-	// stay queued, not marked stored, and are recorded on it once the writes and commit return
-	// without error (RoomFlush.cut); given updates past the prefix are not stored.
+	// A closed issue's gate admits a prefix of the run (gateAppend, RoomFlush.cut).
 	updates = updates[:admitted]
-	var cut []*queuedClass
-	if flush != nil {
-		taking, cut = taking[:admitted], taking[admitted:]
-	}
 	first = persistence.Version(head + 1)
 	// nil tx: this batch commits on its own connection, not in a caller's transaction.
 	plan, err := p.appendWrites(ctx, nil, room, head, updates, owes)
@@ -322,8 +308,8 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		}
 		return first, nil
 	}
-	flush.appendedRun(taking, updates, persistence.Version(head+1))
-	flush.cut = cut
+	flush.appendedRun(taking[:admitted], updates, persistence.Version(head+1))
+	flush.cut = taking[admitted:]
 	advanceRoomCursorThrough(flush.cursor, flush.appended(nil))
 	for _, unlanded := range flush.markStored(nil) {
 		unlanded.landed()

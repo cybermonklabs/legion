@@ -416,9 +416,7 @@ func (s *Service) unusedLocked(state *roomState) bool {
 		len(state.parked) == 0 && state.retiring == nil
 }
 
-// parkedBytes is one commit's parked bytes and the room instance that took them: its cursor gates
-// their append, and storeParked calls refuseClosedIssueAppend for it when the gate refuses that
-// append for a closed issue.
+// parkedBytes is one commit's parked bytes and the room instance that took them (storeParked).
 type parkedBytes struct {
 	update   []byte
 	instance *roomInstance

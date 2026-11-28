@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,12 +144,10 @@ func TestABrowsersEditWaitsWhileTheRoomsUpdatesQueuePastItsBuffer(t *testing.T) 
 
 	applied, unsubscribe := sendAsBrowser(t, service, room, browser, "before, edited\n\nafter\n")
 	defer unsubscribe()
-	waiting := false
 	testwait.Eventually(t, "the browser's read loop to wait in ygo's awaitPersistence, or the room to apply the browser's edit", func() bool {
-		waiting = readLoopWaitsOnPersistence()
-		return waiting || isClosed(applied)
+		return readLoopWaitsOnPersistence() || isClosed(applied)
 	})
-	if !waiting || isClosed(applied) {
+	if isClosed(applied) {
 		t.Fatal("the room applied the browser's edit while its updates queued past the persistence channel: storage lag no longer slows a browser")
 	}
 	unlock()
@@ -163,12 +162,9 @@ func TestABrowsersEditWaitsWhileTheRoomsUpdatesQueuePastItsBuffer(t *testing.T) 
 // waiting, before it applies the peer's next update, for the updates queued past its room's
 // persistence channel to be handed on.
 func readLoopWaitsOnPersistence() bool {
-	for _, stack := range goroutinetest.Traces() {
-		if strings.Contains(stack, "provider/websocket.(*room).awaitPersistence") && strings.Contains(stack, "provider/websocket.(*peer).applySyncUpdate") {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(goroutinetest.Traces(), func(stack string) bool {
+		return strings.Contains(stack, "provider/websocket.(*room).awaitPersistence") && strings.Contains(stack, "provider/websocket.(*peer).applySyncUpdate")
+	})
 }
 
 // isClosed reports whether ch is closed.

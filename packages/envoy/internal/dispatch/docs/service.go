@@ -2825,9 +2825,8 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 // bytes, which carry no observed time (storeParked). It starts the close of the room for its
 // issue, as the notification would close it (setRoomIssueOpen), once per instance
 // (issueCloseStarted), on a goroutine of its own: the caller can be ygo's persistence worker,
-// which the close waits for. The close
-// runs whatever the room's record holds: that flag is no proof that a close was ever made, for
-// the reason setRoomIssueOpen gives (notified).
+// which the close waits for. The close runs whatever the room's record holds: that flag is no proof
+// that a close was ever made, for the reason setRoomIssueOpen gives (notified).
 //
 // It closes the room that still holds instance, the room instance whose append was refused, and
 // no other: one try at that close holds the room's close gate for its check that the room holds
