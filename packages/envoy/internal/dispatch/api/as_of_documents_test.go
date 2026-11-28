@@ -1,15 +1,16 @@
 // as_of_documents_test.go holds the document routes at a cut to
 // the cases the equality harness (as_of_equality_test.go) does not write: a document read after a
 // version and an unsettled edit made after the cut, with a typed block, two blocks of one text and
-// a table; a document removed after the cut; a version made after the cut; an approval request
-// written before approval requests held their documents; and a review whose hash the boot fill
-// pinned with no event.
+// a table; a version this build cannot read back; a document removed after the cut; a version
+// made after the cut; an approval request written before approval requests held their documents;
+// and a review whose hash the boot fill pinned with no event.
 package api
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"reflect"
@@ -183,6 +184,73 @@ func TestADocumentReadAtACutIsTheVersionThen(t *testing.T) {
 				t.Errorf("the answer at the cut lists %d blocks of the text %q, want the 2 the version holds", repeated, repeatedBlockText)
 			}
 		})
+	}
+}
+
+// TestAVersionThisBuildCannotReadIsReadAtACutAsItsBlocksAre: the text route reads at a cut a
+// version this build cannot read back, here one holding an element only a newer build knows
+// (docs.UnknownElementForTest), and answers it as it did before it read asks at a cut, never 500.
+// A version that holds no ask block is served its stored markdown as it is, and with ?blocks=true
+// it answers 409 DOC_NEWER_CONTENT, as its blocks answer on every route. A version that holds an
+// ask block answers 409 DOC_NEWER_CONTENT with blocks and without: its stored bytes hold the
+// block's server-owned attributes, an answer's words among them, which the text routes take off,
+// so none of them is served. Each answers so to a reader of asks and to every other reader.
+func TestAVersionThisBuildCannotReadIsReadAtACutAsItsBlocksAre(t *testing.T) {
+	_, handler, database, served := browserDocumentServer(t)
+	issue := createInteractionIssue(t, handler, "ASDU", "Versions this build cannot read", "The spec.\n")
+	const answerWord = "kestrel"
+	newer := "Before.\n\n:::" + docs.UnknownElementForTest + "{#newer-1}\nWritten by a newer build.\n:::\n"
+	versions := []struct {
+		name, markdown string
+		holdsAsk       bool
+	}{
+		{name: "plain", markdown: newer},
+		{name: "asked", holdsAsk: true, markdown: newer + "\n" +
+			`:::ask{#count urgency="low" multiple="false" state="answered" answered_by="alice" selected="[&#x22;Heron&#x22;]" answer="The ` +
+			answerWord + ` count."}` + "\nWhich count goes first?\n\n- Heron: The first.\n- Egret: The second.\n:::\n"},
+	}
+	documents := make([]model.Artifact, len(versions))
+	for index, version := range versions {
+		documents[index] = uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, version.name+".md", "Before.\n").Artifact
+	}
+	settleServed(t, served)
+	// Each document's one version holds what a newer build wrote there.
+	for index, version := range versions {
+		written, err := database.Pool.Exec(t.Context(), `update artifact_versions set markdown = $2 where artifact_id = $1`,
+			documents[index].ID, version.markdown)
+		if err != nil || written.RowsAffected() != 1 {
+			t.Fatalf("store the %s version a newer build wrote: %v, %d rows; want one", version.name, err, written.RowsAffected())
+		}
+	}
+	cut := databaseCut(t, database)
+
+	for index, version := range versions {
+		for _, query := range []string{"", "?blocks=true"} {
+			for _, readsAsks := range []bool{false, true} {
+				target := withAsOf(t, "/api/v1/artifacts/"+documents[index].ID+"/text"+query, cut)
+				response := textRead(t, handler, target, readsAsks)
+				what := fmt.Sprintf("GET %s (the %s version, Dispatch-Asks %t)", target, version.name, readsAsks)
+				if version.holdsAsk || query != "" {
+					var refusal refusalAnswer
+					_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+					if response.Code != http.StatusConflict || refusal.Code != "DOC_NEWER_CONTENT" {
+						t.Errorf("%s answers %d %s, want 409 DOC_NEWER_CONTENT", what, response.Code, abbreviateAnswer(response.Body.Bytes()))
+					}
+					if strings.Contains(response.Body.String(), answerWord) {
+						t.Errorf("%s shows %q, a word of the answer the stored version holds: %s", what, answerWord, response.Body.String())
+					}
+					continue
+				}
+				var text artifactText
+				if err := json.Unmarshal(response.Body.Bytes(), &text); response.Code != http.StatusOK || err != nil {
+					t.Errorf("%s answers %d %s (%v), want 200 with the stored markdown", what, response.Code, abbreviateAnswer(response.Body.Bytes()), err)
+					continue
+				}
+				if text.Markdown != version.markdown {
+					t.Errorf("%s serves the markdown %q, want the stored %q", what, text.Markdown, version.markdown)
+				}
+			}
+		}
 	}
 }
 

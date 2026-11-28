@@ -40,6 +40,7 @@ var shadows = [...]shadow{
 	{Table: "artifact_reviews", Definition: createdByTheCut("artifact_reviews")},
 	{Table: "check_results", Definition: createdByTheCut("check_results")},
 	{Table: "check_result_retractions", Definition: createdByTheCut("check_result_retractions")},
+	{Table: "graph_tuples", Definition: graphTuplesShadow},
 }
 
 // ShadowedTables are the names of the shadowed tables, in the order Shadows writes them.
@@ -76,6 +77,19 @@ func createdByTheCut(table string) func(cut string) string {
 	return func(cut string) string {
 		return "select * from public." + table + " where created_at <= " + cut
 	}
+}
+
+// graphTuplesShadow is the shadow of graph_tuples: no row, at every cut, since a read at a cut
+// takes no fact off a tuple. It takes each ask's answer state off the asks shadow, which names no
+// ask node (asksShadow's node_kind, which says why the tuples cannot give that state), so a
+// statement that reads an ask's node behind its row's node_kind reads no tuple at a cut; and no
+// other read at a cut reads the store. With no row here, that holds of every statement that names
+// graph_tuples at a cut, a later one that reads a tuple included: it reads no tuple, never the
+// present store. A statement that names public.graph_tuples reads the present store outside the
+// shadows, which the relation inventory test of the shadows refuses, since neither
+// MachineryTables nor CutReadTables lists the table.
+func graphTuplesShadow(string) string {
+	return "select * from public.graph_tuples where false"
 }
 
 // sqlList is values as a SQL list of string literals, such as ('a', 'b'). Each value is a
@@ -285,8 +299,6 @@ var CutReadTables = map[string]string{
 	"graph_nodes": "Only a node's visibility, through the predicate refs.VisibleKind and refs.VisibleEnd bind: " +
 		"which nodes the acting person may see is read as it stands now, so an answer at a cut gives no node " +
 		"that person may not see today. The node and tuple store keeps no history of a node's visibility.",
-	"graph_tuples": "Only behind the node_kind of an ask's row, which the asks shadow gives as none at every cut: " +
-		"a read at a cut takes each ask's answer state off the asks shadow, so no tuple is read (asksShadow).",
 	"post_body_history": "Only the body that the first comment.edited, comment.deleted, message.edited or message.deleted event " +
 		"of the post after the cut replaced, for an event at or after the time schema_migrations records for 20261110224508: " +
 		"the row of the post, in edited_at and id order, after as many rows as the post has such events at the cut at or after that time. " +

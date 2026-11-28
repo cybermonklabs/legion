@@ -44,7 +44,7 @@ type API interface {
 	TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
 	// kept for one release: stored-ask-state
 	KeptText(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
-	VersionAskedText(ctx context.Context, artifactID, markdown string, kept bool) (AskedText, error)
+	VersionAskedText(ctx context.Context, artifactID, markdown string, withBlocks, kept bool) (AskedText, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	CopiesOf(ctx context.Context, ask model.Ask) ([]string, error)

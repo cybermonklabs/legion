@@ -15,13 +15,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
-// shadowedTables are the tables the plan's decision 2 gives a shadow, events among them.
+// shadowedTables are the tables the plan's decision 2 gives a shadow, events among them, and
+// graph_tuples, whose shadow holds no row at any cut (emptyAtEveryCut).
 var shadowedTables = []string{
 	"events", "issues", "asks", "comments", "messages", "artifacts", "artifact_versions",
 	"artifact_reviews", "check_results", "check_result_retractions", "issue_links",
 	"issue_external_links", "issue_components", "priority_tuples", "projects", "repo_projects",
-	"ask_followers", "comment_deliveries", "message_deliveries",
+	"ask_followers", "comment_deliveries", "message_deliveries", "graph_tuples",
 }
+
+// emptyAtEveryCut are the shadowed tables whose shadow holds no row at any cut: graph_tuples,
+// since no read at a cut takes a fact off a tuple (asof's graphTuplesShadow).
+var emptyAtEveryCut = map[string]bool{"graph_tuples": true}
 
 // column is one column by its name, its type, as pg_type names it (int4, _text, timestamptz),
 // and its collation, as information_schema names it: empty for a type that has none and for the
@@ -36,7 +41,8 @@ type column struct{ name, kind, collation string }
 // bytes), so a statement that orders or compares it at a cut answers in another order. Each
 // shadow also runs, bound in front of a statement at a cut of now, over a database with a row in
 // every shadowed table written as the writers write them, and at that cut answers each table's
-// rows.
+// rows, but for a table whose shadow holds none (emptyAtEveryCut), which answers no row of the
+// rows it holds.
 func TestEveryShadowAnswersEveryColumnOfItsTable(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
@@ -90,7 +96,10 @@ func TestEveryShadowAnswersEveryColumnOfItsTable(t *testing.T) {
 			if err := rows.Err(); err != nil {
 				t.Fatalf("select * from %s at a cut of now: %v", table, err)
 			}
-			if answered != stored {
+			switch {
+			case emptyAtEveryCut[table] && answered != 0:
+				t.Errorf("%s at a cut of now answers %d of the %d rows it holds, want none: its shadow holds no row at any cut", table, answered, stored)
+			case !emptyAtEveryCut[table] && answered != stored:
 				t.Errorf("%s at a cut of now answers %d rows, want the %d it holds", table, answered, stored)
 			}
 		})
@@ -266,6 +275,10 @@ func seedEveryShadowedTable(t *testing.T, w world) {
 		askID, w.encode(ask.Author), w.encode(ask.Options), made)
 	w.event(issueOwned(key), "ask.opened", ask.Author, model.NewAskEventPayload(ask, model.ReferenceChanges{}), made)
 	w.exec(`insert into ask_followers (ask_id, session_id, since) values ($1, 's-1', $2)`, askID, made)
+	// The ask's node holds its answer state, a tuple, which the graph_tuples shadow gives at no
+	// cut.
+	w.exec(`insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+		values ('ask', $1, 'answer_state', 'value', 'open', $2, $3, 0)`, askID, made, w.encode(ask.Author))
 
 	replyID := "00000000-0000-4000-8000-0000000000c1"
 	turn := "human"

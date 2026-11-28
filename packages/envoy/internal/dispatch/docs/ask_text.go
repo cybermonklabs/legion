@@ -168,18 +168,49 @@ func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored
 }
 
 // VersionAskedText is markdown, the text of a version of document artifactID, as the text routes
-// serve a document (TextWithAsks, or KeptText where kept): read back into a tree
-// (pmdoc.ParseRendering), rendered again only where an ask block of it held an attribute the read
-// takes off (servedAskTree), with the asks of the tree it serves (textAsks). The token is the
-// caller's. The text route reads a version so at a cut (api's artifactTextAtTheCut), where every
-// statement reads the asks as the shadows give them at the cut, so each ask reads its answer as
-// the ask's newest state event at the cut carries it.
-func (s *Service) VersionAskedText(ctx context.Context, artifactID, markdown string, kept bool) (AskedText, error) {
+// serve a document (TextWithAsks, or KeptText where kept), with its blocks beside it when
+// withBlocks. A markdown that holds no ask block is served as it is stored, with no parse, as
+// askedText serves such a document; with blocks it is the version's rendering and its blocks
+// (VersionRenderingBlocks). One that holds an ask block is read back into a tree
+// (pmdoc.ParseRendering) once and served from that tree: rendered again where withBlocks, with its
+// blocks, or where an ask block of it held an attribute the read takes off (servedAskTree), and
+// with the asks of the tree it serves (textAsks). Such a version that this build cannot read back
+// is refused as its blocks are (documentSchemaError): a NewerContentError for an element this
+// build does not know, an OutsideSchemaError for any other schema refusal. Its stored bytes are
+// never served in its place, since they can hold an answer's words and selection, which the text
+// routes take off. The token is the caller's. The text route reads a version so at a cut (api's
+// artifactTextAtTheCut), where every statement reads the asks as the shadows give them at the
+// cut, so each ask reads its answer as the ask's newest state event at the cut carries it.
+func (s *Service) VersionAskedText(ctx context.Context, artifactID, markdown string, withBlocks, kept bool) (AskedText, error) {
+	if !strings.Contains(markdown, "ask{") {
+		if !withBlocks {
+			return AskedText{Markdown: markdown}, nil
+		}
+		rendered, blocks, err := VersionRenderingBlocks(markdown)
+		if err != nil {
+			return AskedText{}, err
+		}
+		return AskedText{Markdown: rendered, Blocks: blocks}, nil
+	}
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return AskedText{}, fmt.Errorf("read a version of document %s back into a tree: %w", artifactID, err)
+		return AskedText{}, fmt.Errorf("read a version of document %s back into a tree: %w", artifactID, documentSchemaError(err))
 	}
-	return s.servedText(ctx, artifactID, AskedText{Markdown: markdown}, tree, kept)
+	served, took := servedAskTree(tree, kept)
+	text := AskedText{Markdown: markdown}
+	if text.Asks, err = s.textAsks(ctx, artifactID, served); err != nil {
+		return AskedText{}, err
+	}
+	switch {
+	case withBlocks:
+		text.Markdown, text.Blocks, err = documentBlocks(served)
+	case took:
+		text.Markdown, err = documentMarkdown(served)
+	}
+	if err != nil {
+		return AskedText{}, err
+	}
+	return text, nil
 }
 
 // servedText is text, whose markdown tree was read back from, as the text routes serve it: its

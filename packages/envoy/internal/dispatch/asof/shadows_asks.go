@@ -154,7 +154,7 @@ var AskAnchorBlocksNotGivenStatement = anchorBlocksNotGiven("asks", askStateList
 //     boot step's backfill folded into one fact, and every write of an answer state appends the
 //     ask's state event with the row that the node projects into (asks.Settle). So the shadow
 //     names no node, every read at a cut reads the answer off the row, and no read at a cut reads
-//     a tuple (CutReadTables, graph_tuples).
+//     a tuple (graphTuplesShadow, which holds none).
 //   - answer and resolution: the payload's, laid as a read of the present lays the node's over the
 //     row (asks.NodeAnswer.ApplyTo) where the present row names its node: the answer only on an
 //     ask answered at the cut, and the resolution only on one resolved then. The row keeps an

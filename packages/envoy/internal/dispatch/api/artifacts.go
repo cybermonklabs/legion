@@ -1320,12 +1320,13 @@ func readsAsks(r *http.Request) bool {
 // (artifactTextAtTheCut).
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (docs.AskedText, *[]model.ArtifactBlock, error) {
 	withBlocks := r.URL.Query().Get("blocks") == "true"
+	// kept for one release: stored-ask-state
+	kept := !readsAsks(r)
 	if _, atCut := asof.CutFrom(r.Context()); atCut {
-		return s.artifactTextAtTheCut(r.Context(), artifactID, withBlocks, !readsAsks(r))
+		return s.artifactTextAtTheCut(r.Context(), artifactID, withBlocks, kept)
 	}
 	read := s.deps.Docs.TextWithAsks
-	if !readsAsks(r) {
-		// kept for one release: stored-ask-state
+	if kept {
 		read = s.deps.Docs.KeptText
 	}
 	text, err := read(r.Context(), artifactID, withBlocks)
