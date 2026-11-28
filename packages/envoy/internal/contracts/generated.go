@@ -298,6 +298,18 @@ const MaxIssueComponents = 50
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
 
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps. A longer text is kept as its first SpecCheckObservedStart runes, then
+// SpecCheckObservedCutNote, which says that the middle was cut, then its last
+// SpecCheckObservedEnd runes, SpecCheckObservedMax runes in all. Generated from
+// SPEC_CHECK_OBSERVED_MAX, SPEC_CHECK_OBSERVED_START, SPEC_CHECK_OBSERVED_CUT_NOTE and
+// SPEC_CHECK_OBSERVED_END in packages/contracts, so the text Dispatch keeps and the text
+// `dispatch result --project` sends are cut by one rule.
+const SpecCheckObservedMax = 2000
+const SpecCheckObservedStart = 500
+const SpecCheckObservedCutNote = "\n[The middle of the text is cut here. A result keeps 2000 characters of what the job observed: its start and its end.]\n"
+const SpecCheckObservedEnd = 1381
+
 // MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
 // DefaultThreadPageLimit the page size when a caller names no limit: GET
 // /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
@@ -692,6 +704,19 @@ func RoleSubject(project, role string) string {
 
 func LegionWakeSubject(token string) string {
 	return "notifications.legion." + token + ".wake"
+}
+
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ".state"
+
+func LegionStateSubject(token string) string {
+	return "notifications.legion." + token + ".state"
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

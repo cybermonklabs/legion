@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -86,7 +88,7 @@ type outbox struct {
 	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
-	notices    notify.Publisher
+	notices    outboxNotices
 	catchUps   *catchUpPacing
 	supervisor *supervisor
 	trees      outboxTrees
@@ -98,10 +100,11 @@ type outbox struct {
 	dispatchProject string
 	stateDir        string
 	// gatedSteps are the design-gate steps the project gates (gates.design), which a root
-	// architect's catch-up this runner writes states (a child's catch-up states none) and whose
-	// kept approval pair a root architect's start task names (workflow.QueueCatchUp). A test that
-	// builds the runner by hand leaves it nil, which newOutbox reads as the shipped list, the one
-	// step spec.
+	// architect's catch-up this runner writes or delivers states (workflow.QueueCatchUp,
+	// workflow.TreeCatchUp; a child's catch-up states none) and whose kept approval pair a root
+	// architect's start task names. A test that builds the runner by hand and leaves it nil holds
+	// the list of a deployment that gates no step: the single step spec, which no person approves
+	// (record.RequiredSteps).
 	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -141,6 +144,13 @@ type outbox struct {
 	// update's ReplacePod, which starts the next pod at once. Set by attach after newOutbox; a test
 	// that builds the outbox by hand leaves it nil, and the end of a pod then runs nothing.
 	podEnded func(context.Context, []string)
+	// prepareHandover readies the hand-over fact consumeHandover applies, as an event's
+	// preparation readies a recorded issue's (workflowRuntime.prepareHandover): where the
+	// resolution the status executor read names another repository than the record's, it carries
+	// what GitHub answered for that repository now, which the correction admission's hand-over
+	// makes is written from. Set by attach after newOutbox; a test that builds the outbox by hand
+	// leaves it nil, and the fact then carries no read, so its correction writes nothing.
+	prepareHandover func(context.Context, intake.Handover) (intake.Handover, error)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
@@ -205,7 +215,7 @@ type outbox struct {
 	// entry a claim the supervisor holds.
 	unheldWarned sync.Map
 	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
-	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
+	// its claim holds the controller's role topic back (heldTopic). False is `controller: operator`.
 	controllerLaunched bool
 	// beforeUndeliveredEnd, where a test sets it, runs on a held message's row between the read
 	// that ends the row undelivered - the workflow's rule of a merge-forward message
@@ -222,6 +232,16 @@ type outbox struct {
 	laneCtx context.Context
 	lanes   map[record.LaneKey]*outboxLane
 	wg      sync.WaitGroup
+}
+
+// outboxNotices is the Envoy listener as the outbox uses it: its publishes (notify.Publisher) and
+// the read of a role's holder (notify.HTTPPublisher.RoleHolder) that a controller notice waits on
+// (controllerHolds). The read is part of the type every outbox is built with, rather than a method
+// a publisher may or may not carry, so no publisher can be built into an outbox that would publish
+// a controller notice without asking who holds the role: a test's publisher answers it itself.
+type outboxNotices interface {
+	notify.Publisher
+	RoleHolder(ctx context.Context, role string) (holder, state string, err error)
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
@@ -270,8 +290,9 @@ type outboxTrees interface {
 }
 
 // newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
-// which decides whether the launched controller claim holds the controller topic back (heldTopic).
-func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
+// which decides whether the launched controller claim holds the controller's role topic back
+// (heldTopic).
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher outboxNotices, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -301,13 +322,12 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 
 // publish is every executor's publish to Envoy (r.notices), and publishKept its publish with keep,
 // both held to the claims this daemon supervises (heldBack). A publish to the role topic of a
-// claim the daemon supervises, or to its project's controller topic under `controller: daemon`
-// (heldTopic), is made only while that claim holds the session it records
-// (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
-// its process, and that process keeps the Envoy role its session claimed, so a notice, a role
-// message, a hook's prompt, an update ask, a merge-queue removal, a merge forward's message or a
-// controller notice would reach a process working under another claim's session, or one no claim
-// holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
+// claim the daemon supervises (heldTopic) is made only while that claim holds the session it
+// records (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend
+// keeps its process, and that process keeps the Envoy role its session claimed, so a notice, a
+// role message, a hook's prompt, an update ask, a merge-queue removal, a merge forward's message
+// or a controller notice would reach a process working under another claim's session, or one no
+// claim holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
 // notify.ErrNoHolder, which every executor already answers its own way: a notice is held for its
 // architect; a merge-queue removal, a merge forward's message, a controller notice, a hook's
 // prompt or a phase-ended message inside its hour (publishKeptToRole) and a role message a
@@ -381,19 +401,19 @@ func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
 }
 
 // heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
-// topic names, or, under `controller: daemon` alone, the project's controller claim for its
-// controller topic. Under `controller: operator` the controller topic is the operator's own
-// controller's, so no claim the daemon launched holds it back, a launched controller an earlier
-// boot retired included (stopLaunchedController); under `controller: daemon` the launched
-// controller claim is the deployment's controller, since one runs per project.
+// topic names, but for the controller's role topic under `controller: operator`. There the role is
+// the operator's own controller's, so no claim the daemon launched holds it back, a launched
+// controller an earlier boot retired included (stopLaunchedController); under `controller: daemon`
+// the launched controller claim is the deployment's controller, since one runs per project.
 func (r *outbox) heldTopic(topic string) (claim.Token, bool) {
-	if role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
-		return claim.Token(role), true
+	role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix)
+	if !isRole {
+		return "", false
 	}
-	if r.controllerLaunched && r.project != "" && topic == notify.ControllerTopic(r.project) {
-		return claim.ControllerToken(r.project), true
+	if !r.controllerLaunched && r.project != "" && claim.Token(role) == claim.ControllerToken(r.project) {
+		return "", false
 	}
-	return "", false
+	return claim.Token(role), true
 }
 
 // RunOnce drains every row of the project due now, in the order the lanes would run them within
@@ -475,6 +495,11 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 		if err := r.retry(ctx, row, err); err != nil {
 			r.log.Error("outbox row retry not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 		}
+		return
+	}
+	// The state executor finished the row itself, together with the rows it published beside it,
+	// in one transaction fenced on this row's lease (stateEvents): a finish here would find nothing.
+	if record.LaneOf(row.Kind) == record.LaneState {
 		return
 	}
 	if err := r.finish(ctx, row); err != nil {
@@ -582,10 +607,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 	case record.ClaimRelease:
 		// Nobody is told: the claim stands where it was, which is the state the daemon would
-		// have left behind had the row never run, and the issue's tree is over. The line is
-		// what says the row ended, since without it a 404 — an issue Dispatch no longer has —
-		// would end it in silence.
+		// have left behind had the row never run. The line is what says the row ended, since
+		// without it a 404 — an issue Dispatch no longer has — would end it in silence. The
+		// issue's record says why the claim stands (refused), so a role reading it learns that
+		// without the log; it names the holder whose release Dispatch refused
+		// (claimReleaseFailure), and none for a read Dispatch refused, which named none.
 		refusal, _ := dispatch.PermanentRefusal(cause)
+		holder := ""
+		var failure *claimReleaseFailure
+		if errors.As(cause, &failure) {
+			holder = failure.holder
+		}
+		follow = func(ctx context.Context, tx pgx.Tx) error {
+			return r.recordClaimLeft(ctx, tx, row.Issue, holder, record.ClaimLeftRefused)
+		}
 		told = func() {
 			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
 				"status", refusal.Status, "code", refusal.Code, "error", kept)
@@ -618,6 +653,19 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told = func() {
 			log("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took, and the next ready or end of a claim on the issue publishes again",
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", kept)
+		}
+	case record.StateChange, record.StateAdmission, record.StateBoot:
+		// Nobody is told, and the line is what says the event is lost. The row is finished so it
+		// no longer holds the project's later state events behind it, and any row that rode beside
+		// it in the refused message goes out as the next one, whose first sequence is one above
+		// this row's. Dispatch finds the gap the row leaves, and the row's events reach Dispatch at
+		// its next whole read of the project. Dispatch makes that read at the gap, or, when its
+		// last read of the project is less than a minute old, when that minute ends: the message
+		// that found the gap goes back to the stream with a delay of the time left, and its
+		// redelivery makes the read (ReadRetryAfter in packages/envoy's legion intake).
+		told = func() {
+			r.log.Error("outbox state event refused by the listener and dropped; its events reach Dispatch at the next whole read of the project",
+				"row", row.ID, "project", row.Issue, "seq", row.StateSeq, "kind", row.Kind, "error", cause)
 		}
 	case record.StepRecord:
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
@@ -914,6 +962,18 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 			return false
 		}
 		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
+	case record.OutboxKindStateChange, record.OutboxKindStateAdmission, record.OutboxKindStateBoot:
+		// Permanent where the listener answers the same message the same way however often it is
+		// sent: its own NATS grant denies the subject (notify.ErrPublishDenied), which ends a
+		// notice too, or it refuses the message itself, a field, the topic or a size NATS does not
+		// take (notify.ErrMessageRefused). The state lane publishes in sequence order
+		// (record.LaneState), so such a row would hold every later state event of the project
+		// behind it for ever. Every other failure — the listener, NATS or the stream down or full,
+		// a bearer the listener does not take — ends with an outage or an operator's repair, and
+		// the row retries on its backoff, keeping its sequence.
+		var denied notify.ErrPublishDenied
+		var refused notify.ErrMessageRefused
+		return errors.As(err, &denied) || errors.As(err, &refused)
 	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
 		return recordRefused(err)
 	case record.OutboxKindHookPrompt:
@@ -995,7 +1055,7 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	case record.MessagePost:
 		return r.message(ctx, row, value)
 	case record.ClaimRelease:
-		return r.releaseClaim(ctx, row)
+		return r.releaseClaim(ctx, row, value)
 	case record.Notice:
 		return r.notice(ctx, row, value)
 	case record.ControllerNotice:
@@ -1074,6 +1134,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.StateChange, record.StateAdmission, record.StateBoot:
+		return r.stateEvents(ctx, row, payload)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -1416,14 +1478,14 @@ func (handOverRule) firstAttempt(ctx context.Context, r *outbox, row record.Outb
 		return false, err
 	}
 	if issue.Status == payload.Status && issue.HandedOver {
-		return false, r.consumeHandover(ctx, row, payload)
+		return false, r.consumeHandover(ctx, row, payload, issue)
 	}
 	// Every hand-over write is conditional on the sequence just read (dispatch HandOver), the
 	// label added when the child lacks it, so a person's move since that read stands.
 	if err := r.dispatch.HandOver(ctx, issue, payload.Status); err != nil {
 		return false, fmt.Errorf("hand Dispatch issue %s to Legion as %s: %w", row.Issue, payload.Status, err)
 	}
-	return false, r.consumeHandover(ctx, row, payload)
+	return false, r.consumeHandover(ctx, row, payload, issue)
 }
 
 // stillWanted is unreachable and says so: a hand-over's write is made by its own first attempt,
@@ -1736,9 +1798,28 @@ func recordRefused(err error) bool {
 // publication lets the boot read record the event's sequence, and the live event then stops at the
 // sequence fence. The fact is idempotent (admit's consumeHandover reads the fence it deletes), so
 // the event, or this row's retry after a failure here, changes nothing more.
-func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
-	_, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("handover:%s:%d", row.Issue, row.ID),
-		intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger}, r.handlers...)
+//
+// read is the issue as the status executor read it from Dispatch before any of this. The fact
+// carries its resolution, so the re-admission lands on the repository Dispatch resolves the issue
+// to now (admit's consumeHandover): no event and no PATCH of this door says the repository
+// changed, so without it the new generation would run on the repository the record holds until
+// the issue's next event or the next boot. A read that answered no repository carries none, and
+// corrects nothing. The fact carries the read's sequence too, so a record that took a later event
+// meanwhile, a person's change of the repository among them, is not corrected back to this read.
+// The fact is prepared first (prepareHandover), outside the fact lock, so a resolution that moves
+// the issue carries GitHub's read of the repository it moves onto, which the correction writes
+// and nothing the daemon kept.
+func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) error {
+	fact := intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger,
+		ResolvedRepo: read.ResolvedRepo, Seq: read.LastSeq}
+	if r.prepareHandover != nil {
+		prepared, err := r.prepareHandover(ctx, fact)
+		if err != nil {
+			return fmt.Errorf("prepare the hand-over of %s: %w", row.Issue, err)
+		}
+		fact = prepared
+	}
+	_, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("handover:%s:%d", row.Issue, row.ID), fact, r.handlers...)
 	return err
 }
 
@@ -1902,10 +1983,11 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // nobody will hold that role for this notice — the claim has failed or retired, or its tree lingers
 // or has closed — the row finishes
 // undelivered with one log line. So does a row whose architect cannot be resolved from the record
-// (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a row
-// whose architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while
-// the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
-// launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
+// (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a
+// changes request the person's approval followed while it waited (changesSuperseded), a row whose
+// architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while the
+// child is out of the workflow by its status or its phase (record.InWorkflow), whose next launch
+// writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
 // will not hold its role again) goes to the controller instead (parkDecision), and so does a
 // notice of the issue pod's disk (tellControllerOfKeptPod).
@@ -1919,8 +2001,9 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // answer reaches the policy only from a listener of the deployed, older build, until that
 // rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
-// catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
-// publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
+// catch-up a newer ready dropped, or a changes request a clear of its generation dropped,
+// errNoticeRowGone) is found gone in the tree's snapshot and finishes without a publish, and so
+// does a catch-up a newer one superseded (catchUpSuperseded, read against the
 // row's own issue as the snapshot holds it and its architect's claim as it runs now): the re-hold
 // reads the claim from memory and writes its copy outside ApplyFact's lock, so it can lose the
 // race to a ready and commit an older copy after the fresh catch-up. A catch-up that publishes
@@ -1989,6 +2072,37 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 
 // deliverNotice is the notice executor's own work: routing the notice, publishing it, and settling
 // what a catch-up that will never publish named. Its endings are notice's to read.
+//
+// A changes request the person's approval followed finishes first, with nothing published and
+// one line that names the approved version (stillOwed's changesSuperseded): the workflow
+// asked when it queued the notice (workflow's tellChanges), but a row waits here while its
+// architect's pod is released or relaunching, and a copy a listener's report queued again
+// (reholdNotice) comes through here too, so the delivery asks again on every attempt. It comes
+// before the routing because nothing after it can make the request the person's word again: a
+// released pod is not woken for it (wakeForDelivery), a later notice of the same architect, the
+// approval's own design-approved notice among them, is not held behind it (earlierNoticeFor),
+// and a tree whose architect stopped with it would not relay it to the controller either
+// (parkDecision also asks workflow.NoticeSuperseded). One window is left: an approval that commits
+// between that read and the publish, which reaches the architect after the request it answered.
+//
+// A catch-up is published as the issues its architect owns stand at this delivery, not as they
+// stood when the row was queued: the delivery's one read of the tree composes it again for the
+// row's own issue (readNoticeTree, workflow.TreeCatchUp: a root's whole tree, a child's own issue
+// and every issue under it), and its record half (record.CatchUpTree) is replaced whole with what
+// that read states, as the notice's Reason is, so a gate registered or an issue added while the
+// row waited reaches the architect with the catch-up (dispatch://INFRA-2819). The Reason keeps in
+// front of it the sentence of what the architect's last process ended that the row was queued
+// with (record.CatchUp.Relaunch), which stays the row's. Decided is written again in that read
+// from the decisions the row claimed, each asked of the gates as they stand then
+// (workflow.SupersedingApproval), so a decision that stopped being the person's word while the row
+// waited is not named. The order is the fence's: whether a newer catch-up supersedes this one
+// (catchUpSuperseded) is read on the payload as the row holds it, before anything is replaced,
+// because the fence compares the row's Generation and Launch with the row's issue and its
+// architect's claim as they are now, and a payload composed from the issue now would compare the
+// issue with itself and never be superseded. So Generation and Launch stay the row's. So does
+// Kept: the row's own queueing claimed those decisions for this row (workflow.EnqueueNaming), and
+// the settling that follows the publish (settleTold, supersededKept) is keyed to what the row
+// claimed, not to what a read at delivery would name.
 func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if r.notices == nil {
 		return errors.New("notice executor has no Envoy publisher")
@@ -1996,9 +2110,15 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if r.supervisor == nil {
 		return errors.New("notice executor has no claim supervisor")
 	}
-	issue, tree, err := r.readNoticeTree(ctx, row)
+	issue, tree, recomposed, err := r.readNoticeTree(ctx, row, payload)
 	if errors.Is(err, errNoticeRowGone) {
 		r.log.Info("outbox notice finished without publishing: its row was deleted under its lease", "row", row.ID, "kind", payload.Kind, "issue", row.Issue)
+		return nil
+	}
+	var superseded changesSuperseded
+	if errors.As(err, &superseded) {
+		r.log.Info("outbox changes request finished without publishing: the person's approval followed it", "row", row.ID, "issue", row.Issue,
+			"version", payload.Version, "approved", superseded.approved)
 		return nil
 	}
 	if errors.Is(err, errNoticeUnroutable) {
@@ -2043,6 +2163,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
+		delivered := *payload.CatchUp
+		delivered.CatchUpTree, delivered.Decided = recomposed.tree, recomposed.decided
+		payload.CatchUp, payload.Reason = &delivered, recomposed.reason
 	}
 	// The architect whose stop_task stopped the task is answered by its own call, so a
 	// task-stopped notice that names it finishes here, and the one the issue's notices reach is
@@ -2543,23 +2666,380 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 	return err == nil, err
 }
 
-// controllerNotice publishes a controller notice row to the controller topic of the daemon's own
-// project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
-// row's own key.
+// controllerNotice publishes a controller notice row (record.ControllerNotice) to the role topic
+// of the daemon's own project's controller (notify.RoleTopicPrefix and claim.ControllerToken), and
+// to nothing else: the Notice it is, under the row's own key. Every kind goes there, and the
+// daemon writes only the kinds named here (#4065): a root in triage handed to Legion (`triage`,
+// admission); the slot wakes admission sends through wakeController, `slot-free` and `todo`, on
+// which the controller runs its prioritization pass and its deployment's intake, and `tick`, its
+// periodic wake (admit.Admission.wakeController and its callers say when; the tick alone carries
+// `openCapabilities`, the deployment capabilities with no decision,
+// admit.Admission.ReportCapabilities); a tree of the project that has stopped (`tree-stalled`,
+// admit's tellStalledTrees, once for each stall); a root whose own architect is not taking the
+// work the daemon states it is owed (`architect-stalled`, admit's wakeStalledArchitects, once for
+// each arm and run of its tree); a person's decision on a tree Legion is not running
+// (`parked-decision`, the outbox's parkDecision and workflow's relayParkedDecision); a hold the
+// tree's architect escalated (`held` with reason `escalated`, workflow's retryOrEscalate); a tree
+// architect's own failed claim while its root is not done (`worker-died`, workflow's claimFailed),
+// and the stall of that architect whose replacement failed its claim over a stop the runtime did
+// not confirm (`worker-stalled`, the daemon's enqueueStallNotice), both because every other
+// notice of the tree reaches that architect; a notice of an issue pod's disk whose owning
+// architect will not hold its role again (`workspace-kept` and `workspace-taken`, the outbox's
+// tellControllerOfKeptPod); an issue whose pod an update round cannot replace (`update-stalled`,
+// the daemon's reconcilePodUpdates); a start the session store could not answer
+// (`session-store-fault`, workflow's sessionStoreFault); a claim whose turns keep ending in a
+// provider error (`provider-errors`, supervise's tellOfProviderErrors), which the issue's
+// architect is told as well, unless the run is the tree root's architect's own, and a child's own
+// architect's run is told to the architect above that child; one of the controller's own programs
+// its pod's memory guard ended (`memory-guard-kill`, workflow's controllerMemoryGuardKill, once
+// for each kill); the messages the intake gave up, counted in one notice that waits a minute for
+// the give-ups after its first (`intake-gave-up`, record's Postgres.GiveUpIntakeMessage), which
+// the controller replays or discards (its replay_give_up and discard_give_up); and the operator's
+// pause and resume of the project (`project-paused` and `project-resumed`, record.ProjectPause,
+// queued in the store's Pause and Resume), of which the controller's own pause or resume tells it
+// nothing. A free slot alone is no reason for the controller to take an issue: work reaches Legion
+// only when a person hands it over or a role reports a clear defect the controller files
+// (skill://legion-controller, "Free slots").
+//
+// A relay of a person's changes request (record.ChangesRequest) is asked first whether its
+// publish is still owed (stillOwed): the relay asked when it wrote the row (parkDecision), but the
+// row waits here for as long as the registered controller session does not hold the controller's
+// role live (controllerHolds, below), and an approval that lands meanwhile would reach the
+// controller as a request to act on. The read asks of the decision the row carries
+// (record.RelayParkedDecision). A row deleted under its lease, which is what a clear of its
+// generation does to a request the person's approval followed, and a request the approval followed
+// each finish with nothing published and one line, the second naming the approved version. A
+// request a clear found standing keeps its row while the clear deletes its gates, so that row is
+// asked of the gates as they stand when it runs. One window is left, as in deliverNotice: an
+// approval that commits between that read and the publish, which reaches the controller after the
+// request it answered. Every other notice, a kept decision of any other kind among them, is
+// published as it is, with no read.
+//
+// The notice is published only once the session that holds the project's controller registration
+// is the controller role's live holder at the listener (controllerHolds), and without keep. Until
+// then the row waits on its backoff, with no time bound, and a row that waited is published once
+// the registered controller session holds the controller's role live, whatever its age. The rules
+// that decide whether a controller row is written at all while no controller is registered stay
+// with their writers (admit's wakeController, the pause's notice).
+//
+// The listener resolves the role at the publish itself (sendToRole,
+// packages/envoy/cmd/listener/confirmed.go): it stores the notice on the live holder's own agent
+// subject, which that session's consumer follows from its first registration, and answers 200,
+// which finishes the row. The 200 is the stream's word that it stored the forward, not the
+// holder's that it read it. A session that still holds the role reads it from its backlog, and a
+// session that comes back under the same id after its process ended reads it there too. Once the
+// role is another session's or no one's, the listener copies the role messages that session did
+// not read to the role's kept lane, which hands each to the role's next live holder within the
+// hour (packages/envoy/cmd/listener's role_takeover.go and role_keep.go); a session that takes the
+// role while the old session's claim still stands is handed the old session's unread role
+// messages of the hour before its claim. A kept-lane or takeover copy keeps the event id of the
+// forward it copies, which the controller's plugin dedupes a copy on. The one loss left: a notice
+// stored for a session whose claim the role claim reaper frees before any session takes the role,
+// and that never comes back, reaches no one, and the next controller reads holds from the
+// daemon's state at its start (`legion state` and Dispatch).
+//
+// A role with no live holder at the moment of the publish — a holder whose registration passed
+// the live window since controllerHolds read it, or a role no session claims any more — is
+// answered 404 and stored for nobody (keep false: notify.ErrHolderUnresponsive or
+// notify.ErrNoHolder), and the row waits, as it waits on controllerHolds. Under `controller:
+// daemon` the publish is also held to the launched controller claim's session (heldTopic), whose
+// refusal, notify.ErrNoHolder, is the same wait: an operator's settle of that claim's name lets the
+// next attempt through. Each wait is logged by settle as a wait, never as an Error at every
+// attempt; controllerHolds says which of them turn into a warning.
+//
+// The topic the daemon published controller notices to before dispatch://INFRA-1585,
+// notifications.legion.<project>.controller, is still readable at the listener for the daemons of
+// other projects at earlier releases; this daemon publishes nothing there.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrNoHolder) {
-		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
-		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
-		// attempt, and the row runs again on its backoff, so an operator's settle of the
-		// controller claim's name lets the next attempt through.
-		return wait.Errorf("the controller notice for %s waits for the controller's claim to hold its session: %w", row.Issue, err)
+	if _, asks := record.ChangesRequest(payload); asks {
+		read := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+		err := store.TransactWith(ctx, r.pool, read, func(ctx context.Context, tx pgx.Tx) error {
+			return r.stillOwed(ctx, tx, row, payload)
+		})
+		args := []any{"row", row.ID, "issue", row.Issue, "root", payload.Root, "ref", payload.Ref,
+			"version", payload.Version}
+		var superseded changesSuperseded
+		switch {
+		case errors.Is(err, errNoticeRowGone):
+			r.log.Info("outbox relayed changes request finished without publishing: "+
+				"its row was deleted under its lease", args...)
+			return nil
+		case errors.As(err, &superseded):
+			r.log.Info("outbox relayed changes request finished without publishing: "+
+				"the person's approval followed it", append(args, "approved", superseded.approved)...)
+			return nil
+		case err != nil:
+			return fmt.Errorf("read whether the changes request relayed for %s is still the "+
+				"person's word: %w", row.Issue, err)
+		}
 	}
+	role := claim.ControllerToken(r.project)
+	if err := r.controllerHolds(ctx, row, role); err != nil {
+		return err
+	}
+	topic := notify.RoleTopicPrefix + string(role)
+	err := r.publish(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	switch {
+	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
+		return wait.Errorf("the controller notice for %s waits for a live holder of %s: %w", row.Issue, role, err)
+	case err != nil:
+		return fmt.Errorf("publish the controller notice for %s to %s: %w", row.Issue, topic, err)
+	}
+	return nil
+}
+
+// controllerHolds is nil once the session that holds the project's controller registration is
+// the live holder of role, the controller's role, at the Envoy listener (GET /v1/roles/<role>,
+// notify.HTTPPublisher.RoleHolder), and a wait until then: no controller registered, a role no
+// session claims, a holder the listener reads unresponsive or gone, or a holder that is another
+// session than the registered one. A controller registers with the daemon before it claims its
+// role (packages/pi-legion's controller-session.ts), so a fresh controller's notices wait the
+// seconds its start takes. A read the listener did not answer, and one it refuses however often it
+// is asked (notify.RoleLookupRefused), fail the attempt, which the row retries.
+//
+// The wait on a registered controller is the one settle logs at INFO, then DEBUG, and at WARN from
+// attempt waitWarnAttempts on, which is the operator's sign that a registered controller does not
+// hold its role. The wait on a project with no controller registered stays at DEBUG after its first
+// attempt (routineWaiting): the controller liveness sweep already says so once per boot timeout
+// (watchController, controllerNotRegistered), and every waiting row of such a project would
+// otherwise repeat it each minute. Both retry on the outbox's own backoff (outbox.retry,
+// record.RetryBackoff: one second, doubling to
+// RetryBackoffMost, 64 s), and that cadence comes from what it waits on: a controller claims its
+// role within the seconds its own start takes after its registration answers, which the first
+// short retries catch; past that, a holder comes only when a controller session comes back or an
+// operator starts a new one, which the 64 s cap waits for at one row read and one listener read a
+// minute, so a notice reaches such a controller at most 64 s after it claims the role, and a row
+// no controller holds never spins. The wait holds nothing else of the issue behind it: a
+// controller notice is a board row, and the outbox holds a due row back only behind an older
+// status write or branch of its issue (record's outboxInOrder) or a running lifecycle row
+// (outboxLaneFree), so the issue's status writes, messages, other notices and lifecycle rows run
+// as they come due.
+func (r *outbox) controllerHolds(ctx context.Context, row record.OutboxRow, role claim.Token) error {
+	if r.pool == nil || r.records == nil {
+		return errors.New("controller notice executor has no store to read the registered controller from")
+	}
+	var session string
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		session, err = r.records.ControllerSession(ctx, tx, r.dispatchProject)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the controller session the controller notice for %s is for: %w", row.Issue, err)
+	}
+	if session == "" {
+		return routineWaiting{err: wait.Errorf("the controller notice for %s waits for a controller to register", row.Issue)}
+	}
+	holder, state, err := r.notices.RoleHolder(ctx, string(role))
 	if err != nil {
-		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
+		return fmt.Errorf("read the holder of %s before the controller notice for %s: %w", role, row.Issue, err)
+	}
+	if holder != session || state != notify.StateLive {
+		return wait.Errorf("the controller notice for %s waits for controller session %s to hold %s live (the listener names %s): sent before then, it reaches no live controller",
+			row.Issue, session, role, holderNamed(holder, state))
+	}
+	return nil
+}
+
+// holderNamed is how a wait names the holder the listener answered for a role: the session and
+// its state, or no holder at all.
+func holderNamed(holder, state string) string {
+	if holder == "" {
+		return "no holder"
+	}
+	return fmt.Sprintf("holder %s, %s", holder, state)
+}
+
+// stateMessageBound is how large one message of the state lane may be as the listener's envelope
+// carries it: 900 KB of its encoding as a JSON string (stateCarried), which leaves the envelope's
+// own fields far more room than they take under the 1 MiB a NATS server takes whole by default. A
+// transaction whose events would pass it is published as consecutive messages, split between
+// events (stateEvents).
+const stateMessageBound = 900_000
+
+// stateAtLayout is how a state message writes when its transaction committed: RFC 3339 in UTC with
+// the microseconds Postgres keeps, every digit written, so the same commit always reads the same.
+const stateAtLayout = "2006-01-02T15:04:05.000000Z07:00"
+
+// stateMessage is one message of the project's state lane (notify.StateTopic), whose contract is
+// legionStateMessage (packages/contracts/src/legion-api.ts): the state events of one committed
+// transaction in sequence order, or a run of them where the transaction's events are too large for
+// one message (stateMessageBound). Project is the Dispatch project key and Run the id of the daemon
+// run that wrote the rows, each lifted off the rows' payloads, which every row of one transaction
+// carries alike; StateID is the id of the store the rows' sequences are counted in
+// (record.StatePublication.StateID), read with the rows, which the state route serves as
+// `daemon.stateId` (api.DaemonInfo.StateID); FirstSeq and Seq are the first and the last event's
+// sequence, which the events run between with no gap; At is when the transaction committed
+// (OutboxRow.StateAt), which every row of it shares (stateAtLayout); More is true on every message
+// of a split transaction but its last, and absent from that last message and from every
+// transaction that fits in one, so a reader applies a transaction's events only once the message
+// without it has arrived. Each event is a stateEvent, encoded once: the encoding the message's size
+// is counted on is the one published.
+type stateMessage struct {
+	Project  string            `json:"project"`
+	Run      string            `json:"run"`
+	StateID  string            `json:"stateId"`
+	FirstSeq int64             `json:"firstSeq"`
+	Seq      int64             `json:"seq"`
+	At       string            `json:"at"`
+	More     bool              `json:"more,omitempty"`
+	Events   []json.RawMessage `json:"events"`
+}
+
+// stateEvent is one event of a stateMessage: one state row's payload with its project and run taken
+// off, its sequence (OutboxRow.StateSeq) put on, and the kind the contract names it by. A change
+// (record.StateChange) names its issue and each field the write moved; an admission
+// (record.StateAdmission) carries the judged admission block (record.AdmissionBlock, including
+// `p0Holders` and without `p0Bound`, which the state route adds separately); a boot
+// (record.StateBoot) carries the settings and the schema version stateevent.Boot names.
+type stateEvent struct {
+	Seq           int64                     `json:"seq"`
+	Kind          string                    `json:"kind"`
+	Issue         string                    `json:"issue,omitempty"`
+	Changes       []record.StateFieldChange `json:"changes,omitempty"`
+	Admission     json.RawMessage           `json:"admission,omitempty"`
+	Settings      json.RawMessage           `json:"settings,omitempty"`
+	SchemaVersion *int64                    `json:"schemaVersion,omitempty"`
+}
+
+// stateEventOf is row's event, encoded, and the project and the run its payload names.
+func stateEventOf(row record.OutboxRow, payload record.OutboxPayload) (json.RawMessage, string, string, error) {
+	var event stateEvent
+	var project, run string
+	switch value := payload.(type) {
+	case record.StateChange:
+		event = stateEvent{Kind: "change", Issue: value.Issue, Changes: value.Changes}
+		project, run = value.Project, value.Run
+	case record.StateAdmission:
+		event = stateEvent{Kind: "admission", Admission: value.Admission}
+		project, run = value.Project, value.Run
+	case record.StateBoot:
+		version := value.SchemaVersion
+		event = stateEvent{Kind: "boot", Settings: value.Settings, SchemaVersion: &version}
+		project, run = value.Project, value.Run
+	default:
+		return nil, "", "", fmt.Errorf("outbox row %d is a %T, which is no state event", row.ID, payload)
+	}
+	event.Seq = row.StateSeq
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("encode the state event of outbox row %d: %w", row.ID, err)
+	}
+	return encoded, project, run, nil
+}
+
+// stateCarried is how many bytes encoded takes as the payload of the listener's envelope, a JSON
+// string: encoding/json writes no control character and no raw <, > or & (it escapes them in every
+// string and raw value), so writing its output as a string escapes exactly its quotes and its
+// backslashes, each into two bytes.
+func stateCarried(encoded []byte) int {
+	return len(encoded) + bytes.Count(encoded, []byte{'"'}) + bytes.Count(encoded, []byte{'\\'})
+}
+
+// stateEvents publishes the state events of head's transaction, from head's own on, on the
+// project's state topic (stateMessage, notify.StateTopic): as one message where they fit, and split
+// as below where they do not. head is the project's lowest unfinished state row, the only one its
+// lane can claim (record.Store's outboxInOrder): every state row of the project carries the bare
+// Dispatch project key as its issue and runs on that one lane (record.LaneState).
+// The rows that committed with head (record.Store.StateRowsAfter) hold the sequences that follow
+// its own, and ride beside it, so Dispatch takes a transaction's events together and collapses a
+// field one fact wrote twice (a pass's slot release and grant) to the value that committed. A
+// transaction whose events pass stateMessageBound is split between events: the message ends before
+// the event that would pass it, carrying `more`, and the rows after it are the next message, whose
+// first row the lane claims once this message's rows are finished; the message that takes the
+// transaction's last row carries no `more`, so a reader holds a split transaction's events until
+// that message arrives. The head's event goes out whatever its size, so a row too large for any
+// message is refused by the listener and dropped rather than held (finishRefused), and its event
+// reaches Dispatch at the next whole read of the project. The store id every message carries
+// (record.Store.StatePublication) is read in the transaction that reads the rows, from the counter
+// row the head's own commit stepped, so it is there for any row the lane can claim.
+//
+// The message's key is the head's own (record.OutboxKey), so a message published again after a
+// failed finish is one the stream already holds. Once the listener has taken it, head and the rows
+// published beside it are finished in one transaction fenced on head's lease
+// (record.Store.FinishStateRows), which is why settle finishes no published state row itself; it
+// finishes only a head the listener refused (finishRefused). The other rows are not leased, and
+// are finished by their sequences instead: while head is unfinished the lane rule lets no runner
+// claim them, and a runner whose lease on head lapsed, and was taken by another, finishes nothing,
+// the other runner publishing the same message under the same key. A finish that does not commit
+// is the row's failure and head runs again; one cut short by the daemon's stop is recorded on a
+// bounded context of its own, as settle's is (settleContext), since the message was published.
+//
+// A publish that fails returns its error, and settle retries head on the outbox's backoff with its
+// sequence, or finishes it, logged, where the listener refuses it the same way however often it is
+// sent (permanentRefusal, finishRefused); record.OutboxLane's comment, in its paragraph on
+// LaneState, says what each holds of the later rows.
+func (r *outbox) stateEvents(ctx context.Context, head record.OutboxRow, payload record.OutboxPayload) error {
+	if r.notices == nil {
+		return errors.New("state event executor has no Envoy publisher")
+	}
+	var after []record.OutboxRow
+	var published record.StatePublication
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if after, err = r.records.StateRowsAfter(ctx, tx, head); err != nil {
+			return err
+		}
+		published, err = r.records.StatePublication(ctx, tx, head.Issue)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the state rows committed with outbox row %d: %w", head.ID, err)
+	}
+	if published.StateID == "" {
+		return fmt.Errorf("outbox row %d is a committed state row of %s, and the project's counter holds no store id", head.ID, head.Issue)
+	}
+	first, project, run, err := stateEventOf(head, payload)
+	if err != nil {
+		return err
+	}
+	message := stateMessage{Project: project, Run: run, StateID: published.StateID, FirstSeq: head.StateSeq, Seq: head.StateSeq,
+		At: head.StateAt.UTC().Format(stateAtLayout), Events: []json.RawMessage{first}}
+	// The message's own fields are counted with the group's last sequence, which no message of the
+	// group passes, and with `more`, which a message of the group may carry, so the count is never
+	// short of what the message takes.
+	frame := message
+	frame.Events, frame.More = nil, true
+	if len(after) > 0 {
+		frame.Seq = after[len(after)-1].StateSeq
+	}
+	encodedFrame, err := json.Marshal(frame)
+	if err != nil {
+		return fmt.Errorf("encode the state message of outbox row %d: %w", head.ID, err)
+	}
+	size := stateCarried(encodedFrame) + stateCarried(first)
+	for _, row := range after {
+		decoded, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		event, _, _, err := stateEventOf(row, decoded)
+		if err != nil {
+			return err
+		}
+		grown := size + 1 + stateCarried(event)
+		if grown > stateMessageBound {
+			// The rows from this one on are the transaction's next message.
+			message.More = true
+			break
+		}
+		message.Events, message.Seq, size = append(message.Events, event), row.StateSeq, grown
+	}
+	summary := fmt.Sprintf("%s state %d-%d", project, message.FirstSeq, message.Seq)
+	if _, err := r.notices.Publish(ctx, notify.StateTopic(r.project), summary, message, record.OutboxKey(head.ID)); err != nil {
+		return fmt.Errorf("publish the state events %d-%d of %s: %w", message.FirstSeq, message.Seq, project, err)
+	}
+	finishCtx, cancel := settleContext(ctx)
+	defer cancel()
+	if err := store.Transact(finishCtx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.FinishStateRows(ctx, tx, head, message.Seq)
+	}); err != nil {
+		if errors.Is(err, record.ErrOutboxLeaseLost) {
+			// Another runner holds head now, and publishes and finishes the same message.
+			return nil
+		}
+		return fmt.Errorf("finish the state events %d-%d of %s once published: %w", message.FirstSeq, message.Seq, project, err)
 	}
 	return nil
 }
@@ -2868,10 +3348,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// queued for news alone: startNews.roundNamed): the one place each prompt is composed reads
 		// it there, and gives a reviewer's task of a row that lacks it, which only a row of the
 		// release before this one can be, those sentences naming no commit and no entry
-		// (supervise's Delivery.message). The news the task carries travels the same way
-		// (supervise.Delivery.News): the task is the start's own text and the news after it, the
-		// round's two sentences after the news where the task names them (renderNews), the send
-		// renders that news again from the record (the daemon's designNews), and the write
+		// (supervise's Delivery.message). A resume task of an answered root carries no text of its
+		// own, and the wait it answers instead (supervise.Delivery.Resume): it is queued with the
+		// news its start carries as its whole text, empty where it carries none, and at each send
+		// its text is written from the record as it stands then (the daemon's rootTask), with that
+		// news rendered after it (narrowedNews). The news the task carries travels the
+		// same way (supervise.Delivery.News): the task is the start's own text and the news after
+		// it, the round's two sentences after the news where the task names them (renderNews), the
+		// send renders that news again from the record (the daemon's designNews), and the write
 		// recording the turn's confirmation makes what the prompt of that turn carried the
 		// delivery's credit, which the write recording the turn's result folds into the told rows
 		// (supervise.Delivery.Carried, the claim store's settleDesignNews). A start queued for news
@@ -2882,15 +3366,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// gives way to a start of an entry, whose own task carries that same news (supervise's
 		// Machine.supersedes), so the start that StartedBy is told of below reads it too.
 		var task *supervise.RequestDeliver
-		if payload.Task != "" || payload.News {
+		if payload.Task != "" || payload.Awaiting != nil || payload.News {
 			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			resume, err := resumeJSON(payload.Awaiting)
 			if err != nil {
 				return err
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Resume: resume,
+				News: news.news, NewsOnly: payload.News}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim

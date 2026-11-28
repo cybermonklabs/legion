@@ -611,6 +611,81 @@ describe("dispatchToolSpecs", () => {
     ]);
   });
 
+  test("dispatch_result with project is a CI job's result of a check of the spec files, and takes check, verdict, commit and observed alone", () => {
+    const schema = schemaFor("dispatch_result");
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const rule =
+      "With project, the call records a CI job's result of a check of the spec files. It takes project, check, verdict, commit and observed, and no other argument.";
+    const job = {
+      project: "ACME",
+      check: "p-1",
+      verdict: "could_not_run",
+      commit: "1111111111111111111111111111111111111111",
+      observed: "panic: test timed out after 10m0s",
+    };
+
+    expect(schema.safeParse(job).success).toBe(true);
+    const { observed: _observed, ...bare } = job;
+    expect(schema.safeParse({ ...bare, verdict: "pass" }).success).toBe(true);
+    // Dispatch reads who ran the check and how from the job's token, from GitHub and from the
+    // files, so an argument of a role's record has no place in the job's.
+    for (const [field, value] of [
+      ["issue", "DSP-1"],
+      ["role", "implementer"],
+      ["surface", "api"],
+      ["run", "go test ./..."],
+      ["negative_control", "The test without its check."],
+      ["failed", 0],
+      ["skipped", 0],
+      ["excluded", 0],
+      ["screenshots", []],
+      ["retract", "res-2"],
+      ["reason", "The run read a stale build."],
+    ] as const) {
+      expect(refusal({ ...job, [field]: value }), field).toEqual([
+        `${rule} This call also carries ${field}.`,
+      ]);
+    }
+    const { commit: _commit, verdict: _verdict, ...partial } = job;
+    expect(refusal(partial)).toEqual([`a CI job's result needs verdict, commit. ${rule}`]);
+    // A role's record of a Verification document's check passes or fails, as before.
+    expect(refusal({ ...validCalls.dispatch_result, verdict: "could_not_run" })).toEqual([
+      "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail.",
+    ]);
+  });
+
+  test("dispatch_results reads the results CI jobs stored at one commit of a project, or an issue's checks, and never both", () => {
+    const schema = schemaFor("dispatch_results");
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const project = {
+      project: "ACME",
+      commit: "1111111111111111111111111111111111111111",
+      check: "p-1",
+      json: true,
+    };
+
+    expect(schema.safeParse(project).success).toBe(true);
+    expect(schema.safeParse({ project: "ACME", commit: project.commit }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", at: project.commit, brief: true }).success).toBe(
+      true
+    );
+    const owner =
+      "Exactly one of issue and project is required. With issue, the read prints the checks of the issue's Verification document. With project, it prints the results that CI jobs stored for checks of the spec files at commit.";
+    expect(refusal({})).toEqual([owner]);
+    expect(refusal({ ...project, issue: "DSP-1" })).toEqual([owner]);
+    expect(refusal({ project: "ACME" })).toEqual([
+      "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.",
+    ]);
+    expect(refusal({ ...project, at: project.commit, brief: true })).toEqual([
+      "With project, the read takes commit, check and json alone, and this call also carries at, brief.",
+    ]);
+    expect(refusal({ issue: "DSP-1", commit: project.commit, check: "p-1", json: true })).toEqual([
+      "With issue, the read takes at and brief alone, and this call also carries commit, check, json.",
+    ]);
+  });
+
   test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {
     const schema = schemaFor("dispatch_send_to_agent");
     const call = { session: "sess-1", body: "DSP-1: please take this.", delivery: "aside" };
@@ -1713,11 +1788,12 @@ describe("dispatchToolSpecs", () => {
     ["dispatch_priorities", ["backlog", "icebox"]],
     ["dispatch_review", ["approve"]],
   ];
-  test.each(
-    descriptionNames
-  )("%s's description, which --help prints, names each name its rules are about", (name, names) => {
-    expect(namesMissing(specFor(name).description, names)).toEqual([]);
-  });
+  test.each(descriptionNames)(
+    "%s's description, which --help prints, names each name its rules are about",
+    (name, names) => {
+      expect(namesMissing(specFor(name).description, names)).toEqual([]);
+    }
+  );
 
   // Every kind the tool takes but `resolved`, which stands twice in the description: by the rule
   // above, a check of it would still pass if the clause that lists the kinds stopped naming it.
@@ -1750,12 +1826,13 @@ describe("dispatchToolSpecs", () => {
       ],
     ],
   ];
-  test.each(
-    referenceForms
-  )("%s's %s flag help names each form of reference it takes", (name, field, forms) => {
-    const description = argumentDescription(name, field);
-    expect(namesMissing(description, forms)).toEqual([]);
-  });
+  test.each(referenceForms)(
+    "%s's %s flag help names each form of reference it takes",
+    (name, field, forms) => {
+      const description = argumentDescription(name, field);
+      expect(namesMissing(description, forms)).toEqual([]);
+    }
+  );
 
   test("points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs", () => {
     const issue = dispatchToolSpecs.find((spec) => spec.name === "dispatch_issue");
@@ -1790,15 +1867,16 @@ describe("dispatchToolSpecs", () => {
     ]);
   });
 
-  test.each(
-    BODY_WRITING_TOOLS
-  )("%s's %s gives the server's two body bounds and names the decision block it refuses", (name, field) => {
-    const flag = argumentDescription(name, field);
-    expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
-    expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
-    expect(flag, `${name} --${field}`).toContain(":::ask");
-    expect(flag, `${name} --${field}`).toContain("`dispatch ask`");
-  });
+  test.each(BODY_WRITING_TOOLS)(
+    "%s's %s gives the server's two body bounds and names the decision block it refuses",
+    (name, field) => {
+      const flag = argumentDescription(name, field);
+      expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
+      expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
+      expect(flag, `${name} --${field}`).toContain(":::ask");
+      expect(flag, `${name} --${field}`).toContain("`dispatch ask`");
+    }
+  );
 
   test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {
     const schema = schemaFor("dispatch_follow");
@@ -1938,42 +2016,42 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
   // field states, and takes what the route takes; JavaScript's trim would read U+0085 and U+FEFF
   // the other way. The field's description holds the refusal's text, both copies of one constant,
   // so the test reads the rule from the refusal and holds the description to it, not to a copy.
-  test.each([
-    "dispatch_issue",
-    "dispatch_issue_update",
-  ] as const)("%s refuses the components parseIssueComponents refuses, in the rule its field states", (name) => {
-    const schema = schemaFor(name);
-    const refusals = new Set<string>();
-    for (const components of [
-      { mode: "explicit" },
-      { mode: "none" },
-      { mode: "none", reason: " \n" },
-      { mode: "none", reason: "\u0085" },
-    ]) {
-      const result = schema.safeParse({ ...validCalls[name], components });
-      expect(result.success, JSON.stringify(components)).toBe(false);
-      const messages = result.error?.issues.map((issue) => issue.message) ?? [];
-      expect(messages, JSON.stringify(components)).toHaveLength(1);
-      for (const message of messages) refusals.add(message);
+  test.each(["dispatch_issue", "dispatch_issue_update"] as const)(
+    "%s refuses the components parseIssueComponents refuses, in the rule its field states",
+    (name) => {
+      const schema = schemaFor(name);
+      const refusals = new Set<string>();
+      for (const components of [
+        { mode: "explicit" },
+        { mode: "none" },
+        { mode: "none", reason: " \n" },
+        { mode: "none", reason: "\u0085" },
+      ]) {
+        const result = schema.safeParse({ ...validCalls[name], components });
+        expect(result.success, JSON.stringify(components)).toBe(false);
+        const messages = result.error?.issues.map((issue) => issue.message) ?? [];
+        expect(messages, JSON.stringify(components)).toHaveLength(1);
+        for (const message of messages) refusals.add(message);
+      }
+      // The four calls get one refusal, the rule, and it is not empty.
+      expect(refusals.size).toBe(1);
+      const [rule = ""] = refusals;
+      expect(rule.trim()).not.toBe("");
+      const empty = { mode: "explicit", ids: [] };
+      expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
+      for (const components of [
+        { mode: "inherit" },
+        { mode: "explicit", ids: ["web"] },
+        { mode: "none", reason: "hiring" },
+        { mode: "none", reason: "\uFEFF" },
+      ]) {
+        const result = schema.safeParse({ ...validCalls[name], components });
+        expect(result.success, JSON.stringify(components)).toBe(true);
+      }
+      const description = argumentDescription(name, "components");
+      expect(description).toContain(rule);
     }
-    // The four calls get one refusal, the rule, and it is not empty.
-    expect(refusals.size).toBe(1);
-    const [rule = ""] = refusals;
-    expect(rule.trim()).not.toBe("");
-    const empty = { mode: "explicit", ids: [] };
-    expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
-    for (const components of [
-      { mode: "inherit" },
-      { mode: "explicit", ids: ["web"] },
-      { mode: "none", reason: "hiring" },
-      { mode: "none", reason: "\uFEFF" },
-    ]) {
-      const result = schema.safeParse({ ...validCalls[name], components });
-      expect(result.success, JSON.stringify(components)).toBe(true);
-    }
-    const description = argumentDescription(name, "components");
-    expect(description).toContain(rule);
-  });
+  );
 
   // POST /api/v1/issues refuses the import of a GitHub issue already imported into another
   // project with 400 EXTERNAL_PROJECT_MISMATCH (createIssue).

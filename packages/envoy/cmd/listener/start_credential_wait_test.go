@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,12 +29,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -56,8 +59,10 @@ const streamInfoSubject = "$JS.API.STREAM.INFO." + bus.Stream
 // which errors.Is matches to nats.ErrAuthorization, itself spelled in lower case).
 const authorizationViolation = "Authorization Violation"
 
-// credentialWaitTolerance is how far each wait of the start, as the server records it, may stand
-// from the wait the start is due to make (c-start-accept).
+// credentialWaitTolerance is how far each wait of a listener run as a process on the wall clock
+// (startListenerChild), as the server records it, may stand from the wait the start is due to make
+// (c-start-never). A start this process runs on a held clock (heldStart) is held to the waits it
+// asked for, exactly.
 const credentialWaitTolerance = 500 * time.Millisecond
 
 // startDrainBound is how long a start the test stopped waiting for may run on once the test's
@@ -120,11 +125,13 @@ func probe(t *testing.T, base, path string) (int, map[string]any) {
 	return response.StatusCode, fields
 }
 
-// startOutcome is what one run of the listener's start returned, and when.
+// startOutcome is what one run of the listener's start returned, and when: at on the wall clock,
+// took on the start's own (natsStart.clock), from its first try.
 type startOutcome struct {
 	client *bus.Client
 	err    error
 	at     time.Time
+	took   time.Duration
 }
 
 // listenerStartRun is a run of the listener's start, connectListenerBus as main's Phase 5 calls it,
@@ -160,35 +167,19 @@ func newListenerStartRun(t *testing.T) *listenerStartRun {
 }
 
 // begin starts the run: the listener's start over cfg, as an edge listener of edge's grant when
-// edge is not nil, reporting to start.
-func (r *listenerStartRun) begin(cfg config.Service, edge *edgeGrant, start *natsStart) {
+// edge is not nil, reporting to start, on a goroutine of held's (goStart) when the start's clock is
+// held (heldStart), held nil when it runs on the wall clock.
+func (r *listenerStartRun) begin(cfg config.Service, edge *edgeGrant, start *natsStart, held *heldWaits) {
 	r.began = time.Now()
-	go func() {
+	run := func() {
 		client, err := connectListenerBus(cfg, edge, start)
-		r.outcome <- startOutcome{client: client, err: err, at: time.Now()}
-	}()
-}
-
-// sleepUntil waits until offset after the run began, or until the start returns, whichever is
-// first, and answers the outcome in the second case.
-func (r *listenerStartRun) sleepUntil(t *testing.T, offset time.Duration) *startOutcome {
-	t.Helper()
-	select {
-	case got := <-r.outcome:
-		r.settle(t, got)
-		return &got
-	case <-time.After(time.Until(r.began.Add(offset))):
-		return nil
+		r.outcome <- startOutcome{client: client, err: err, at: time.Now(), took: start.clock.Now().Sub(start.began)}
 	}
-}
-
-// refusedUntil waits until offset after the run began, failing the test when the start returns
-// first: every case holds the start's credential refused until then.
-func (r *listenerStartRun) refusedUntil(t *testing.T, offset time.Duration) {
-	t.Helper()
-	if got := r.sleepUntil(t, offset); got != nil {
-		t.Fatalf("the listener's start returned %s after its first try, before the %s its credential was refused for: error %v", got.at.Sub(r.began), offset, got.err)
+	if held == nil {
+		go run()
+		return
 	}
+	held.goStart(run)
 }
 
 // await waits for the start's outcome until the test-local watchdog, watchdog after the run began,
@@ -215,51 +206,270 @@ func (r *listenerStartRun) settle(t *testing.T, got startOutcome) {
 	}
 }
 
-// awaitRefusedHealthz polls /healthz at base until it answers 503, and fails the test when the start
-// returns or offset after the run began passes first. It answers that 503's fields.
-func (r *listenerStartRun) awaitRefusedHealthz(t *testing.T, base string, offset time.Duration) map[string]any {
+// next answers the next wait the start asks clock for, its start's held clock, or, when the start
+// returns first, its outcome (heldNext).
+func (r *listenerStartRun) next(t *testing.T, clock *heldWaits) (*heldWait, *startOutcome) {
 	t.Helper()
-	tick := time.NewTicker(250 * time.Millisecond)
-	defer tick.Stop()
+	w, got, returned := heldNext(t, clock, r.outcome, "the listener's start")
+	if !returned {
+		return w, nil
+	}
+	r.settle(t, got)
+	return nil, &got
+}
+
+// waitsUntil lets each wait the start asks clock for end, one at a time, until it asks for one
+// that would end past mark on the clock, and answers that wait, still held, and every wait the
+// start asked for, that one last. Before it lets a wait end, and before it answers the one it
+// holds, it calls each with the wait's place among them, when each is not nil. It fails the test
+// when the start returns first: every case holds the start's credential refused until mark.
+func (r *listenerStartRun) waitsUntil(t *testing.T, clock *heldWaits, mark time.Duration, each func(i int, w *heldWait)) (*heldWait, []time.Duration) {
+	t.Helper()
+	var waits []time.Duration
 	for {
-		status, fields := probe(t, base, "/healthz")
-		if status == http.StatusServiceUnavailable {
-			return fields
+		w, got := r.next(t, clock)
+		if got != nil {
+			t.Fatalf("the listener's start returned %s after its first try on its clock, having waited %v, before the %s its credential was refused for: error %v", got.took, waits, mark, got.err)
 		}
-		if !time.Now().Before(r.began.Add(offset)) {
-			t.Fatalf("/healthz answered %d %v up to %s after the start's first try, while the server refused its credential; want 503", status, fields, offset)
+		waits = append(waits, w.wait)
+		if each != nil {
+			each(len(waits)-1, w)
 		}
-		select {
-		case got := <-r.outcome:
-			r.settle(t, got)
-			t.Fatalf("the listener's start returned %s after its first try, while the server refused its credential: error %v", got.at.Sub(r.began), got.err)
-		case <-tick.C:
+		if w.endsPast(mark) {
+			return w, waits
 		}
+		w.end()
+	}
+}
+
+// finish lets each further wait the start asks clock for end at once until the start returns, and
+// answers its outcome and those waits. It fails the test when the start's clock would read past
+// watchdog, counted from its first try, before the start has returned: a wait that would end past
+// it, or a return past it, as a wait the test let end before it called finish can carry the start.
+func (r *listenerStartRun) finish(t *testing.T, clock *heldWaits, watchdog time.Duration) (startOutcome, []time.Duration) {
+	t.Helper()
+	var waits []time.Duration
+	for {
+		w, got := r.next(t, clock)
+		if got != nil {
+			if got.took > watchdog {
+				t.Fatalf("watchdog: the listener's start returned %s after its first try on its clock, past %s, having waited %v since the test let it go on: error %v", got.took, watchdog, waits, got.err)
+			}
+			return *got, waits
+		}
+		waits = append(waits, w.wait)
+		if w.endsPast(watchdog) {
+			t.Fatalf("watchdog: the listener's start had not returned %s after its first try on its clock, having waited %v since the test let it go on", watchdog, waits)
+		}
+		w.end()
 	}
 }
 
 // untilLogged waits until records holds a record matching holds, and answers it, failing the test,
-// naming what it waited for, when the start returns first or watchdog after the run began passes.
-func (r *listenerStartRun) untilLogged(t *testing.T, records *logtest.Recorder, watchdog time.Duration, what string, holds func(slog.Record) bool) slog.Record {
+// naming what it waited for, when the start returns or asks clock for a wait first, or when
+// heldStepWatchdog passes.
+func (r *listenerStartRun) untilLogged(t *testing.T, records *logtest.Recorder, clock *heldWaits, what string, holds func(slog.Record) bool) slog.Record {
 	t.Helper()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
+	deadline := time.After(heldStepWatchdog)
 	for {
 		for _, record := range records.Records() {
 			if holds(record) {
 				return record
 			}
 		}
-		if !time.Now().Before(r.began.Add(watchdog)) {
-			t.Fatalf("watchdog: no log line showed %s within %s of the start's first try", what, watchdog)
+		if w := clock.armed(); w != nil {
+			t.Fatalf("the listener's start asked for a wait of %s at %s on its clock, before a log line showed %s", w.wait, w.at, what)
 		}
 		select {
 		case got := <-r.outcome:
 			r.settle(t, got)
 			t.Fatalf("the listener's start returned %s after its first try, before a log line showed %s: error %v", got.at.Sub(r.began), what, got.err)
+		case <-deadline:
+			t.Fatalf("watchdog: no log line showed %s within %s", what, heldStepWatchdog)
 		case <-tick.C:
 		}
 	}
+}
+
+// heldStepWatchdog bounds each wait of a test on a step of a start whose waits are held
+// (heldStart): a try of the start, which takes milliseconds against a server on this host and
+// waits on nothing on the wall clock but its dial (connectTimeout, 5 s) and its reads. It bites
+// only on a hang.
+const heldStepWatchdog = time.Minute
+
+// heldOrigin is where the clock of every held start begins (heldStart), the reading of the
+// start's first try, from which a held test counts each reading.
+var heldOrigin = time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)
+
+// heldWaits is a held start's clock and the goroutines a test runs the start's connects on. The
+// clock is a clocktest.Fake that only the test moves, so a try takes no time on it, and each wait
+// the start asks for is a timer the fake reports armed (Armed), on which the start waits until the
+// test moves the fake to its deadline (heldWait.end). A test so reads the exact wait the production
+// schedule asks for, and does what one of its offsets calls for, a reload of the server, while the
+// start waits across that offset on its clock, with no wait on the wall clock. The goroutines are
+// counted (goStart), and once the test has ended its release moves the fake past each wait they arm
+// until every one has returned: a start the test stopped following, as a test that failed mid-run
+// does, runs to its end and leaves no goroutine waiting on the clock.
+type heldWaits struct {
+	fake    *clocktest.Fake
+	running sync.WaitGroup
+}
+
+// since is the clock's reading, counted from heldOrigin.
+func (h *heldWaits) since() time.Duration { return h.fake.Now().Sub(heldOrigin) }
+
+// goStart runs f, a connect of the held start, on a goroutine of its own, which the release waits
+// for once the test has ended.
+func (h *heldWaits) goStart(f func()) {
+	h.running.Add(1)
+	go func() {
+		defer h.running.Done()
+		f()
+	}()
+}
+
+// armed is the wait the start has asked for and the test has not ended, the earliest when it
+// asked for more than one, or nil when it waits on none.
+func (h *heldWaits) armed() *heldWait {
+	now, armed := h.fake.Now(), h.fake.Armed()
+	if len(armed) == 0 {
+		return nil
+	}
+	return &heldWait{at: now.Sub(heldOrigin), wait: armed[0].Sub(now), fake: h.fake, deadline: armed[0]}
+}
+
+// release moves the fake to each wait the test's goroutines on the start arm, earliest first,
+// until every one of them has returned (goStart). A start that waits out refusals then ends at its
+// bound on the fake, and one whose dials fail otherwise after its ten tries, each within
+// milliseconds of the wall clock once nothing holds its waits. heldStart registers it after the
+// test's servers, so it runs before they stop. It fails the test when a goroutine still runs
+// startDrainBound after the test ended.
+func (h *heldWaits) release(t *testing.T) {
+	returned := make(chan struct{})
+	go func() {
+		h.running.Wait()
+		close(returned)
+	}()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	bound := time.After(startDrainBound)
+	for {
+		h.fake.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 {
+				return now, false
+			}
+			return armed[0], true
+		})
+		select {
+		case <-returned:
+			return
+		case <-bound:
+			t.Errorf("a connect of the held start still ran %s after the test ended, with waits %v armed on its clock", startDrainBound, h.fake.Armed())
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// heldWait is a wait the start asked its held clock for: at, the clock's reading then, counted from
+// heldOrigin, and wait, what the start asked for, which ends at deadline on the fake.
+type heldWait struct {
+	at, wait time.Duration
+	fake     *clocktest.Fake
+	deadline time.Time
+}
+
+// end moves the fake to the wait's deadline, which ends the wait and lets the start go on.
+func (w *heldWait) end() { w.fake.Set(w.deadline) }
+
+// endsPast reports whether the wait ends past mark on its clock: whether the moment mark names
+// falls inside it, or before it, as a moment the start waits across.
+func (w *heldWait) endsPast(mark time.Duration) bool { return w.at+w.wait > mark }
+
+// heldNext answers the next wait the start asks clock for, or what returned receives when the
+// start returns first (returnedFirst). It fails the test, naming what it waited on, when neither
+// comes within heldStepWatchdog.
+func heldNext[T any](t *testing.T, clock *heldWaits, returned <-chan T, what string) (w *heldWait, got T, returnedFirst bool) {
+	t.Helper()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(heldStepWatchdog)
+	for {
+		if w = clock.armed(); w != nil {
+			return w, got, false
+		}
+		select {
+		case got = <-returned:
+			return nil, got, true
+		case <-deadline:
+			t.Fatalf("watchdog: %s neither asked for a wait nor returned within %s, at %s on its clock", what, heldStepWatchdog, clock.since())
+			return nil, got, false
+		case <-tick.C:
+		}
+	}
+}
+
+// heldFinish lets each further wait the start asks clock for end at once until returned receives,
+// and answers what it received and those waits. It fails the test, naming what it waited on, when
+// the start's clock would read past by, a reading counted from heldOrigin, before returned
+// receives: a wait that would end past it, or a return past it, as a wait the test let end before
+// it called heldFinish can carry the start.
+func heldFinish[T any](t *testing.T, clock *heldWaits, returned <-chan T, what string, by time.Duration) (T, []time.Duration) {
+	t.Helper()
+	var waits []time.Duration
+	for {
+		w, got, done := heldNext(t, clock, returned, what)
+		if done {
+			if at := clock.since(); at > by {
+				t.Fatalf("watchdog: %s returned at %s on its clock, past %s, having waited %v since the test let it go on", what, at, by, waits)
+			}
+			return got, waits
+		}
+		waits = append(waits, w.wait)
+		if w.endsPast(by) {
+			t.Fatalf("watchdog: %s had not returned by %s on its clock, having waited %v since the test let it go on", what, by, waits)
+		}
+		w.end()
+	}
+}
+
+// heldStart is the listener's start as main makes it (newNATSStart, with listenerCredentialWait),
+// on a clocktest.Fake (heldWaits) that the start counts its bound by and each of its connects waits
+// on (bus.WithStartClock), and whose connects also read their nkey seed, seed, from an environment
+// of their own (testnats.SeedOnly, bus.WithEnvironment) and not from the process's, which only a
+// test that runs alone may change. A test of the start so runs beside the others, and none of its
+// waits takes time on the wall clock. It registers the release of the clock's waits (heldWaits)
+// as a cleanup, so it runs before the cleanups the test registered earlier: its servers' stops.
+func heldStart(t *testing.T, seed string) (*natsStart, *heldWaits) {
+	t.Helper()
+	clock := &heldWaits{fake: clocktest.New(heldOrigin)}
+	t.Cleanup(func() { clock.release(t) })
+	start := newNATSStart(listenerCredentialWait)
+	start.clock = clock.fake
+	start.extra = append(start.extra, bus.WithEnvironment(testnats.SeedOnly(seed)), bus.WithStartClock(clock.fake))
+	return start, clock
+}
+
+// awaitClosedTries waits until server has recorded tries of the listener's start, each closed, and
+// fails the test when it records more: a start on a held clock that is waiting makes no try, so the
+// try before its wait is the last the server takes until the wait ends.
+func awaitClosedTries(t *testing.T, server *testnats.Server, tries int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the server to record %d tries of the listener's start, each closed", tries), func() (string, bool) {
+		got := listenerTries(t, server)
+		if len(got) > tries {
+			t.Fatalf("the server recorded %d tries of the listener's start while it waited after its try %d: %+v", len(got), tries, got)
+		}
+		closed := 0
+		for _, try := range got {
+			if try.Stop != nil {
+				closed++
+			}
+		}
+		return fmt.Sprintf("%d tries, %d closed", len(got), closed), closed == tries
+	})
 }
 
 // recordAttr is the value of record's attribute key as text, "" when it has none.
@@ -312,20 +522,23 @@ func triesWaits(t *testing.T, tries []*natsserver.ConnInfo, n int) []time.Durati
 
 // TestTheListenerStartWaitsOutACredentialRefusal (c-start-accept): a start whose credential the
 // server refuses, at the connect or at the stream's reconcile, waits out the refusal with waits of
-// 1, 2, 4 and 8 seconds between its first five tries, answers /healthz 503 naming the refusal and
-// /livez 204 meanwhile, and connects and reconciles the stream once the server reloads an
-// authorization that admits it, 30 s after the start's first try, as the hub's reloader does. The
-// start then returns no error and /healthz answers as on main. Without the wait the start ends with
-// the refusal: after main's ten tries, about ten seconds, at the connect, and at once at the
-// reconcile.
+// 1, 2, 4 and 8 seconds between its first five tries, and of the 10 s cap after them, answers
+// /healthz 503 naming the refusal and /livez 204 meanwhile, and connects and reconciles the stream
+// once the server reloads an authorization that admits it, 30 s after the start's first try, as the
+// hub's reloader does. The start then returns no error and /healthz answers as on main. Without the
+// wait the start ends with the refusal: after main's ten tries, about ten seconds, at the connect,
+// and at once at the reconcile.
+//
+// The start runs on a held clock (heldStart): each wait is the one the start asked for, the server
+// records one try, closed, before each wait and none during it, and the reload comes while the
+// start waits across the 30 s mark on its clock.
 func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv of
-	// bus.NkeySeedEnvVar in each row's subtest).
+	t.Parallel()
 	const (
 		reloadAt = 30 * time.Second
 		watchdog = 90 * time.Second
 	)
-	wantWaits := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+	wantWaits := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second}
 	for _, row := range []struct {
 		name string
 		// refusing and admitting are the server's authorization before and after its reload, for
@@ -350,33 +563,38 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			run := newListenerStartRun(t)
 			seed, public := testnats.User(t)
 			_, fallback := testnats.User(t)
 			server, uri := testnats.StartConfig(t, row.refusing(public, fallback), []string{"-js"}, true)
-			t.Setenv(bus.NkeySeedEnvVar, seed)
-			start := newNATSStart(listenerCredentialWait)
+			start, clock := heldStart(t, seed)
 			base := serveStartRoutes(t, start)
 			if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 				t.Fatalf("/healthz before the start = %d %v, want main's 200 starting", status, fields)
 			}
 
-			run.begin(config.Service{MachineID: "start-credential-wait", NATSURLs: []string{uri}, NATSReplicas: 1}, nil, start)
-			refused := run.awaitRefusedHealthz(t, base, reloadAt)
-			if text, _ := refused["error"].(string); !strings.Contains(text, row.refusal) {
-				t.Fatalf("/healthz answered 503 %v while the server refused the start's credential, want an error naming %q", refused, row.refusal)
-			}
-			if status, _ := probe(t, base, "/livez"); status != http.StatusNoContent {
-				t.Fatalf("/livez answered %d while the server refused the start's credential, want 204", status)
-			}
-			run.refusedUntil(t, reloadAt)
+			run.begin(config.Service{MachineID: "start-credential-wait", NATSURLs: []string{uri}, NATSReplicas: 1}, nil, start, clock)
+			held, waits := run.waitsUntil(t, clock, reloadAt, func(i int, _ *heldWait) {
+				awaitClosedTries(t, server, i+1)
+				if i > 0 {
+					return
+				}
+				if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(fields["error"]), row.refusal) {
+					t.Fatalf("/healthz answered %d %v while the server refused the start's credential, want 503 naming %q", status, fields, row.refusal)
+				}
+				if status, _ := probe(t, base, "/livez"); status != http.StatusNoContent {
+					t.Fatalf("/livez answered %d while the server refused the start's credential, want 204", status)
+				}
+			})
 			if err := server.Reload(t, row.admitting(public, fallback)); err != nil {
 				t.Fatalf("reload the server with an authorization that admits the listener: %v", err)
 			}
+			held.end()
 
-			got := run.await(t, watchdog)
+			got, after := run.finish(t, clock, watchdog)
 			if got.err != nil {
-				t.Fatalf("the listener's start returned %v %s after its first try, want it to connect once the server admits it", got.err, got.at.Sub(run.began))
+				t.Fatalf("the listener's start returned %v %s after its first try on its clock, want it to connect once the server admits it", got.err, got.took)
 			}
 			if _, err := got.client.JS().StreamInfo(bus.Stream); err != nil {
 				t.Fatalf("read the %s stream the start reconciled: %v", bus.Stream, err)
@@ -384,13 +602,9 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 			if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 				t.Fatalf("/healthz after the start = %d %v, want main's 200 starting", status, fields)
 			}
-			tries := listenerTries(t, server)
-			waits := triesWaits(t, tries, len(wantWaits)+1)
-			t.Logf("the server recorded %d tries; waits between the first five: %v", len(tries), waits)
-			for i, want := range wantWaits {
-				if gap := waits[i] - want; gap > credentialWaitTolerance || gap < -credentialWaitTolerance {
-					t.Fatalf("the server recorded waits %v between the start's first five tries, want %v, each within %s", waits, wantWaits, credentialWaitTolerance)
-				}
+			t.Logf("the start waited %v up to the reload and %v after it, and connected %s after its first try on its clock; the server recorded %d tries", waits, after, got.took, len(listenerTries(t, server)))
+			if !slices.Equal(waits, wantWaits) {
+				t.Fatalf("the start waited %v between its tries up to the reload at %s, want %v", waits, reloadAt, wantWaits)
 			}
 		})
 	}
@@ -440,53 +654,54 @@ func edgeStartRun(t *testing.T, uri string) (config.Service, *edgeGrant) {
 // TestAnEdgeListenerStartWaitsOutACredentialRefusal: an edge listener (ENVOY_EDGE_PROJECTS) is
 // cmd/listener too, so its start waits out a refusal of its nkey as every listener's does
 // (connectListenerBus). While the server refuses the nkey, /healthz answers 503 naming the refusal
-// and /livez 204, and the server records waits of 1, 2, 4 and 8 s between the start's first five
-// tries. The server reloads an authorization that admits the nkey 20 s after the first try, past
-// the ten tries a start without the wait makes; the start then connects and finds the stream
-// (edgeStreamPresent), and /healthz answers as on main. Without the wait the start ends with the
-// refusal after those ten tries, about ten seconds, and /healthz answers 200 "starting" throughout.
+// and /livez 204, and the start waits 1, 2, 4 and 8 s between its first five tries, and the 10 s
+// cap after them, the server recording one try, closed, before each wait. The server reloads an
+// authorization that admits the nkey 20 s after the first try on the start's clock (heldStart); the
+// start then connects and finds the stream (edgeStreamPresent), and /healthz answers as on main.
+// Without the wait the start ends with the refusal after the ten tries, a second apart, that a
+// start without the wait makes on the wall clock, before it asks the start's clock for any wait,
+// and /healthz answers 200 "starting" throughout.
 func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv of
-	// bus.NkeySeedEnvVar).
+	t.Parallel()
 	const (
 		reloadAt = 20 * time.Second
 		watchdog = 60 * time.Second
 	)
-	wantWaits := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+	wantWaits := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second}
 	run := newListenerStartRun(t)
 	rig := startEdgeStartServer(t, func(_, fallback string) string { return nkeyAuthorization(fallback) })
 	cfg, edge := edgeStartRun(t, rig.uri)
-	t.Setenv(bus.NkeySeedEnvVar, rig.seed)
-	start := newNATSStart(listenerCredentialWait)
+	start, clock := heldStart(t, rig.seed)
 	base := serveStartRoutes(t, start)
 
-	run.begin(cfg, edge, start)
-	refused := run.awaitRefusedHealthz(t, base, reloadAt)
-	if text, _ := refused["error"].(string); !strings.Contains(text, authorizationViolation) {
-		t.Fatalf("/healthz answered 503 %v while the server refused the edge listener's nkey, want an error naming %q", refused, authorizationViolation)
-	}
-	if status, _ := probe(t, base, "/livez"); status != http.StatusNoContent {
-		t.Fatalf("/livez answered %d while the server refused the edge listener's nkey, want 204", status)
-	}
-	run.refusedUntil(t, reloadAt)
+	run.begin(cfg, edge, start, clock)
+	held, waits := run.waitsUntil(t, clock, reloadAt, func(i int, _ *heldWait) {
+		awaitClosedTries(t, rig.server, i+1)
+		if i > 0 {
+			return
+		}
+		if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(fields["error"]), authorizationViolation) {
+			t.Fatalf("/healthz answered %d %v while the server refused the edge listener's nkey, want 503 naming %q", status, fields, authorizationViolation)
+		}
+		if status, _ := probe(t, base, "/livez"); status != http.StatusNoContent {
+			t.Fatalf("/livez answered %d while the server refused the edge listener's nkey, want 204", status)
+		}
+	})
 	if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
 		t.Fatalf("reload the server with an authorization that admits the edge listener: %v", err)
 	}
+	held.end()
 
-	got := run.await(t, watchdog)
+	got, after := run.finish(t, clock, watchdog)
 	if got.err != nil {
-		t.Fatalf("the edge listener's start returned %v %s after its first try, want it to connect once the server admits it", got.err, got.at.Sub(run.began))
+		t.Fatalf("the edge listener's start returned %v %s after its first try on its clock, want it to connect once the server admits it", got.err, got.took)
 	}
 	if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 		t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
 	}
-	tries := listenerTries(t, rig.server)
-	waits := triesWaits(t, tries, len(wantWaits)+1)
-	t.Logf("the server recorded %d tries; waits between the first five: %v", len(tries), waits)
-	for i, want := range wantWaits {
-		if gap := waits[i] - want; gap > credentialWaitTolerance || gap < -credentialWaitTolerance {
-			t.Fatalf("the server recorded waits %v between the edge listener's first five tries, want %v, each within %s", waits, wantWaits, credentialWaitTolerance)
-		}
+	t.Logf("the start waited %v up to the reload and %v after it, and connected %s after its first try on its clock; the server recorded %d tries", waits, after, got.took, len(listenerTries(t, rig.server)))
+	if !slices.Equal(waits, wantWaits) {
+		t.Fatalf("the edge listener's start waited %v between its tries up to the reload at %s, want %v", waits, reloadAt, wantWaits)
 	}
 }
 
@@ -495,17 +710,17 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 // read, as a server that has yet to reload the edge's grant refuses it, is waited out under the same
 // bound as a refusal of the connect. The server admits the edge's nkey throughout and refuses its
 // publish to the stream's info request until it reloads a grant that holds it. The first case
-// reloads that grant 20 s after the start's first try: meanwhile /healthz answers 503 naming the
-// read's refusal, and then the start completes. The second, its control, never grants the read: the
-// listener, run as a process with a credential wait of startChildWait, exits 1 at the bound, its
-// last line naming its nkey's public key and the read's refusal. Without the wait over the read,
-// the start ends at the first refusal, milliseconds after its first try, and the child exits as
-// soon. The third case holds the wait to refusals: a stream the server does not hold ends the
-// start at its first try. The fourth has the refusal reach the read as the connection's last error,
-// an authorization violation, rather than as the read's own error, and waits it out too.
+// reloads that grant 20 s after the start's first try, on the start's clock (heldStart): meanwhile
+// /healthz answers 503 naming the read's refusal, and then the start completes. The second, its
+// control, never grants the read: the listener, run as a process with a credential wait of
+// startChildWait on the wall clock, exits 1 at the bound, its last line naming its nkey's public key
+// and the read's refusal. Without the wait over the read, the start ends at the first refusal,
+// milliseconds after its first try, and the child exits as soon. The third case holds the wait to
+// refusals: a stream the server does not hold ends the start at its first try, before any wait.
+// TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError has
+// the refusal reach the read as the connection's last error, and waits it out too.
 func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv of
-	// bus.NkeySeedEnvVar) and swaps the default logger (logtest.SetDefault).
+	t.Parallel()
 	const watchdog = 60 * time.Second
 	readRefusal := `Permissions Violation for Publish to "` + streamInfoSubject + `"`
 	refusingRead := func(public, fallback string) string {
@@ -513,35 +728,40 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 	}
 
 	t.Run("a read the grant refuses and then holds is waited out", func(t *testing.T) {
+		t.Parallel()
 		const reloadAt = 20 * time.Second
 		run := newListenerStartRun(t)
 		rig := startEdgeStartServer(t, refusingRead)
 		cfg, edge := edgeStartRun(t, rig.uri)
-		t.Setenv(bus.NkeySeedEnvVar, rig.seed)
-		start := newNATSStart(listenerCredentialWait)
+		start, clock := heldStart(t, rig.seed)
 		base := serveStartRoutes(t, start)
 
-		run.begin(cfg, edge, start)
-		refused := run.awaitRefusedHealthz(t, base, reloadAt)
-		if text, _ := refused["error"].(string); !strings.Contains(text, readRefusal) {
-			t.Fatalf("/healthz answered 503 %v while the grant refused the edge listener's read of the stream, want an error naming %q", refused, readRefusal)
-		}
-		run.refusedUntil(t, reloadAt)
+		run.begin(cfg, edge, start, clock)
+		held, waits := run.waitsUntil(t, clock, reloadAt, func(i int, _ *heldWait) {
+			if i > 0 {
+				return
+			}
+			if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(fields["error"]), readRefusal) {
+				t.Fatalf("/healthz answered %d %v while the grant refused the edge listener's read of the stream, want 503 naming %q", status, fields, readRefusal)
+			}
+		})
 		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
 			t.Fatalf("reload the server with a grant that holds the edge listener's read: %v", err)
 		}
+		held.end()
 
-		got := run.await(t, watchdog)
+		got, after := run.finish(t, clock, watchdog)
 		if got.err != nil {
-			t.Fatalf("the edge listener's start returned %v %s after its first try, want it to complete once the grant holds its read", got.err, got.at.Sub(run.began))
+			t.Fatalf("the edge listener's start returned %v %s after its first try on its clock, want it to complete once the grant holds its read", got.err, got.took)
 		}
 		if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 			t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
 		}
-		t.Logf("the start completed %s after its first try, having tried %d times", got.at.Sub(run.began), len(listenerTries(t, rig.server)))
+		t.Logf("the start waited %v up to the reload and %v after it, and completed %s after its first try on its clock, having tried %d times", waits, after, got.took, len(listenerTries(t, rig.server)))
 	})
 
 	t.Run("control: a read the grant refuses for good ends the listener at the bound", func(t *testing.T) {
+		t.Parallel()
 		rig := startEdgeStartServer(t, refusingRead)
 		broker := ciphertokentest.NewStubBroker(t)
 		account := filepath.Join(t.TempDir(), "account-token")
@@ -565,16 +785,20 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 
 	// Only a refusal of the read is waited out: a stream the server does not hold ends the start at
 	// its first try, as it did before the read joined the wait, rather than after the ten tries a
-	// second apart that the wait gives any other error of the connect.
+	// second apart that the wait gives any other error of the connect: the start asks for no wait.
 	t.Run("a stream the server does not hold ends the start at once", func(t *testing.T) {
+		t.Parallel()
 		run := newListenerStartRun(t)
 		seed, public := testnats.User(t)
 		_, fallback := testnats.User(t)
 		_, uri := testnats.StartConfig(t, nkeyAuthorization(fallback, nkeyUser(public)), []string{"-js"}, true)
 		cfg, edge := edgeStartRun(t, uri)
-		t.Setenv(bus.NkeySeedEnvVar, seed)
-		run.begin(cfg, edge, newNATSStart(listenerCredentialWait))
-		got := run.await(t, watchdog)
+		start, clock := heldStart(t, seed)
+		run.begin(cfg, edge, start, clock)
+		w, got := run.next(t, clock)
+		if w != nil {
+			t.Fatalf("the edge listener's start on a server with no stream asked for a wait of %s at %s on its clock, want it to end at its first try", w.wait, w.at)
+		}
 		took := got.at.Sub(run.began)
 		const want = "the server holds no " + bus.Stream + " stream"
 		if got.err == nil || !strings.Contains(got.err.Error(), want) {
@@ -587,56 +811,74 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 			t.Fatalf("the edge listener's start on a server with no stream ended %s after its first try, want at its first try: %v", took, got.err)
 		}
 	})
+}
 
-	// A refusal can reach the read as the connection's last error rather than as the read's own:
-	// the server takes the edge's user away while the read waits for an answer it will never get
-	// (the user may not subscribe to the edge's inboxes, so the server drops the reply), so the read
-	// ends on a connection the server refused, whose last error is the authorization violation.
-	// edgeStreamPresent wraps that error, so the start waits it out as it waits out a refusal of the
-	// connect, and completes once the server admits the user again. With the last error formatted
-	// rather than wrapped, the start ended at that read.
-	t.Run("an authorization refusal the read meets as the connection's last error is waited out", func(t *testing.T) {
-		var records logtest.Recorder
-		logtest.SetDefault(t, &records)
-		run := newListenerStartRun(t)
-		inboxes := natsgrant.EdgeInboxPrefix(edgeStartMachine) + ".>"
-		rig := startEdgeStartServer(t, func(public, fallback string) string {
-			return nkeyAuthorization(fallback, fmt.Sprintf("{nkey: %q, permissions: {subscribe: {deny: [%q]}}}", public, inboxes))
-		})
-		cfg, edge := edgeStartRun(t, rig.uri)
-		t.Setenv(bus.NkeySeedEnvVar, rig.seed)
-		start := newNATSStart(listenerCredentialWait)
-		base := serveStartRoutes(t, start)
-
-		run.begin(cfg, edge, start)
-		// The connect's read of the deployed subjects has waited out the answer the server dropped,
-		// so the start's read of the stream is next, and meets the same silence.
-		run.untilLogged(t, &records, watchdog, "the connect's read of the deployed subjects to end", func(record slog.Record) bool {
-			return record.Message == "envoy nats could not read the stream's subjects" && recordAttr(record, "name") == listenerTryName
-		})
-		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback)); err != nil {
-			t.Fatalf("reload the server without the edge listener's user: %v", err)
-		}
-		const lastError = "the connection's last error: nats: authorization violation"
-		refusal := run.untilLogged(t, &records, watchdog, "the start to wait out the read's refusal through the connection's last error", func(record slog.Record) bool {
-			return record.Message == "envoy nats credential refused at start; trying again" && strings.Contains(strings.ToLower(recordAttr(record, "error")), lastError)
-		})
-		t.Logf("the start waits out: %s", recordAttr(refusal, "error"))
-		if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable {
-			t.Fatalf("/healthz answered %d %v while the start waited out a refusal, want 503", status, fields)
-		}
-		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
-			t.Fatalf("reload the server with the edge listener's user: %v", err)
-		}
-
-		got := run.await(t, watchdog)
-		if got.err != nil {
-			t.Fatalf("the edge listener's start returned %v %s after its first try, want it to complete once the server admits it again", got.err, got.at.Sub(run.began))
-		}
-		if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
-			t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
-		}
+// TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError: a
+// refusal can reach an edge listener's read of the stream (edgeStreamPresent) as the connection's
+// last error rather than as the read's own: the server takes the edge's user away while the read
+// waits for an answer it will never get (the user may not subscribe to the edge's inboxes, so the
+// server drops the reply), so the read ends on a connection the server refused, whose last error
+// is the authorization violation. edgeStreamPresent wraps that error, so the start waits it out as
+// it waits out a refusal of the connect: it logs the refusal at WARN and asks its clock for a wait
+// (heldStart), and /healthz names that error meanwhile. It completes once the server admits the
+// user again. With the last error formatted rather than wrapped, the start ended at that read.
+func TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault), where the bus writes the
+	// start's WARN of each refusal.
+	const watchdog = 60 * time.Second
+	var records logtest.Recorder
+	logtest.SetDefault(t, &records)
+	run := newListenerStartRun(t)
+	inboxes := natsgrant.EdgeInboxPrefix(edgeStartMachine) + ".>"
+	rig := startEdgeStartServer(t, func(public, fallback string) string {
+		return nkeyAuthorization(fallback, fmt.Sprintf("{nkey: %q, permissions: {subscribe: {deny: [%q]}}}", public, inboxes))
 	})
+	cfg, edge := edgeStartRun(t, rig.uri)
+	start, clock := heldStart(t, rig.seed)
+	base := serveStartRoutes(t, start)
+
+	run.begin(cfg, edge, start, clock)
+	// The connect's read of the deployed subjects has waited out the answer the server dropped, so
+	// the start's read of the stream is next, and meets the same silence.
+	run.untilLogged(t, &records, clock, "the connect's read of the deployed subjects to end", func(record slog.Record) bool {
+		return record.Message == "envoy nats could not read the stream's subjects" && recordAttr(record, "name") == listenerTryName
+	})
+	if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback)); err != nil {
+		t.Fatalf("reload the server without the edge listener's user: %v", err)
+	}
+	w, got := run.next(t, clock)
+	if got != nil {
+		t.Fatalf("the edge listener's start returned %v %s after its first try, want it to wait out the read's refusal", got.err, got.at.Sub(run.began))
+	}
+	// The start logs each refusal, with the wait that follows it, before it waits: the line is
+	// there once the start has asked for the wait.
+	const lastError = "the connection's last error: nats: authorization violation"
+	refusal, logged := slog.Record{}, false
+	for _, record := range records.Records() {
+		if record.Message == "envoy nats credential refused at start; trying again" && strings.Contains(strings.ToLower(recordAttr(record, "error")), lastError) {
+			refusal, logged = record, true
+			break
+		}
+	}
+	if !logged {
+		t.Fatalf("the start asked for a wait of %s at %s on its clock, but no WARN line says it waits out a refusal naming %q", w.wait, w.at, lastError)
+	}
+	t.Logf("the start waits out: %s", recordAttr(refusal, "error"))
+	if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable || !strings.Contains(strings.ToLower(fmt.Sprint(fields["error"])), lastError) {
+		t.Fatalf("/healthz answered %d %v while the start waited out a refusal, want 503 naming %q", status, fields, lastError)
+	}
+	if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
+		t.Fatalf("reload the server with the edge listener's user: %v", err)
+	}
+	w.end()
+
+	outcome, _ := run.finish(t, clock, watchdog)
+	if outcome.err != nil {
+		t.Fatalf("the edge listener's start returned %v %s after its first try on its clock, want it to complete once the server admits it again", outcome.err, outcome.took)
+	}
+	if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
+		t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
+	}
 }
 
 // rotatingForwarder is the one address the listener is given in
@@ -753,7 +995,7 @@ func (f *rotatingForwarder) close() {
 }
 
 // memberReload is one member's reload of an authorization that admits the listener, at an offset
-// from the start's first try.
+// from the start's first try on the start's clock (heldStart).
 type memberReload struct {
 	member int
 	at     time.Duration
@@ -766,10 +1008,10 @@ type memberReload struct {
 // server has reloaded an authorization that admits the nkey, however many of the others still
 // refuse it: with only the third (nats-2, as on 2026-11-22) reloading, through it, within three
 // rotations of the forwarder after its reload. Without the wait the start ends after main's ten
-// tries, before any server reloads.
+// tries, before any server reloads. The start runs on a held clock (heldStart), and each server
+// reloads while the start waits across that server's offset on it.
 func TestTheListenerStartConnectsOnceTheServersHaveReloaded(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv of
-	// bus.NkeySeedEnvVar in each row's subtest).
+	t.Parallel()
 	const watchdog = 120 * time.Second
 	for _, row := range []struct {
 		name    string
@@ -783,9 +1025,9 @@ func TestTheListenerStartConnectsOnceTheServersHaveReloaded(t *testing.T) {
 			name:         "only the third server reloads",
 			reloads:      []memberReload{{member: 2, at: 30 * time.Second}},
 			throughThird: true,
-			// Three waits of at most 10 s, one connectTimeout of 5 s, and 10 s for the refused tries
-			// and the reconcile.
-			withinFirst: 45 * time.Second,
+			// Three waits of at most 10 s, one before each of the three tries the forwarder hands to
+			// each server in turn; a try takes no time on the start's clock.
+			withinFirst: 30 * time.Second,
 		},
 		{
 			name:    "the third, the first and the second server reload in turn",
@@ -793,49 +1035,60 @@ func TestTheListenerStartConnectsOnceTheServersHaveReloaded(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			run := newListenerStartRun(t)
 			seed, public := testnats.User(t)
 			_, fallback := testnats.User(t)
 			cluster := testnats.StartClusterConfig(t, 3, nkeyAuthorization(fallback))
 			forwarder := startRotatingForwarder(t, cluster.URLs())
-			t.Setenv(bus.NkeySeedEnvVar, seed)
-			start := newNATSStart(listenerCredentialWait)
-
-			run.begin(config.Service{MachineID: "start-cluster-reload", NATSURLs: []string{forwarder.url()}, NATSReplicas: 1}, nil, start)
-			var connected *startOutcome
-			var firstReload time.Time
-			for i, reload := range row.reloads {
-				if i == 0 {
-					run.refusedUntil(t, reload.at)
-				} else if connected == nil {
-					connected = run.sleepUntil(t, reload.at)
-				}
+			start, clock := heldStart(t, seed)
+			reload := func(reload memberReload) {
 				if err := cluster.ReloadMember(t, reload.member, nkeyAuthorization(fallback, nkeyUser(public))); err != nil {
 					t.Fatalf("reload server %s with an authorization that admits the listener: %v", cluster.Name(reload.member), err)
 				}
-				if i == 0 {
-					firstReload = time.Now()
-				}
 			}
-			got := connected
-			if got == nil {
-				outcome := run.await(t, watchdog)
-				got = &outcome
+
+			run.begin(config.Service{MachineID: "start-cluster-reload", NATSURLs: []string{forwarder.url()}, NATSReplicas: 1}, nil, start, clock)
+			pending := row.reloads
+			var got *startOutcome
+			var waits []time.Duration
+			for got == nil {
+				var w *heldWait
+				if w, got = run.next(t, clock); got != nil {
+					break
+				}
+				waits = append(waits, w.wait)
+				for len(pending) > 0 && w.endsPast(pending[0].at) {
+					reload(pending[0])
+					pending = pending[1:]
+				}
+				if w.endsPast(watchdog) {
+					t.Fatalf("watchdog: the listener's start had not returned %s after its first try on its clock, having waited %v", watchdog, waits)
+				}
+				w.end()
+			}
+			if len(pending) == len(row.reloads) {
+				t.Fatalf("the listener's start returned %s after its first try on its clock, before the %s its credential was refused for: error %v", got.took, pending[0].at, got.err)
+			}
+			// A start that connected before a later reload's offset leaves it to be made now, as the
+			// servers reload whatever the start did.
+			for _, later := range pending {
+				reload(later)
 			}
 			if got.err != nil {
-				t.Fatalf("the listener's start returned %v %s after its first try, want it to connect once a server admits it", got.err, got.at.Sub(run.began))
+				t.Fatalf("the listener's start returned %v %s after its first try on its clock, want it to connect once a server admits it", got.err, got.took)
 			}
 			if _, err := got.client.JS().StreamInfo(bus.Stream); err != nil {
 				t.Fatalf("read the %s stream the start reconciled: %v", bus.Stream, err)
 			}
-			server, after := got.client.Conn.ConnectedServerName(), got.at.Sub(firstReload)
-			t.Logf("the start connected through %s, %s after the first reload and %s after its first try", server, after, got.at.Sub(run.began))
+			server, after := got.client.Conn.ConnectedServerName(), got.took-row.reloads[0].at
+			t.Logf("the start connected through %s, %s after the first reload and %s after its first try on its clock, having waited %v", server, after, got.took, waits)
 			if row.throughThird {
 				if want := cluster.Name(2); server != want {
 					t.Fatalf("the start connected through %s, want %s, the one server that admits it", server, want)
 				}
 				if after > row.withinFirst {
-					t.Fatalf("the start connected %s after the third server reloaded, want within %s", after, row.withinFirst)
+					t.Fatalf("the start connected %s after the third server reloaded on its clock, want within %s", after, row.withinFirst)
 				}
 			}
 		})
@@ -944,20 +1197,23 @@ func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStar
 // listener whose credential the server never admits exits 1 once the bound has passed, its last
 // line naming its credential's public key and the last refusal; a start whose server is not there
 // at all ends after main's ten tries, not at the bound; and the production start's bound is 180 s,
-// which main passes to the start (runListener, newNATSStart), whose option connectListenerBus hands
-// to the owning connect and, on an edge listener, to bus.Connect, and startRoleLane and
+// which main passes to the start (runListener, newNATSStart), whose options connectListenerBus
+// hands to the owning connect and, on an edge listener, to bus.Connect, and startRoleLane and
 // startSessionDelivery hand to the role lane's and the session consumers' connects:
-// bus.WithCredentialWait has one call outside tests, natsStart.option in cmd/listener.
+// bus.WithCredentialWait has one call outside tests, natsStart.options in cmd/listener, and
+// bus.WithStartClock none, so every start outside a test waits on the process's clock.
 func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	// Not parallel: it holds the child's waits between tries to credentialWaitTolerance (500 ms)
 	// of 1 and 2 s, and a start of ten failed dials to mainsEndMargin (500 ms) past main's connect
-	// beside it (requireMainsEnd).
+	// beside it (requireMainsEnd). Its rows run beside each other alone: the child and the two
+	// connects spend their time waiting on timers, and the third row reads source files.
 	if seedFile, child := os.LookupEnv(startChildSeedFile); child {
 		runStartChild(seedFile)
 	}
 	const watchdog = 60 * time.Second
 
 	t.Run("a credential the server never admits ends the listener at the bound", func(t *testing.T) {
+		t.Parallel()
 		var rig edgeStartServer
 		rig.seed, rig.public = testnats.User(t)
 		_, fallback := testnats.User(t)
@@ -984,11 +1240,12 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	})
 
 	t.Run("a port where nothing listens ends the start after main's ten tries", func(t *testing.T) {
+		t.Parallel()
 		run := newListenerStartRun(t)
 		start := newNATSStart(listenerCredentialWait)
 		cfg := config.Service{MachineID: "start-refused-port", NATSURLs: []string{"nats://" + testport.Refused(t)}, NATSReplicas: 1}
 		mains := mainsConnect(cfg.NATSURLs)
-		run.begin(cfg, nil, start)
+		run.begin(cfg, nil, start, nil)
 		got := run.await(t, watchdog)
 		took := got.at.Sub(run.began)
 		if got.err == nil {
@@ -1003,6 +1260,7 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	})
 
 	t.Run("the production start waits 180 s and no other caller waits", func(t *testing.T) {
+		t.Parallel()
 		if listenerCredentialWait != 180*time.Second {
 			t.Fatalf("listenerCredentialWait is %s, want 180s", listenerCredentialWait)
 		}
@@ -1017,9 +1275,10 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 		if len(starts) != 1 || starts[0].in.Name.Name != "runListener" || !identArgument(starts[0].call, 0, firstParameter(starts[0].in)) {
 			t.Fatalf("calls of newNATSStart outside tests: %s; want runListener's one, passing its credential wait parameter", describeCalls(starts))
 		}
-		// The one wait any program of the module passes to a connect is the listener's own. The walk
-		// must have found the option's own declaration in internal/bus, or it read too little to
-		// say that no other file calls it.
+		// The one wait any program of the module passes to a connect is the listener's own, and no
+		// program gives a start a clock of its own (bus.WithStartClock, which only tests pass), so
+		// every start waits on the process's clock. The walk must have found each option's own
+		// declaration in internal/bus, or it read too little to say that no other file calls it.
 		root, err := filepath.Abs(filepath.Join("..", ".."))
 		if err != nil {
 			t.Fatal(err)
@@ -1028,12 +1287,20 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		calls, declared := credentialWaitCalls(t, root)
-		if want := filepath.Join(root, "internal", "bus"); len(declared) != 1 || filepath.Dir(declared[0]) != want {
-			t.Fatalf("the walk of %s found bus.WithCredentialWait declared in %q, want once, in %s", root, declared, want)
+		busDir := filepath.Join(root, "internal", "bus")
+		calls, declared := optionCalls(t, root, "WithCredentialWait")
+		if len(declared) != 1 || filepath.Dir(declared[0]) != busDir {
+			t.Fatalf("the walk of %s found bus.WithCredentialWait declared in %q, want once, in %s", root, declared, busDir)
 		}
 		if len(calls) != 1 || filepath.Dir(calls[0]) != here {
 			t.Fatalf("calls of bus.WithCredentialWait outside tests: %q; want one, in %s", calls, here)
+		}
+		calls, declared = optionCalls(t, root, "WithStartClock")
+		if len(declared) != 1 || filepath.Dir(declared[0]) != busDir {
+			t.Fatalf("the walk of %s found bus.WithStartClock declared in %q, want once, in %s", root, declared, busDir)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("calls of bus.WithStartClock outside tests: %q; want none", calls)
 		}
 	})
 }
@@ -1114,10 +1381,10 @@ func describeCalls(calls []sourceCall) string {
 	return "[" + strings.Join(described, ", ") + "]"
 }
 
-// credentialWaitCalls are the files under root that call bus.WithCredentialWait, once per call, and
-// the files that declare it, among the Go files that are not tests. A file that does not spell the
-// name is not parsed.
-func credentialWaitCalls(t *testing.T, root string) (calls, declared []string) {
+// optionCalls are the files under root that call the bus option name (bus.WithCredentialWait,
+// bus.WithStartClock), once per call, and the files that declare it, among the Go files that are
+// not tests. A file that does not spell the name is not parsed.
+func optionCalls(t *testing.T, root, name string) (calls, declared []string) {
 	t.Helper()
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -1136,7 +1403,7 @@ func credentialWaitCalls(t *testing.T, root string) (calls, declared []string) {
 		if err != nil {
 			return err
 		}
-		if !bytes.Contains(source, []byte("WithCredentialWait")) {
+		if !bytes.Contains(source, []byte(name)) {
 			return nil
 		}
 		file, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
@@ -1146,17 +1413,17 @@ func credentialWaitCalls(t *testing.T, root string) (calls, declared []string) {
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.FuncDecl:
-				if node.Recv == nil && node.Name.Name == "WithCredentialWait" {
+				if node.Recv == nil && node.Name.Name == name {
 					declared = append(declared, path)
 				}
 			case *ast.CallExpr:
 				switch fun := node.Fun.(type) {
 				case *ast.SelectorExpr:
-					if fun.Sel.Name == "WithCredentialWait" {
+					if fun.Sel.Name == name {
 						calls = append(calls, path)
 					}
 				case *ast.Ident:
-					if fun.Name == "WithCredentialWait" {
+					if fun.Name == name {
 						calls = append(calls, path)
 					}
 				}

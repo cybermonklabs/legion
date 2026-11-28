@@ -16,14 +16,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// heldHandshakeClient is a client of its own, owning the stream, through a handshake hold of its own
-// (testnats.HandshakeHold) on the package's shared server. The hold is released and the proxy
-// restored before the client closes, since nats.go's Close waits for its connection lock, which a
-// held handshake or a held write holds.
-func heldHandshakeClient(t *testing.T) (*Client, *testnats.HandshakeHold) {
+// heldHandshakeClient is a client of its own, owning the stream and connected with options, through
+// a handshake hold of its own (testnats.HandshakeHold) on the package's shared server. The hold is
+// released and the proxy restored before the client closes, since nats.go's Close waits for its
+// connection lock, which a held handshake or a held write holds.
+func heldHandshakeClient(t *testing.T, options ...ConnectOption) (*Client, *testnats.HandshakeHold) {
 	t.Helper()
 	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
-	client, err := ConnectOwningStream([]string{hold.URL()})
+	client, err := ConnectOwningStream([]string{hold.URL()}, options...)
 	if err != nil {
 		t.Fatalf("connect through the handshake hold: %v", err)
 	}

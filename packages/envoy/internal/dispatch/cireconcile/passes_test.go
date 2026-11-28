@@ -3,12 +3,14 @@ package cireconcile
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The record each pass leaves in ci_reconcile_passes, and the reading of it the API answers
@@ -145,39 +147,29 @@ func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (
 // to wait on but the row.
 func waitForPass(t *testing.T, pool *store.Pool, id int64, want PassState) PassRecord {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	var last []PassRecord
-	for time.Now().Before(deadline) {
-		last = recent(t, pool)
-		for _, pass := range last {
+	return testwait.Until(t, "the pass row in its expected state", func() (PassRecord, bool) {
+		for _, pass := range recent(t, pool) {
 			if pass.ID == id && pass.State == want {
-				return pass
+				return pass, true
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("pass %d never read as %q: %+v", id, want, last)
-	return PassRecord{}
+		return PassRecord{}, false
+	})
 }
 
 // waitForRow polls until the table holds a pass of this instance with no end time, which is the
 // row a pass writes when it starts, and answers its id.
 func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	ctx := testwait.Context(t)
+	return testwait.Until(t, "the instance's open pass row", func() (int64, bool) {
 		var id int64
-		err := pool.QueryRow(t.Context(), `
+		err := pool.QueryRow(ctx, `
 			select id from ci_reconcile_passes where instance = $1 and ended_at is null
 			order by started_at desc, id desc limit 1
 		`, instance).Scan(&id)
-		if err == nil {
-			return id
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("no open pass row of %s was written", instance)
-	return 0
+		return id, err == nil
+	})
 }
 
 // A pass that is still reading GitHub reads as running: its row has no end time, its process is
@@ -185,23 +177,28 @@ func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 // writing the row at the start of the pass rather than at its end -- a person who asks why
 // nothing has settled wants to know that a pass is running now, not only what the last one did.
 //
-// The pass here is held open by a GitHub that does not answer the second page of the repository,
-// and it is run under its lease exactly as the loop runs it (duty.Exclusive), so the lease the
-// read asks about is held by the pass itself.
+// The pass here is held open by a GitHub that does not answer the second page of the repository.
+// The test waits for that request before reading its row or ending its bound: the row is opened
+// before the pass binds its writer or reads GitHub, so a running row alone is not the stall.
+// It runs under its lease exactly as the loop runs it (duty.Exclusive).
 func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	// The window the test reads the open row in is the whole of this bound, since GitHub never
-	// answers the second page: ten seconds is long enough that a loaded machine still has the
-	// pass running when the two reads below reach the row, and short enough that the wait for
-	// the end of the pass is a wait and not a hang.
+	// The pass stays open until the test ends its fake deadline, or GitHub's real 20 s request
+	// timeout ends the held second-page read. The row reads below occur inside that window.
 	h.reconciler.PassTimeout = 10 * time.Second
+	h.boundByTheTest()
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	stalled := make(chan struct{})
+	var once sync.Once
+	h.github.atStall(func() { once.Do(func() { close(stalled) }) })
 
 	_, _, finished := holdLease(t, h.pool, h.reconciler.Pass)
+	testwait.Receive(t, "GitHub holding the second-page query open", stalled)
 	id := waitForRow(t, h.pool, instance)
 
 	running := waitForPass(t, h.pool, id, PassStateRunning)
@@ -216,6 +213,7 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	}
 
 	// The pass ends on its own bound, and the same row then says so.
+	h.endBound()
 	<-finished
 	ended := passOf(t, recent(t, h.pool), id)
 	if ended.State != outcomeDeadline {
@@ -228,6 +226,8 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 // just expired, and a write made on it would land nowhere, leaving a row that reads as a pass
 // that vanished -- the one state that must mean a process died.
 func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
+	// Not parallel: this is the real-timer deadline control. Its 2 s bound uses
+	// context.WithTimeout, and the pass must read the first page inside it.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
@@ -279,6 +279,7 @@ func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 // back to the listing, and is cut short at the second head of that page. The pass after it
 // reads from exactly the number the row names.
 func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
@@ -295,6 +296,7 @@ func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
 	h.reconciler.PassTimeout = 3 * time.Second
+	h.boundEndsAtTheStall()
 	// GitHub is slower than the pass has left at the second head of that page.
 	cutAt := int64(pullsPerQuery) + 2
 	h.github.stall(runsOf(head(cutAt)), time.Minute)
@@ -348,6 +350,7 @@ func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 // holds back the page it is reading until the test cancels the context the pass was handed,
 // which is what the loop's own context does when the process is told to stop.
 func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
@@ -384,11 +387,45 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 	}
 }
 
+// A pass whose caller is already cancelled when it begins still records a row, and that row says
+// the caller cancelled it. Cancelling first is a shorter road to the same insert than a shutdown
+// landing while the insert is in flight. Were the insert on the pass's context, pgxpool would
+// refuse at the acquire on this road, before any insert was sent. On the in-flight road, the read
+// of the id would fail after Postgres had committed the row. On both roads, the pass would hold
+// no row's id and record nothing of how it ended. beginPass says why the insert runs on a context
+// of its own.
+func TestAPassWhoseCallerIsAlreadyCancelledStillRecordsTheCancellation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, reviewerAppID)
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+
+	shutting, shutdown := context.WithCancel(h.ctx)
+	shutdown()
+	h.reconciler.Pass(shutting)
+
+	passes := recent(t, h.pool)
+	if len(passes) != 1 {
+		t.Fatalf("the pass left %d rows, want the one row a pass writes: a pass that holds no row's id records nothing of how it ended", len(passes))
+	}
+	pass := passes[0]
+	if pass.State != outcomeCancelled {
+		t.Errorf("the pass reads %q, want %q: its caller had cancelled it before it began: %+v", pass.State, outcomeCancelled, pass)
+	}
+	if pass.EndedAt == nil {
+		t.Error("the pass has no end time, so nothing tells it from a pass whose process died in the middle of it")
+	}
+	if pass.Instance != instance {
+		t.Errorf("the row names instance %q, want this process's %q", pass.Instance, instance)
+	}
+}
+
 // The record outlives the process that wrote it. A restart deletes the process's registry row
 // (Deregister) and the next process registers under an id of its own, and the day of passes the
 // route answers still holds both -- which is the whole reason the counts are in Postgres rather
 // than only in a container log the restart rotated away.
 func TestTheRecordSurvivesARestartOfTheProcessThatWroteIt(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -426,6 +463,7 @@ func TestTheRecordSurvivesARestartOfTheProcessThatWroteIt(t *testing.T) {
 // nowhere else: the passes are the only writer of this table, so there is nothing to tidy
 // between two of them.
 func TestRowsPastTheRetentionArePrunedByThePassThatEnds(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -464,6 +502,7 @@ func TestRowsPastTheRetentionArePrunedByThePassThatEnds(t *testing.T) {
 // running a pass of its own, so the only thing that can decide the open row is that it is no
 // longer the newest.
 func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLease(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -505,19 +544,18 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 // decide this row. Only the heartbeat can: the killed process's registry row is older than
 // processes.LiveWindow, so the pass is over whatever the lease says.
 //
-// LiveWindow is a variable so this test can shorten it rather than wait a real window out; the
-// heartbeat is written older than the shortened window, so the test waits for nothing at all.
+// The heartbeat is written older than processes.LiveWindow, so the test waits for nothing at all
+// and changes no package variable.
 //
 // The mutation this case exists to catch is "live while its row exists": read that way, the
 // killed process is live, the lease is held and the row is the newest, and the pass reads as
 // running for ever.
 func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	was := processes.LiveWindow
-	processes.LiveWindow = time.Second
-	t.Cleanup(func() { processes.LiveWindow = was })
 
-	killed := registerProcess(t, h.pool, 5*time.Second)
+	stopped := processes.LiveWindow + 5*time.Second
+	killed := registerProcess(t, h.pool, stopped)
 	open := seedPass(t, h.pool, killed, time.Minute)
 	release, taken, _ := holdLease(t, h.pool, nil)
 	<-taken
@@ -539,7 +577,7 @@ func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *te
 	}
 	if passes[0].State != PassStateAbandoned {
 		t.Fatalf("the killed process's newest pass reads %q, want %q: its heartbeat is %s old and the live window is %s",
-			passes[0].State, PassStateAbandoned, 5*time.Second, processes.LiveWindow)
+			passes[0].State, PassStateAbandoned, stopped, processes.LiveWindow)
 	}
 }
 
@@ -548,6 +586,7 @@ func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *te
 // signing keys do not match, so the first pass of a process can run before its instance id
 // exists -- and a row naming no process could be read neither as running nor as ended.
 func TestAPassBeforeItsProcessIsRegisteredRecordsNothing(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()

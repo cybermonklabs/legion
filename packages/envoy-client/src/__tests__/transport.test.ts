@@ -1,14 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   BUS_UNANSWERED_PREFIX,
   type Envelope,
   EnvelopeSchema,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  LISTENER_CALL_RETRY_DELAY_MS,
   MESSAGE_NOT_SENT_PREFIX,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-role.json";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
@@ -46,10 +48,21 @@ import {
   roleHeldBy,
 } from "../transport";
 
+/** The listener's bearer in the redirect cases, made for this run so no line holds a credential. */
+const REDIRECT_TOKEN = fixtureSecret("listener");
+
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: a change of that constant must change the rule's text, and these
  *  expectations with it, rather than leaving the text saying a number nothing enforces. */
 const GRACE_MINUTES = ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS / 60_000;
+
+// A row on Bun's fake clock reads what the client did after one turn of the event loop (`turn`,
+// whose `setImmediate` Bun's fake timers leave real): the stand-in listener answers in promise jobs
+// alone, so by then the client has gone as far as it can without the clock. Such a row that fails
+// part way would leave the next row on that clock.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 type RecordedFetch = {
   readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -1854,23 +1867,28 @@ describe("EnvoyClient", () => {
         "this listener may not manage session consumers, so it can give ses_sender none",
       ],
       ["consumer_error", "the session consumer of ses_sender could not be read or created"],
-    ] as const)("a retry the listener refuses with its %s 503 fails with that refusal, told at once", async (reason, error) => {
-      const session = registrations(async () => Response.json({ error, reason }, { status: 503 }));
+    ] as const)(
+      "a retry the listener refuses with its %s 503 fails with that refusal, told at once",
+      async (reason, error) => {
+        const session = registrations(async () =>
+          Response.json({ error, reason }, { status: 503 })
+        );
 
-      const failure = await session.register().catch((thrown: unknown) => thrown);
+        const failure = await session.register().catch((thrown: unknown) => thrown);
 
-      expect(session.calls()).toBe(2);
-      expect(isBusUnanswered(failure)).toBe(false);
-      expect(failure).toMatchObject({ reason, details: { status: 503 } });
-      expect(session.told).toEqual([`${error} (reason: ${reason})`]);
-      expect(session.kinds).toEqual(["refused"]);
-      const refusedNotice = inboundUnavailableNoticeText({
-        kind: "refused",
-        why: session.told[0] ?? "",
-      });
-      expect(refusedNotice).toContain("no durable consumer");
-      expect(refusedNotice).toContain("receives none");
-    });
+        expect(session.calls()).toBe(2);
+        expect(isBusUnanswered(failure)).toBe(false);
+        expect(failure).toMatchObject({ reason, details: { status: 503 } });
+        expect(session.told).toEqual([`${error} (reason: ${reason})`]);
+        expect(session.kinds).toEqual(["refused"]);
+        const refusedNotice = inboundUnavailableNoticeText({
+          kind: "refused",
+          why: session.told[0] ?? "",
+        });
+        expect(refusedNotice).toContain("no durable consumer");
+        expect(refusedNotice).toContain("receives none");
+      }
+    );
 
     test("a retry the listener refuses with a 4xx fails with that refusal, told at once", async () => {
       const refusal =
@@ -1925,26 +1943,29 @@ describe("EnvoyClient", () => {
       },
     ],
     ["gets a 5xx that names no reason", async () => new Response("bad gateway", { status: 502 })],
-  ] as const)("an unsubscribe whose first attempt got the bus-outage 503 and whose retry %s fails with that 503", async (_name, retry) => {
-    const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_sender's session consumer: bus: NATS is reconnecting`;
-    let calls = 0;
-    const client = createEnvoyClient({
-      baseUrl: "http://listener",
-      fetch: async () => {
-        calls += 1;
-        if (calls === 1) return Response.json({ error: outage }, { status: 503 });
-        return retry();
-      },
-    });
+  ] as const)(
+    "an unsubscribe whose first attempt got the bus-outage 503 and whose retry %s fails with that 503",
+    async (_name, retry) => {
+      const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_sender's session consumer: bus: NATS is reconnecting`;
+      let calls = 0;
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: async () => {
+          calls += 1;
+          if (calls === 1) return Response.json({ error: outage }, { status: 503 });
+          return retry();
+        },
+      });
 
-    const failure = await client
-      .unsubscribe({ sessionID: "ses_sender", topics: ["notifications.role.reviewer"] })
-      .catch((thrown: unknown) => thrown);
+      const failure = await client
+        .unsubscribe({ sessionID: "ses_sender", topics: ["notifications.role.reviewer"] })
+        .catch((thrown: unknown) => thrown);
 
-    expect(calls).toBe(2);
-    expect(isBusUnanswered(failure)).toBe(true);
-    expect((failure as Error).message).toBe(outage);
-  });
+      expect(calls).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(true);
+      expect((failure as Error).message).toBe(outage);
+    }
+  );
 
   test("retries one 503 response and keeps the direct-send recipient", async () => {
     const recorded = recordFetch([
@@ -2127,38 +2148,39 @@ describe("EnvoyClient", () => {
   // 302 or 303 would turn the send's POST into a GET, and a 307 or 308 would send it again to
   // another origin. The 3xx is the answer: it says nothing reached the listener, so the send is
   // refused, never "may or may not have arrived".
-  test.each([
-    301, 302, 303, 307, 308,
-  ])("a send a %i answers is refused, and the redirect is not followed", async (status) => {
-    let followed = 0;
-    let sent = 0;
-    const client = createEnvoyClient({
-      baseUrl: "http://listener",
-      fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
-        sent += 1;
-        if (init?.redirect !== "manual") {
-          // What fetch does where it follows: the request goes to the other origin.
-          followed += 1;
-          return Response.json(
-            { event_id: "evt-elsewhere", recipient: "ses_target", recipient_state: "live" },
-            { status: 202 }
-          );
-        }
-        return new Response("moved", {
-          status,
-          headers: { Location: "http://elsewhere.test/v1/messages/send" },
-        });
-      }) as unknown as typeof fetch,
-    });
-    const error = await client
-      .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
-      .catch((caught: unknown) => caught);
-    expect(followed).toBe(0);
-    expect(sent).toBe(1);
-    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
-    expect(error).toBeInstanceOf(EnvoyApiError);
-    expect((error as EnvoyApiError).details.status).toBe(status);
-  });
+  test.each([301, 302, 303, 307, 308])(
+    "a send a %i answers is refused, and the redirect is not followed",
+    async (status) => {
+      let followed = 0;
+      let sent = 0;
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+          sent += 1;
+          if (init?.redirect !== "manual") {
+            // What fetch does where it follows: the request goes to the other origin.
+            followed += 1;
+            return Response.json(
+              { event_id: "evt-elsewhere", recipient: "ses_target", recipient_state: "live" },
+              { status: 202 }
+            );
+          }
+          return new Response("moved", {
+            status,
+            headers: { Location: "http://elsewhere.test/v1/messages/send" },
+          });
+        }) as unknown as typeof fetch,
+      });
+      const error = await client
+        .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
+        .catch((caught: unknown) => caught);
+      expect(followed).toBe(0);
+      expect(sent).toBe(1);
+      expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+      expect(error).toBeInstanceOf(EnvoyApiError);
+      expect((error as EnvoyApiError).details.status).toBe(status);
+    }
+  );
 
   // F6 (the review of 81d860a8f7): whatever answered a redirect in the listener's place chose its
   // body, and a misconfigured proxy echoes the request back, the bearer with it. The error prints
@@ -2203,35 +2225,38 @@ describe("EnvoyClient", () => {
   test.each([
     [403, "Forbidden"],
     [502, "Bad Gateway"],
-  ] as const)("a %i page a proxy answers in the listener's place prints as one redacted line", async (status, phrase) => {
-    const listenerToken = fixtureSecret("listener");
-    const page =
-      `<html><head><title>${status} ${phrase}</title><style>body{margin:0}</style></head>\n` +
-      `<body><h1>${status} ${phrase}</h1>\n<pre>GET /v1/interests/ses_sender\n` +
-      `Authorization: Bearer ${listenerToken}</pre>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
-    const client = createEnvoyClient({
-      baseUrl: "http://listener",
-      credential: bearerCredential(listenerToken),
-      retry: false,
-      fetch: (async () =>
-        new Response(page, {
-          status,
-          headers: { "Content-Type": "text/html" },
-        })) as unknown as typeof fetch,
-    });
-    const error = await client.getInterest("ses_sender").catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(EnvoyApiError);
-    const message = (error as EnvoyApiError).message;
-    expect(message).toStartWith(
-      `GET http://listener/v1/interests/ses_sender failed with ${status}: a body that is not the ` +
-        `listener's error JSON ("${status} ${phrase} ${status} ${phrase} GET /v1/interests/ses_sender ` +
-        "Authorization: Bearer [redacted]"
-    );
-    expect(message).not.toContain(listenerToken);
-    expect(message).not.toContain("\n");
-    expect(message).not.toContain("<");
-    expect(message.length).toBeLessThan(400);
-  });
+  ] as const)(
+    "a %i page a proxy answers in the listener's place prints as one redacted line",
+    async (status, phrase) => {
+      const listenerToken = fixtureSecret("listener");
+      const page =
+        `<html><head><title>${status} ${phrase}</title><style>body{margin:0}</style></head>\n` +
+        `<body><h1>${status} ${phrase}</h1>\n<pre>GET /v1/interests/ses_sender\n` +
+        `Authorization: Bearer ${listenerToken}</pre>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        credential: bearerCredential(listenerToken),
+        retry: false,
+        fetch: (async () =>
+          new Response(page, {
+            status,
+            headers: { "Content-Type": "text/html" },
+          })) as unknown as typeof fetch,
+      });
+      const error = await client.getInterest("ses_sender").catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(EnvoyApiError);
+      const message = (error as EnvoyApiError).message;
+      expect(message).toStartWith(
+        `GET http://listener/v1/interests/ses_sender failed with ${status}: a body that is not the ` +
+          `listener's error JSON ("${status} ${phrase} ${status} ${phrase} GET /v1/interests/ses_sender ` +
+          "Authorization: Bearer [redacted]"
+      );
+      expect(message).not.toContain(listenerToken);
+      expect(message).not.toContain("\n");
+      expect(message).not.toContain("<");
+      expect(message.length).toBeLessThan(400);
+    }
+  );
 
   // M4 (the review of 99b1e438db): a page that echoes the request's `Authorization: DPoP` back is
   // redacted as a bearer's is, and so is the token the request was sent with when the credential
@@ -2902,90 +2927,195 @@ describe("EnvoyClient", () => {
   test.each([
     ["a user and a password", `http://${user}:${pw}@listener`, pw],
     ["a password holding an '@' and no host", `http://${user}:p@ssw0rdTAIL7c`, "ssw0rdtail7c"],
-  ])("names a listener URL that carries %s by its fixed phrase in the errors it throws", async (_, baseUrl, secret) => {
-    const unmintable: RequestCredential = {
-      scheme: "DPoP",
-      headers: () => Promise.reject(new Error("the secrets broker did not answer")),
-      secret: () => "",
-    };
-    const refused = recordFetch([new Response("no such route", { status: 404 })]);
-    const closed = recordFetch([new Response(null, { status: 401 })]);
-    const lost = (async () => {
-      throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${secret}`), {
-        code: "ENOTFOUND",
-        syscall: "getaddrinfo",
-      });
-    }) as unknown as typeof fetch;
-    // Each error's message and the messages of its cause chain: what a log of it prints, without
-    // the source lines Bun.inspect quotes from this file beside a stack.
-    const failure = (call: Promise<unknown>) =>
-      call.then(
-        () => "",
-        (error: unknown) => {
-          const texts: string[] = [];
-          for (let at: unknown = error; at instanceof Error; at = at.cause) texts.push(at.message);
-          return texts.join(" <- ");
-        }
+  ])(
+    "names a listener URL that carries %s by its fixed phrase in the errors it throws",
+    async (_, baseUrl, secret) => {
+      const unmintable: RequestCredential = {
+        scheme: "DPoP",
+        headers: () => Promise.reject(new Error("the secrets broker did not answer")),
+        secret: () => "",
+      };
+      const refused = recordFetch([new Response("no such route", { status: 404 })]);
+      const closed = recordFetch([new Response(null, { status: 401 })]);
+      const lost = (async () => {
+        throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${secret}`), {
+          code: "ENOTFOUND",
+          syscall: "getaddrinfo",
+        });
+      }) as unknown as typeof fetch;
+      // Each error's message and the messages of its cause chain: what a log of it prints, without
+      // the source lines Bun.inspect quotes from this file beside a stack.
+      const failure = (call: Promise<unknown>) =>
+        call.then(
+          () => "",
+          (error: unknown) => {
+            const texts: string[] = [];
+            for (let at: unknown = error; at instanceof Error; at = at.cause)
+              texts.push(at.message);
+            return texts.join(" <- ");
+          }
+        );
+
+      const messages = [
+        await failure(
+          createEnvoyClient({ baseUrl, fetch: refused.fetch, retry: false }).getInterest(
+            "ses_sender"
+          )
+        ),
+        await failure(
+          createEnvoyClient({
+            baseUrl,
+            fetch: closed.fetch,
+            credential: unmintable,
+            retry: false,
+          }).getInterest("ses_sender")
+        ),
+        await failure(
+          createEnvoyClient({ baseUrl, fetch: lost, retry: false }).getInterest("ses_sender")
+        ),
+      ];
+
+      const shown = `the configured Envoy URL ${URL_NOT_PRINTED}`;
+      expect(refused.requests[0]?.url.toLowerCase()).toBe(
+        `${baseUrl}/v1/interests/ses_sender`.toLowerCase()
       );
-
-    const messages = [
-      await failure(
-        createEnvoyClient({ baseUrl, fetch: refused.fetch, retry: false }).getInterest("ses_sender")
-      ),
-      await failure(
-        createEnvoyClient({
-          baseUrl,
-          fetch: closed.fetch,
-          credential: unmintable,
-          retry: false,
-        }).getInterest("ses_sender")
-      ),
-      await failure(
-        createEnvoyClient({ baseUrl, fetch: lost, retry: false }).getInterest("ses_sender")
-      ),
-    ];
-
-    const shown = `the configured Envoy URL ${URL_NOT_PRINTED}`;
-    expect(refused.requests[0]?.url.toLowerCase()).toBe(
-      `${baseUrl}/v1/interests/ses_sender`.toLowerCase()
-    );
-    expect(messages[0]).toContain(
-      `GET ${shown} failed with 404: a body that is not the listener's error JSON ("no such route")`
-    );
-    expect(messages[1]).toContain(
-      `GET ${shown} answered 401, and this machine's Envoy credential could not be minted: ` +
-        "the secrets broker did not answer"
-    );
-    expect(messages[2]).toContain(`GET ${shown} got no answer: getaddrinfo ENOTFOUND`);
-    for (const message of messages) {
-      expect(message).not.toContain("user-7f2a");
-      expect(message.toLowerCase()).not.toContain(secret.toLowerCase());
+      expect(messages[0]).toContain(
+        `GET ${shown} failed with 404: a body that is not the listener's error JSON ("no such route")`
+      );
+      expect(messages[1]).toContain(
+        `GET ${shown} answered 401, and this machine's Envoy credential could not be minted: ` +
+          "the secrets broker did not answer"
+      );
+      expect(messages[2]).toContain(`GET ${shown} got no answer: getaddrinfo ENOTFOUND`);
+      for (const message of messages) {
+        expect(message).not.toContain("user-7f2a");
+        expect(message.toLowerCase()).not.toContain(secret.toLowerCase());
+      }
     }
-  });
+  );
 
-  // The deadline is AbortSignal.timeout's, on the platform's clock, which no fake timer moves:
-  // the row holds the request until its signal aborts and reads no clock to see that a short
-  // deadline gave up first. Nothing answers the request, so a client left on its own timing
-  // spends two attempts of LISTENER_CALL_TIMEOUT_MS with LISTENER_CALL_RETRY_DELAY_MS between
-  // them and runs past 10 s, while the 50 ms this one is configured for spends two of those with
-  // the same wait between, a third of a second of wall clock on any machine. The row's 5 s limit
-  // is what catches the difference, and it stays on the row, below the suite's 30 s default, for
-  // exactly that reason.
+  // The deadline is AbortSignal.timeout's, which Bun's fake timers hold as they hold every timer
+  // (measured on Bun 1.4.4), so the row moves the fake clock and reads that each attempt gave up
+  // at the 50 ms its configuration names. Nothing answers the request, so a client left on its own
+  // timing would still hold its first attempt open there, for LISTENER_CALL_TIMEOUT_MS.
   test("gives up a call at the deadline its configuration names", async () => {
+    jest.useFakeTimers();
+    const attempts: AbortSignal[] = [];
     const client = createEnvoyClient({
       baseUrl: "http://listener",
       timeoutMs: 50,
       fetch: async (_input, init) => {
         const signal = init?.signal;
         if (signal === undefined || signal === null) throw new Error("no deadline was set");
+        attempts.push(signal);
         const aborted = Promise.withResolvers<never>();
         signal.addEventListener("abort", () => aborted.reject(signal.reason), { once: true });
         return aborted.promise;
       },
     });
-    const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+    let failure: unknown;
+    void client.getRole("reviewer").catch((error: unknown) => {
+      failure = error;
+    });
+    const aborted = () => attempts.map((signal) => signal.aborted);
+
+    await turn();
+    jest.advanceTimersByTime(49);
+    await turn();
+    expect(aborted()).toEqual([false]);
+    jest.advanceTimersByTime(1);
+    await turn();
+    expect(aborted()).toEqual([true]);
+    // The second attempt, after the retry delay, gives up at the same deadline, and so does the call.
+    jest.advanceTimersByTime(LISTENER_CALL_RETRY_DELAY_MS);
+    await turn();
+    jest.advanceTimersByTime(49);
+    await turn();
+    expect({ aborted: aborted(), failure }).toEqual({ aborted: [true, false], failure: undefined });
+    jest.advanceTimersByTime(1);
+    await turn();
+    expect(aborted()).toEqual([true, true]);
     expect(failure).toBeInstanceOf(Error);
-  }, 5_000);
+  });
+});
+
+// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
+// and the listener answers no route with a redirect, so no call follows one: the origin it names
+// is asked nothing.
+describe("a listener answer that redirects to another origin", () => {
+  test("is not followed, so the credential's proof never leaves", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
+        return Response.json({ role: "reviewer", session_id: "ses_other" });
+      },
+    });
+    const listener = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${other.port}/v1/roles/reviewer` },
+        }),
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential(REDIRECT_TOKEN),
+      headers: async () => ({ Authorization: "DPoP listener-token", DPoP: "PROOF" }),
+    };
+    try {
+      const client = createEnvoyClient({
+        baseUrl: `http://127.0.0.1:${listener.port}/`,
+        fetch,
+        credential,
+        retry: false,
+      });
+      await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      listener.stop(true);
+      other.stop(true);
+    }
+  });
+
+  // The refusal says where the redirect points, so an operator who wrote `http://` for an
+  // `https://` listener fixes the URL from the line: the scheme and the host of the target, never
+  // its path, its query or its user, any of which can carry a secret.
+  test("is refused with a line that names the origin it points at, and nothing else of its target", async () => {
+    // A target that carries a user and a secret, built from its parts; the secret is made for
+    // this run, so no line of the test holds a credential.
+    const hidden = crypto.randomUUID();
+    const withUser = new URL("https://listener.example.com/v1/roles/reviewer");
+    withUser.username = "user";
+    withUser.password = hidden;
+    for (const [location, origin] of [
+      [
+        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
+        "https://sso.example.com:8443",
+      ],
+      [withUser.href, "https://listener.example.com"],
+      ["/v1/roles/reviewer?again=1", "http://listener.test"],
+    ] as const) {
+      const client = createEnvoyClient({
+        baseUrl: "http://listener.test/",
+        fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch,
+        retry: false,
+      });
+      const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EnvoyApiError);
+      const { message } = failure as EnvoyApiError;
+      expect(message, location).toContain(
+        `(a redirect to ${origin}, which this client does not follow)`
+      );
+      for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "again=1"]) {
+        expect(message, location).not.toContain(part);
+      }
+    }
+  });
 });
 
 describe("newClientInstanceID", () => {

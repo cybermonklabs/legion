@@ -106,6 +106,17 @@
       "jj": true
     },
     {
+      "script": "left-session-claims.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": false,
+      "evidence_variable": "LEFT_SESSION_CLAIMS_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/left-session-claims.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch, the Envoy listener and the daemon itself as handoff-records.sh does, and it reaches no outside service; most of a run is building Dispatch, the listener and the driver. The job runs the proof without --base-commit: its negative control takes a commit of this repository's own history with git archive, which a shallow CI checkout carries none of, so it is run by hand from a full checkout",
+      "jj": true
+    },
+    {
       "script": "owner-steps.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -402,7 +413,7 @@
     },
     {
       "script": "pack-memory-probe.sh",
-      "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache, fetch and provision on the Job's disk volume and judges nothing a runner could give it"
+      "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache and provision on the Job's disk volume and judges nothing a runner could give it"
     },
     {
       "script": "repository-cache-burst-job.sh",

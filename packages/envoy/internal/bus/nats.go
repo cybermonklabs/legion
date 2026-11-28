@@ -17,6 +17,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/buildversion"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -25,9 +26,9 @@ import (
 type ConnectOption interface{ apply(*connectOpts) }
 
 // DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
-// WithPromptReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
-// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
-// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
+// WithPromptReconnect, WithWriteDeadline, WithInboxPrefix and WithReconnectErrClock. Dial's name
+// and environment are its parameters, so WithName and WithEnvironment are not DialOptions, and
+// neither are the options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -55,6 +56,7 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	promptReconnect             bool
+	writeDeadline               time.Duration
 	inboxPrefix                 string
 	streamMessageReads          bool
 	// logger is where the client and its connections write their lines (WithLogger):
@@ -63,10 +65,12 @@ type connectOpts struct {
 	logger          *slog.Logger
 	keeperStepGuard time.Duration
 	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
-	// reports, and startCheck WithStartCheck's check.
+	// reports, startClock the clock that start reads and waits on (WithStartClock; clock.Real by
+	// default), and startCheck WithStartCheck's check.
 	credentialWait     time.Duration
 	credentialRefused  func(error)
 	credentialAdmitted func()
+	startClock         startClock
 	startCheck         func(*Client) error
 	closedHook         func()
 	closeSettleBound   time.Duration
@@ -74,8 +78,8 @@ type connectOpts struct {
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection, the redial waits of WithPromptReconnect and the inbox prefix of
-// WithInboxPrefix, each when the client asked for it.
+// WithSilentCutDetection, the redial waits of WithPromptReconnect, the write deadline of
+// WithWriteDeadline and the inbox prefix of WithInboxPrefix, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -83,6 +87,9 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	}
 	if o.promptReconnect {
 		settings = append(settings, promptRedial)
+	}
+	if o.writeDeadline > 0 {
+		settings = append(settings, nats.FlusherTimeout(o.writeDeadline))
 	}
 	if o.inboxPrefix != "" {
 		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
@@ -95,7 +102,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
-	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh}
+	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh, startClock: clock.Real()}
 	for _, o := range options {
 		o.apply(&opts)
 	}
@@ -292,6 +299,21 @@ func WithPromptReconnect() DialOption {
 	return func(o *connectOpts) { o.promptReconnect = true }
 }
 
+// WithWriteDeadline has every connection the client makes, the first and each one it dials to
+// replace a closed one, give each write to its socket at most d (nats.go's FlusherTimeout, which
+// sets the socket's write deadline before each write: timeoutWriter, nats.go v1.55.0). A write
+// holds nats.go's connection lock until it ends, and so does every call that waits for that lock
+// meanwhile: Close, and the ping timer that would notice a silent cut. Without this option a write
+// to a socket that takes no byte holds the lock for nats.go's default of a minute
+// (DefaultFlusherTimeout). The cost: a write the socket has not taken whole within d fails, since
+// each Write has one fixed deadline and the bytes the socket takes do not move it; nats.go closes
+// the socket when the write sent part of a message, and reconnects. So d must stay above the
+// longest a healthy link can take to accept a whole write. envoy-dispatch gives it to its intakes'
+// clients alone (delivery.IntakeWriteDeadline), which publish only small answers.
+func WithWriteDeadline(d time.Duration) DialOption {
+	return func(o *connectOpts) { o.writeDeadline = d }
+}
+
 // WithInboxPrefix has every connection the client makes name its inboxes under prefix in place
 // of nats.go's _INBOX (nats.CustomInboxPrefix): its request replies, and every inbox named by the
 // connection's NewInbox, which is how this module names each one. An edge listener takes it
@@ -342,7 +364,7 @@ func WithStreamMessageReads() ConnectOption {
 // admitted is still called when it gets in. A start in the background (WithConnectInBackground)
 // never fails, so it ignores the option.
 //
-// cmd/listener alone passes it, through its start (natsStart.option): to the main client, the role
+// cmd/listener alone passes it, through its start (natsStart.options): to the main client, the role
 // lane (ConnectRoleLane) and the session-consumer connection (ConnectSessionConsumers), each a
 // connect of the listener's start, so a listener started before the hub's servers have reloaded
 // its new nkey connects once they have, where it would exit and be restarted.
@@ -350,6 +372,18 @@ func WithCredentialWait(bound time.Duration, refused func(error), admitted func(
 	return clientOption(func(o *connectOpts) {
 		o.credentialWait, o.credentialRefused, o.credentialAdmitted = bound, refused, admitted
 	})
+}
+
+// WithStartClock replaces the clock that WithCredentialWait's start reads its bound by and waits
+// on, the process's (clock.Real), with c: each wait after a refusal, and after a dial that failed
+// otherwise, is one wait on c's After (waitOutCredentialRefusals). A test of a program that
+// connects through this package hands it a clocktest.Fake, which reports each wait the start arms
+// (Armed), so the test reads the wait the start asks for and moves the start's time past it
+// without waiting it out; the schedule itself is this package's, and a try takes on that clock
+// only what the test moves it. It is exported for those tests, as WithKeepInterval is: no
+// deployment sets it, and no caller outside a test may.
+func WithStartClock(c clock.Clock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.startClock = c })
 }
 
 // WithStartCheck has the constructor's start in the foreground (Connect's or ConnectOwningStream's)
@@ -786,7 +820,7 @@ func credentialStart(urls []string, ownsStream bool, opts connectOpts, settings 
 			opts.credentialRefused(err)
 		}
 	}
-	return waitOutCredentialRefusals(opts.credentialWait, refused, wallStartClock, func() (*Client, error) {
+	return waitOutCredentialRefusals(opts.credentialWait, refused, opts.startClock, func() (*Client, error) {
 		client, failedAt, err := checkedStart(urls, ownsStream, opts, settings, dialer, 1, 0)
 		if err != nil && failedAt != stepDial && !credentialRefusal(err) {
 			return nil, endsStart{err}
