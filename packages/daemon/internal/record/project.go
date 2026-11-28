@@ -486,12 +486,6 @@ func acceptedAncestorHolding(issue Issue, byKey map[string]Issue) string {
 	if issue.Phase != phase.Admitted {
 		return ""
 	}
-	// A child's next change follows a merge that is on the base already (D10), so the hold that
-	// keeps an ancestor from merging a head without its children's work does not hold it: it
-	// starts under that ancestor, and that ancestor's own close waits for it (OpenBeneath).
-	if OnNextChange(issue) {
-		return ""
-	}
 	return AcceptedAncestor(issue, byKey)
 }
 
