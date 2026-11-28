@@ -385,8 +385,7 @@ func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, tr
 		if err != nil {
 			return graphPrefixes{}, err
 		}
-		outer, held := outermost[block]
-		prefixes.node, prefixes.nodeAmbiguous = documentBlockPrefix(outer, held, node.Text)
+		prefixes.node, prefixes.nodeAmbiguous = documentBlockPrefix(heldContainer(outermost.Of(block)), node.Text)
 	}
 	pin := node.Pin
 	if pin == nil || !strings.Contains(pin.Text, "\n") {
@@ -397,7 +396,7 @@ func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, tr
 		return graphPrefixes{}, err
 	}
 	if stated {
-		prefixes.pin, prefixes.pinAmbiguous = documentBlockPrefix(outer, held, pin.Text)
+		prefixes.pin, prefixes.pinAmbiguous = documentBlockPrefix(heldContainer(outer, held), pin.Text)
 		return prefixes, nil
 	}
 	markdown, err := documents.markdownAt(ctx, s, block.ArtifactID, pin.Version)

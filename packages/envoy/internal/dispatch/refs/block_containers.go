@@ -7,50 +7,52 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
-// OutermostContainers is, for each of blocks that another block of its document holds, the
-// current stored text of its outermost container: the block at the document's top level that
-// holds it, which the walk up from the block reaches through the block its row's parent_block_id
-// names, the block that block's names, and so on, its text the newest document_block_texts row of
-// its block, as BlockTexts reads a block's text. The block index places each block in the
-// innermost block of its document that holds it and that the renderer gives an id (blockParents,
-// placeBlocks): every block but a list item, so a block in a list item is held by the list. The
-// outermost container's text and the block's own are slices of one markdown, the document's
-// latest, so a reader finds the block's text inside that container's and reads off the line the
-// block starts on what its containers write before each of its later lines (api's placedPrefix).
-// The block's own text cannot tell that prefix from what the block writes of its own: `- b` then
-// `  - c` is a list whose item b holds a list, or, in a list item two columns in, a list of two
-// items. The outermost container starts its line, and so does each of its lines after the first,
-// so the line the block starts on is whole in its text, and what every container of the block
-// writes on that line is there: the texts of the containers inside it add nothing, and are not
-// read.
+// OutermostContainers is, for each of blocks that another block of its document holds, its
+// outermost container and that container's current stored text: the block at the document's top
+// level that holds it, which the walk up from the block reaches through the block its row's
+// parent_block_id names, the block that block's names, and so on, its text the newest
+// document_block_texts row of its block, as BlockTexts reads a block's text. The block index
+// places each block in the innermost block of its document that holds it and that the renderer
+// gives an id (blockParents, placeBlocks): every block but a list item, so a block in a list item
+// is held by the list. The outermost container's text and the block's own are slices of one
+// markdown, the document's latest, so a reader finds the block's text inside that container's and
+// reads off the line the block starts on what its containers write before each of its later lines
+// (api's placedPrefix). The block's own text cannot tell that prefix from what the block writes of
+// its own: `- b` then `  - c` is a list whose item b holds a list, or, in a list item two columns
+// in, a list of two items. The outermost container starts its line, and so does each of its lines
+// after the first, so the line the block starts on is whole in its text, and what every container
+// of the block writes on that line is there: the texts of the containers inside it add nothing,
+// and are not read.
 //
-// A block has no entry where it stands at the document's top level, its row naming its node and
-// no parent, and where its outermost container cannot be read: the index holds no row of it, or
-// none of a block its walk names; its row or the row of a block holding it names no node
-// (node_address is null where no pass has named the row's node, and its parent_block_id then says
-// nothing); its outermost container has no text, its newest row deleting it; or the walk meets a
-// block it met before, which the index, placing each block in a block that holds it, never
-// writes. The caller reads such a block as the coverage and the results reads read a block: a
-// typed block takes the prefix its closing fence carries, and any other block reads as its text
-// stands (api's documentBlockPrefix). The block index's reconciliation sets a row's
-// parent_block_id beside its node columns (queueBlockParents), but the graph backfill names a
-// row's node and writes no parent_block_id (graphcensus's writeBlockBatch), so a row the backfill
-// named that no reconciliation has reached since names its node and no parent, and reads as a
-// block at the document's top level. R7 of spec v11 records that production held no row so
-// written on 2026-11-28.
+// A block has no container in the answer where it stands at the document's top level, its row
+// naming its node and no parent, and where its outermost container cannot be read: the index
+// holds no row of it, or none of a block its walk names; its row or the row of a block holding it
+// names no node (node_address is null where no pass has named the row's node, and its
+// parent_block_id then says nothing); its outermost container has no text, its newest row
+// deleting it; or the walk meets a block it met before, which the index, placing each block in a
+// block that holds it, never writes. The caller reads such a block as the coverage and the
+// results reads read a block: a typed block takes the prefix its closing fence carries, and any
+// other block reads as its text stands (api's documentBlockPrefix). The block index's
+// reconciliation sets a row's parent_block_id beside its node columns (queueBlockParents), but
+// the graph backfill names a row's node and writes no parent_block_id (graphcensus's
+// writeBlockBatch), so a row the backfill named that no reconciliation has reached since names its
+// node and no parent, and reads as a block at the document's top level. R7 of spec v11 records
+// that production held no row so written on 2026-11-28.
 //
 // It is one recursive statement for every block, which walks up each block's holders through
 // document_blocks's primary key, one lookup a step (the lateral's limit keeps the planner from
 // joining the whole table instead), and reads the text of each distinct outermost container once,
 // through document_block_texts's primary key, however many of the blocks it holds: each row of
-// the answer is one container's text with the blocks whose outermost container it is. So a
-// request costs one statement however many blocks it reads, no blocks cost none, and the blocks of
-// one list carry the list's text once. The walk of a block ends at a block at the document's top
-// level, and at a block met twice (the statement's cycle clause), so it ends even where the rows
-// go round.
-func OutermostContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (map[DocumentBlock]string, error) {
+// the answer is one container, named and with its text, beside the blocks whose outermost
+// container it is. So a request costs one statement however many blocks it reads, no blocks cost
+// none, and the answer names each block's container (Outermost.Holders) and holds each
+// container's text once (Outermost.Texts), so the blocks of one list carry the list's text once,
+// and a caller that places them in it makes one placement index of it for all of them (api's
+// blockTrees). The walk of a block ends at a block at the document's top level, and at a block
+// met twice (the statement's cycle clause), so it ends even where the rows go round.
+func OutermostContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (Outermost, error) {
 	if len(blocks) == 0 {
-		return nil, nil
+		return Outermost{}, nil
 	}
 	artifactIDs, blockIDs := make([]string, len(blocks)), make([]string, len(blocks))
 	for index, block := range blocks {
@@ -78,7 +80,7 @@ func OutermostContainers(ctx context.Context, q Queryer, blocks []DocumentBlock)
 			having bool_and(chain.projected)
 			   and bool_or(chain.depth > 0 and chain.parent_block_id is null)
 		)
-		select array_agg(outermost.ordinality), (
+		select array_agg(outermost.ordinality), outermost.artifact_id::text, outermost.block_id, (
 			select t.text from document_block_texts t
 			where t.artifact_id = outermost.artifact_id and t.block_id = outermost.block_id
 			order by t.version desc limit 1
@@ -87,27 +89,43 @@ func OutermostContainers(ctx context.Context, q Queryer, blocks []DocumentBlock)
 		group by outermost.artifact_id, outermost.block_id`,
 		artifactIDs, blockIDs)
 	if err != nil {
-		return nil, fmt.Errorf("read the outermost containers of document blocks: %w", err)
+		return Outermost{}, fmt.Errorf("read the outermost containers of document blocks: %w", err)
 	}
 	defer rows.Close()
-	containers := make(map[DocumentBlock]string, len(blocks))
+	answer := Outermost{Holders: make(map[DocumentBlock]DocumentBlock, len(blocks)), Texts: map[DocumentBlock]string{}}
 	for rows.Next() {
 		var ordinalities []int64
+		var holder DocumentBlock
 		var text *string
-		if err := rows.Scan(&ordinalities, &text); err != nil {
-			return nil, fmt.Errorf("read the outermost containers of document blocks: %w", err)
+		if err := rows.Scan(&ordinalities, &holder.ArtifactID, &holder.BlockID, &text); err != nil {
+			return Outermost{}, fmt.Errorf("read the outermost containers of document blocks: %w", err)
 		}
 		if text == nil {
 			continue
 		}
+		answer.Texts[holder] = *text
 		for _, ordinality := range ordinalities {
-			containers[blocks[ordinality-1]] = *text
+			answer.Holders[blocks[ordinality-1]] = holder
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the outermost containers of document blocks: %w", err)
+		return Outermost{}, fmt.Errorf("read the outermost containers of document blocks: %w", err)
 	}
-	return containers, nil
+	return answer, nil
+}
+
+// Outermost is OutermostContainers' answer. Holders is the outermost container of each block that
+// has one whose text can be read, and Texts is the text of each such container, held once however
+// many of the blocks it holds.
+type Outermost struct {
+	Holders map[DocumentBlock]DocumentBlock
+	Texts   map[DocumentBlock]string
+}
+
+// Of is the text of block's outermost container, and held, whether the answer names one for it.
+func (o Outermost) Of(block DocumentBlock) (text string, held bool) {
+	holder, held := o.Holders[block]
+	return o.Texts[holder], held
 }
 
 // OutermostContainerAt is the text at version of block's outermost container at that version,

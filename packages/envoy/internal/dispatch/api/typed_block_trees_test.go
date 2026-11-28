@@ -633,7 +633,7 @@ func requireAmbiguousBlocks(t *testing.T, handler http.Handler, database *store.
 		if err != nil {
 			t.Fatalf("%s: read the block's outermost container: %v", row.name, err)
 		}
-		outer, held := outermost[block]
+		outer, held := outermost.Of(block)
 		if text != row.stored() || !held || outer != row.opener+text {
 			t.Fatalf("%s: the block's stored text is %q and its outermost container's %q (held %t), want %q and %q",
 				row.name, text, outer, held, row.stored(), row.opener+row.stored())

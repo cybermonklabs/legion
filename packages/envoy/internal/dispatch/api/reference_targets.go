@@ -243,12 +243,17 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // writes on it, and the texts of the containers inside it are not read. The outermost containers
 // of every document's block of the request whose text holds more than one line are read in one
 // statement beside BlockTexts' statement, and in none where no such block is named, and that
-// statement reads each container's text once however many of the request's blocks it holds. A
-// block whose containers the index does not record, as for one at the document's top level or one
-// whose outermost container cannot be read, takes the prefix the coverage and the results reads
-// take: a typed block the one its closing fence carries, and any other block none, so it reads as
-// its text stands (documentBlockPrefix). So one block answers one tree in this read and those two.
-// The footnotes are read from the stored texts, which call the same labels.
+// statement reads each container's text once however many of the request's blocks it holds,
+// naming each block's container beside it. The request makes one placement index of each such
+// container's text, the first time it places one of its blocks, and places each of its blocks in
+// that one index (containerPlacements, containerIndex.place): so its placement reads each
+// distinct container's bytes once, and then costs each block its text's length and one test of
+// each line of its container, however many blocks of one container it names. A block whose
+// containers the index does not record, as for one at the document's top level or one whose
+// outermost container cannot be read, takes the prefix the coverage and the results reads take: a
+// typed block the one its closing fence carries, and any other block none, so it reads as its
+// text stands (documentBlockPrefix). So one block answers one tree in this read and those two. The
+// footnotes are read from the stored texts, which call the same labels.
 //
 // A block whose bytes stand at two or more starts that container syntax allows in its outermost
 // container's text, where two of those starts write different prefixes, is ambiguous
@@ -309,15 +314,17 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if err != nil {
 		return err
 	}
-	// prefixes is what the containers of each document's block write before its lines after the
-	// first, and drawn each document's block that calledFootnotes reads its document for: one whose
-	// text holds a call, and one that is ambiguous, whose prefix that call reads from the parse.
+	// placements places each document's block in the placement index of its outermost container,
+	// made once for each container (containerPlacements). prefixes is what the containers of each
+	// document's block write before its lines after the first, and drawn each document's block that
+	// calledFootnotes reads its document for: one whose text holds a call, and one that is
+	// ambiguous, whose prefix that call reads from the parse.
+	placements := newContainerPlacements(outermost)
 	prefixes := make(map[refs.Target]string, len(documents))
 	var drawn map[refs.Target]drawnText
 	for target, block := range documents {
 		whole := texts[target]
-		outer, held := outermost[block]
-		prefix, ambiguous := documentBlockPrefix(outer, held, whole)
+		prefix, ambiguous := placements.prefix(block, whole)
 		prefixes[target] = prefix
 		if ambiguous || strings.Contains(whole, "[^") {
 			if drawn == nil {

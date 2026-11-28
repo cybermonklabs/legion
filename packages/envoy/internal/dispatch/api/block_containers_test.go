@@ -2,11 +2,13 @@ package api
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // A container's prefix is what the containers of a document's block write before each of the
@@ -194,14 +196,25 @@ func mebibyteListOfParagraphs() (list string, texts []string) {
 
 // placeRequest is the prefix of each of texts, the stored texts of document blocks one request
 // of the batched reference read names, where outer is the stored text of their one outermost
-// container, as blockTrees answers them (documentBlockPrefix): one placedPrefix of outer and each
-// text, each a walk of the whole container. It holds that loop and nothing more, so that it
-// stands for how a request places its blocks, and a change to that placement changes its body
-// alone.
+// container, as blockTrees answers them: the blocks named in the answer refs.OutermostContainers
+// gives, each held by that one container, are placed by the placement blockTrees makes
+// (containerPlacements). It holds that answer and that loop and nothing more, so that it stands for
+// how a request places its blocks, and a change to that placement changes no line of it.
 func placeRequest(outer string, texts []string) []string {
+	holder := refs.DocumentBlock{ArtifactID: "document", BlockID: "list"}
+	outermost := refs.Outermost{
+		Holders: make(map[refs.DocumentBlock]refs.DocumentBlock, len(texts)),
+		Texts:   map[refs.DocumentBlock]string{holder: outer},
+	}
+	blocks := make([]refs.DocumentBlock, len(texts))
+	for index := range texts {
+		blocks[index] = refs.DocumentBlock{ArtifactID: holder.ArtifactID, BlockID: "paragraph-" + strconv.Itoa(index)}
+		outermost.Holders[blocks[index]] = holder
+	}
+	placements := newContainerPlacements(outermost)
 	prefixes := make([]string, len(texts))
 	for index, text := range texts {
-		prefixes[index], _ = placedPrefix(outer, text)
+		prefixes[index], _ = placements.prefix(blocks[index], text)
 	}
 	return prefixes
 }
