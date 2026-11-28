@@ -240,8 +240,9 @@ func ReceiveWithin[T any](t *testing.T, bound time.Duration, what, why string, c
 	return zero
 }
 
-// timeoutFlag is the test binary's -test.timeout, and 0 when it has none: the span flagDeadline,
-// the package's one reader of that flag, adds to the process's start.
+// timeoutFlag is the test binary's -test.timeout, and 0 when it has none: the span flagDeadline
+// adds to the process's start. BinaryDeadline reads that flag too, for a TestMain, and adds it to
+// the moment it is called.
 func timeoutFlag() time.Duration {
 	deadline, ok := flagDeadline()
 	if !ok {

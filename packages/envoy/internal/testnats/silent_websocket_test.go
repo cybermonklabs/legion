@@ -38,6 +38,7 @@ var silentWebSocketEnd = regexp.MustCompile(`gave up waiting for a connection to
 // handshake, and the wait asking for the connection, hold to the panic. Main's
 // TestAConnectToASilentWebSocketServerEndsWithTheWait held the same of main's wait.
 func TestAConnectToASilentWebSocketServerFailsByNameAtTheWaitsEnd(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(silentWebSocketChildEnv) != "" {
 		Connect(t, "wss://"+silentServer(t))
 		t.Fatal("the connect to a wss:// server that sends nothing returned a connection")

@@ -8,6 +8,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // embeddingModel is the one `model` value every seeded vector carries, which the command prints
@@ -48,17 +50,21 @@ var hnswBuildSettings = []string{
 	`set local max_parallel_maintenance_workers = 0`,
 }
 
-// writeEmbeddings fills half the embedding rows the triggers queued. It drops the HNSW index
-// first and builds it again after: about 285,000 per-row insertions into an HNSW index at scale 1
-// would dominate the run, where one build at the cluster's maintenance memory is a fraction of
-// it (the plan's Decision "The seed drops and rebuilds the HNSW index around its vector writes").
-// That build is serial and bounded, for the reason hnswBuildSettings gives.
+// writeEmbeddings gives a vector to every row embeddedRows names: half the issues, and one window
+// of each of half the documents, asks, comments and messages. It drops the HNSW index first and
+// builds it again after: about 285,000 per-row insertions into an HNSW index at scale 1 would
+// dominate the run, where one build at the cluster's maintenance memory is a fraction of it (the
+// plan's Decision "The seed drops and rebuilds the HNSW index around its vector writes"). That
+// build is serial and bounded, for the reason hnswBuildSettings gives.
 func (r *seedRun) writeEmbeddings(ctx context.Context) error {
 	if _, err := r.database.Pool.Exec(ctx, `drop index if exists embeddings_cosine`); err != nil {
 		return fmt.Errorf("drop the HNSW index: %w", err)
 	}
 	centres := newEmbeddingCentres()
-	kinds, ids := r.embeddedRows()
+	kinds, ids, err := r.embeddedRows(ctx)
+	if err != nil {
+		return err
+	}
 	random := rand.New(rand.NewPCG(randomSeed+2, randomSeed^0xd1b54a32d192ed03))
 	literal := make([]string, 0, embeddingBatch)
 	at := baseTime.Add(seedSpan)
@@ -104,23 +110,99 @@ func (r *seedRun) writeEmbeddings(ctx context.Context) error {
 	return nil
 }
 
-// embeddedRows is every (kind, id) that gets a vector: every other row of each kind, in plan
-// order, which is the half of the issues, documents, asks, comments and messages the spec asks
-// for. The triggers queued a row for every one of them when the seed wrote it, so these are
-// updates, not inserts.
-func (r *seedRun) embeddedRows() (kinds, ids []string) {
-	add := func(kind string, count int, id func(int) string) {
-		for index := 0; index < count; index += 2 {
-			kinds = append(kinds, kind)
-			ids = append(ids, id(index))
+// windowedKinds is each kind of row meaning search embeds in windows of its blocks rather than
+// whole, in the order embeddedRows takes them: a document's, an ask's, a comment's and a
+// message's. Each holds the embeddings kind of its windows, how many rows of the kind the plan
+// holds, and the owner key of the plan's row at an index, which each of that row's windows' ids
+// begins with (refs.writeWindows). refs.WindowKinds is the same kinds as a literal SQL list, the
+// list embeddings_window_owner's partial predicate names (migration 20261102233630).
+var windowedKinds = []struct {
+	kind  string
+	count func(plan *seedPlan) int
+	owner func(plan *seedPlan, index int) string
+}{
+	{
+		refs.DocumentWindowKind,
+		func(plan *seedPlan) int { return len(plan.documents) },
+		func(plan *seedPlan, index int) string { return plan.documents[index].ID },
+	},
+	{
+		refs.ItemAsk.WindowKind(),
+		func(plan *seedPlan) int { return len(plan.asks) },
+		func(plan *seedPlan, index int) string {
+			return refs.ItemAsk.WindowOwnerKey(plan.asks[index].ID)
+		},
+	},
+	{
+		refs.ItemComment.WindowKind(),
+		func(plan *seedPlan) int { return len(plan.comments) },
+		func(plan *seedPlan, index int) string {
+			return refs.ItemComment.WindowOwnerKey(plan.comments[index].ID)
+		},
+	},
+	{
+		refs.ItemMessage.WindowKind(),
+		func(plan *seedPlan) int { return len(plan.messages) },
+		func(plan *seedPlan, index int) string {
+			return refs.ItemMessage.WindowOwnerKey(plan.messages[index].ID)
+		},
+	},
+}
+
+// embeddedRows is every (kind, id) that gets a vector, in the order the vectors are drawn: every
+// other issue in plan order, then the first window by id of every other document, ask, comment
+// and message in plan order. An issue is embedded whole, through its own row; the other four are
+// embedded in windows of their blocks, and since migrations 20261102233626 to 20261102233629 hold
+// no row of their own kind, so a vector on a row of the kind itself would be a vector on nothing
+// and every window arm of meaning search would read no row. One window for each owner keeps the
+// count of the rule before windows, one vector for half the rows of each kind (about 285,000 at
+// scale 1); an owner with no window gets none.
+//
+// The issues' rows are the triggers', queued when the seed wrote each issue, and the windows are
+// the ones refs.WriteDocumentWindows and refs.WriteItemWindows wrote in the steps before this
+// one, read back here, so every row named is an update, not an insert. The issues come first so
+// the rows the clusters' centres go to (writeEmbeddings) and the query vector's row are issues,
+// as they were before windows.
+func (r *seedRun) embeddedRows(ctx context.Context) (kinds, ids []string, err error) {
+	for index := 0; index < len(r.plan.issues); index += 2 {
+		kinds = append(kinds, "issue")
+		ids = append(ids, r.plan.issues[index].Key)
+	}
+	var ownerKinds, owners []string
+	for _, windowed := range windowedKinds {
+		for index := 0; index < windowed.count(r.plan); index += 2 {
+			ownerKinds = append(ownerKinds, windowed.kind)
+			owners = append(owners, windowed.owner(r.plan, index))
 		}
 	}
-	add("issue", len(r.plan.issues), func(index int) string { return r.plan.issues[index].Key })
-	add("document", len(r.plan.documents), func(index int) string { return r.plan.documents[index].ID })
-	add("ask", len(r.plan.asks), func(index int) string { return r.plan.asks[index].ID })
-	add("comment", len(r.plan.comments), func(index int) string { return r.plan.comments[index].ID })
-	add("message", len(r.plan.messages), func(index int) string { return r.plan.messages[index].ID })
-	return kinds, ids
+	// A window's id is "<owner key>#<its first block>" (refs.writeWindows). The first window of
+	// every owner is read in one pass over the window rows and joined to the owners the rule takes.
+	// A probe for each owner's first window by id (order by id limit 1) is one the planner answers
+	// by walking the primary key of (kind, id) in order until a row of the owner turns up: at scale
+	// 0.01 it read 1,850 comment windows for each comment, half of them, which at scale 1 is about
+	// 185,000 rows for each of the 185,000 comments the rule takes.
+	rows, err := r.database.Pool.Query(ctx, `
+		select w.kind, w.id
+		  from unnest($1::text[], $2::text[]) with ordinality as o (kind, owner_key, n)
+		  join (select distinct on (kind, split_part(id, '#', 1)) kind, split_part(id, '#', 1) as owner_key, id
+		          from embeddings
+		         where kind in `+refs.WindowKinds+`
+		         order by kind, split_part(id, '#', 1), id) w
+		    on w.kind = o.kind and w.owner_key = o.owner_key
+		 order by o.n
+	`, ownerKinds, owners)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the first window of each owner: %w", err)
+	}
+	var kind, id string
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &id}, func() error {
+		kinds = append(kinds, kind)
+		ids = append(ids, id)
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("read the first window of each owner: %w", err)
+	}
+	return kinds, ids, nil
 }
 
 // newEmbeddingCentres is the cluster centres, each a unit vector from the run's fixed seed.

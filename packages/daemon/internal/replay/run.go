@@ -367,6 +367,10 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		starts = firstStartRanks(trace)
 	}
 	conflicts := in.conflicts
+	if conflicts.NoProfile != nil {
+		fit := *conflicts.NoProfile
+		conflicts.NoProfile = &fit
+	}
 	if conflicts.Legacy != nil {
 		fallback := *conflicts.Legacy
 		conflicts.Legacy = &fallback

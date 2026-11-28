@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -104,26 +105,24 @@ func (h *memoryHarness) waitForSettlement(t *testing.T, upload uploadResult) {
 	}
 }
 
-// waitForSettled waits until a document has settled every write it has had: the settlement that
-// has read every update deletes the document's doc_settlements_pending row as it commits.
+// waitForSettled waits, through the shared wait, until a document has settled every write it has
+// had: the settlement that has read every update deletes the document's doc_settlements_pending
+// row as it commits. Its reading is when that row was marked, while it is there.
 func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		var owed bool
-		if err := h.database.Pool.QueryRow(context.Background(),
-			`select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID,
-		).Scan(&owed); err != nil {
+	reading := testwait.Context(t)
+	testwait.Until(t, fmt.Sprintf("document %s to settle every write it has had (its doc_settlements_pending row gone)", artifactID), func() (string, bool) {
+		var markedAt *time.Time
+		if err := h.database.Pool.QueryRow(reading,
+			`select max(marked_at) from doc_settlements_pending where artifact_id = $1`, artifactID,
+		).Scan(&markedAt); err != nil {
 			t.Fatalf("read the document's pending settlement: %v", err)
 		}
-		if !owed {
-			return
+		if markedAt != nil {
+			return "its settlement pending since " + markedAt.Format(time.RFC3339Nano), false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("document %s never settled", artifactID)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return "no settlement pending", true
+	})
 }
 
 // memoryTestCollectEnv makes a memory test's server collect its heap each time it is sent SIGUSR1
@@ -231,32 +230,26 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
 	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
 	t.Cleanup(func() { server.stop(t) })
-	deadline := time.Now().Add(time.Minute)
-	// The kernel queues a request on the held socket until the server serves it, so each one is
-	// bounded by the start's own deadline.
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.base+"/healthz", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if response, err := http.DefaultClient.Do(request); err == nil {
-			_ = response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				break
-			}
-		}
+	// The kernel queues a request on the held socket until the server serves it, so each one
+	// carries the shared wait's context, which ends where the wait gives up.
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the Dispatch server to answer /healthz with 200", func() (string, bool) {
 		select {
 		case <-server.exited:
 			t.Fatalf("the Dispatch server exited while starting:\n%s", server.outputTail())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the Dispatch server did not answer /healthz:\n%s", server.outputTail())
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.base+"/healthz", nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return fmt.Sprintf("GET /healthz: %v; the server's output ends:\n%s", err, server.outputTail()), false
+		}
+		_ = response.Body.Close()
+		return fmt.Sprintf("GET /healthz: %d; the server's output ends:\n%s", response.StatusCode, server.outputTail()), response.StatusCode == http.StatusOK
+	})
 	// The idle is read after a collection that gives the heap's free memory back to the system.
 	// Whether a collection had freed what a boot left dead before /healthz answered was the luck of
 	// where the boot's collections fell: read at once, the idle was about 90 MiB on one server and
@@ -498,6 +491,9 @@ func (h *memoryHarness) owedDocumentNames(t *testing.T) []string {
 	return names
 }
 
+// stop stops the server with SIGTERM, as a deploy does, and waits through the shared wait for it to
+// exit: what its graceful stop writes (a compaction, history_memory_test.go) is read after it, and
+// StartThen's cleanup kill stays the last resort.
 func (p *memoryServer) stop(t *testing.T) {
 	t.Helper()
 	select {
@@ -506,12 +502,7 @@ func (p *memoryServer) stop(t *testing.T) {
 	default:
 	}
 	_ = p.command.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-p.exited:
-	case <-time.After(30 * time.Second):
-		_ = p.command.Process.Kill()
-		<-p.exited
-	}
+	testwait.Receive(t, "the Dispatch server to exit on SIGTERM", p.exited)
 }
 
 // collect asks the server for a collection (collectOnSignal), waits until the server has reported
@@ -523,8 +514,11 @@ func (p *memoryServer) collect(t *testing.T) (collection, int) {
 	if err := p.command.Process.Signal(syscall.SIGUSR1); err != nil {
 		t.Fatalf("ask the server for a collection: %v\n%s", err, p.outputTail())
 	}
-	deadline := time.Now().Add(time.Minute)
-	for {
+	var (
+		reported collection
+		end      int
+	)
+	testwait.Until(t, "the server to report the collection it was asked for (is "+memoryTestCollectEnv+"=1 set?)", func() (string, bool) {
 		logged := p.outputFrom(offset)
 		if at := collectedLine.FindStringSubmatchIndex(logged); at != nil {
 			number, err := strconv.Atoi(logged[at[2]:at[3]])
@@ -535,18 +529,17 @@ func (p *memoryServer) collect(t *testing.T) (collection, int) {
 			if err != nil {
 				t.Fatalf("read the collection's live heap %q: %v", logged[at[4]:at[5]], err)
 			}
-			return collection{number: number, live: live}, offset + at[1]
+			reported, end = collection{number: number, live: live}, offset+at[1]
+			return logged[at[0]:at[1]], true
 		}
 		select {
 		case <-p.exited:
 			t.Fatalf("the server exited before it reported the collection it was asked for:\n%s", p.outputTail())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server did not report the collection it was asked for within a minute: is %s=1 set?\n%s", memoryTestCollectEnv, p.outputTail())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return "what the server wrote since the ask: " + tailOf(logged), false
+	})
+	return reported, end
 }
 
 // resident is the server's resident memory in bytes, VmRSS now or VmHWM its peak.
@@ -849,8 +842,11 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	if err := connection.WriteMessage(gws.BinaryMessage, append(frame, ygsync.EncodeSyncStep1(crdt.New())...)); err != nil {
 		t.Fatalf("ask the room for the document: %v", err)
 	}
-	if err := connection.SetReadDeadline(time.Now().Add(2 * time.Minute)); err != nil {
-		t.Fatalf("set the read deadline: %v", err)
+	// The room's answer is read under the shared wait's give-up, which is every wait's one bound.
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
+		if err := connection.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set the read deadline: %v", err)
+		}
 	}
 	for {
 		_, message, err := connection.ReadMessage()
@@ -885,16 +881,17 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 }
 
 // waitForRequestLine waits until the server's output past offset holds the access log line of a
-// request whose line carries every one of fields, and fails the test if the server exits first or
-// a minute passes, a hang guard on a line a healthy server writes in milliseconds.
+// request whose line carries every one of fields, and fails the test if the server exits first.
+// The shared wait (testwait.Until) is its one bound, and a give-up prints the last 4,000 bytes the
+// server wrote past offset.
 func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...string) {
 	t.Helper()
 	want := append([]string{`msg="` + accesslog.Message + `"`}, fields...)
-	deadline := time.Now().Add(time.Minute)
-	for {
-		for line := range strings.Lines(p.outputFrom(offset)) {
+	testwait.Until(t, fmt.Sprintf("the server to log the request %q", fields), func() (string, bool) {
+		logged := p.outputFrom(offset)
+		for line := range strings.Lines(logged) {
 			if !slices.ContainsFunc(want, func(field string) bool { return !strings.Contains(line, field) }) {
-				return
+				return line, true
 			}
 		}
 		select {
@@ -902,18 +899,20 @@ func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...st
 			t.Fatalf("the server exited before it logged the request %q:\n%s", fields, p.outputTail())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server logged no request %q within a minute:\n%s", fields, p.outputTail())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return "what the server wrote since the request began: " + tailOf(logged), false
+	})
 }
 
 // outputTail is the last 4,000 bytes the server has written, for a failure to show.
 func (p *memoryServer) outputTail() string {
-	output := p.output.String()
+	return tailOf(p.output.String())
+}
+
+// tailOf is the last 4,000 bytes of output, as outputTail and the waits on the server's output show
+// it.
+func tailOf(output string) string {
 	if len(output) > 4000 {
-		output = output[len(output)-4000:]
+		return output[len(output)-4000:]
 	}
 	return output
 }
@@ -967,7 +966,9 @@ func (h *memoryHarness) coldReads(t *testing.T, name, artifactID string) {
 }
 
 // coldTextReads reads a document's text readers times at once, failing unless every read answers
-// 200. Its caller measures the fresh server's peak around it.
+// 200. Its caller measures the fresh server's peak around it. Each read carries trySend's
+// 20-minute client timeout, which can outlast the test binary's deadline, so the join on them goes
+// through the shared wait (testwait.Returns), which is their bound.
 func (p *memoryServer) coldTextReads(t *testing.T, artifactID string, readers int) {
 	t.Helper()
 	failures := make([]error, readers)
@@ -981,7 +982,7 @@ func (p *memoryServer) coldTextReads(t *testing.T, artifactID string, readers in
 			failures[index] = err
 		})
 	}
-	group.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d cold text reads at once to return", readers), group.Wait)
 	if err := errors.Join(failures...); err != nil {
 		t.Fatal(err)
 	}
@@ -1006,8 +1007,8 @@ func (h *memoryHarness) coldEdit(t *testing.T, name, artifactID string, edit map
 // the issue's spec, in that order, once it has indexed every one.
 func (p *memoryServer) blockAsks(t *testing.T, issueKey string, count int) []string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
+	var ids []string
+	testwait.Until(t, fmt.Sprintf("settlement to index the %d asks of %s's spec", count, issueKey), func() (string, bool) {
 		answer := p.send(t, http.MethodGet, "/api/v1/issues/"+issueKey+"/asks?state=all", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
 		var asks []struct {
 			ID      string  `json:"id"`
@@ -1022,20 +1023,15 @@ func (p *memoryServer) blockAsks(t *testing.T, issueKey string, count int) []str
 				byBlock[*ask.BlockID] = ask.ID
 			}
 		}
-		ids := make([]string, 0, count)
+		ids = make([]string, 0, count)
 		for index := range count {
 			if id, found := byBlock[fmt.Sprintf("ask-%d", index)]; found {
 				ids = append(ids, id)
 			}
 		}
-		if len(ids) == count {
-			return ids
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("settlement indexed %d of the spec's %d asks", len(ids), count)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return fmt.Sprintf("settlement indexed %d of the spec's %d asks", len(ids), count), len(ids) == count
+	})
+	return ids
 }
 
 // createdIssue is an issue a memory test created, and its primary document.

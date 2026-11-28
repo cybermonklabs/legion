@@ -223,10 +223,10 @@ func writeMachineCache(dir string, key *ecdsa.PrivateKey, enrollmentID string) e
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(dir, keyFile), pemBytes, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, keyFile), pemBytes); err != nil {
 		return fmt.Errorf("write %s: %w", machineCacheKeyFile, redact.File(err))
 	}
-	if err := writeFileAtomic(filepath.Join(dir, enrollmentFile), []byte(enrollmentID+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, enrollmentFile), []byte(enrollmentID+"\n")); err != nil {
 		return fmt.Errorf("write %s: %w", machineCacheEnrollment, redact.File(err))
 	}
 	return nil
@@ -355,7 +355,7 @@ func keepFirst(path, value string) (string, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	if err := writeFileAtomic(path, []byte(value+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(path, []byte(value+"\n")); err != nil {
 		return "", err
 	}
 	return value, nil
@@ -421,7 +421,7 @@ func moveFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(dst, data, 0o600); err != nil {
+	if err := writeFileAtomic(dst, data); err != nil {
 		return err
 	}
 	return os.Remove(src)

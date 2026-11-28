@@ -116,9 +116,12 @@ type AppContextOptions struct {
 	// where the deployment configured neither. See api.DepsInput.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	InsecureCookie  bool
-	EnvoyURL        string
+	// SpecForm is the form of The Spec main built from DISPATCH_SPEC_ROOTS (api.NewSpecForm),
+	// which set the gate of Docs; nil names no root. See api.DepsInput.
+	SpecForm       *api.SpecForm
+	ServerURL      string
+	InsecureCookie bool
+	EnvoyURL       string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -238,6 +241,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentTokens:            opts.AgentTokens,
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
+		SpecForm:               opts.SpecForm,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
@@ -303,6 +307,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 
 // errNoEventLog is what a context built with no Store answers for the event log's head.
 var errNoEventLog = errors.New("this server holds no store, so no event log to read the head of")
+
+// APIDeps is the API's dependencies that BuildAppContext parsed and New registers the routes
+// with. A pass that does what a route does outside a request (api.RunIssueAskRepair, which
+// restores the approval requests a reopen restores) runs on these, so it holds every field the
+// routes hold, the roots of The Spec among them.
+func (ctx *AppContext) APIDeps() api.Deps {
+	return ctx.apiDeps
+}
 
 // Architecture is the shared architecture importer the HTTP routes use, so
 // the server's five-minute sync ticker, the Refresh route and the sync tool

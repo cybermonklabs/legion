@@ -363,10 +363,12 @@ export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
 
 /**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's
- * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
- * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
- * handler runs, and names the cut, rather than answer it with the present. On a route outside
- * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ * `as_of`: the past time the token reads at) to a read that holds no past answer: `GET /ws/live`,
+ * and each read route that does not answer `as_of` except `GET /api/v1/whoami`. A route that
+ * answers `as_of` answers such a token as of its cut, whatever `as_of` the request sends, and
+ * `GET /api/v1/whoami` names the cut. Dispatch refuses the request before the route's handler
+ * runs, and names the cut, rather than answer it with the present. On a route outside the read
+ * class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
  */
 export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 
@@ -527,6 +529,31 @@ export const RECEIPT_TIMEOUT_CAUSE =
   "The listener didn't answer within the send window; the message may already have been delivered.";
 
 /**
+ * The words that open the Envoy listener's refusal of a session it will not answer for, one it
+ * holds no record of or whose record is past the gone horizon: its `404` to a send and to
+ * `GET /v1/registry/<id>` reads `no live session <id>`, and may say more after the id
+ * (`noLiveSession` in packages/envoy/cmd/listener/api.go). Dispatch writes the same words for
+ * such a session itself: with the id after them when its own resolution finds the session absent
+ * or gone (`resolveDeliveryTarget` in packages/envoy/internal/dispatch/api/envoy_resolve.go), and
+ * bare for a delivery that names no session to send to (`sendResolvedDelivery` in
+ * comment_delivery.go) and for a broadcast recipient it leaves out (`resolveBroadcastTargets` in
+ * broadcasts.go).
+ *
+ * Dispatch reads them back: an attempt whose failure opens with them and a space pins no session
+ * (`resolvedMention` in comment_delivery.go), and a failure that opens with them is one a listener
+ * take-over gives, which the sender tries again (`retryableDeliveryFailure` in envoy_resolve.go).
+ * The comment-delivery report classes a mention that failed with them `session-not-live`
+ * (`mentionErrorClass` in scripts/dispatch/comment-delivery), and the dashboard prints them as
+ * they came. Generated into Go as `contracts.NoLiveSession`, so the listener's refusal, Dispatch's
+ * own failures and every reader of either are one literal. A listener and a Dispatch of different
+ * releases read each other's refusals, so the words themselves do not change.
+ *
+ * It is not `no live session holds the role`, the Legion daemon's role refusal
+ * (`notify.ErrNoHolder`).
+ */
+export const NO_LIVE_SESSION = "no live session";
+
+/**
  * The error a delete settles each send of its post still pending with: the post's delete ended
  * the attempt, and nothing more - not whether its frame had already reached the session. Each
  * such attempt also gets a failed receipt carrying it. Generated into Go as
@@ -549,11 +576,27 @@ export const DELETED_POST_DELIVERY_ERROR = "ended by the post's delete";
 export const STORE_UNCONFIRMED_CAUSE =
   "The listener sent the message but could not confirm it was stored; the message may already have been delivered.";
 
+/**
+ * The cause a delivery attempt of a post to a role records when the copy the Envoy listener kept
+ * for the role ended after a forward of it to the role's holder began and was never confirmed
+ * (the expiry notice's `forward_unconfirmed`): the stream may hold that forward, so the holder may
+ * already have the message, as a receipt timeout's recipient may. Dispatch settles such an
+ * attempt `failed` with it (`model.KeptDeliveryExpiredError` in
+ * packages/envoy/internal/dispatch/model), and the dashboard gives it the receipt timeout's
+ * possible-second-delivery warning (`POSSIBLY_DELIVERED_CAUSES`). Generated into Go as
+ * `contracts.KeptForwardUnconfirmedCause`.
+ *
+ * It is the CAUSE only, as `RECEIPT_TIMEOUT_CAUSE` is.
+ */
+export const KEPT_FORWARD_UNCONFIRMED_CAUSE =
+  "The Envoy listener kept this message for the role, and a forward to its holder was not confirmed before the listener dropped it; the message may already have been delivered.";
+
 /** The causes whose send may already have reached the recipient, so that re-sending it in another
  * mode delivers it a second time: the one list the dashboard keys that warning on. */
 export const POSSIBLY_DELIVERED_CAUSES: readonly string[] = [
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
+  KEPT_FORWARD_UNCONFIRMED_CAUSE,
 ];
 
 /** `SearchResponse.degraded`'s one value today: meaning search could not run for this request (no
@@ -613,6 +656,68 @@ export type SessionAnswerRelation = (typeof SESSION_ANSWER_RELATIONS)[number];
  *  something in front of Dispatch, an authenticating proxy among them, and says nothing about
  *  the session: a sign-out answered that way did not go through. */
 export const AUTH_NO_IDENTITY = "NO_IDENTITY";
+
+/**
+ * The code of the `400` for an `as_of` that a route cannot answer. A route that holds no history
+ * answers only the present, and it refuses every `as_of` with this code. A route that answers
+ * `as_of` refuses with this code a filter parameter that it cannot evaluate at that time. The
+ * message names that parameter.
+ */
+export const DISPATCH_AS_OF_NOT_SERVED = "AS_OF_NOT_SERVED";
+
+/**
+ * The code of the `400` for an `as_of` that Dispatch cannot read: a value that is not an RFC 3339
+ * time, a time later than the server's present time, or an `as_of` that the request sends more
+ * than once.
+ */
+export const DISPATCH_INVALID_AS_OF = "INVALID_AS_OF";
+
+/**
+ * The code of the `409` for a search at a past time that the fill of the keyword table has not
+ * reached. That table holds each past version of the text of issues, comments, messages and asks.
+ * Where the fill has reached a time, the message and `DISPATCH_AS_OF_FILLED_THROUGH_HEADER` name
+ * that time. Where the fill has reached no time yet, the message says so and the answer has no
+ * such header.
+ */
+export const DISPATCH_AS_OF_SEARCH_NOT_FILLED = "AS_OF_SEARCH_NOT_FILLED";
+
+/**
+ * The response header on every answer that Dispatch gives as of a past time (the cut). Dispatch
+ * gives such an answer for an `as_of` in the request and for a token that carries a cut. The
+ * value is the cut in RFC 3339, with six fractional digits, in UTC: `2026-11-19T22:06:00.000000Z`.
+ * A server older than `as_of` ignores the parameter and sends no such header. So when a request
+ * sends `as_of` and its answer has no such header, the answer is not an answer as of that time.
+ */
+export const DISPATCH_AS_OF_HEADER = "Dispatch-As-Of";
+
+/**
+ * The response header that names each member that a past-time answer omits because the records
+ * at the cut (`DISPATCH_AS_OF_HEADER`) cannot give it. The value is a comma-separated list of
+ * RFC 6901 JSON Pointers into the answer's body, such as `/route_status`. A pointer segment `*`
+ * stands for every member of an array. Dispatch omits such a member and never writes it as
+ * `null`, because `null` already means "none". `parseAsOfAbsent` reads the value.
+ */
+export const DISPATCH_AS_OF_ABSENT_HEADER = "Dispatch-As-Of-Absent";
+
+/**
+ * The response header on a `409 AS_OF_SEARCH_NOT_FILLED` (`DISPATCH_AS_OF_SEARCH_NOT_FILLED`) when
+ * the fill of the keyword table has reached a time. The value is that time, in RFC 3339. A search
+ * at that time or at an earlier time does not get that refusal. When the fill has reached no time
+ * yet, the refusal has no such header.
+ */
+export const DISPATCH_AS_OF_FILLED_THROUGH_HEADER = "Dispatch-As-Of-Filled-Through";
+
+/**
+ * The JSON Pointers that a `DISPATCH_AS_OF_ABSENT_HEADER` value names, in the order of the header.
+ * It splits the value at each comma, trims each part and removes each empty part. A missing or
+ * empty header names no pointer.
+ */
+export function parseAsOfAbsent(header: string | null | undefined): string[] {
+  return (header ?? "")
+    .split(",")
+    .map((pointer) => pointer.trim())
+    .filter((pointer) => pointer !== "");
+}
 
 /**
  * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it

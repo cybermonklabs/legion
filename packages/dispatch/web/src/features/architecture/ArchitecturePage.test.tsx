@@ -49,6 +49,8 @@ function issue(overrides: Partial<ArchitectureTreeIssue> & { key: string }): Arc
     external_links: [],
     parent: null,
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     status: "todo",
     title: `Title of ${overrides.key}`,
     updated_at: "2026-09-17T00:00:00Z",

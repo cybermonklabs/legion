@@ -283,8 +283,8 @@ The windows `git-store-verdicts`, `git-unanswered-reads`, `merge-event-time`, `d
   An unanswered read goes to the generator, and a live stretch draws once.
 
 - **After a loop the record does not hold.**
-  A loop whose work is drawn, one that an answered conflict began at a stretch the record ended otherwise or one that the generator drew, leaves the issue's head merged with the replay's base at the loop's end: the return to the phase the conflict left, or the landing of the merge forward.
-  A later read of that issue counts its touching merges only among the commits that the replay's base took after that loop's end: with none the read is answered clean, n = 0, and with one or more it is unanswered, `order`, since the replay merged those changes in an order the record does not hold.
+  A loop whose work is drawn, one that an answered conflict began at a stretch the record ended otherwise or one that the generator drew, leaves the issue's head merged with the replay's base as it stood at the end of the loop's implementing round, its move out of implementing, or at the landing of the merge forward.
+  A later read of that issue counts its touching merges only among the commits that the replay's base took after that moment: with none the read is answered clean, n = 0, and with one or more it is unanswered, `order`, since the replay merged those changes in an order the record does not hold.
   The generator counts a later stretch's M the same way.
   A loop that is the record's own needs no such rule: the recorded heads after it carry the record's merge forward.
 
@@ -295,8 +295,8 @@ The windows `git-store-verdicts`, `git-unanswered-reads`, `merge-event-time`, `d
 - **The generator.**
   On `conflicts=drawn`, and for an unanswered read, a stretch draws as "Conflicts" above says, with M the stretch's touching merges where the repository holds git input.
   An issue's profile is the `paths` of the `reading` line of its head that stands at the draw, and the touching merges are the commits of the replay's base at the draw that change a path of the profile and came after that head's merge base.
-  A stretch with no touching merge draws no conflict: its chance is 0, and its draw's line says `merges` 0 and `chance` 0.
-  The model is fitted on the window's recorded stretches, with M counted the same way on the record's base before each stretch's end; a stretch with M = 0 is left out of the fit.
+  A stretch with a profile and no touching merge draws no conflict: its chance is 0, and its draw's line says `merges` 0 and `chance` 0.
+  The model is fitted on the window's recorded stretches, with M counted the same way on the record's base before each stretch's draw, the first boot that reads it or else its end; a stretch with a profile and M = 0 is left out of the fit, and a stretch with no profile is fitted apart, with M every commit since its start (assumption 52).
   Work that the record never ran has no head: it takes the profile of the issue that its scenario drew its work from, and its touching merges are those that the replay's base took after the later of the replay's start of its first implementing segment and the landing of its last merge forward.
   On the main branch such work keeps the recorded conflicts of the issue it was drawn from.
   A repository with no git input keeps the count of "Conflicts" above, every commit strictly inside the stretch (`drawn-skipped-loop`, `drawn-boot-earlier-phase`).

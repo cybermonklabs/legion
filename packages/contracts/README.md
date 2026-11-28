@@ -31,9 +31,12 @@ Change the source and regenerate; never edit these by hand.
 
 - `scripts/gen-go.ts` writes, in `packages/envoy`, `listenerwire/envelope_generated.go` (the
   envelope), `internal/contracts/generated.go` (its aliases and every shared constant),
-  `internal/contracts/dispatch_tools_generated.go` (from `src/dispatch-tools.ts`) and
-  `internal/dispatch/pmdoc/schema_generated.go` (from `schemas/block-schema.schema.json`), and
-  here `src/block-schema.generated.ts`.
+  `internal/contracts/dispatch_tools_generated.go` (from `src/dispatch-tools.ts`),
+  `internal/dispatch/pmdoc/schema_generated.go` (from `schemas/block-schema.schema.json`) and
+  `internal/dispatch/text/dashboard-pages.json` (a copy of `src/dashboard-pages.json`, which the
+  server embeds), and here `src/block-schema.generated.ts`.
+- `src/dashboard-pages.json`, the dashboard's pages file, is written from the dashboard's route
+  table by `bun web/src/features/refs/dashboard-pages-file.ts --write` in `packages/dispatch`.
 - `schemas/dispatch-openapi.json` is reflected from Dispatch's Go route table. In
   `packages/envoy`, `go run ./cmd/dispatch openapi --check` compares it with a fresh render and
   prints the command that rewrites it.
@@ -72,6 +75,8 @@ granularity they need using wildcard patterns.
 | Mention (repo-level) | `notifications.github.{owner}.{repo}.mention` |
 | Mention (resource-level) | `notifications.github.{owner}.{repo}.{type}.{number}.mention` |
 | Actions job finished on the default branch, of a run with no PR (`githubJobSubject`) | `notifications.github.{owner}.{repo}.job.{run_id}.completed` |
+| Workflow run with no PR (`githubWorkflowSubject`) | `notifications.github.{owner}.{repo}.workflow.{file}.{action}` |
+| The same run on the default branch, of the repository's own head (`githubDefaultBranchWorkflowSubject`) | `notifications.github.{owner}.{repo}.default_branch.workflow.{file}.{action}.{event}` |
 
 ### Subscription granularity
 

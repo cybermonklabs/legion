@@ -474,9 +474,9 @@ func issueFactText(t *testing.T, value any) string {
 
 // issueListRows runs one unpaged listing statement and returns its rows as text, one string per
 // row, which is how two statements' answers are compared here. `advances` says whether the
-// statement carries this change's three `advances` columns and the two of the move, which main's
-// does not: the listing's are dropped so that the comparison runs over the columns both
-// statements answer.
+// statement carries this change's three `advances` columns, the two of the move and the two of
+// the resolved priority, which main's does not: the listing's are dropped so that the comparison
+// runs over the columns both statements answer.
 func issueListRows(t *testing.T, database *store.Store, statement string, arguments []any, advances bool) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, arguments...)
@@ -503,16 +503,18 @@ func issueListRows(t *testing.T, database *store.Store, statement string, argume
 
 // advancesColumnsAt is where the three `advances` columns stand in a listing row
 // (issueSummaryColumns): behind the seven the issue's own table answers and the blockers, and
-// ahead of the two cells of the move, which stand ahead of the assignee.
+// ahead of the two cells of the move, which stand ahead of the resolved priority and its source,
+// which stand ahead of the assignee.
 const advancesColumnsAt = 8
 
 // issueRowWithoutAdvances is a listing row as main's statement answered it: main carried no
-// `advances` and no move, so the five columns this change added are not its to answer and the
-// comparison runs over the columns both statements carry. They are read instead by
-// TestAdvancesInheritance and TestTheListingAnswersTheFaultLists, which this comparison's fixture
-// cannot reach: no issue of it states a relation, and no request here asks for the move, which
-// this function requires, so a row carrying either would be a fixture or a request that outgrew
-// the oracle rather than a silent pass.
+// `advances`, no move and no resolved priority, so the seven columns this change added are not
+// its to answer and the comparison runs over the columns both statements carry. The first five
+// are read instead by TestAdvancesInheritance and TestTheListingAnswersTheFaultLists, which this
+// comparison's fixture cannot reach: no issue of it states a relation, and no request here asks
+// for the move, which this function requires, so a row carrying either would be a fixture or a
+// request that outgrew the oracle rather than a silent pass. The resolved priority and its source
+// are read by TestTheReadAndTheListResolveThePriorityFromTheNearestIssueAbove.
 func issueRowWithoutAdvances(t *testing.T, values []any) []any {
 	t.Helper()
 	own, revision, inherited := values[advancesColumnsAt], values[advancesColumnsAt+1], values[advancesColumnsAt+2]
@@ -522,7 +524,7 @@ func issueRowWithoutAdvances(t *testing.T, values []any) []any {
 	if movedAt, movedBy := values[advancesColumnsAt+3], values[advancesColumnsAt+4]; movedAt != nil || movedBy != nil {
 		t.Fatalf("a listed row of a request that asked for no move answered it moved at %v by %v, want neither", movedAt, movedBy)
 	}
-	return slices.Concat(values[:advancesColumnsAt], values[advancesColumnsAt+5:])
+	return slices.Concat(values[:advancesColumnsAt], values[advancesColumnsAt+7:])
 }
 
 // issueListPage runs a paged listing statement and returns the rows of its page and the count it

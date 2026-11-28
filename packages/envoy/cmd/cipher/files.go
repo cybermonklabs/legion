@@ -45,8 +45,8 @@ func readPodToken(path string) (string, error) {
 // and that call must read a whole key or none. internal/cipherclient keeps its own copy for the
 // sign-in records it writes, which is the one other place in this repository that needs it: two
 // short copies cost less than a general file-writing helper exported across a package boundary
-// for one caller each.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+// for one caller each. The file it writes is 0600.
+func writeFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
@@ -56,7 +56,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return err
 	}

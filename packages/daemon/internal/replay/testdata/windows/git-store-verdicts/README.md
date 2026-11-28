@@ -74,9 +74,9 @@ Every read below is read by the rules of `../README.md`, "The branch that asks g
 - **10:30, ACME-1**: `review_approved`: accepting (its slot back); 10:45 retro; 11:00 merging.
 
 - **11:05, ACME-2's re-entered reviewing segment ends** (recorded move `review_rejected` at 10:20).
-  The head at the recorded moment 10:20 is still `00f5a4b7…`, and this read follows a conflict loop whose work the replay drew, which ended at 10:50 (ACME-2's return to reviewing).
-  By the rule after a loop that the record does not hold (`../README.md`, "The branch that asks git, and the generator's profile"), ACME-2's head has merged the replay's base at 10:50, and a later read counts only commits that the replay's base took after 10:50.
-  None landed between 10:50 and 11:05: no touching merge, so the store answers clean, n = 0.
+  The head at the recorded moment 10:20 is still `00f5a4b7…`, and this read follows a conflict loop whose work the replay drew, whose implementing round ended at 10:35 (ACME-2's move to testing; the loop returned to reviewing at 10:50).
+  By the rule after a loop that the record does not hold (`../README.md`, "The branch that asks git, and the generator's profile"), ACME-2's head has merged the replay's base at 10:35, the end of the loop's implementing round, and a later read counts only commits that the replay's base took after 10:35.
+  None landed between 10:35 and 11:05: no touching merge, so the store answers clean, n = 0.
   ACME-2's recorded `review_rejected` enters at 11:05, moving ACME-2 back to implementing on its slot: implementing 11:05 to 11:20, testing 11:20 to 11:35, reviewing 11:35 to 11:50, accepting 11:50 (slot back), retro 12:05, merging 12:20.
 
 - **11:15, ACME-1's merge** (recorded move `pull_request_merged` at 11:45).
@@ -86,7 +86,7 @@ Every read below is read by the rules of `../README.md`, "The branch that asks g
 
 - **12:35, ACME-2's merge** (recorded move `pull_request_merged` at 11:50).
   The head that stands at 11:50 is `a9a3e0f7…`.
-  Since the drawn conflict loop ended at 10:50, the replay's base took #11 at 11:15, which changes `aisle/sort.go` alone and does not meet `shelf/stock.go`: no touching merge.
+  Since ACME-2's head took the replay's base at 10:35, the end of the drawn loop's implementing round, the replay's base took #11 at 11:15, which changes `aisle/sort.go` alone and does not meet `shelf/stock.go`: no touching merge.
   The store answers clean, n = 0, and ACME-2 merges at 12:35.
 
 **The counts.**
@@ -189,7 +189,11 @@ So at 09:00, the window's start, the run under each rule that `expect.json` name
 Each run limits all five signals (`limits`), and run.json echoes them; neither rule here admits by signals, so the limits decide nothing.
 
 - `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
+
 - `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
+
 - `provider`: no minute of the provider's record, so the tokens model has no minute to read.
+
 - `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted.
+
 - `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

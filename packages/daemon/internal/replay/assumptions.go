@@ -9,8 +9,9 @@ package replay
 type Assumption struct {
 	// Number is the assumption's number: 1 to 18 are the list of the tool's spec, in its order,
 	// 19 to 25 were added by its plan, 26 to 37 are the tool's own, 38 on were added to the plan,
-	// 50 came with the forward merge of cybermonklabs/legion#4592, and 51 with the priority
-	// Dispatch resolves (spec R10) (Assumptions).
+	// 50 came with the forward merge of cybermonklabs/legion#4592, 51 with the priority Dispatch
+	// resolves (spec R10), and 52 with the conflict generator's rate of the stretches with no
+	// profile (Assumptions).
 	Number int `json:"number"`
 	// Text is what the replay assumes.
 	Text string `json:"text"`
@@ -37,8 +38,9 @@ type Assumption struct {
 // limit a replay takes from its caller where the record holds none (49: RunConfig.TokenLimit); and
 // the design-gate basis of cybermonklabs/legion#4592, which a replay rests no step on (50:
 // OutboxHandling's two basis reads); and the priority Dispatch resolves where the record holds
-// none, reconstructed from the window's parent chains (51: resolvePriorities). A run names the ones
-// its measures rest on by these numbers.
+// none, reconstructed from the window's parent chains (51: resolvePriorities); and the rate a
+// stretch whose head has no profile draws its conflict at (52: ConflictModel.NoProfile). A run
+// names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -195,6 +197,9 @@ var Assumptions = []Assumption{
 	{Number: assumeResolvedFromChains,
 		Text:      "Where Dispatch recorded no resolved priority, an issue's priority is the one Dispatch's rule gives from the window's own events: its own, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels, read at each change of a priority or a parent, every ancestor the window holds being one Dispatch showed the daemon.",
 		Direction: "Doubtful where Dispatch hid an ancestor from the daemon's reader that the collector read, or where a chain moved with no event in the window: an issue counted at an inherited priority it did not have counts in the wait of urgent work and in today's line's order at that priority, under every rule, and a rule with the new P0 start starts it outside the cap where Dispatch would not have, which favours that rule on the wait of urgent work. The tool reads Dispatch's recorded value wherever an event carries one, names each ancestor whose history the window lacks, and then compares no rule with the new P0 start and prints no measure that rests on the priority. Check on a window recorded after Dispatch served resolved_priority, whose recorded values the reconstruction must give."},
+	{Number: assumeNoProfileRate,
+		Text:      "A stretch whose head has no profile, the record holding no pull request of its issue, conflicts at the rate fitted on the window's stretches whose heads have none, with M every commit of its base since the stretch's start.",
+		Direction: "Doubtful: the record does not show which paths such an issue changes, so its chance pools every such stretch of the window and counts every merge since the stretch's start, not the merges that change its paths since its head last took its base. A merge before the stretch's start never counts, so a rule that makes such an issue wait longer before its stretch raises its chance less than the wait would, which favours that rule, as a missed conflict does in assumption 3. The tool fits that rate apart from the stretches with a profile, prints both fits, and counts the draws with no profile."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -236,3 +241,8 @@ const assumeNoBasis = 50
 // chains, Dispatch having recorded no resolved priority for it there (resolvedPriorities.inherited),
 // which every rule's measures read, and a rule with the new P0 start its admissions.
 const assumeResolvedFromChains = 51
+
+// assumeNoProfileRate is the assumption a draw of a stretch whose head has no profile rests on, at
+// the rate the window's stretches with none were fitted on (ConflictModel.NoProfile), which a run
+// names where it makes one such draw (driver.drawAt).
+const assumeNoProfileRate = 52

@@ -8,8 +8,8 @@ body: |-
   mode in place of the push check. The leak guard now calls the check as `gh-guard -- <the gh
   call>`, `gh-guard` alone for a gh call of no words, and `check-public-text -- -` for a text; the
   pre-push call does not change. `legion gh`'s list of reads is proven against `leak-check-v33`
-  (`ghReadsProvenCheck`), so a call that writes nothing still skips the visibility read in a pod
-  on the new pin.
+  (`ghroute.ReadsProvenCheckTag`), so a call that writes nothing still skips the visibility read
+  in a pod on the new pin.
 
   These call forms need `leak-check-v33` or later, and the release before this one does not work
   under `leak-check-v33`. A pod gets the check and the binary from one image. A tmux pane runs the

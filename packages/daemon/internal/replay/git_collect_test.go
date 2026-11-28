@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // gitRemote is a repository a test builds with the git CLI in a directory of its own, which
@@ -1237,7 +1239,7 @@ func TestCollectGitMergingAloneOpensNoConnectionToTheRemote(t *testing.T) {
 	}
 	scratch := t.TempDir()
 	marker, uploadPack := filepath.Join(scratch, "marker"), filepath.Join(scratch, "upload-pack")
-	if err := os.WriteFile(uploadPack, fmt.Appendf(nil, "#!/bin/sh\necho \"$@\" >> '%s'\nexit 1\n", marker), 0o755); err != nil {
+	if err := testexec.WriteFile(uploadPack, fmt.Appendf(nil, "#!/bin/sh\necho \"$@\" >> '%s'\nexit 1\n", marker), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	c.remote.git("-C", clone, "remote", "set-url", "origin", "file://"+filepath.Join(scratch, "gone"))
