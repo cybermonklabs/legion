@@ -8,19 +8,20 @@ package api
 // retro's report: answered 200 with the empty body (`HandoffCompleteResponse`) and recorded as
 // `intake.RetroReport`, with no status write and no read of GitHub. It carries `summary`,
 // `planRating` and `planReason` and nothing else: no rating is refused `400 PLAN_RATING_REQUIRED`
-// whatever contract the plugin states, a rating of the wrong form `400 PLAN_RATING_INPUT`, a verdict
-// `400 RETRO_VERDICT_UNEXPECTED`, a commit `400 RETRO_COMMIT_UNEXPECTED`, a wake `400
-// CHECK_WAKE_UNEXPECTED`, a handoff record `409 HANDOFF_RECORD_MISMATCH` and a `returnTo` `400
-// RETURN_TO_NEEDS_FAIL` (or `INVALID_RETURN_TO`). A report of a retro that is not open is refused
-// `409 RETRO_NOT_OPEN`, naming how it ended (its report, its 24-hour bound with no report, or a
-// `todo`), one from a claim other than the retro's agent `409 RETRO_AGENT_MISMATCH`, and the same
-// report sent again `409 HANDOFF_ALREADY_RECORDED`. Every other completion on a `done` issue stays
-// `409 CHECK_LOOK_NOT_SERVED`, and its text now names whose report the issue takes: the production
-// check's role, the retro's agent, or that the retro ended at its bound. Every refusal records
-// nothing, so the report sent again, corrected, is taken. `POST /legion/v1/claims/owed`
-// (20261125181104) answers that retro too: the claim serving an open retro after a close, its
-// agent's, owes it (`owes: true`, `work: "the retro after the close of <KEY>"`), so the end-of-turn
-// reminder asks its agent for the report, and once the retro ends nobody owes it.
+// whatever contract the plugin states and whatever commit or handoff record the plugin attached, a
+// rating of the wrong form `400 PLAN_RATING_INPUT`, a verdict `400 RETRO_VERDICT_UNEXPECTED`, a
+// commit `400 RETRO_COMMIT_UNEXPECTED`, a wake `400 CHECK_WAKE_UNEXPECTED`, a handoff record `409
+// HANDOFF_RECORD_MISMATCH` and a `returnTo` `400 RETURN_TO_NEEDS_FAIL` (or `INVALID_RETURN_TO`). A
+// report of a retro that is not open is refused `409 RETRO_NOT_OPEN`, naming how it ended (its
+// report, its 24-hour bound with no report, or a `todo`), one from a claim other than the retro's
+// agent `409 RETRO_AGENT_MISMATCH`, and the same report sent again `409 HANDOFF_ALREADY_RECORDED`.
+// Every other completion on a `done` issue stays `409 CHECK_LOOK_NOT_SERVED`, and its text now
+// names whose report the issue takes: the production check's role, the retro's agent, or that the
+// retro ended at its bound. Every refusal records nothing, so the report sent again, corrected, is
+// taken. `POST /legion/v1/claims/owed` (20261125181104) answers that retro too: the claim serving
+// an open retro after a close, its agent's, owes it (`owes: true`,
+// `work: "the retro after the close of <KEY>"`), so the end-of-turn reminder asks its agent for
+// the report, and once the retro ends nobody owes it.
 //
 // No shape moves, so the entry adds no row to a table the daemon serves from: the request and the
 // answer keep their schemas, and the codes are values of a refusal's `code`, which no reader

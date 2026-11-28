@@ -1133,7 +1133,8 @@ test("a retro report on a done issue with an open check posts the rating and no 
 
 // Without check_opened_at, a completion on a done issue with neither a verdict nor a rating is no
 // retro report and no check report: it follows the step completion path, looking up its handoff
-// report and posting to the daemon, which refuses it CHECK_LOOK_NOT_SERVED.
+// report and posting to the daemon, which refuses it PLAN_RATING_REQUIRED from the agent of an open
+// retro after the close and CHECK_LOOK_NOT_SERVED from any other session.
 test("a completion with neither a verdict nor a rating on a done issue follows the step completion path", async () => {
   for (const role of ["implementer", "tester"] as const) {
     const { ops, lookups, posted } = runtime(

@@ -1034,9 +1034,6 @@ func servedRetroRun(c supervise.Claim, caller claim.Token, retro *record.RunRetr
 //     as already received, as a phase completion's is.
 //   - RETRO_AGENT_MISMATCH: the grant is not the claim of the retro's agent (record.RunRetro.Agent).
 //   - RETRO_VERDICT_UNEXPECTED: a verdict, which no retro gives: its report rates the plan.
-//   - RETRO_COMMIT_UNEXPECTED: a commit, since the retro after a close pushes nothing.
-//   - HANDOFF_RECORD_MISMATCH: a handoff record, which a retro ends without, as the phase path
-//     refuses one for a phase that ends with none.
 //   - CHECK_WAKE_UNEXPECTED: a wakeAt, which belongs to a production check's pending report.
 //   - INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL: a returnTo (returnToRefusal), since the retro after a
 //     close moves the issue nowhere.
@@ -1044,6 +1041,17 @@ func servedRetroRun(c supervise.Claim, caller claim.Token, retro *record.RunRetr
 //     PLAN_RATING_REQUIRED: no rating at all. The report of a retro is what rates the plan, so it is
 //     required whatever contract the caller's plugin declared: a plugin from before the rating
 //     sends no report of a retro after a close, and that retro ends at its bound.
+//   - RETRO_COMMIT_UNEXPECTED: a commit, since the retro after a close pushes nothing.
+//   - HANDOFF_RECORD_MISMATCH: a handoff record, which a retro ends without, as the phase path
+//     refuses one for a phase that ends with none.
+//
+// The rating is read before the commit and the handoff record because a plugin attaches those two
+// to a call that leaves out the rating (legion-phase-ops.ts completeHandoff takes its step path and
+// attaches what findHandoffReport reports), and the agent can add the rating but cannot take them
+// away. The wake and the returnTo stay before the rating, as the verdict does: each is a field the
+// agent gave itself and no plugin attaches to a call with no rating (the plugin refuses wake_at on
+// its step path before it posts, and sends returnTo only when the agent named return_to), so a
+// refusal that names either asks for a change the agent can make.
 //
 // No GitHub read is made and no status is written: the retro pushed nothing, and the issue stays as
 // its close left it. The event is the issue and the run, so the report sent again is answered
@@ -1067,16 +1075,6 @@ func (s *server) retroReport(w http.ResponseWriter, r *http.Request, grant crede
 			what, req.Verdict))
 		return
 	}
-	if req.Commit != "" {
-		s.writeFailure(w, r, http.StatusBadRequest, "RETRO_COMMIT_UNEXPECTED", fmt.Sprintf(
-			"%s names commit %s, and the retro after a close pushes nothing; send it again without the commit, and nothing was recorded", what, req.Commit))
-		return
-	}
-	if req.HandoffID != "" || req.HandoffVersion != 0 {
-		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
-			"%s names a handoff record, and a retro ends with none: send it again without handoffId and handoffVersion; this completion changed nothing", what))
-		return
-	}
 	if req.WakeAt != nil {
 		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED", fmt.Sprintf(
 			"%s names wakeAt, which belongs to the pending report of a production check's look and to nothing else; send it again without a time, and nothing was recorded", what))
@@ -1092,6 +1090,16 @@ func (s *server) retroReport(w http.ResponseWriter, r *http.Request, grant crede
 	}
 	if refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
+	if req.Commit != "" {
+		s.writeFailure(w, r, http.StatusBadRequest, "RETRO_COMMIT_UNEXPECTED", fmt.Sprintf(
+			"%s names commit %s, and the retro after a close pushes nothing; send it again without the commit, and nothing was recorded", what, req.Commit))
+		return
+	}
+	if req.HandoffID != "" || req.HandoffVersion != 0 {
+		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
+			"%s names a handoff record, and a retro ends with none: send it again without handoffId and handoffVersion; this completion changed nothing", what))
 		return
 	}
 	result, err := s.apply(r.Context(), "api", fmt.Sprintf("retro-after-close:%s:%d", grant.Issue, run), intake.RetroReport{Issue: grant.Issue,
