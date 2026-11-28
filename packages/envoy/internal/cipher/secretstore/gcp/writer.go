@@ -276,7 +276,7 @@ func unreadPrincipal(account string) string {
 // personAccount reports whether email, as Google's userinfo endpoint names an account, is a
 // person's: a plain email the broker accepts as a person owner (policy.ValidPersonOwner,
 // lowercased), and no service account's (one ending in .gserviceaccount.com, such as a machine's
-// own). --owner me takes only a person's (gcpBackend.PersonEmail).
+// own). --owner me takes only a person's (writer.PersonEmail).
 func personAccount(email string) bool {
 	lower := strings.ToLower(email)
 	return policy.ValidPersonOwner(lower) && !strings.HasSuffix(lower, ".gserviceaccount.com")
@@ -355,7 +355,7 @@ func (s redactedTokens) Token() (*oauth2.Token, error) {
 	return token, nil
 }
 
-// signIn sets b's credential from the first source present (newGCPBackend).
+// signIn sets b's credential from the first source present (newWriter).
 func (b *writer) signIn(ctx context.Context) error {
 	var absent []string
 	skip := func(source gcpSource, why string) { absent = append(absent, source.name()+": "+why) }
@@ -521,8 +521,8 @@ func credentialsFilePrincipal(creds *google.Credentials) string {
 	return cipherclient.ServiceAccountWords(account, "the credentials file")
 }
 
-// gcpBackend is the secretstore.Writer for store "gcp-secret-manager": GCP Secret Manager under
-// the credential of the first Google credential source present (newGCPBackend), pinned to
+// writer is the secretstore.Writer for store "gcp-secret-manager": GCP Secret Manager under the
+// credential of the first Google credential source present (newWriter), pinned to
 // settings.GCPProject. It implements no secretstore.AccountGuard: every call it makes names
 // projects/<gcp_project>/... in the resource, so a wrong-project sign-in gets a real
 // PermissionDenied or NotFound from the API itself rather than reading another project's
@@ -604,7 +604,7 @@ func (b *writer) PersonEmail(ctx context.Context) (string, error) {
 }
 
 // Identity names the credential this backend signs in with, as `<source>: <principal>`: the
-// source newGCPBackend took it from, and who it acts as, or that the principal is unknown.
+// source newWriter took it from, and who it acts as, or that the principal is unknown.
 func (b *writer) Identity() string { return b.sourcePhrase + ": " + b.principal }
 
 // ChooseAnother is how a refusal of the store's says to sign in with another credential, built

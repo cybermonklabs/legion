@@ -75,10 +75,10 @@
 // the cloud credential the environment gives them, as the cloud's own tools read it - against an
 // AWS broker the AWS SDK's own chain (access keys, a web identity token file, AWS_PROFILE,
 // AWS_DEFAULT_PROFILE, the rest of its default chain), against a GCP one the first Google source
-// present (newGCPBackend) - and need no session identity at all. The machine and grant forms act
-// under this machine's login: the helper signs each call with its launcher credential
-// (sign-launcher) for a process it can show is outside every registered session's process tree,
-// the operator's own shell, and only for the broker's four operator routes.
+// present (secretstore/gcp's writer) - and need no session identity at all. The machine and
+// grant forms act under this machine's login: the helper signs each call with its launcher
+// credential (sign-launcher) for a process it can show is outside every registered session's
+// process tree, the operator's own shell, and only for the broker's four operator routes.
 package main
 
 import (

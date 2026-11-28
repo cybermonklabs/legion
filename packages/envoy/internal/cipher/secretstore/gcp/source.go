@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// gcpSource is one Google credential source, in the order newGCPBackend tries them.
+// gcpSource is one Google credential source, in the order newWriter tries them.
 type gcpSource int
 
 const (
@@ -142,7 +142,7 @@ func gcloudConfigurationList() string {
 // developer's Compute Engine VM on 2026-11-15, where `config list --configuration=<name>` for a
 // person's configuration named the VM's account and `config configurations describe <name>` named
 // none. A file it cannot read is an error, with the system's reason alone (redact.File): the name
-// is one this machine holds (newGCPBackend refuses any other first), and the path is gcloud's
+// is one this machine holds (newWriter refuses any other first), and the path is gcloud's
 // directory's.
 func gcloudConfigurationAccount(name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(gcloudConfigDir(), "configurations", "config_"+name))
