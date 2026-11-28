@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -803,7 +804,7 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn, project string, issues ...s
 	if err := os.WriteFile(token, []byte("kept-decisions-operator-"+project+"\n"), 0o600); err != nil {
 		t.Fatalf("step 5: %v", err)
 	}
-	if err := os.WriteFile(omp, []byte(keptDecisionsOMP), 0o755); err != nil {
+	if err := testexec.WriteFile(omp, []byte(keptDecisionsOMP), 0o755); err != nil {
 		t.Fatalf("step 5: %v", err)
 	}
 	repository := filepath.Join("..", "..", "..", "..")
