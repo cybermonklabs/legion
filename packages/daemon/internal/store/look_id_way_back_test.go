@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,38 +14,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// lookIDWayBackExtract is the copy of the way back docs/kubernetes.md gives under "Rolling back the
-// release whose look report gives its look id", which internal/textcheck's
-// TestTheLookIDWayBackExtractIsTheGuidesBlock holds to the guide's block, line for line. This file
-// reads the copy beside it rather than the guide, so the guide stays out of this package's CI
-// filter: a test that read the guide would start the whole daemon Go lane on an edit of the guide
-// alone.
-const lookIDWayBackExtract = "look_id_way_back_extract.txt"
-
-// lookIDWayBackFor is the block the extract carries, everything under its run of `#` lines, as an
-// operator who rolls project back runs it: with project's key in place of rollingBackProject. A
-// copy with nothing under its header, or with no rollingBackProject to name the project by, stops
-// the test by name: a block this cannot find is a block it would pass while running nothing.
-func lookIDWayBackFor(t *testing.T, project string) string {
-	t.Helper()
-	text, err := os.ReadFile(lookIDWayBackExtract)
-	if err != nil {
-		t.Fatalf("read the way back of %s: %v", lookIDRelease, err)
-	}
-	body := string(text)
-	for strings.HasPrefix(body, "#") {
-		_, body, _ = strings.Cut(body, "\n")
-	}
-	if body = strings.TrimSpace(body); body == "" || !strings.Contains(body, rollingBackProject) {
-		t.Fatalf("%s carries no block naming the project by %s under its `#` header: %q", lookIDWayBackExtract,
-			rollingBackProject, body)
-	}
-	return strings.ReplaceAll(body, rollingBackProject, project)
-}
-
-// The way back of the release whose look report gives its look id, run for LEGION with every
-// daemon stopped, leaves each queued row and each production check of LEGION as the release
-// before can take it, and each of another project as this release left it:
+// The way back of the release whose look report gives its look id, the last paragraph of the
+// header of lookIDVersion (20261127171352_production_check_look_id, migrations.WayBack), run for
+// LEGION (LEGION in place of rollingBackProject) with every daemon stopped, leaves each queued row
+// and each production check of LEGION as the release before can take it, and each of another
+// project as this release left it:
 //
 //   - lookId and lookReissue go off each supervise row that carries them (the release before
 //     decodes a payload strictly, DisallowUnknownFields), and every other key of the row stays.
@@ -62,6 +34,12 @@ func lookIDWayBackFor(t *testing.T, project string) string {
 //
 // OTHER's rows, of the same shapes, stay as they are. A second run changes nothing. The control is
 // the state before the block, which the same reads hold to the fixtures.
+//
+// docs/kubernetes.md carries the same block under "Rolling back the release whose look report gives
+// its look id", and internal/textcheck's TestTheLookIDWayBackIsOneTextInTheHeaderAndTheGuide holds
+// the two to one text. This file reads the header alone, so the guide stays out of this package's
+// CI filter: a test that read the guide would start the whole daemon Go lane on an edit of the
+// guide alone.
 func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -153,7 +131,7 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 		"OTHER-301 open - look open true generation 2 id LOOKIDOFOTHER301",
 	})
 
-	wayBack := lookIDWayBackFor(t, "LEGION")
+	wayBack := strings.ReplaceAll(wayBackOf(t, lookIDVersion, lookIDRelease), rollingBackProject, "LEGION")
 	if _, err := s.Pool().Exec(ctx, wayBack); err != nil {
 		t.Fatalf("run the way back for LEGION: %v", err)
 	}

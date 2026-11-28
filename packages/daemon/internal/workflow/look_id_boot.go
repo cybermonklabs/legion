@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"crypto/rand"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,18 +17,17 @@ import (
 //
 // An open look with no look id of its own (record.ProductionCheck.CurrentLookID is ""), which an
 // older daemon opened or left behind after a rollback, gets one, made as startLook makes it
-// (crypto/rand's Text) and stored with the look's number and the check instance, and one start
-// row of that same look: the check's role, the look's number and the check's opening time, the
-// generation the issue holds, the look id, the mark of the new task of an open look
-// (record.SuperviseRequest.LookReissue) and the task checkTask writes now, from the record's last
-// wake (LastWakeKind, LastWakeDetail) and its last mark (Last). The look keeps its number, its
-// wake and its bound: the check_look row its start queued still ends it. The new task takes the
-// place of the old one, which gives no look id and so never holds (supervise's queue and its
-// send), and the old start row finishes at its fence for the same reason (the outbox's
-// checkLookHolds). The start row of a look whose issue runs again finishes there too, since no
-// look runs while the run holds the issue. A start row so marked that meets a hold of the
-// operator's or the controller's waits for the resume, as a phase start does, and does not end
-// the look (the outbox's start executor).
+// (giveLookID), and one start row of that same look as startLook queues it (lookStart): the
+// check's role, the look's number and the check's opening time, the generation the issue holds,
+// the look id and the task checkTask writes now, from the record's last wake (LastWakeKind,
+// LastWakeDetail) and its last mark (Last), with the mark of the new task of an open look
+// (record.SuperviseRequest.LookReissue). The look keeps its number, its wake and its bound: the
+// check_look row its start queued still ends it. The new task takes the place of the old one,
+// which gives no look id and so never holds (supervise's queue and its send), and the old start
+// row finishes at its fence for the same reason (the outbox's checkLookHolds). The start row of a
+// look whose issue runs again finishes there too, since no look runs while the run holds the
+// issue. A start row so marked that meets a hold of the operator's or the controller's waits for
+// the resume, as a phase start does, and does not end the look (the outbox's start executor).
 //
 // An open check with no generation (record.ProductionCheck.OpenedGeneration is 0), which an older
 // binary opened or the way back of docs/kubernetes.md left, gets one, read from its issue as the
@@ -68,7 +66,7 @@ func (e *Engine) RepairOpenChecks(ctx context.Context, tx pgx.Tx) (looks, genera
 		}
 		reissue := check.LookOpen && check.Looks > 0 && check.CurrentLookID() == ""
 		if reissue {
-			check.LookID, check.LookIDLook, check.LookIDOpenedAt = rand.Text(), check.Looks, check.OpenedAt
+			giveLookID(&check)
 			looks++
 		}
 		if !generation && !reissue {
@@ -80,9 +78,9 @@ func (e *Engine) RepairOpenChecks(ctx context.Context, tx pgx.Tx) (looks, genera
 		if !reissue {
 			continue
 		}
-		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: check.Role,
-			Generation: issue.Generation, CheckLook: check.Looks, CheckOpenedAt: check.OpenedAt, LookID: check.LookID, LookReissue: true,
-			Task: checkTask(*issue, check, check.LookID, check.LastWakeKind, check.LastWakeDetail, check.Last)}); err != nil {
+		start := lookStart(*issue, check)
+		start.LookReissue = true
+		if err := e.enqueue(ctx, tx, issue.Key, start); err != nil {
 			return 0, 0, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot gave an open production check look an id of its own and a new task", "issue", issue.Key,

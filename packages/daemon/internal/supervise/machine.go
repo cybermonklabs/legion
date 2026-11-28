@@ -2791,21 +2791,22 @@ func (c Claim) ServingEntry() int64 {
 	return serving(c.Pending, deliveredEntry, c.ServedEntry, c.ServedEntry != 0, c.openRoundHoldsTask())
 }
 
-// ServingCheck is the production check look this worker took, or zero if it took none.
-// A phase task leaves a served look in place: the completion's checkOpenedAt selects the
-// check path, and this accessor only attributes that report to its look. A later look replaces
-// the old one, so a report from an earlier turn is still fenced by the engine.
+// ServingCheck is the production check look this worker took, or zero if it took none. It serves
+// the owed route (api/owed.go), which owes a claim the look the record holds open for it, and what
+// the claim is left serving when its task retires (retirePending). A phase task leaves a served
+// look in place, and a later look replaces it. No report reads it: a report's look id names its
+// look (api/handoff.go's checkReport), and the look fence (lookHolds, Deps.LookHolds) holds a
+// look's task to its look, so the task of a look that ended is retired and never sent.
 //
 // An unread look task is taken only on a claim that has served nothing at all (servedAnything).
-// Otherwise the worker could report a look it has not begun. An acknowledged prompt whose own
-// turn starts confirms the task (Machine.outstanding, turnStarted); a turn of the agent's own
-// confirms nothing. If the prompt produced no turn, the report is refused and the task is sent
-// again after that turn. The look's two-hour bound is the backstop (workflow.CheckLookBound).
+// Otherwise the owed route could owe the worker a look it has not begun. An acknowledged prompt
+// whose own turn starts confirms the task (Machine.outstanding, turnStarted); a turn of the agent's
+// own confirms nothing. The look's two-hour bound is the backstop (workflow.CheckLookBound).
 func (c Claim) ServingCheck() CheckLook {
 	return serving(c.Pending, deliveredCheckLook, c.ServingCheckLook, c.servedAnything(), c.openRoundHoldsTask())
 }
 
-// servedAnything keeps a report from borrowing an unread look task while this claim serves
+// servedAnything keeps ServingCheck from taking an unread look task while this claim serves
 // earlier work. A confirmed delivery is taken by serving's first rule before this guard.
 func (c Claim) servedAnything() bool {
 	return c.ServingGeneration != 0 || c.ServedEntry != 0 || c.ServingCheckLook != (CheckLook{})

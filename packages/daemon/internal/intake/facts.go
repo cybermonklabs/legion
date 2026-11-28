@@ -2429,6 +2429,13 @@ func PlanRatingUnexpected(what string) *Refusal {
 		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
+// LookIDRule is the rule each refusal of a report's look names: the look id, as the check's opening
+// time, comes from the task of the look the report is of, the one text that gives it (workflow's
+// checkTask). The completion route's refusals give it (api's checkReport and answerCompletion),
+// and so do the engine's refusals of a report that a later merge or a new look overtook
+// (workflow's checkReported), so an agent reads the same words from either.
+const LookIDRule = "A report gives check_opened_at and look_id from the task of its look."
+
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes

@@ -68,7 +68,7 @@ func TestADoneIssuesLookReportThatNamesNoCheckIsRefused(t *testing.T) {
 	seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 	c := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: c.grant(t), Summary: "production passes", Verdict: "pass"}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	for _, want := range []string{"checkOpenedAt", "check_opened_at and look_id from the task of its look"} {
+	for _, want := range []string{"checkOpenedAt", intake.LookIDRule} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("refusal = %q, want the missing check identity and the rule, %q", message, want)
 		}
@@ -187,7 +187,7 @@ func TestAReportNamingNoOpenCheckOfThatTimeIsRefused(t *testing.T) {
 			}
 			message := refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass", LookID: checkLookID}, opened), http.StatusConflict, "CHECK_NOT_OPEN")
 			if which == "replaced" || which == "wrong time" {
-				for _, detail := range []string{"production check is open", "look 2", "check_opened_at and look_id from the task of its look"} {
+				for _, detail := range []string{"production check is open", "look 2", intake.LookIDRule} {
 					if !strings.Contains(message, detail) {
 						t.Fatalf("refusal = %q, want the open check, its current look and the rule %q", message, detail)
 					}

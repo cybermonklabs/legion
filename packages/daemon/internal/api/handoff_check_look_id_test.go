@@ -469,7 +469,7 @@ func TestAReportWithoutTheCurrentLooksIDRecordsNothing(t *testing.T) {
 			opened := tc.openedAt
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "driven in production", Verdict: "pass",
 				CheckOpenedAt: &opened, LookID: tc.lookID}), tc.status, tc.code)
-			for _, want := range []string{"look 2", lookIDRule} {
+			for _, want := range []string{"look 2", intake.LookIDRule} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q: the current look and the rule", message, want)
 				}
@@ -516,7 +516,7 @@ func TestANamedReportFromATestingTurnWithNoLookIDIsNoProductionPass(t *testing.T
 	} {
 		message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 			CheckOpenedAt: &opened, LookID: tc.lookID}), tc.status, tc.code)
-		if !strings.Contains(message, "look 1") || !strings.Contains(message, lookIDRule) {
+		if !strings.Contains(message, "look 1") || !strings.Contains(message, intake.LookIDRule) {
 			t.Fatalf("the refusal is %q, want it to name look 1 and the rule", message)
 		}
 		if strings.Contains(message, "works no look") || strings.Contains(message, recordedCheck(t, h, "LEGION-209").LookID) {
@@ -554,7 +554,7 @@ func TestAPhaseCompletionCarryingALookIDIsRefused(t *testing.T) {
 			withID := req
 			withID.GrantID, withID.LookID = tester.grant(t), checkLookID
 			message := refused(t, h.complete(withID), http.StatusBadRequest, "CHECK_LOOK_ID_UNEXPECTED")
-			for _, want := range []string{"lookId", "checkOpenedAt", "Nothing was recorded", lookIDRule} {
+			for _, want := range []string{"lookId", "checkOpenedAt", "Nothing was recorded", intake.LookIDRule} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q", message, want)
 				}

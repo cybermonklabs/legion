@@ -3378,10 +3378,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
 		// the role the work of the entry its row already names travels with the mark that
 		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-		// it was given that entry. A check start's look and check instance travel the same way,
-		// and attribute a report that names its check to the look this task gave the worker
-		// (supervise.Claim.ServingCheck, api/handoff.go). The look's id travels with them: the
-		// look's task gives it to the worker, and the claim keeps it with the delivery
+		// it was given that entry. A check start's look and check instance travel the same way:
+		// the claim serves that look once a turn takes the task (supervise.Claim.ServingCheck, which
+		// the owed route reads), and the look fence holds the task to it (supervise's lookHolds).
+		// The look's id travels with them: the look's task gives it to the worker, and the claim
+		// keeps it with the delivery, where the fence reads it
 		// (record.SuperviseRequest.LookID, supervise.Delivery.LookID). The row travels as well:
 		// the claim writes it with the delivery, so a retry of this row (a
 		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
@@ -5157,32 +5158,17 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // the look ends at its own bound) leave the row nothing to start, and so does a row with no look id
 // (an older daemon queued it, and its task gives no id) or with an id that is not the look's own
 // (the check holds none for this look, or another start of the look took its place): it finishes
-// without acting, logged with why. The line names the look by its number, and never the id or the
-// task (R3 of dispatch://INFRA-3518).
+// without acting, logged with why (record.WhyLookDoesNotHold, the reason record.LookHolds rejects
+// it for). The line names the look by its number, and never the id or the task (R3 of
+// dispatch://INFRA-3518).
 func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (*record.ProductionCheck, error) {
 	check, err := r.productionCheck(ctx, row.Issue)
 	if err != nil {
 		return nil, err
 	}
-	var why string
-	switch {
-	case check == nil:
-		why = "the issue has no production check"
-	case record.InWorkflow(issue):
-		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
-	case !check.Open():
-		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.CheckOpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
-	case check.Looks != payload.CheckLook:
-		why = fmt.Sprintf("the check is at look %d", check.Looks)
-	case !check.LookOpen:
-		why = "the look has ended"
-	case payload.LookID == "":
-		why = "the row gives no look id: an older daemon queued it"
-	case payload.LookID != check.CurrentLookID():
-		why = "the row's look id is not the id the check holds for the look"
-	default:
+	look := supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt}
+	why := record.WhyLookDoesNotHold(&issue, check, look, payload.LookID)
+	if why == "" {
 		return check, nil
 	}
 	r.log.Info("production check start finishes without acting", "row", row.ID, "issue", row.Issue, "look", payload.CheckLook, "why", why)

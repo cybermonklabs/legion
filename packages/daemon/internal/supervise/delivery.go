@@ -98,9 +98,11 @@ type Delivery struct {
 	// was upgraded to number them. The promotion's resume of a mid-phase worker is no such task:
 	// it carries the entry it raised (workflow.Engine.StartPromotedWorker).
 	Entry int64
-	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
-	// to attribute an explicitly named check report to the look the worker took, not to choose
-	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
+	// CheckLook is the look and check instance this task gives the worker. ServingCheck reads it
+	// for the owed route (api/owed.go) and for what the claim is left serving when the task
+	// retires (retirePending); no report reads it, since a report's look id names its look. The
+	// look fence (lookHolds) holds the task to this look. Phase tasks, operator tasks and resumes
+	// carry zero.
 	CheckLook CheckLook
 	// LookID is the secret look id that a look's task gives the checking role, from the start
 	// row that queued it (RequestDeliver.LookID, record.SuperviseRequest.LookID): the look id
@@ -594,25 +596,22 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		if (id != "" && pending.ID == id && pending.Task == request.Task) || queued {
 			return nil
 		}
-		if pending.CheckLook.Look > 0 && pending.ConfirmedAt.IsZero() {
+		ended := false
+		if pending.ConfirmedAt.IsZero() {
 			holds, err := m.lookHolds(ctx, *pending)
 			if err != nil {
 				return err
 			}
-			if !holds {
-				if m.send != nil {
-					return m.refuseBehindPending(ctx)
-				}
-				m.log.Info("supervise: the pending production check look no longer holds; the newer task takes its place",
-					"replaced", pending.ID, "look", pending.CheckLook.Look, "delivery", id)
-				if err := m.retirePending(ctx); err != nil {
-					return err
-				}
-				m.disarm(TimerTurn)
-				m.answeredBusy = ""
-				if err := m.answerAskFirstAfterDrop(ctx); err != nil {
-					return err
-				}
+			ended = !holds
+		}
+		if ended && m.send != nil {
+			return m.refuseBehindPending(ctx)
+		}
+		if ended {
+			m.log.Info("supervise: the pending production check look no longer holds; the newer task takes its place",
+				"replaced", pending.ID, "look", pending.CheckLook.Look, "delivery", id)
+			if _, err := m.retireEndedLook(ctx); err != nil {
+				return err
 			}
 		}
 	}
@@ -1591,18 +1590,29 @@ func (m *Machine) RetireLookTask(ctx context.Context, look CheckLook, reported b
 	d := m.claim.Pending
 	m.log.Info("supervise: the production check look this task was queued for ended; it is retired rather than kept",
 		"delivery", d.ID, "issue", m.claim.Issue, "look", look.Look, "reported", reported, "outstanding", m.outstanding)
-	if err := m.retirePending(ctx); err != nil {
-		if claimChanged {
+	retired, err := m.retireEndedLook(ctx)
+	if err != nil {
+		if !retired && claimChanged {
 			m.oweWrite("RetireDelivery", err)
 		}
+		return retired, err
+	}
+	return true, m.relaunchAfterDrop(ctx)
+}
+
+// retireEndedLook retires the pending task of a look that no longer holds, and the claim's waits on
+// it: the retirement (retirePending), then the turn timer, the busy answer the task met
+// (answeredBusy) and the question a restart armed for it (answerAskFirstAfterDrop), in that
+// order. retired says whether the retirement landed, so a failure after it is told from a failure
+// of the retirement itself. queue runs it for an unconfirmed look task a newer task replaces, and
+// RetireLookTask for the task of a look the workflow ended.
+func (m *Machine) retireEndedLook(ctx context.Context) (retired bool, err error) {
+	if err := m.retirePending(ctx); err != nil {
 		return false, err
 	}
 	m.disarm(TimerTurn)
 	m.answeredBusy = ""
-	if err := m.answerAskFirstAfterDrop(ctx); err != nil {
-		return true, err
-	}
-	return true, m.relaunchAfterDrop(ctx)
+	return true, m.answerAskFirstAfterDrop(ctx)
 }
 
 // relaunchAfterDrop gives a claim that one of sendPending's drops left holding nothing the

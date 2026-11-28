@@ -165,7 +165,7 @@ func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 // pointer to read_record, which serves no look id.
 func namesTheRuleAndNoLookID(t *testing.T, h *harness, key, message string) {
 	t.Helper()
-	for _, want := range []string{"checkOpenedAt", "recorded nothing", lookIDRule} {
+	for _, want := range []string{"checkOpenedAt", "recorded nothing", intake.LookIDRule} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal is %q, want it to say %q", message, want)
 		}
@@ -385,7 +385,7 @@ func TestACheckReportOfAReplacedChecksLookIsRefused(t *testing.T) {
 	const replacedLookID = "REPLACEDCHECKLOOKTWOABCDEF"
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &opened, LookID: replacedLookID}),
 		http.StatusConflict, "CHECK_NOT_OPEN")
-	for _, want := range []string{opened.UTC().Format(time.RFC3339Nano), "look 2", lookIDRule} {
+	for _, want := range []string{opened.UTC().Format(time.RFC3339Nano), "look 2", intake.LookIDRule} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal is %q, want it to say %q", message, want)
 		}

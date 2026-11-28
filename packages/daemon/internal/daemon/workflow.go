@@ -1393,21 +1393,17 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 // lookHolds answers supervise's Deps.LookHolds from the issue and production check records in one
 // read-only transaction: a look's task holds only while the check is open, it is the check look
 // names, look is its current look and is open, the issue is out of the workflow, and lookID is
-// non-empty and matches the check's current look id (record.LookHolds).
+// non-empty and matches the check's current look id (record.ReadLookHolds, record.LookHolds).
 func (w *workflowRuntime) lookHolds(ctx context.Context, key string, look supervise.CheckLook, lookID string) (bool, error) {
-	var issue *record.Issue
-	var check *record.ProductionCheck
+	var holds bool
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		if issue, err = w.records.Issue(ctx, tx, key); err != nil {
-			return err
-		}
-		check, err = w.records.ProductionCheck(ctx, tx, key)
+		holds, err = record.ReadLookHolds(ctx, w.records, tx, key, look, lookID)
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read %s for the production check look of its task: %w", key, err)
 	}
-	return record.LookHolds(issue, check, look, lookID), nil
+	return holds, nil
 }
 
 // phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open

@@ -189,9 +189,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		return
 	}
 	// Only the request field chooses the route. A check report reads nothing of the claim: its
-	// look id names its look (checkReport). One claim snapshot supplies the run and the entry of a
-	// phase completion: two reads could straddle a delivery's confirmation.
-	c := machine.Claim()
+	// look id names its look (checkReport).
 	if req.CheckOpenedAt != nil {
 		s.checkReport(w, r, grant, position.check, req)
 		return
@@ -205,14 +203,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if req.LookID != "" {
 		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_LOOK_ID_UNEXPECTED", fmt.Sprintf(
 			"This completion of %s gives lookId and no checkOpenedAt. Only the report of a production check's look gives a look id, and that report also gives checkOpenedAt. Nothing was recorded. %s A phase completion gives neither.",
-			grant.Issue, lookIDRule))
+			grant.Issue, intake.LookIDRule))
 		return
 	}
 	if issue.Phase == phase.Done {
 		whose := "It has no open production check, so there is nothing here for any role to report."
 		if position.check != nil && position.check.Open() {
 			whose = fmt.Sprintf(
-				"Its production check is the %s's. Only that role reports on it, with the verdict pass, pending or fail. "+lookIDRule,
+				"Its production check is the %s's. Only that role reports on it, with the verdict pass, pending or fail. "+intake.LookIDRule,
 				position.check.Role)
 		}
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", fmt.Sprintf(
@@ -248,6 +246,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			issue.Phase, grant.Issue))
 		return
 	}
+	// One claim snapshot supplies the run and the entry of a phase completion: two reads could
+	// straddle a delivery's confirmation.
+	c := machine.Claim()
 	serving, entry := c.ServingRun(), c.ServingEntry()
 	// A claim that has retired no run and holds a task its agent neither confirmed nor was marked
 	// as reading is working that held task: that is exactly the state a busy refusal, a late
@@ -903,12 +904,6 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 // the daemon's rate reading counts its calls on each installation by.
 const handoffPullRequestCaller = "handoff_pull_request"
 
-// lookIDRule is the rule each refusal of a report's look names: the look id, as the check's
-// opening time, comes from the task of the look the report is of, the one text that gives it
-// (workflow's checkTask). The engine's refusal of a report that a new look overtook gives the
-// same words (workflow's checkReported).
-const lookIDRule = "A report gives check_opened_at and look_id from the task of its look."
-
 // checkReport records a report on the current look of the check explicitly named by
 // CheckOpenedAt, the look the report's look id names. Before any fact, in this order, it refuses:
 //
@@ -921,18 +916,17 @@ const lookIDRule = "A report gives check_opened_at and look_id from the task of 
 //     replaced, the id of a check a later merge replaced, or any id while the current look has
 //     none yet, which is a look an older daemon started, until the boot gives it one.
 //
-// The test of the id is one `if`, which a control removes in one line, and it compares in
-// constant time (namesCurrentLook), so the time an answer takes says nothing of how much of an id
-// matched. The open check's other answer and the id's two answers name the current look's number
-// and the rule (lookIDRule), and no answer holds a look id, neither the one the report gave nor
-// the current one (R3 of dispatch://INFRA-3518). Nothing of the claim is read: the task it holds,
-// whether a turn confirmed that task and what the claim was left serving decide nothing, since a
-// turn names no prompt (Oh My Pi's agent_start carries no delivery id) and the turn match is a
-// guess. So a report that gives the current look's id is recorded whatever the turn, a turn of a
-// phase task of a run the issue runs again included, and a report that does not is recorded from
-// no turn. A look that ended with no report (its bound, a hold its start met, a failed claim) is
-// the current look until the next one starts, so its report is recorded (workflow's
-// checkReported).
+// The id is compared in constant time (namesCurrentLook), so the time an answer takes says nothing
+// of how much of an id matched. The open check's other answer and the id's two answers name the
+// current look's number and the rule (intake.LookIDRule), and no answer holds a look id, neither
+// the one the report gave nor the current one (R3 of dispatch://INFRA-3518). Nothing of the claim
+// is read: the task it holds, whether a turn confirmed that task and what the claim was left
+// serving decide nothing, since a turn names no prompt (Oh My Pi's agent_start carries no delivery
+// id) and the turn match is a guess. So a report that gives the current look's id is recorded
+// whatever the turn, a turn of a phase task of a run the issue runs again included, and a report
+// that does not is recorded from no turn. A look that ended with no report (its bound, a hold its
+// start met, a failed claim) is the current look until the next one starts, so its report is
+// recorded (workflow's checkReported).
 //
 // The remaining refusals validate the report's fields, not which kind of call the request is.
 //   - CHECK_VERDICT_REQUIRED: the verdict is not one of pass, pending or fail.
@@ -968,7 +962,7 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 	if !check.OpenedAt.Equal(*req.CheckOpenedAt) {
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
 			"%s's production check is open, but it did not open at %s. The current look of the check is look %d. This completion changed nothing. %s Send the report again with the values from that task.",
-			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano), check.Looks, lookIDRule))
+			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano), check.Looks, intake.LookIDRule))
 		return
 	}
 	if grant.Role != check.Role {
@@ -984,7 +978,7 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		}
 		s.writeFailure(w, r, status, code, fmt.Sprintf(
 			"This report on %s's production check %s. The current look of the check is look %d. %s Nothing was recorded. Send the report again with the look id from the task of look %d.",
-			grant.Issue, gives, check.Looks, lookIDRule, check.Looks))
+			grant.Issue, gives, check.Looks, intake.LookIDRule, check.Looks))
 		return
 	}
 	if req.Verdict != "pass" && req.Verdict != "pending" && req.Verdict != "fail" {

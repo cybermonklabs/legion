@@ -1538,7 +1538,8 @@ type SuperviseRequest struct {
 	// Only a start of a look carries one, and a start of a look that an older daemon queued
 	// carries none. A release before this key refuses a row that carries it
 	// (DisallowUnknownFields), so the way back of
-	// migrations/20261127171352_production_check_look_id.up.sql takes it off every supervise row.
+	// migrations/20261127171352_production_check_look_id.up.sql takes it off every supervise row
+	// of the project that rolls back.
 	LookID string `json:"lookId,omitempty"`
 	// LookReissue marks the start of a look that is open already: the boot gives such a look,
 	// which had no look id of its own, an id and a new task of that look. It comes only with a
@@ -1547,7 +1548,8 @@ type SuperviseRequest struct {
 	LookReissue bool `json:"lookReissue,omitempty"`
 	// Reported marks a `retire_look` of a look that ended with the checking role's report, which
 	// retires the look's task as one its turn served. Every other request carries none. A release
-	// before this key knows no `retire_look`, and the same way back deletes every such row.
+	// before this key knows no `retire_look`, and the same way back deletes each such row of the
+	// project that rolls back.
 	Reported bool `json:"reported,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
 	// it always: its executor stops the claim for that pause, and finishes without acting once

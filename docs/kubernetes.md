@@ -2327,7 +2327,8 @@ A done issue refuses that phase call with `CHECK_LOOK_NOT_SERVED` and names the 
 Since the release whose look report gives its look id, a check report also gives `lookId` (the tool's `look_id`), the secret id that only the task of its look gives, and the route takes the report's look from that id, never from the turn the claim is in ([Rolling back the release whose look report gives its look id](#rolling-back-the-release-whose-look-report-gives-its-look-id)).
 Before it applies any fact, the route refuses a missing, closed or different check (`CHECK_NOT_OPEN`), then another role (`CHECK_ROLE_MISMATCH`), then a report with no `lookId` (`400 CHECK_LOOK_ID_REQUIRED`), then a `lookId` that is not the id of the check's current look (`409 CHECK_LOOK_NOT_OPEN`).
 The same `409` answers a report on a look that an older daemon started, until the next boot of that release gives the look an id and a new task.
-Each of these answers names the number of the current look and holds no look id.
+`CHECK_LOOK_ID_REQUIRED`, `CHECK_LOOK_NOT_OPEN` and the `CHECK_NOT_OPEN` of an open check that opened at another time name the number of the current look.
+No answer holds a look id.
 A phase completion that gives `lookId` gets `400 CHECK_LOOK_ID_UNEXPECTED` and records nothing.
 The claim keeps the look it last served through phase tasks until a later look replaces it (`serving_check_look`), and the report route reads none of it.
 The check route runs no phase effects.
@@ -2366,7 +2367,9 @@ Its migration `20261127171352_production_check_look_id` adds five columns, null 
 **Four things of this release need SQL before the earlier image runs on this database.**
 
 - The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither `lookId` nor `lookReissue`, so it fails a supervise row that carries either at every attempt.
-  A start without the two keys is a start of its look as the release before writes one.
+  A start without the two keys runs under the release before as a start of its look.
+  Its task still gives the look id and asks for `look_id`, and so does the task of a delivery that a claim holds (`pending_task_deliveries.task`).
+  The earlier plugin's `handoff_complete` accepts no field that it does not know, so it refuses a report that gives `look_id`, and the checking role then sends the report again without it.
 
 - The release before knows no op `retire_look`, so it fails such a row at every attempt too.
   The row holds nothing that the release before can run.
@@ -2410,9 +2413,7 @@ The outbox and the production checks are one table each for every project's daem
 A daemon that stays on this release keeps its own look ids, reissue marks, `retire_look` rows and generations.
 A second run of the block changes nothing.
 
-The header of `20261127171352_production_check_look_id.up.sql` names this section as the release's whole way back.
-The block that closes that header holds the first, second and fourth statements of this block without the project's scope, for every project of the database at once, and it closes no check.
-So run this block for each project that rolls back, and that block adds nothing to it.
+The header of `20261127171352_production_check_look_id.up.sql` carries this same block.
 
 The block drops none of the five columns and deletes no version row, so the roll forward applies nothing.
 The release before names none of the five columns in a statement, so it writes none of them.
@@ -2421,8 +2422,8 @@ Such a look id counts for nothing: this release reads an id as the current look'
 At the roll forward, the first boot of this release gives each open check its generation again, and each open look with no id of its own an id and a new task of that look.
 Until then, the release before takes a report's look from the turn the claim is in, as it did before this release.
 
-This block is the one source of its statements.
-`internal/store`'s `TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain` runs it, from the copy `internal/store/look_id_way_back_extract.txt`, over queued rows of two projects with and without the two keys, `retire_look` rows, and the checks of a child that runs again, of a done child, of a parked child, of a root in the workflow and of another project's child; `internal/textcheck`'s `TestTheLookIDWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+`internal/store`'s `TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain` runs the header's block over queued rows of two projects with and without the two keys, `retire_look` rows, and the checks of a child that runs again, of a done child, of a parked child, of a root in the workflow and of another project's child.
+`internal/textcheck`'s `TestTheLookIDWayBackIsOneTextInTheHeaderAndTheGuide` holds the header's block to this block, so change the two in one commit.
 
 #### Rolling back the release whose cap counts issues
 
@@ -4432,7 +4433,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
-20261127171352_production_check_look_id, of dispatch://INFRA-3518, adds `production_checks.look_id`, `production_checks.look_id_look`, `production_checks.look_id_opened_at`, `production_checks.opened_generation` and `pending_task_deliveries.look_id`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the five columns standing, which the earlier release names in no statement; a rollback to a release before it takes the steps of its own section first, [Rolling back the release whose look report gives its look id](#rolling-back-the-release-whose-look-report-gives-its-look-id), with every daemon of the database stopped, whose block, run for each project that rolls back, takes `lookId` and `lookReissue` off the project's supervise rows and deletes its supervise rows of the op `retire_look`, keys and an op that the release before refuses as ones it does not know, closes `not_run` the open check of each of its children that runs again, which the release before would let start looks after the child's next leave, and clears `production_checks.opened_generation` on its checks, which the release before's upsert of a new check would leave as the generation of the check it replaced; the way back in the migration's own header holds three of those four statements for every project of the database at once, and closes no check.
+20261127171352_production_check_look_id, of dispatch://INFRA-3518, adds `production_checks.look_id`, `production_checks.look_id_look`, `production_checks.look_id_opened_at`, `production_checks.opened_generation` and `pending_task_deliveries.look_id`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the five columns standing, which the earlier release names in no statement; a rollback to a release before it takes the steps of its own section first, [Rolling back the release whose look report gives its look id](#rolling-back-the-release-whose-look-report-gives-its-look-id), with every daemon of the database stopped, whose block, run for each project that rolls back, takes `lookId` and `lookReissue` off the project's supervise rows and deletes its supervise rows of the op `retire_look`, keys and an op that the release before refuses as ones it does not know, closes `not_run` the open check of each of its children that runs again, which the release before would let start looks after the child's next leave, and clears `production_checks.opened_generation` on its checks, which the release before's upsert of a new check would leave as the generation of the check it replaced; the migration's own header carries that section's block.
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.

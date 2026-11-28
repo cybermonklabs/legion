@@ -288,10 +288,6 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 	}
 }
 
-// lookIDRule is the rule each refusal of a report that a later merge or a new look overtook names,
-// in the route's words for it (api's lookIDRule).
-const lookIDRule = "A report gives check_opened_at and look_id from the task of its look."
-
 // A report of a check that a later merge replaced — the route read the first check, and the
 // rerun's merge opened the second before the report's fact applied — names the first check's
 // OpenedAt, and is refused CHECK_NOT_OPEN: the second check, which counts its looks from one
@@ -323,7 +319,7 @@ func TestAReportOfAReplacedCheckIsNotRecordedOnItsSuccessor(t *testing.T) {
 	if got := refusalCode(result); got != "CHECK_NOT_OPEN" {
 		t.Fatalf("the report of the replaced check = %q, want CHECK_NOT_OPEN", got)
 	}
-	for _, want := range []string{"look 1", lookIDRule} {
+	for _, want := range []string{"look 1", intake.LookIDRule} {
 		if !strings.Contains(result.Refusal.Message, want) {
 			t.Fatalf("the refusal is %q, want it to say %q", result.Refusal.Message, want)
 		}
@@ -372,7 +368,7 @@ func TestAReportThatANewLookOvertookNamesTheCurrentLookAndTheRule(t *testing.T) 
 	if got := refusalCode(result); got != "CHECK_LOOK_NOT_OPEN" {
 		t.Fatalf("the report of look 1 after look 2 started = %q, want CHECK_LOOK_NOT_OPEN", got)
 	}
-	for _, want := range []string{"current look of the check is look 2", lookIDRule} {
+	for _, want := range []string{"current look of the check is look 2", intake.LookIDRule} {
 		if !strings.Contains(result.Refusal.Message, want) {
 			t.Fatalf("the refusal is %q, want it to say %q", result.Refusal.Message, want)
 		}

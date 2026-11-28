@@ -33,23 +33,46 @@
 -- retire_look, which end a look's task when its look ends. The release before this one knows no
 -- such key and no such op, and decodes an outbox payload strictly (record.DecodeOutboxPayload,
 -- DisallowUnknownFields), so each such row would fail to decode there on every attempt. A start
--- stripped of the two keys is a start of its look as the release before writes one. A retire_look
--- row has nothing the release before can run, and is deleted. The release's whole way back is the
--- section of docs/kubernetes.md "Rolling back the release whose look report gives its look id",
--- which also closes the open checks that the release before would keep open past the leave of an
--- issue that ran again.
+-- stripped of the two keys runs under the release before as a start of its look. Its task, and
+-- the task of a delivery a claim holds, still give the look id and ask for look_id, which the
+-- earlier plugin's strict handoff_complete refuses, so the checking role sends its report again
+-- without it. A retire_look row has nothing the release before can run, and is deleted. The
+-- release before closes a child's check at the child's re-entry, and no leave of a run closes a
+-- check under it, so the open check of a child that runs again, which this release keeps open,
+-- is closed not_run, as the release before would have closed it at the re-entry.
 --
 -- There is no down file. This directory keeps none: migrations here are forward-only and no
--- .down.sql file exists. The way back is the block that closes this header, its last paragraph
--- (migrations.WayBack), run with every daemon of the database stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. It drops no column and
--- deletes no version row, so the roll forward finds the five columns and applies nothing.
+-- .down.sql file exists. The release's whole way back is the section of docs/kubernetes.md
+-- "Rolling back the release whose look report gives its look id", whose block is the last
+-- paragraph of this header (migrations.WayBack), run with every daemon of the database stopped
+-- and before the release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1,
+-- once for each project that rolls back. Daemons of several projects can share the database, and
+-- each runs only its own project's rows (split_part(issue, '-', 1)), so each statement names the
+-- project, <PROJECT>, which the operator replaces with its key, and leaves the rows and the
+-- checks of every project that stays on this release. It drops no column and deletes no version
+-- row, so the roll forward finds the five columns and applies nothing. internal/textcheck's
+-- TestTheLookIDWayBackIsOneTextInTheHeaderAndTheGuide holds the guide's block and this one to one
+-- text, and internal/store's
+-- TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain and
+-- TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefuses run this one.
 --
 -- begin;
+-- -- The look id and the reissue mark on each supervise row one project still has queued.
 -- update outbox set payload = payload - 'lookId' - 'lookReissue'
--- where kind = 'supervise' and (payload ? 'lookId' or payload ? 'lookReissue');
--- delete from outbox where kind = 'supervise' and payload->>'op' = 'retire_look';
--- update production_checks set opened_generation = null where opened_generation is not null;
+-- where kind = 'supervise' and (payload ? 'lookId' or payload ? 'lookReissue')
+--   and split_part(issue, '-', 1) = '<PROJECT>';
+-- -- The end of a look's task, on each supervise row one project still has queued.
+-- delete from outbox where kind = 'supervise' and payload->>'op' = 'retire_look'
+--   and split_part(issue, '-', 1) = '<PROJECT>';
+-- -- The open check of each child of one project that runs again.
+-- update production_checks as c set closed_at = now(), outcome = 'not_run', look_open = false
+-- from issues as i
+-- where c.issue = i.key and c.closed_at is null
+--   and i.project = '<PROJECT>' and i.key <> i.tree
+--   and i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done');
+-- -- The generation each check of one project opened in.
+-- update production_checks set opened_generation = null
+-- where opened_generation is not null and project = '<PROJECT>';
 -- commit;
 alter table production_checks add column look_id text;
 alter table production_checks add column look_id_look integer;

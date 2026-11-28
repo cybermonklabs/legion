@@ -522,8 +522,8 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 // no restart of its phase replaces: a task that holds work (supervise.HoldsWork), less the task of
 // a production check look whose look no longer holds (record.LookHolds: the check closed or was
 // replaced, the look ended, or the issue runs again). The issue and its check are read in one
-// read-only transaction, and only for a look's task. A daemon that records no issues holds every
-// look's task, as its supervisor's look fence does.
+// read-only transaction (record.ReadLookHolds), and only for a look's task. A daemon that records
+// no issues holds every look's task, as its supervisor's look fence does.
 func (s *server) owesTask(ctx context.Context, c supervise.Claim) (bool, error) {
 	pending := c.Pending
 	if !supervise.HoldsWork(pending) {
@@ -534,16 +534,9 @@ func (s *server) owesTask(ctx context.Context, c supervise.Claim) (bool, error) 
 	}
 	var holds bool
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		issue, err := s.records.Issue(ctx, tx, c.Issue)
-		if err != nil {
-			return err
-		}
-		check, err := s.records.ProductionCheck(ctx, tx, c.Issue)
-		if err != nil {
-			return err
-		}
-		holds = record.LookHolds(issue, check, pending.CheckLook, pending.LookID)
-		return nil
+		var err error
+		holds, err = record.ReadLookHolds(ctx, s.records, tx, c.Issue, pending.CheckLook, pending.LookID)
+		return err
 	})
 	return holds, err
 }

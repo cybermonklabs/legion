@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,14 +24,15 @@ const lookIDRelease = "the release whose look report gives its look id"
 // it was made for, the generation a check opened in, and the look id of a pending delivery, all
 // null on every row it finds, which the stores read as no look id, look 0, the zero time and
 // generation 0. The release before's upsert of a later look leaves the look id's columns as this
-// release wrote them, and the record reads such an id as no id of the current look. Its way back,
-// the last paragraph of the migration's header (migrations.WayBack), takes lookId and lookReissue
-// off every supervise row and deletes every retire_look row, which the release before refuses
+// release wrote, and the record reads such an id as no id of the current look. Its way back,
+// the last paragraph of the migration's header (migrations.WayBack), run for LEGION (LEGION in
+// place of rollingBackProject), takes lookId and lookReissue off each of LEGION's supervise rows
+// and deletes each of its retire_look rows, which the release before refuses
 // (DisallowUnknownFields, an unknown op), and leaves every other key and every row of another kind
-// as it stands. It clears opened_generation, which the release before's upsert of a new check
-// would leave in place. It drops no column and deletes no version row, so the roll forward
-// applies nothing. The negative control is the store before the migration, whose tables hold none
-// of the five columns.
+// as it stands. It clears opened_generation on LEGION's checks, which the release before's upsert
+// of a new check would leave in place. It drops no column and deletes no version row, so the roll
+// forward applies nothing. The negative control is the store before the migration, whose tables
+// hold none of the five columns.
 func TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefuses(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -128,7 +130,7 @@ func TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefus
 	queue("supervise", `{"op":"retire_task","tree":"LEGION-208","role":"tester","generation":3,"phase":"testing"}`)
 	queue("notice", `{"kind":"phase-finished","lookId":"kept"}`)
 
-	exec(wayBackOf(t, lookIDVersion, lookIDRelease))
+	exec(strings.ReplaceAll(wayBackOf(t, lookIDVersion, lookIDRelease), rollingBackProject, "LEGION"))
 	const queued = `select kind || ' ' || coalesce(payload->>'op', payload->>'kind') || ' ' || coalesce(payload->>'task', '') ||
 		' look ' || coalesce(payload->>'checkLook', '-') || ' id ' || coalesce(payload->>'lookId', '-') ||
 		' reissue ' || coalesce(payload->>'lookReissue', '-') from outbox order by id`
