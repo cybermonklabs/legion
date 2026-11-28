@@ -73,6 +73,7 @@ type countedSample struct {
 	operationByModule           map[string]uint64
 	updateItems                 uint64
 	outcome                     string
+	walks                       *countedSample
 }
 
 // countedVerdict returns one diagnostic per broken bound and one line with the readings at both
@@ -92,6 +93,7 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 		}
 	}
 	readings = leaf.name + ": " + readings
+	alternating := small.walks != nil || large.walks != nil
 	if small.units <= 0 || large.units <= small.units {
 		return []string{fmt.Sprintf("%s: the builder sizes must be positive and increasing, got %d and %d", leaf.name, small.units, large.units)}, readings
 	}
@@ -120,17 +122,20 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 				leaf.name, what, before, after, ratio, growth, unit, limit, unit))
 		}
 	}
-	checkStatements := func(what string, before, after uint64) {
+	checkNondecreasing := func(what string, before, after uint64) {
 		if after < before {
 			failures = append(failures, fmt.Sprintf("%s: %s fall from %d to %d: work that shrinks as the input grows is a coverage counter that wrapped",
 				leaf.name, what, before, after))
 		}
-		checkGrowth(what, before, after, false)
 	}
-	checkStatements("operation-only statements", small.operation, large.operation)
+	checkNondecreasing("operation-only statements", small.operation, large.operation)
+	if !alternating {
+		checkGrowth("operation-only statements", small.operation, large.operation, false)
+	}
 	checkGrowth("counted build bytes allocated", small.countedBytes, large.countedBytes, false)
 	if leaf.heavyBody {
-		checkStatements("statements with preparation", small.withPreparation, large.withPreparation)
+		checkNondecreasing("statements with preparation", small.withPreparation, large.withPreparation)
+		checkGrowth("statements with preparation", small.withPreparation, large.withPreparation, false)
 		checkGrowth("invoking build bytes allocated", small.invokingBytes, large.invokingBytes, false)
 	}
 
@@ -151,7 +156,7 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 	if leaf.reading.past <= 0 || leaf.reading.most <= 0 {
 		failures = append(failures, fmt.Sprintf("%s: no reading is recorded; %s", leaf.name, record))
 	}
-	if floor := leaf.reading.past / countedMargin; past < floor {
+	if floor := leaf.reading.past / countedMargin; !alternating && past < floor {
 		failures = append(failures, fmt.Sprintf("%s: each %s past %d costs %.2f operation-only statements, fewer than %.2f: the counters did not see the operation read every %s",
 			leaf.name, leaf.unit, small.units, past, floor, leaf.unit))
 	}
@@ -161,12 +166,17 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 				leaf.name, units[i], unit, perUnit(count, i), what, unit, ceiling))
 		}
 	}
-	for i, sample := range samples {
-		checkCeiling("operation-only statements", sample.operation, i, leaf.reading.most)
+	checkWrap := func(what string, sample countedSample) {
 		if sample.busiest >= countedBlockLimit {
-			failures = append(failures, fmt.Sprintf("%s: the block %s ran %d times at %d %ss, at or past 2^31: its coverage counter can wrap at the next size",
-				leaf.name, sample.busiestBlock, sample.busiest, sample.units, leaf.unit))
+			failures = append(failures, fmt.Sprintf("%s: the block %s ran %d times at %d %ss, at or past 2^31: its coverage counter can wrap at the next size%s",
+				leaf.name, sample.busiestBlock, sample.busiest, sample.units, leaf.unit, what))
 		}
+	}
+	for i, sample := range samples {
+		if !alternating {
+			checkCeiling("operation-only statements", sample.operation, i, leaf.reading.most)
+		}
+		checkWrap("", sample)
 		if leaf.heavyBody {
 			failures = append(failures, countedHeavyBodyFailures(leaf, sample)...)
 		}
@@ -186,7 +196,48 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 		checkCeiling(stage.name, stage.before, 0, stage.recorded)
 		checkCeiling(stage.name, stage.after, 1, stage.recorded)
 	}
+	if alternating {
+		if small.walks == nil || large.walks == nil {
+			failures = append(failures, leaf.name+": missing a ygo comparison")
+		} else {
+			checkNondecreasing("ygo Delete and Insert statements", small.walks.operation, large.walks.operation)
+			for _, sample := range samples {
+				checkWrap(" in ygo's Delete and Insert comparison", *sample.walks)
+				broken, details := countedAlternatingBounds(leaf.name, sample)
+				failures = append(failures, broken...)
+				readings += "; " + details
+			}
+		}
+	}
 	return failures, readings
+}
+
+// countedAlternatingBounds compares the write with the work ygo necessarily does at each
+// replaced index. The Update reading includes its read-back, which only tightens the comparison.
+func countedAlternatingBounds(name string, sample countedSample) (failures []string, reading string) {
+	walks := ygoWalks(sample.units)
+	allowed := walks + alternatingAllowance*uint64(sample.units)
+	perAllowed := float64(sample.operation) / float64(allowed)
+	comparison := sample.walks
+	at := fmt.Sprintf("%s at %d blocks", name, sample.units)
+	reading = fmt.Sprintf("%d blocks: Update reached %d items (ygo walks %d, allowed %d); %.6f statements per item allowed; "+
+		"ygo comparison counted %d statements, busiest block %q ran %d times",
+		sample.units, sample.updateItems, walks, allowed, perAllowed, comparison.operation, comparison.busiestBlock, comparison.busiest)
+	if sample.updateItems > allowed {
+		failures = append(failures, fmt.Sprintf("%s: Update reached %d items, more than %d (ygo walks %d plus %d a block)",
+			at, sample.updateItems, allowed, walks, alternatingAllowance))
+	}
+	if perAllowed < alternatingFloor || perAllowed > alternatingCeiling {
+		failures = append(failures, fmt.Sprintf("%s: Update counted %.6f statements per item allowed, outside %.6f to %.6f",
+			at, perAllowed, alternatingFloor, alternatingCeiling))
+	}
+	if comparison.operation == 0 {
+		failures = append(failures, at+": ygo's Delete and Insert comparison counted no statements")
+	} else if sample.operation > 0 && (sample.operation-1)/alternatingAllowance >= comparison.operation {
+		failures = append(failures, fmt.Sprintf("%s: Update counted %d statements, more than %d times ygo's %d",
+			at, sample.operation, alternatingAllowance, comparison.operation))
+	}
+	return failures, reading
 }
 
 // countedHeavyBodyFailures applies the same fixed limits to each build, in that build's units.
@@ -489,6 +540,44 @@ func TestCountGrowthVerdictCatchesQuadraticWorkAndRefusesACountOfNone(t *testing
 		op, withPreparation, err := countedStatementDifferences(leaf.name, small, nil, countedStatementRun{small, 20}, countedStatementRun{small, 30})
 		if op != 10 || withPreparation != 0 || err != nil {
 			t.Errorf("differences = %d, %d, %v; want 10, 0, nil", op, withPreparation, err)
+		}
+	})
+	t.Run("alternating index walks", func(t *testing.T) {
+		leaf := countedLeaf{
+			name: "alternating synthetic input", unit: "block",
+			reading: countedReading{past: 1, most: 1},
+		}
+		for _, tc := range []struct {
+			name   string
+			change func(*countedSample)
+			want   []string
+		}{
+			{"quadratic index walks pass", nil, nil},
+			{"too many items reached", func(s *countedSample) { s.updateItems++ }, []string{"Update reached"}},
+			{"too few statements per item", func(s *countedSample) { s.operation = s.updateItems }, []string{"statements per item allowed"}},
+			{"too many statements per item", func(s *countedSample) {
+				ceiling := alternatingCeiling
+				s.operation = (uint64(ceiling) + 1) * s.updateItems
+				s.walks.operation = (s.operation + alternatingAllowance - 1) / alternatingAllowance
+			}, []string{"statements per item allowed"}},
+			{"too many statements compared to ygo", func(s *countedSample) {
+				s.walks.operation = (s.operation - 1) / alternatingAllowance
+			}, []string{"more than 4 times ygo's"}},
+			{"wrap in ygo", func(s *countedSample) { s.walks.busiest = countedBlockLimit }, []string{"coverage counter can wrap"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				samples := linear(10, 40)
+				for i := range samples {
+					sample := &samples[i]
+					sample.updateItems = ygoWalks(sample.units) + alternatingAllowance*uint64(sample.units)
+					sample.operation = 12 * sample.updateItems
+					sample.walks = &countedSample{units: sample.units, operation: sample.operation / alternatingAllowance}
+				}
+				if tc.change != nil {
+					tc.change(&samples[0])
+				}
+				check(t, leaf, samples, tc.want...)
+			})
 		}
 	})
 }

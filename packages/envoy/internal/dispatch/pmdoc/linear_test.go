@@ -3,134 +3,169 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"runtime"
-	"runtime/debug"
-	"runtime/metrics"
-	"sort"
+	"reflect"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
-
-	"github.com/sjawhar/envoy/internal/cputest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 )
 
-// parseFullTarget and renderFullTarget are
-// TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText's full-size targets.
-const (
-	// parseFullTarget is a mebibyte: the write-path limit (MaxDocumentBytes) this loop's parse
-	// reads back, since a caller's write of this much is refused for the elements it makes.
-	parseFullTarget = 1 << 20
-	// renderFullTarget is smaller: large enough for growthScale's quadratic margin, small enough
-	// that even the slowest shape (`<a`) stays fast - rendering is not bound by MaxDocumentBytes.
-	renderFullTarget = 512 << 10
-	// updateSeedTarget is TestUpdateIsLinearInTheBlockCount's seed of one-word paragraphs: the
-	// mebibyte a document may hold, which a rebuild from a stored rendering writes whole.
-	updateSeedTarget = 1 << 20
-	// updateShapeTarget is its other shapes', each 21,845 blocks or fewer, about what the 65,536
-	// elements one upload may make allow of them.
-	updateShapeTarget = 128 << 10
-)
-
-// alternatingBlocks are the documents TestUpdateIsLinearInTheBlockCount replaces every other block
-// of: 16,384 blocks is about the most paragraphs the 65,536 elements one upload may make allow.
-var alternatingBlocks = []int{4_096, 16_384}
-
-// Parse and Render finish in time linear in the text on the shapes that once cost them quadratic
-// time: the work of each grows less than growthBound times over each growthScale-fold step of its
-// size up to its full size (parseFullTarget/renderFullTarget, above; growsLinearly, below). The
-// work is the CPU time, user and system, of the thread that parses or renders (cputest.Growth, on
-// cputest's thread clock), not wall time and not the process's CPU time: a wait for a core is not
-// in it, nor the collector's work on another thread. The smaller size of a step runs growthScale
-// times in one window and the larger once in another, so that the two windows last about as long
-// and a load of the machine that comes and goes reaches both alike.
-//
-// A write of a mebibyte of these is refused for the elements it makes (MaxDocumentElements), so
-// the parse here is a read-back's, which counts none and reads all of it. Render's target is
-// smaller than parse's (above). The margin the bound keeps is between the work healthy linear code
-// does and the far greater work of a reintroduced O(n²) bug, which breaks the bound at the smaller
-// step already, in seconds; the test binary's own timeout reports a hang with the name of the test
-// that runs.
-func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
-	for _, shape := range []string{"a_", "a_b*", "a~b_"} {
-		t.Run(shape, func(t *testing.T) {
-			growsLinearly(t, fmt.Sprintf("parsing %q", shape), parseFullTarget/len(shape)*len(shape), func(size int) func() func() {
-				text := strings.Repeat(shape, size/len(shape))
-				return cputest.Again(func() {
-					if _, err := ParseRendering(text); err != nil {
-						t.Fatalf("parse %d bytes of %q: %v", size, shape, err)
-					}
-				})
-			})
+// runLinearRow uses the same shape registry as the counted child. A URL slash must not
+// turn one shape name into another level of the subtest path.
+func runLinearRow(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	row := t.Name()
+	for _, leaf := range countedRows[row]() {
+		name := strings.ReplaceAll(leaf.shape, "/", "∕")
+		// Go changes spaces to underscores, which would merge two URL spellings.
+		if strings.TrimSpace(name) != name {
+			name = strings.ReplaceAll(name, " ", "␠")
+		}
+		t.Run(name+"/"+leaf.operation, func(t *testing.T) {
+			if leaf.sizes[0] <= 0 {
+				t.Fatalf("%s: no builder size is recorded", leaf.name)
+			}
+			runCountedLeaf(t, row, leaf)
 		})
 	}
-	// A block shape: a list item whose typed block holds one list item per blank line. Reading a
-	// blank line inside such a block as the item's walked the whole block once for each of them,
-	// and the list again for each node of it, which is quadratic in a block of blank lines; the
-	// reading is taken once over the document now (readSpreads). A write is
-	// what reads it, so this one is timed through ParseForWrite. The unit is one item and 200
-	// blank lines, so the items and the lines grow together and a mebibyte of them stays under
-	// MaxDocumentElements: the write is accepted at every size here, and any refusal - of the
-	// elements above all, which would stop the read before the cost - fails the case rather than
-	// passing it.
-	{
-		open, closer := "- a\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n", "  :::\n"
-		repeat := "  - p\n" + strings.Repeat("\n", 200)
-		name := "a typed block of spaced items in a list item"
-		t.Run(name, func(t *testing.T) {
-			growsLinearly(t, name, parseFullTarget/len(repeat)*len(repeat), func(size int) func() func() {
-				text := open + strings.Repeat(repeat, size/len(repeat)) + closer
-				return cputest.Again(func() {
-					if _, err := ParseForWrite(text, nil); err != nil {
-						t.Fatalf("%s at %d bytes: %v", name, size, err)
-					}
-				})
-			})
-		})
+}
+
+// linearReading records each leaf's own builder size and its measured bounds.
+type linearReading struct {
+	small int
+	countedReading
+}
+
+// withLinearReadings binds each reading to the shape and operation that took it.
+func withLinearReadings(shapes []countedShape, readings map[string]linearReading) []countedShape {
+	for i := range shapes {
+		shape := &shapes[i]
+		if reading, ok := readings[shape.name]; ok {
+			shape.reading = reading.countedReading
+			if shape.sizes == [2]int{} {
+				shape.sizes = [2]int{reading.small, reading.small * growthStep}
+			}
+		}
 	}
-	// A block shape of bare exits: a quoted typed block whose last line holds the quote's marker
-	// alone, then the blank lines that make the cost show. Each such block ends where its content
-	// did, which puts its exits into the stream before the events of the lines already read;
-	// writing them in one by one moved the stream and walked every line's marks per block, so the
-	// cost was the blocks times the lines, and the inserts are collected and written once now
-	// (insertEvents, writeInserts). The unit is one block and 200 blank lines, so the blocks and
-	// the lines grow together and a mebibyte of them stays under MaxDocumentElements: the write is
-	// accepted at every size here, and any refusal - of the elements above all, which would stop
-	// the read before the cost - fails the case rather than passing it.
-	{
-		repeat := "> :::callout{#c%d kind=\"note\" title=\"T\"}\n>\nb\n" + strings.Repeat("\n", 200)
-		unit := len(fmt.Sprintf(repeat, 1000))
-		name := "quoted typed blocks ending on a bare line"
-		t.Run(name, func(t *testing.T) {
-			growsLinearly(t, name, parseFullTarget/unit*unit, func(size int) func() func() {
-				var text strings.Builder
-				for index := range size / unit {
-					fmt.Fprintf(&text, repeat, index)
+	return shapes
+}
+
+// linearShape labels one operation on one fixture for both the parent and the child.
+func linearShape(shape, operation, unit string) countedShape {
+	return countedShape{
+		countedLeaf: countedLeaf{name: shape + "/" + operation, unit: unit},
+		shape:       shape, operation: operation,
+	}
+}
+
+// parseGrowthShape counts a markdown operation but not the building of its input.
+func parseGrowthShape(shape, operation, unit string, body func(int) string, allowMarksRefusal bool) countedShape {
+	leaf := linearShape(shape, operation, unit)
+	leaf.prepare = func(t *testing.T, size int) (int, int, func() string) {
+		markdown := body(size)
+		return size, len(markdown), func() string {
+			var err error
+			switch operation {
+			case "Parse":
+				_, err = Parse(markdown)
+			case "ParseForWrite":
+				_, err = ParseForWrite(markdown, nil)
+			case "ParseRendering":
+				_, err = ParseRendering(markdown)
+			case "ParseRendering+Render":
+				var doc *Node
+				doc, err = ParseRendering(markdown)
+				if err != nil {
+					t.Fatalf("ParseRendering at %d bytes: %v", len(markdown), err)
 				}
-				body := text.String()
-				return cputest.Again(func() {
-					if _, err := ParseForWrite(body, nil); err != nil {
-						t.Fatalf("%s at %d bytes: %v", name, size, err)
-					}
-				})
-			})
-		})
+				_, err = Render(doc)
+			default:
+				t.Fatalf("unknown markdown operation %q", operation)
+			}
+			if err != nil && !(allowMarksRefusal && refusedForItsMarks(err)) {
+				t.Fatalf("%s at %d bytes: %v", operation, len(markdown), err)
+			}
+			return ""
+		}
 	}
-	// Two-part shapes: an opener half repeated, then a closer half repeated, so each closer looks
-	// back past every run before it. goldmark's ProcessDelimiters walks a closer back over every
-	// earlier run of either character, so `~~a ` then `a* ` and `*a ` then `a~ ` took 3.8-4.2 s at
-	// 112 KB, and pairing `~` runs by length makes `~~a ` then `a~ ` and `~a ` then `a~~ ` the same
-	// walk (dispatch://INFRA-534). The rule of three keeps every `*` of `a*a`, which can both open
-	// and close, from every `**` before it, so a walk passed each of them: `**a ` then `a*a` took
-	// 100 s at 437 KiB. Each is read as a rendering is and as a caller's write is; a write of a
-	// mebibyte may be refused for the elements it makes, and a shape nesting past maxInlineNesting
-	// for that, each timed all the same.
-	for _, shape := range []struct{ before, open, close, after string }{
+	return leaf
+}
+
+// renderGrowthShape builds the render tree outside the operation it counts.
+func renderGrowthShape(shape, unit string, body func(int) string, label string) countedShape {
+	leaf := linearShape(shape, "Render", unit)
+	leaf.prepare = func(t *testing.T, size int) (int, int, func() string) {
+		paragraph := func(text string) *Node {
+			return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: text}}}
+		}
+		text := body(size)
+		doc := &Node{Type: "doc", Children: []*Node{paragraph(text)}}
+		characters := len(text)
+		if label != "" {
+			doc.Children = append(doc.Children, &Node{Type: "footnote_definition", Attrs: Attrs{"label": label}, Children: []*Node{paragraph("x")}})
+			characters++
+		}
+		return size, characters, func() string {
+			if _, err := Render(doc); err != nil {
+				t.Fatalf("Render at %d bytes: %v", len(text), err)
+			}
+			return ""
+		}
+	}
+	return leaf
+}
+
+// TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText counts each shape at two sizes,
+// including work in Goldmark and the bytes that standard-library searches read. The reader
+// formerly walked back over delimiter runs for each closer, and the renderer searched the
+// rest of the text from each opener. A caller's write of a mebibyte of some shapes would be
+// refused for the elements it makes, so the uncapped parse reads them as a rendering does.
+func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
+	runLinearRow(t)
+}
+
+// delimiterAndOpenerShapes keeps the different reasons for a repeated scan in separate leaves.
+func delimiterAndOpenerShapes() []countedShape {
+	var shapes []countedShape
+	for _, repeat := range []string{"a_", "a_b*", "a~b_"} {
+		shapes = append(shapes, parseGrowthShape(repeat, "ParseRendering", "repeat",
+			func(n int) string { return strings.Repeat(repeat, n) }, false))
+	}
+
+	// Reading a blank line in a list item's typed block once per item walked the whole
+	// block and then the list again for each node. readSpreads now reads the document once.
+	// Each item brings 200 blank lines so both grow, without hitting MaxDocumentElements.
+	// Refusing the write would stop the operation before the work this shape must count.
+	spacedItem := "  - p\n" + strings.Repeat("\n", 200)
+	shapes = append(shapes, parseGrowthShape("a typed block of spaced items in a list item", "ParseForWrite", "item",
+		func(n int) string {
+			return "- a\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n" + strings.Repeat(spacedItem, n) + "  :::\n"
+		}, false))
+
+	// A typed block in a quote that ends with a bare quote marker inserts its exits before
+	// events already read. Inserting one by one moved the stream and walked every line's
+	// marks per block, so insertEvents and writeInserts now collect and write them once.
+	// Each block brings 200 blank lines. This shape also requires the write to succeed.
+	bareExit := "> :::callout{#c%d kind=\"note\" title=\"T\"}\n>\nb\n" + strings.Repeat("\n", 200)
+	shapes = append(shapes, parseGrowthShape("quoted typed blocks ending on a bare line", "ParseForWrite", "block",
+		func(n int) string {
+			var text strings.Builder
+			for index := range n {
+				fmt.Fprintf(&text, bareExit, index)
+			}
+			return text.String()
+		}, false))
+
+	// Goldmark's ProcessDelimiters walked past runs of either character: `~~a ` then `a* `
+	// and `*a ` then `a~ ` took 3.8–4.2 s at 112 KB. Pairing tilde runs by length makes
+	// `~~a ` then `a~ ` and `~a ` then `a~~ ` do the same walk (INFRA-534). The rule of
+	// three prevents the `*` of `a*a` from closing `**`, so `**a ` then `a*a` took 100 s
+	// at 437 KiB. Both readers may refuse these shapes for the elements or nesting their
+	// marks make, but neither may take quadratic work to answer.
+	for _, part := range []struct{ before, open, close, after string }{
 		{"", "~~a ", "a~ ", ""},
 		{"", "~a ", "a~~ ", ""},
 		{"", "~~a ", "a* ", ""},
@@ -140,40 +175,48 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 		{"", "**a ", "a*a", ""},
 		{"", "a**a*a ", "a*a**a", ""},
 	} {
-		pair := len(shape.open) + len(shape.close)
-		name := fmt.Sprintf("%s%s…%s…%s", shape.before, shape.open, shape.close, shape.after)
-		for _, reader := range []struct {
-			name  string
-			parse func(string) (*Node, error)
-		}{{"ParseRendering", ParseRendering}, {"Parse", Parse}} {
-			t.Run(reader.name+" "+name, func(t *testing.T) {
-				growsLinearly(t, fmt.Sprintf("%s of %q", reader.name, name), parseFullTarget/pair*pair, func(size int) func() func() {
-					repeats := size / pair
-					text := shape.before + strings.Repeat(shape.open, repeats) + strings.Repeat(shape.close, repeats) + shape.after
-					return cputest.Again(func() {
-						if _, err := reader.parse(text); err != nil && !refusedForItsMarks(err) {
-							t.Fatalf("%s of %d bytes of %q: %v", reader.name, size, name, err)
-						}
-					})
-				})
-			})
+		name := part.before + part.open + "…" + part.close + "…" + part.after
+		for _, operation := range []string{"ParseRendering", "Parse"} {
+			shapes = append(shapes, parseGrowthShape(name, operation, "pair",
+				func(n int) string {
+					return part.before + strings.Repeat(part.open, n) + strings.Repeat(part.close, n) + part.after
+				}, true))
 		}
 	}
-	for _, shape := range []string{"[a", "a_b&", "<a", "[^a"} {
-		doc := func(repeats int) *Node {
-			return &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: strings.Repeat(shape, repeats)}}}}}
-		}
-		t.Run(shape, func(t *testing.T) {
-			growsLinearly(t, fmt.Sprintf("rendering %q", shape), renderFullTarget/len(shape)*len(shape), func(size int) func() func() {
-				tree := doc(size / len(shape))
-				return cputest.Again(func() {
-					if _, err := Render(tree); err != nil {
-						t.Fatalf("render %d bytes of %q: %v", size, shape, err)
-					}
-				})
-			})
-		})
+	for _, repeat := range []string{"[a", "a_b&", "<a", "[^a"} {
+		shapes = append(shapes, renderGrowthShape(repeat, "repeat",
+			func(n int) string { return strings.Repeat(repeat, n) }, ""))
 	}
+	return withLinearReadings(shapes, delimiterAndOpenerReadings)
+}
+
+// delimiterAndOpenerReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+var delimiterAndOpenerReadings = map[string]linearReading{
+	"**a …a*a…/Parse":          {585, countedReading{past: 1709.5667887667887, most: 1715.7760683760685, scanMost: 7}},
+	"**a …a*a…/ParseRendering": {585, countedReading{past: 1517.063492063492, most: 1523.1641025641027, scanMost: 7}},
+	"*a …a~ …/Parse":           {682, countedReading{past: 1520.0312107247591, most: 1524.983870967742, scanMost: 6}},
+	"*a …a~ …/ParseRendering":  {682, countedReading{past: 1342.0312107247591, most: 1346.9516129032259, scanMost: 6}},
+	"*~a…~*…/Parse":            {819, countedReading{past: 1766.060003488575, most: 1775.3003663003662, scanMost: 5}},
+	"*~a…~*…/ParseRendering":   {819, countedReading{past: 1650.060003488575, most: 1659.2905982905984, scanMost: 5}},
+	"<a/Render":                {2048, countedReading{past: 989, most: 991.22314453125, searchedMost: 1.99993896484375, scanMost: 4.00048828125}},
+	"[^a/Render":               {1365, countedReading{past: 86, most: 86.35531135531136, searchedMost: 2.999908424908425}},
+	"[a/Render":                {2048, countedReading{past: 61, most: 61.23681640625, searchedMost: 1.99993896484375}},
+	"a typed block of spaced items in a list item/ParseForWrite": {19, countedReading{past: 124479.03007518797, most: 125217.05263157895, scanMost: 218.26315789473685}},
+	"a**a*a …a*a**a…/Parse":                                      {315, countedReading{past: 3474.7292517006804, most: 3486.504761904762, scanMost: 13}},
+	"a**a*a …a*a**a…/ParseRendering":                             {315, countedReading{past: 3099.0625850340134, most: 3110.5174603174605, scanMost: 13}},
+	"a_/ParseRendering":                                          {2048, countedReading{past: 515, most: 516.6591796875, scanMost: 2}},
+	"a_b&/Render":                                                {1024, countedReading{past: 129, most: 129.4619140625}},
+	"a_b*/ParseRendering":                                        {1024, countedReading{past: 1267.015625, most: 1270.1640625, scanMost: 4}},
+	"a~b_/ParseRendering":                                        {1024, countedReading{past: 1245.515625, most: 1248.8251953125, scanMost: 4}},
+	"quoted typed blocks ending on a bare line/ParseForWrite":    {16, countedReading{past: 26852.348214285714, most: 27019.1875, scanMost: 299.2734375}},
+	"~a [~~a …a~ …](u)/Parse":                                    {585, countedReading{past: 1418.0312576312576, most: 1427.1299145299145, scanMost: 7.013675213675214}},
+	"~a [~~a …a~ …](u)/ParseRendering":                           {585, countedReading{past: 1239.0312576312576, most: 1247.6564102564103, scanMost: 7.013675213675214}},
+	"~a …a~~ …/Parse":                                            {585, countedReading{past: 1516.0312576312576, most: 1521.5384615384614, scanMost: 7}},
+	"~a …a~~ …/ParseRendering":                                   {585, countedReading{past: 1337.0312576312576, most: 1342.5008547008547, scanMost: 7}},
+	"~~a …a* …/Parse":                                            {585, countedReading{past: 1524.0312576312576, most: 1529.5299145299145, scanMost: 7}},
+	"~~a …a* …/ParseRendering":                                   {585, countedReading{past: 1345.0312576312576, most: 1350.4923076923078, scanMost: 7}},
+	"~~a …a~ …/Parse":                                            {585, countedReading{past: 1516.0312576312576, most: 1521.531623931624, scanMost: 7}},
+	"~~a …a~ …/ParseRendering":                                   {585, countedReading{past: 1337.0312576312576, most: 1342.4940170940172, scanMost: 7}},
 }
 
 // refusedForItsMarks reports whether err refuses markdown for the inline marks it makes: more
@@ -183,121 +226,168 @@ func refusedForItsMarks(err error) bool {
 	return errors.Is(err, ErrTooManyElements) || errors.As(err, &nesting) && nesting.inline
 }
 
-// The shapes a sweep found after the ones above, each quadratic before LEGION-465 finished: a
-// text of one delimiter character, whose every character was escaped by a scan of its whole run;
-// many `[^` before one `]`, whose every label was case-folded to look it up among the footnote
-// labels; a text of many line feeds, whose every line joined the rest of the text to ask whether
-// only whitespace followed; and a run of `~` in a paragraph, which goldmark's strikethrough parser
-// scanned again from every `~` in it. Before the fix 128 KiB of each text took 18-115 s to render
-// and 32 KiB of `[^a` 7.7 s. Each shape's work grows less than growthBound times from a
-// growthScale-th of its full size to the full size (growsLinearly).
+// TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds counts shapes that took quadratic work
+// before LEGION-465. Each delimiter character measured its whole run; each `[^` before one `]`
+// case-folded the label to look it up; each line feed joined the rest of the text to ask if only
+// whitespace followed; and Goldmark's strikethrough parser rescanned a run from each `~`. Before
+// the fix 128 KiB of each text took 18–115 s to render, and 32 KiB of `[^a` took 7.7 s.
 func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
-	paragraph := func(text string) *Node {
-		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: text}}}
-	}
-	doc := func(blocks ...*Node) *Node {
-		return &Node{Type: "doc", Children: blocks}
-	}
-	definition := func(label string) *Node {
-		return &Node{Type: "footnote_definition", Attrs: Attrs{"label": label}, Children: []*Node{paragraph("x")}}
-	}
-	labels := func(size int) string {
-		label := strings.Repeat("[^a", (size-1)/3) + "]"
-		return label + strings.Repeat("x", size-len(label))
-	}
-	for _, test := range []struct {
-		name string
-		doc  func(int) *Node
-	}{
-		{"a run of *", func(size int) *Node { return doc(paragraph(strings.Repeat("*", size))) }},
-		{"a run of _", func(size int) *Node { return doc(paragraph(strings.Repeat("_", size))) }},
-		{"a run of ~", func(size int) *Node { return doc(paragraph(strings.Repeat("~", size))) }},
-		{"[^a before one ] with no footnote", func(size int) *Node { return doc(paragraph(labels(size))) }},
-		{"[^a before one ] with a short label defined", func(size int) *Node {
-			return doc(paragraph(labels(size)), definition("a"))
-		}},
-		{"[^a before one ] with a long label defined", func(size int) *Node {
-			return doc(paragraph(labels(size)), definition(strings.Repeat("b", 1000)))
-		}},
-		{"line feeds", func(size int) *Node { return doc(paragraph(strings.Repeat("a\n", size/2))) }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, "rendering "+test.name, renderFullTarget, func(size int) func() func() {
-				document := test.doc(size)
-				return cputest.Again(func() {
-					if _, err := Render(document); err != nil {
-						t.Fatalf("render %s at %s: %v", test.name, sizeText(size), err)
-					}
-				})
-			})
-		})
-	}
-	// A run after an escaped `~` may open or close, so its run is scanned rather than refused. A
-	// write of a mebibyte of escapes is refused for the elements they make, so `a\~~` repeated is
-	// read as a rendering is, which counts none and reads all of it.
-	for _, test := range []struct {
-		name     string
-		markdown func(int) string
-		parse    func(string) (*Node, error)
-	}{
-		{"a run of ~", func(size int) string { return "a" + strings.Repeat("~", size-1) }, Parse},
-		{"\\~ and a run of ~", func(size int) string { return "\\~" + strings.Repeat("~", size-2) }, Parse},
-		{"a\\~~ repeated", func(size int) string { return strings.Repeat("a\\~~", size/4) }, ParseRendering},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, "parsing "+test.name, parseFullTarget, func(size int) func() func() {
-				markdown := test.markdown(size)
-				return cputest.Again(func() {
-					if _, err := test.parse(markdown); err != nil {
-						t.Fatalf("parse %s at %s: %v", test.name, sizeText(size), err)
-					}
-				})
-			})
-		})
-	}
+	runLinearRow(t)
 }
 
-// A table whose every row holds an escaped pipe in a code span parses in time linear in its size,
-// up to the 1 MiB a document may be. goldmark's table transformer checked every code span's text
-// against every escaped pipe in the document: on one machine at a load of about 300, 16 KiB of such
-// rows parsed in 35 ms and 256 KiB in 6.8 s, and 1 MiB took 2 min 9 s. unescapeTablePipes,
-// which replaced it, parsed 16 KiB in 19 ms, 256 KiB in 0.6-0.8 s and 1 MiB in 2.0-2.4 s there. No
-// wall-clock bound holds on every runner, so the work of the parse is bounded in its growth
-// (growsLinearly), as TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText bounds it. A
-// caller's write of a table that size passes the element limit and is refused, so it is read as a
-// rendering is, whose parse no element limit stops.
+// runsAndLabelsShapes separates the scans that the run, footnote and line-feed inputs exercise.
+func runsAndLabelsShapes() []countedShape {
+	var shapes []countedShape
+	for _, delimiter := range []string{"*", "_", "~"} {
+		shapes = append(shapes, renderGrowthShape("a run of "+delimiter, "byte",
+			func(n int) string { return strings.Repeat(delimiter, n) }, ""))
+	}
+	for _, footnote := range []struct{ description, label string }{
+		{"no footnote", ""}, {"a short label defined", "a"}, {"a long label defined", strings.Repeat("b", 1000)},
+	} {
+		shapes = append(shapes, renderGrowthShape("[^a before one ] with "+footnote.description, "byte",
+			func(n int) string { return strings.Repeat("[^a", (n-1)/3) + "]" + strings.Repeat("x", (n-1)%3) }, footnote.label))
+	}
+	shapes = append(shapes, renderGrowthShape("line feeds", "repeat",
+		func(n int) string { return strings.Repeat("a\n", n) }, ""))
+
+	// A run after an escaped `~` may open or close, so its run is scanned rather than
+	// refused. The repeated escapes are read as a rendering so no element limit stops them.
+	shapes = append(shapes,
+		parseGrowthShape("a run of ~", "Parse", "byte", func(n int) string { return "a" + strings.Repeat("~", n-1) }, false),
+		parseGrowthShape(`\~ and a run of ~`, "Parse", "byte", func(n int) string { return `\~` + strings.Repeat("~", n-2) }, false),
+		parseGrowthShape(`a\~~ repeated`, "ParseRendering", "repeat", func(n int) string { return strings.Repeat(`a\~~`, n) }, false),
+	)
+	return withLinearReadings(shapes, runsAndLabelsReadings)
+}
+
+// runsAndLabelsReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+var runsAndLabelsReadings = map[string]linearReading{
+	"[^a before one ] with a long label defined/Render":  {4096, countedReading{past: 32.333077566964285, most: 49.72216796875, searchedMost: 0.99993896484375}},
+	"[^a before one ] with a short label defined/Render": {4096, countedReading{past: 32.333077566964285, most: 32.7998046875, searchedMost: 0.99993896484375}},
+	"[^a before one ] with no footnote/Render":           {4096, countedReading{past: 28.999860491071427, most: 29.117431640625, searchedMost: 0.99993896484375}},
+	"\\~ and a run of ~/Parse":                           {4096, countedReading{past: 225, most: 225.841064453125, scanMost: 1}},
+	"a run of */Render":                                  {4096, countedReading{past: 58, most: 59.095947265625, scanMost: 2.000244140625}},
+	"a run of _/Render":                                  {4096, countedReading{past: 46, most: 47.10791015625, scanMost: 2.000244140625}},
+	"a run of ~/Parse":                                   {4096, countedReading{past: 222, most: 222.9013671875, scanMost: 1}},
+	"a run of ~/Render":                                  {4096, countedReading{past: 631, most: 633.312744140625, scanMost: 4.000732421875}},
+	"a\\~~ repeated/ParseRendering":                      {1024, countedReading{past: 754.015625, most: 757.431640625, scanMost: 4}},
+	"line feeds/Render":                                  {2048, countedReading{past: 286, most: 286.14404296875}},
+}
+
+// TestParseIsLinearInATableOfEscapedPipes counts the read-back of a table whose every row
+// holds an escaped pipe in a code span. Goldmark's table transformer compared each code span
+// with every escaped pipe in the document. On a machine with a load of about 300, 16 KiB took
+// 35 ms and 256 KiB took 6.8 s, and 1 MiB took 2 min 9 s. unescapeTablePipes took 19 ms,
+// 0.6–0.8 s and 2.0–2.4 s there. A large table is read as a rendering so the element limit
+// does not stop the parse before it reaches the escaped pipes.
 func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
+	runLinearRow(t)
+}
+
+// escapedPipeTableShapes keeps one growing code-span cell per row.
+func escapedPipeTableShapes() []countedShape {
 	const header, row = "| a |\n| --- |\n", "`\\|`\n"
-	growsLinearly(t, "parsing a table of `\\|` cells", 1<<20, func(size int) func() func() {
-		markdown := header + strings.Repeat(row, (size-len(header))/len(row))
-		return cputest.Again(func() {
-			if _, err := ParseRendering(markdown); err != nil {
-				t.Fatalf("parse %d bytes of `\\|` rows: %v", size, err)
+	return withLinearReadings([]countedShape{
+		parseGrowthShape(`a table of \| cells`, "ParseRendering", "row",
+			func(n int) string { return header + strings.Repeat(row, n) }, false),
+	}, escapedPipeTableReadings)
+}
+
+// escapedPipeTableReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+var escapedPipeTableReadings = map[string]linearReading{
+	"a table of \\| cells/ParseRendering": {819, countedReading{past: 2010.027036455608, most: 2016.4725274725274, scanMost: 5.017094017094017}},
+}
+
+// TestNoReaderRegistersGoldmarksTableASTTransformer checks the display and inline readers as
+// well as the document reader. Goldmark's transformer compares every escaped pipe with every
+// code span; pmdoc's unescapeTablePipes does the same job in one walk of the cells.
+func TestNoReaderRegistersGoldmarksTableASTTransformer(t *testing.T) {
+	t.Parallel()
+	const table = "| a | b |\n| --- | --- |\n| `\\|` | x |\n"
+	tree, err := ParseRendering(table)
+	if err != nil {
+		t.Fatalf("parse the table: %v", err)
+	}
+	if _, err := Render(tree); err != nil {
+		t.Fatalf("render the table: %v", err)
+	}
+	_ = ReadForDisplay(table, DisplayLatest)
+	const inline = "`\\|` a"
+	if _, err := ParseInline(inline, NewWriteBudget()); err != nil {
+		t.Fatalf("parse the inline markdown: %v", err)
+	}
+
+	goldmarks := reflect.TypeOf(extension.NewTableASTTransformer())
+	check := func(name string, p parser.Parser) {
+		t.Run(name, func(t *testing.T) {
+			for _, registered := range astTransformerTypes(t, p) {
+				if registered == goldmarks {
+					t.Errorf("registers goldmark's table AST transformer (%s), whose work in a table of escaped pipes is quadratic", registered)
+				}
 			}
 		})
-	})
+	}
+	check("blockReader", blockReader.md.Parser())
+	check("displayReader", displayReader.md.Parser())
+	for _, entry := range []struct {
+		name string
+		read inlineReader
+	}{
+		{"inlineMarkdown", inlineMarkdown},
+		{"storedMarkdown", storedMarkdown},
+		{"flankingMarkdown", flankingMarkdown},
+	} {
+		// Build both parsers even if the table's render did not need this reader.
+		for _, labels := range [][]string{nil, {"note"}} {
+			if _, _, err := parseInlineWithDefinitions(inline, labels, entry.read); err != nil {
+				t.Fatalf("build %s with definitions %v: %v", entry.name, labels, err)
+			}
+		}
+		check(entry.name+".run", entry.read.run)
+		check(entry.name+".withDefinitions", entry.read.withDefinitions)
+	}
 }
 
-// A document of many footnote references and many definitions parses in time linear in its size,
-// up to the 1 MiB a document may be: one paragraph that refers to each definition, many paragraphs
-// that each refer to a definition of their own, and references that match their definitions only
-// up to case. goldmark's footnote reference parser walked its whole list of definitions for each
-// reference: on one machine at a load of about 800, one paragraph of 16,000 references parsed in
-// 1.1 s, 16 times the 65 ms of 4,000. footnoteReferenceParser finds each definition in a map built
-// once for each parse.
-func TestParseIsLinearInFootnoteReferences(t *testing.T) {
-	references := func(size int, each func(index int) (reference, definition string)) string {
-		var markdown, definitions strings.Builder
-		for index := 1; markdown.Len()+definitions.Len() < size; index++ {
-			reference, definition := each(index)
-			markdown.WriteString(reference)
-			definitions.WriteString(definition)
-		}
-		return markdown.String() + "\n\n" + definitions.String()
+// astTransformerTypes reads the built list because Goldmark exposes no accessor for it. A
+// parser that has not been built or whose fields have changed fails instead of appearing empty.
+func astTransformerTypes(t *testing.T, p parser.Parser) []reflect.Type {
+	t.Helper()
+	value := reflect.ValueOf(p)
+	if value.Kind() != reflect.Pointer || value.Elem().Kind() != reflect.Struct {
+		t.Fatalf("goldmark parser %T is not a pointer to a struct", p)
 	}
+	built := value.Elem().FieldByName("astTransformers")
+	config := value.Elem().FieldByName("config")
+	if built.Kind() != reflect.Slice || config.Kind() != reflect.Pointer || !config.IsNil() {
+		t.Fatalf("goldmark parser %T does not have a built astTransformers slice and a cleared config", p)
+	}
+	types := make([]reflect.Type, 0, built.Len())
+	for i := range built.Len() {
+		slot := built.Index(i)
+		if slot.Kind() != reflect.Interface || slot.IsNil() {
+			t.Fatalf("goldmark parser %T has an unreadable AST transformer at %d", p, i)
+		}
+		types = append(types, slot.Elem().Type())
+	}
+	return types
+}
+
+// TestParseIsLinearInFootnoteReferences counts one paragraph referring to each definition,
+// many paragraphs with their own definitions, and references that match only up to case.
+// Goldmark's footnote parser walked every definition for each reference: at a load of about
+// 800, a paragraph of 16,000 references took 1.1 s, 16 times the 65 ms of 4,000. pmdoc's
+// footnoteReferenceParser looks up each definition in a map built once per parse.
+func TestParseIsLinearInFootnoteReferences(t *testing.T) {
+	runLinearRow(t)
+}
+
+// footnoteReferenceShapes grows references and definitions together, one of each per unit.
+func footnoteReferenceShapes() []countedShape {
+	var shapes []countedShape
 	for _, shape := range []struct {
 		name string
-		each func(index int) (reference, definition string)
+		each func(int) (string, string)
 	}{
 		{"one paragraph that refers to each definition", func(index int) (string, string) {
 			return fmt.Sprintf("x[^%d]", index), fmt.Sprintf("[^%d]: Note %[1]d.\n\n", index)
@@ -309,226 +399,263 @@ func TestParseIsLinearInFootnoteReferences(t *testing.T) {
 			return fmt.Sprintf("x[^N%d]", index), fmt.Sprintf("[^n%d]: Note %[1]d.\n\n", index)
 		}},
 	} {
-		t.Run(shape.name, func(t *testing.T) {
-			growsLinearly(t, "parsing "+shape.name, 1<<20, func(size int) func() func() {
-				markdown := references(size, shape.each)
-				return cputest.Again(func() {
-					if _, err := ParseRendering(markdown); err != nil {
-						t.Fatalf("parse %d bytes of footnotes: %v", size, err)
-					}
-				})
-			})
-		})
+		shapes = append(shapes, parseGrowthShape(shape.name, "ParseRendering", "reference",
+			func(n int) string {
+				var markdown, definitions strings.Builder
+				for index := 1; index <= n; index++ {
+					reference, definition := shape.each(index)
+					markdown.WriteString(reference)
+					definitions.WriteString(definition)
+				}
+				return markdown.String() + "\n\n" + definitions.String()
+			}, false))
 	}
+	return withLinearReadings(shapes, footnoteReferenceReadings)
 }
 
-// A bare URL or email is read and written in time linear in its line. A line can hold an address
-// opening at every place the browser editor's engine starts one - after whitespace, any
-// punctuation, an escape, a character reference or a letter outside ASCII, in the markdown its
-// tokenizer reads and in the decoded text its transform reads - that the engine refuses only at
-// its domain, its `@` or its previous character, so nothing a refused read scans may be scanned
-// again from the next place. Each shape is one paragraph of one text node, which no element limit
-// stops, read as a rendering is and written from that tree.
+// footnoteReferenceReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+var footnoteReferenceReadings = map[string]linearReading{
+	"many paragraphs that each refer to their own definition/ParseRendering": {113, countedReading{past: 7477.022756005057, most: 7451.804203539823, scanMost: 35.52433628318584}},
+	"one paragraph that refers to each definition/ParseRendering":            {157, countedReading{past: 5671.787079162876, most: 5651.548566878981, scanMost: 26.35748407643312}},
+	"references that match their definitions up to case/ParseRendering":      {146, countedReading{past: 6462.86301369863, most: 6437.9375, scanMost: 28.158390410958905}},
+}
+
+// TestBareURLShapesParseAndRenderLinearly counts a read and its render as one operation.
+// The tokenizer reads markdown and the transform reads decoded text. A line can try an
+// address after whitespace, punctuation, an escape, a character reference or a letter outside
+// ASCII, and refuse it only at the domain, its `@` or its previous character. Nothing scanned
+// on a refused read may be scanned again from the next opening.
 //
-// A text `<` before each address that opens a comment, a processing instruction, a declaration, a
-// CDATA section or a tag the run's markdown closes only at its end is asked whether that markdown
-// reads as raw HTML there (rawHTMLScan), which reads to the closer at the run's end, and past the
-// next `<` in a quoted attribute value. Each such `<` is then escaped, so the readers, which search
-// from each `<` they read as one for its closer, read none of them.
-//
-// A paragraph that reads back in no spelling is written in every spelling runSpellings lists for
-// it, and unreadableRun calls for every family of them. The plain text after it is in each writing,
-// and each distinct writing is read back once (TestRenderReadsEachWritingBackUnderAReaderOnce). It
-// is timed up to renderFullTarget, as TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText
-// times a render.
+// A text `<` before each address can open a comment, a processing instruction, a declaration,
+// a CDATA section or a tag. The renderer searches to the closer at the end of the run, past the
+// next `<` in a quoted attribute value. It escapes each such `<`, so the readers do not repeat
+// those searches. A paragraph that reads back in no spelling is written in every spelling
+// runSpellings lists; unreadableRun needs all the families. Each writing includes the plain
+// text after the prefix and is read back once (TestRenderReadsEachWritingBackUnderAReaderOnce).
 func TestBareURLShapesParseAndRenderLinearly(t *testing.T) {
-	for _, shape := range []string{
+	runLinearRow(t)
+}
+
+// bareURLShapes keeps the rejected address spellings and the escaped opener/closer pairs apart.
+func bareURLShapes() []countedShape {
+	var shapes []countedShape
+	for _, repeat := range []string{
 		"_www.a", "-www.x_", `(https://-a.b\`, ".www.a&", ".www", "www.", `www\.`, `www\.a `, "HTTP://a ", ` "'https://-a.b`, `(""www.a_`, ` ".www.a`,
 		";https://-a.b", "x;www.a_", `\*https://-a`, "&amp;https://-a.", "éhttps://-a.", `http\://-a.`, `www\.a_`, `x"www.a_`, ";;", `\*`, ";a_a@", "é+a@b-", `www\.a@`,
 	} {
-		readsAndWritesLinearly(t, "", shape, "", 1<<20)
+		shapes = append(shapes, readAndRenderShape(repeat, "", repeat, ""))
 	}
-	for _, shape := range []struct{ opener, closer string }{
+	for _, html := range []struct{ opener, closer string }{
 		{"&lt;!-- a@b.cc ", "-->"}, {"&lt;?x;https://a.bc/ ", "?>"}, {"&lt;!X a@b.cc ", ">"}, {"&lt;![CDATA[ a@b.cc ", "]]>"},
 		{`&lt;a b="x;a@b.cc `, `">`}, {`&lt;a b='&lt;a c="x;a@b.cc `, `'>`},
 	} {
-		readsAndWritesLinearly(t, "", shape.opener, shape.closer, 1<<20)
+		shapes = append(shapes, readAndRenderShape(html.opener+"…"+html.closer, "", html.opener, html.closer))
 	}
-	readsAndWritesLinearly(t, unreadableRun, "lorem ipsum ", "", renderFullTarget)
+	shapes = append(shapes, readAndRenderShape("unreadableRun before repeated lorem ipsum", unreadableRun, "lorem ipsum ", ""))
+	return withLinearReadings(shapes, bareURLReadings)
 }
 
-// A paragraph of declarations no `>` closes is read and written in time linear in its size. A
-// declaration opens at `<!` and any ASCII letter (opensDeclaration) and ends at the first `>`
-// after it, over as many lines of its block as that takes, so an opener with no `>` after it
-// walked to the block's end and kept nothing: every later opener in the paragraph walked the same
-// bytes again. A mebibyte of `p ` and `<!a` repeated took 9.97 s to Parse and 19.38 s to
-// ParseForWrite, and `<!A` 19.24 s and 37.02 s, since goldmark's own raw HTML parser, which opens
-// a declaration after an uppercase letter, walked each of them again after this package's parser
-// gave up; `x <!a` on each line, where a walk crosses every later line of the paragraph, grew
-// about fourfold per doubling, 6.88 s at 64 KiB and 27.60 s at 128 KiB. The block's record of the
-// offset from which it holds no `>` (unclosedRawHTML) now answers every later opener without a
-// walk, and the one parser that reads every kind of inline raw HTML (inlineRawHTMLParser, which
-// wraps goldmark's own) walks a declaration once rather than twice: the same reads take 0.21 s,
-// 0.67 s, 0.20 s, 0.51 s, 0.05 s and 0.13 s.
+// bareURLReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+var bareURLReadings = map[string]linearReading{
+	" \"'https://-a.b/ParseRendering+Render":                          {273, countedReading{past: 5194, most: 5215.934065934066, scanMost: 30.014652014652015}},
+	" \".www.a/ParseRendering+Render":                                 {512, countedReading{past: 3789, most: 3800.298828125, scanMost: 16.0078125}},
+	"&amp;https://-a./ParseRendering+Render":                          {256, countedReading{past: 2896, most: 2932.21875, scanMost: 28.01953125}},
+	"&lt;!-- a@b.cc …-->/ParseRendering+Render":                       {273, countedReading{past: 6351, most: 6383.871794871795, searchedMost: 65.97802197802197, scanMost: 45.040293040293044}},
+	"&lt;!X a@b.cc …>/ParseRendering+Render":                          {292, countedReading{past: 5752, most: 5780.311643835616, searchedMost: 33.98929794520548, scanMost: 43.023972602739725}},
+	"&lt;![CDATA[ a@b.cc …]]>/ParseRendering+Render":                  {204, countedReading{past: 13617, most: 13598.96875, searchedMost: 165.94975490196077, scanMost: 73.07843137254902}},
+	"&lt;?x;https://a.bc/ …?>/ParseRendering+Render":                  {195, countedReading{past: 4980, most: 5024.54358974359, searchedMost: 41.98205128205128, scanMost: 40.04615384615385}},
+	"&lt;a b=\"x;a@b.cc …\">/ParseRendering+Render":                   {227, countedReading{past: 20821, most: 20858.40088105727, searchedMost: 14, scanMost: 178.13215859030836}},
+	"&lt;a b='&lt;a c=\"x;a@b.cc …'>/ParseRendering+Render":           {151, countedReading{past: 31924, most: 31950.71523178808, searchedMost: 26, scanMost: 217.19867549668874}},
+	"(\"\"www.a_/ParseRendering+Render":                               {455, countedReading{past: 2771.0153846153844, most: 2787.9142857142856, scanMost: 19.01098901098901}},
+	"(https://-a.b\\/ParseRendering+Render":                           {292, countedReading{past: 2658, most: 2689.695205479452, scanMost: 27.017123287671232}},
+	"-www.x_/ParseRendering+Render":                                   {585, countedReading{past: 3556.015628815629, most: 3575.8581196581194, scanMost: 31.017094017094017}},
+	".www.a&/ParseRendering+Render":                                   {585, countedReading{past: 1318, most: 1327.9675213675214, scanMost: 7.005128205128205}},
+	".www/ParseRendering+Render":                                      {1024, countedReading{past: 811, most: 818.5224609375, scanMost: 8.0048828125}},
+	";;/ParseRendering+Render":                                        {2048, countedReading{past: 334, most: 336.177734375, scanMost: 2.00146484375}},
+	";a_a@/ParseRendering+Render":                                     {819, countedReading{past: 2018, most: 2027.3797313797313, scanMost: 10.006105006105006}},
+	";https://-a.b/ParseRendering+Render":                             {315, countedReading{past: 2572, most: 2601.209523809524, scanMost: 26.015873015873016}},
+	"HTTP://a /ParseRendering+Render":                                 {455, countedReading{past: 2204, most: 2219.8043956043957, scanMost: 18.01098901098901}},
+	"\\*/ParseRendering+Render":                                       {2048, countedReading{past: 216, most: 220.2490234375, scanMost: 4.00390625}},
+	"\\*https://-a/ParseRendering+Render":                             {341, countedReading{past: 2706, most: 2728.6217008797653, scanMost: 24.01466275659824}},
+	"_www.a/ParseRendering+Render":                                    {682, countedReading{past: 5082, most: 5115.260997067448, scanMost: 39.077712609970675}},
+	"http\\://-a./ParseRendering+Render":                              {372, countedReading{past: 2074, most: 2097.798387096774, scanMost: 21.013440860215052}},
+	"unreadableRun before repeated lorem ipsum/ParseRendering+Render": {341, countedReading{past: 165728, most: 180542.63929618767, scanMost: 848.8181818181819}},
+	"www./ParseRendering+Render":                                      {1024, countedReading{past: 420, most: 428.8740234375, scanMost: 8.0048828125}},
+	"www\\./ParseRendering+Render":                                    {819, countedReading{past: 1008, most: 1020.6483516483516, scanMost: 14.008547008547009}},
+	"www\\.a /ParseRendering+Render":                                  {585, countedReading{past: 2885, most: 2897.459829059829, scanMost: 13.008547008547009}},
+	"www\\.a@/ParseRendering+Render":                                  {585, countedReading{past: 639, most: 648.3128205128205, scanMost: 7.005128205128205}},
+	"www\\.a_/ParseRendering+Render":                                  {585, countedReading{past: 3313, most: 3329.4307692307693, scanMost: 20.015384615384615}},
+	"x\"www.a_/ParseRendering+Render":                                 {512, countedReading{past: 2529, most: 2543.978515625, scanMost: 16.01171875}},
+	"x;www.a_/ParseRendering+Render":                                  {512, countedReading{past: 2529, most: 2543.978515625, scanMost: 16.01171875}},
+	"é+a@b-/ParseRendering+Render":                                    {585, countedReading{past: 1515, most: 1528.5589743589744, scanMost: 14.008547008547009}},
+	"éhttps://-a./ParseRendering+Render":                              {315, countedReading{past: 2548, most: 2573.133333333333, scanMost: 26.015873015873016}},
+}
+
+// TestUnclosedRawHTMLShapesParseAndRenderLinearly counts a read and its render as one operation.
+// A declaration opens at `<!` and an ASCII letter and ends at `>` even on a later line of the
+// block. Without a closer, each opener walked to the block's end. A mebibyte of `p ` and `<!a`
+// repeated took 9.97 s to Parse and 19.38 s to ParseForWrite. With `<!A` it took 19.24 s and
+// 37.02 s because Goldmark's own parser walked the block again. `x <!a` on each line took
+// 6.88 s at 64 KiB and 27.60 s at 128 KiB. unclosedRawHTML records the missing closer, and
+// inlineRawHTMLParser walks a declaration once rather than twice. The same reads took 0.21 s,
+// 0.67 s, 0.20 s, 0.51 s, 0.05 s and 0.13 s after those changes.
 //
-// So is a paragraph of the three other kinds of inline raw HTML that end at a closer of their own
-// - a comment at `-->`, a processing instruction at `?>`, a CDATA section at `]]>` - whose walk
-// is goldmark's, inside the wrapped parser, and which goldmark has walked from every opener to
-// the block's end since it had a raw HTML parser. Before the record a mebibyte of `p ` and
-// `<!--` repeated took 24.97 s to Parse and 50.17 s to ParseForWrite, `<?` 46.31 s and 93.65 s,
-// and `<![CDATA[`, whose parse the element limit refuses past, 1.61 s and 1.66 s. The record
-// holds one offset per kind, and the wrapper records for those three what the wrapped parser's
-// own walk answered, so the same reads take 0.23 s and 0.55 s, 0.22 s and 0.62 s, and 0.15 s
-// and 0.11 s.
-//
-// Each shape is one paragraph, read as a rendering is and written from that tree, at the size
-// TestBareURLShapesParseAndRenderLinearly reads its own shapes at. All but the CDATA sections are
-// one text node, which no element limit stops; each `[` of those is a link opener of its own, so
-// a caller's write of a mebibyte of them is refused for the elements they make, which the
-// read-back counts none of.
+// A comment ends at `-->`, a processing instruction at `?>`, and a CDATA section at `]]>`.
+// Goldmark walked to the end from each opener. A mebibyte took 24.97 s to Parse and 50.17 s to
+// ParseForWrite for comments, 46.31 s and 93.65 s for processing instructions, and 1.61 s and
+// 1.66 s for CDATA, which the element limit refused. The wrapper now records each kind's
+// missing closer, so the same reads took 0.23 s and 0.55 s, 0.22 s and 0.62 s, and 0.15 s and
+// 0.11 s. CDATA has a link opener at each `[`, so reading as a rendering keeps the element
+// limit from stopping its parse.
 func TestUnclosedRawHTMLShapesParseAndRenderLinearly(t *testing.T) {
-	for _, form := range []struct{ head, shape string }{
-		{"p ", "<!a"}, {"p ", "<!A"}, {"", "x <!a\n"},
-		{"p ", "<!--"}, {"p ", "<?"}, {"p ", "<![CDATA["},
-	} {
-		readsAndWritesLinearly(t, form.head, form.shape, "", 1<<20)
+	runLinearRow(t)
+}
+
+// unclosedRawHTMLShapes uses a leading word so each opener belongs to a paragraph.
+func unclosedRawHTMLShapes() []countedShape {
+	var shapes []countedShape
+	for _, repeat := range []string{"<!a", "<!A", "<!--", "<?", "<![CDATA["} {
+		shapes = append(shapes, readAndRenderShape("p "+repeat, "p ", repeat, ""))
 	}
+	shapes = append(shapes, readAndRenderShape("x <!a and a line feed", "", "x <!a\n", ""))
+	return withLinearReadings(shapes, unclosedRawHTMLReadings)
 }
 
-// readsAndWritesLinearly requires a paragraph of head, then shape repeated to a size of full and
-// then tail to be read as a rendering is and written from that tree in time linear in its size
-// (growsLinearly).
-func readsAndWritesLinearly(t *testing.T, head, shape, tail string, full int) {
-	t.Helper()
-	what := head + shape + tail
-	growsLinearly(t, fmt.Sprintf("reading and writing %q", what), full, func(size int) func() func() {
-		markdown := head + strings.Repeat(shape, (size-len(head))/len(shape)) + tail + "._\n"
-		return cputest.Again(func() {
-			doc, err := ParseRendering(markdown)
-			if err != nil {
-				t.Fatalf("parse %d bytes of %q: %v", size, what, err)
-			}
-			if _, err := Render(doc); err != nil {
-				t.Fatalf("render %d bytes of %q: %v", size, what, err)
-			}
-		})
-	})
+// unclosedRawHTMLReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+var unclosedRawHTMLReadings = map[string]linearReading{
+	"p <!--/ParseRendering+Render":                {1024, countedReading{past: 920, most: 924.9296875, searchedMost: 20.0087890625, scanMost: 4.0048828125}},
+	"p <!A/ParseRendering+Render":                 {1365, countedReading{past: 625, most: 628.6717948717949, searchedMost: 9.003663003663004, scanMost: 3.0036630036630036}},
+	"p <![CDATA[/ParseRendering+Render":           {455, countedReading{past: 1716, most: 1727.0263736263737, searchedMost: 54.01758241758242, scanMost: 9.010989010989011}},
+	"p <!a/ParseRendering+Render":                 {1365, countedReading{past: 625, most: 628.6717948717949, searchedMost: 9.003663003663004, scanMost: 3.0036630036630036}},
+	"p <?/ParseRendering+Render":                  {2048, countedReading{past: 480, most: 482.4658203125, searchedMost: 10.00439453125, scanMost: 2.00244140625}},
+	"x <!a and a line feed/ParseRendering+Render": {682, countedReading{past: 1792.0043988269795, most: 1798.7771260997067, searchedMost: 17.999816715542522, scanMost: 6.004398826979473}},
 }
 
-// Writing a tree of many blocks into a document takes time linear in its blocks when the blocks it
-// adds or replaces stand together (LEGION-465). Update inserted the children a fragment gains one
-// index at a time, and ygo's fragment insert walks the fragment's children to the index it is given
-// - an element no document holds yet copies the children it has buffered instead - so n blocks
-// took about n²/2 steps. On one machine at a load of 140 to 200, seeding 16,384 one-word
-// paragraphs took 2.1 s of CPU and 65,536 took 36 s, a quote of 21,844 rules 4.3 s, and replacing
-// a quote of 21,844 empty headings with a quote of as many rules 11 s through the upload route.
-// Nothing in Update bounds the blocks: a rebuild from the latest version writes a stored rendering
-// whole, whatever it weighs, so the seed of paragraphs runs to the mebibyte a document may hold
-// (updateSeedTarget). The work of each write grows less than growthBound times from a
-// growthScale-th of its blocks to all of them (growsLinearly), and each write goes into a document
-// of its own, which Growth builds and seeds before the window opens.
+// readAndRenderShape keeps the input's prefix and closer fixed while the middle grows.
+func readAndRenderShape(name, head, repeat, tail string) countedShape {
+	return parseGrowthShape(name, "ParseRendering+Render", "repeat",
+		func(n int) string { return head + strings.Repeat(repeat, n) + tail + "._\n" }, false)
+}
+
+// TestUpdateIsLinearInTheBlockCount counts the work of seeding or replacing contiguous blocks.
+// Update used to insert the children one index at a time, and ygo walks to the index for each
+// insert unless the element is still buffered. On a machine with load 140–200, seeding 16,384
+// one-word paragraphs took 2.1 s of CPU and 65,536 took 36 s; a quote of 21,844 rules took
+// 4.3 s, and replacing a quote of 21,844 headings with a quote of rules took 11 s through the
+// upload route. A rebuild writes the stored rendering whole, whatever its block count.
 //
-// Replaced blocks that stand apart are not linear. ygo's Delete and Insert walk the fragment from
-// its start to the index each is given (crdt/yxml.go leftChildAt, deleteChildRange, in the pinned
-// sjawhar/ygo v1.55.1-sami.2), and a replaced block between two kept ones is a run of its own, so a
-// document whose every other block changes type costs a walk per replaced block, as it did before
-// runs were batched. That shape is held to ygo's own walks instead: the work of Update is no more
-// than alternatingAllowance times the work of a Delete and an Insert at each replaced index on the
-// same document, the two timed in turn on cputest.Growth at a scale of 1. On one machine at a
-// load of 105 to 121, back to back, it took 134 ms and 5.83 s at 4,096 and 16,384
-// blocks (2.1 and 1.6 times ygo's walks), the Update before sjawhar/legion#1892 112 ms and 5.65 s
-// (1.6 and 1.6 times); the write that typed its batch from the live fragment's children, walking
-// the whole fragment once more per replaced block, took 936 ms at 4,096 (12.7 times).
+// Every other block is a separate run, so the index walks necessarily grow quadratically.
+// At 4,096 and 16,384 blocks, Update took 134 ms and 5.83 s, or 2.1 and 1.6 times ygo's
+// Delete and Insert alone. Before batching, it took 112 ms and 5.65 s (1.6 times ygo's walks
+// at both sizes). Typing each batch from the live fragment's children caused another full
+// walk per replaced block and took 936 ms at 4,096 blocks (12.7 times). This shape counts
+// the items reached, and compares its counted statements with the same edits made in ygo.
 func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
-	for _, test := range []struct {
-		name, from, to string
-		target         int
-	}{
-		{"seeding paragraphs", "", "a\n\n", updateSeedTarget},
-		{"seeding a quote of rules", "", "> ***\n", updateShapeTarget},
-		{"replacing headings with paragraphs", "#\n", "a\n\n", updateShapeTarget},
-		{"replacing a quote of headings with a quote of rules", "> #\n", "> ***\n", updateShapeTarget},
+	runLinearRow(t)
+}
+
+// updateShapes builds a fresh document outside each measured Update and checks its read-back.
+func updateShapes() []countedShape {
+	var shapes []countedShape
+	for _, test := range []struct{ name, from, to string }{
+		{"seeding paragraphs", "", "a\n\n"},
+		{"seeding a quote of rules", "", "> ***\n"},
+		{"replacing headings with paragraphs", "#\n", "a\n\n"},
+		{"replacing a quote of headings with a quote of rules", "> #\n", "> ***\n"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, test.name, test.target/len(test.to)*len(test.to), func(size int) func() func() {
-				blocks := size / len(test.to)
-				var seed *Node
-				if test.from != "" {
-					seed = repeatedBlocks(t, test.from, blocks)
-				}
-				want := repeatedBlocks(t, test.to, blocks)
-				seeded := func() (*crdt.Doc, *crdt.YXmlFragment) {
-					doc := crdt.New()
-					fragment := doc.GetXmlFragment("prosemirror")
-					if seed != nil {
-						writeUpdate(t, doc, fragment, seed)
-					}
-					return doc, fragment
-				}
-				readsBack(t, test.name, seeded, want)
-				return func() func() {
-					doc, fragment := seeded()
-					return func() { writeUpdate(t, doc, fragment, want) }
+		leaf := linearShape(test.name, "Update", "block")
+		leaf.prepare = func(t *testing.T, blocks int) (int, int, func() string) {
+			doc := crdt.New(crdt.WithClientID(1))
+			fragment := doc.GetXmlFragment("prosemirror")
+			if test.from != "" {
+				writeUpdate(t, doc, fragment, repeatedBlocks(t, test.from, blocks))
+			}
+			want := repeatedBlocks(t, test.to, blocks)
+			return blocks, len(test.to) * blocks, func() string {
+				writeUpdate(t, doc, fragment, want)
+				requireUpdateReadBack(t, fragment, want)
+				return ""
+			}
+		}
+		shapes = append(shapes, leaf)
+	}
+	return withLinearReadings(append(shapes, alternatingShape()), updateReadings)
+}
+
+// updateReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+var updateReadings = map[string]linearReading{
+	"replacing a quote of headings with a quote of rules/Update": {512, countedReading{past: 856.8727678571429, most: 854.93701171875}},
+	"replacing every other block/Update":                         {4096, countedReading{past: 118718.47330729167, most: 95164.82373046875}},
+	"replacing headings with paragraphs/Update":                  {512, countedReading{past: 1323.205357142857, most: 1321.139892578125}},
+	"seeding a quote of rules/Update":                            {512, countedReading{past: 411, most: 412.349609375}},
+	"seeding paragraphs/Update":                                  {512, countedReading{past: 906, most: 906.513671875}},
+}
+
+// alternatingBlocks ends near the most paragraphs a caller write's element budget allows.
+var alternatingBlocks = [2]int{4096, 16384}
+
+// alternatingAllowance permits that many items reached per block beside ygo's own walks, and
+// that many times ygo's counted statements for Update with its read-back.
+const alternatingAllowance = 4
+
+// alternatingFloor and alternatingCeiling bound the counted statements per reached item allowed.
+// At the same reading as updateReadings, 4,096 blocks took 11.941460 statements per allowed item
+// and 16,384 took 11.611130. The bounds are a quarter of the lower and four times the higher.
+const (
+	alternatingFloor   = 11.611130 / countedMargin
+	alternatingCeiling = 11.941460 * countedMargin
+)
+
+// alternatingShape replaces each heading between two kept paragraphs as a run of its own.
+func alternatingShape() countedShape {
+	leaf := linearShape("replacing every other block", "Update", "block")
+	leaf.sizes = alternatingBlocks
+	leaf.limitChildren = true
+	seed := func(t *testing.T, blocks int) (*crdt.Doc, *crdt.YXmlFragment, *Node) {
+		doc := crdt.New(crdt.WithClientID(1))
+		fragment := doc.GetXmlFragment("prosemirror")
+		writeUpdate(t, doc, fragment, repeatedBlocks(t, "#\n\na\n\n", blocks/2))
+		return doc, fragment, repeatedBlocks(t, "a\n\n", blocks)
+	}
+	leaf.prepare = func(t *testing.T, blocks int) (int, int, func() string) {
+		doc, fragment, want := seed(t, blocks)
+		return 2 * (blocks / 2), len("a\n\n") * blocks, func() string {
+			writeUpdate(t, doc, fragment, want)
+			requireUpdateReadBack(t, fragment, want)
+			return ""
+		}
+	}
+	leaf.prepareWalks = func(t *testing.T, blocks int) (int, int, func() string) {
+		doc, fragment, _ := seed(t, blocks)
+		return 2 * (blocks / 2), len("a\n\n") * blocks, func() string {
+			doc.Transact(func(txn *crdt.Transaction) {
+				for index := 0; index < blocks; index += 2 {
+					fragment.Delete(txn, index, 1)
+					fragment.InsertElement(txn, index, crdt.NewYXmlElement("paragraph"))
 				}
 			})
-		})
-	}
-	t.Run("replacing every other block", func(t *testing.T) {
-		for _, blocks := range alternatingBlocks {
-			// Headings and paragraphs alternate, and every block becomes a paragraph: every heading
-			// is a run of its own, between two paragraphs Update keeps.
-			seed := repeatedBlocks(t, "#\n\na\n\n", blocks/2)
-			from := func() (*crdt.Doc, *crdt.YXmlFragment) {
-				doc := crdt.New()
-				fragment := doc.GetXmlFragment("prosemirror")
-				writeUpdate(t, doc, fragment, seed)
-				return doc, fragment
-			}
-			want := repeatedBlocks(t, "a\n\n", blocks)
-			readsBack(t, "replacing every other block", from, want)
-			update := func() func() {
-				doc, fragment := from()
-				return func() { writeUpdate(t, doc, fragment, want) }
-			}
-			walks := func() func() {
-				doc, fragment := from()
-				return func() {
-					doc.Transact(func(txn *crdt.Transaction) {
-						for index := 0; index < blocks; index += 2 {
-							fragment.Delete(txn, index, 1)
-							fragment.InsertElement(txn, index, crdt.NewYXmlElement("paragraph"))
-						}
-					})
-				}
-			}
-			ratio, walked, took := cputest.Growth(growthSamples, 1, walks, update)
-			if ratio > alternatingAllowance {
-				t.Errorf("replacing every other block of %d took %v, %.1f times the %v that ygo's own Delete and Insert at those indexes take (at most %d)",
-					blocks, took, ratio, walked, alternatingAllowance)
-			}
-			t.Logf("replacing every other block of %d: %v, %.1f times ygo's walks (%v, at most %d)", blocks, took, ratio, walked, alternatingAllowance)
+			return ""
 		}
-	})
+	}
+	return leaf
 }
 
-// readsBack writes want, untimed, into the document that seeded makes, and requires the document
-// to read back as want: so each timed write of want into a document that seeded makes writes it.
-func readsBack(t *testing.T, what string, seeded func() (*crdt.Doc, *crdt.YXmlFragment), want *Node) {
+// ygoWalks counts the items ygo's Delete and Insert walk over, and the item each edits.
+func ygoWalks(blocks int) uint64 {
+	var walked uint64
+	for index := 0; index < blocks; index += 2 {
+		walked += 2 * (uint64(index) + 1)
+	}
+	return walked
+}
+
+// requireUpdateReadBack requires the measured Update to write exactly the requested tree.
+func requireUpdateReadBack(t *testing.T, fragment *crdt.YXmlFragment, want *Node) {
 	t.Helper()
-	doc, fragment := seeded()
-	writeUpdate(t, doc, fragment, want)
 	if got, err := Read(fragment); err != nil || !got.Equal(want) {
-		t.Fatalf("%s: %d blocks read back otherwise (%v)", what, len(want.Children), err)
+		t.Fatalf("%d blocks read back otherwise (%v)", len(want.Children), err)
 	}
 }
-
-// alternatingAllowance is how many times ygo's own index walks replacing every other block may
-// take (TestUpdateIsLinearInTheBlockCount). Update's work beside the walks - building each block
-// and comparing the trees - grows linearly while the walks grow quadratically, so the ratio falls
-// as the document grows: 1.6 to 2.6 at the sizes the test runs, the Update before
-// sjawhar/legion#1892 included, against 12.7 for a write that walks the fragment once more per
-// replaced block.
-const alternatingAllowance = 4
 
 // repeatedBlocks is the tree of unit written blocks times, read as a stored rendering is, which no
 // element limit stops.
@@ -547,433 +674,4 @@ func writeUpdate(t *testing.T, doc *crdt.Doc, fragment *crdt.YXmlFragment, tree 
 	if err := doc.TransactE(func(txn *crdt.Transaction) error { return Update(txn, fragment, tree) }); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-}
-
-// growthScale is how many times the full size of each growth row of this package is its smaller
-// size, and growthBound how many times its work may grow from the smaller size to the full one
-// (growsLinearly): work in proportion to the input grows about growthScale times, and work for
-// each pair of units about growthScale² (256) times, so a walk for each pair breaks the bound once
-// it is about a sixth of the work at the smaller size.
-const (
-	growthScale = 16
-	growthBound = 48
-)
-
-// growthSamples is how many times cputest.Growth times each window of a row.
-const growthSamples = 3
-
-// growsLinearly requires the work at each size to grow less than growthBound times over the work at
-// a growthScale-th of it (cputest.Growth), first from full/growthScale² to full/growthScale, then
-// from there to full, and stops at the first step whose work grows past the bound, failing there.
-// Work for each pair of units grows about growthScale² times at either step, so it fails the first,
-// where each window holds a growthScale²-th of the work it would hold at full size: a quadratic
-// walk that takes minutes at full size, such as a parse of a mebibyte of footnote references that
-// builds its map of definitions again for each reference, fails in seconds, and the full size is
-// not timed. Linear work with a cost of its own for each run grows less over the smaller step than
-// over the larger, so the bound holds it with more room there. input builds the input of one size,
-// untimed, and returns the small or large of cputest.Growth for it: cputest.Again of a run that
-// changes nothing, or a function that builds a fresh input for each run.
-func growsLinearly(t *testing.T, what string, full int, input func(size int) func() func()) {
-	t.Helper()
-	for _, large := range []int{full / growthScale, full} {
-		small := large / growthScale
-		growth, smallWork, largeWork := cputest.Growth(growthSamples, growthScale, input(small), input(large))
-		t.Logf("%s: %s %d times %v, %s once %v: %.1f times", what, sizeText(small), growthScale, smallWork, sizeText(large), largeWork, growth)
-		if growth >= growthBound {
-			untimed := ""
-			if large < full {
-				untimed = fmt.Sprintf("; %s, the full size, is not timed", sizeText(full))
-			}
-			t.Errorf("%s: the work grew %.1f times, from %v for %d runs of %s to %v for one run of %s, want less than %d times%s",
-				what, growth, smallWork, growthScale, sizeText(small), largeWork, sizeText(large), growthBound, untimed)
-			return
-		}
-	}
-}
-
-// processCPUTime is this process's total CPU time, user and system, since it started
-// (cputest.Process), not wall time: it leaves out the time the process waits for a core, though
-// another process's load still slows its own CPU time through shared caches and clock frequency.
-// Every test that measures a call through it is serial (it does not call t.Parallel), and go test
-// starts a run's parallel tests only once every serial test of that run has ended, so ordinarily
-// at most one measured call runs at a time and nothing else runs beside it. leakedCallGuard
-// (below) is what keeps that true even once a call has missed its own deadline and gone on running
-// in the background. Every measured call reads it through timedWindow.
-func processCPUTime() time.Duration { return cputest.Process() }
-
-// cpuTimeOf is the CPU time one run of an operation takes, for a test that holds one run to a
-// budget of CPU time rather than to a growth (heavyBodyCPUBudget). prepare builds one run's input,
-// untimed, and returns the run, as the small and large of cputest.Growth do. cputest.Measure picks
-// how many runs one timed window holds, so the clock resolves the window, and divides by them;
-// every run's input is built before its window opens (timedWindow), since the input is not the
-// code under test.
-func cpuTimeOf(prepare func() (run func())) (time.Duration, error) {
-	return cputest.Measure(func(count int) (time.Duration, error) {
-		runs := make([]func(), count)
-		for i := range runs {
-			runs[i] = prepare()
-		}
-		return timedWindow(func() {
-			for _, run := range runs {
-				run()
-			}
-		})
-	})
-}
-
-// timedWindow is the CPU time this process spends running op, with the garbage collector settled
-// before op starts and stopped while it runs, so the time is op's own work alone.
-//
-// A collection inside the window adds CPU time that depends on when it lands rather than on op.
-// Whether one lands depends on the heap goal the untimed setup and the tests before it leave
-// behind, so a small size's write can run with no collection at all while a full-size write runs
-// one or two. A collection's own CPU time varies several times over between cycles, since its
-// idle mark workers run on every processor the single-threaded write leaves idle and
-// processCPUTime counts them. Either way the full size's time grows against the small size's
-// without the work growing.
-//
-// Stopping the collector hides nothing a regression would show: work that grows quadratically
-// does so on op's own goroutine, and allocation that grows quadratically still pays inside the
-// window for the fresh memory it touches. The heap may grow to windowMemoryLimit while the
-// collector is stopped, so a regression that allocates without bound is collected rather than
-// killing the process; a window that reaches the limit comes back with an error naming its
-// collections, since that collection would put its noise back into the time.
-//
-// timedWindow reports through no *testing.T. It runs inside the goroutine runWithDeadline starts,
-// which a call that misses its deadline leaves running past its test's end, and testing panics the
-// whole binary on a Fail from such a goroutine; the caller waiting on runWithDeadline reports the
-// error on its test's own goroutine (timedWithDeadline). A call that misses its deadline may also
-// never return to restore the collector, so runWithDeadline restores it as well.
-func timedWindow(op func()) (time.Duration, error) {
-	runtime.GC()
-	defer debug.SetGCPercent(debug.SetGCPercent(-1))
-	limit := min(debug.SetMemoryLimit(-1), windowMemoryLimit)
-	defer debug.SetMemoryLimit(debug.SetMemoryLimit(limit))
-	cycles := gcCycles()
-	before := processCPUTime()
-	op()
-	took := processCPUTime() - before
-	if collected := gcCycles() - cycles; collected != 0 {
-		return took, fmt.Errorf("%d collections ran inside a timed window, which grew the heap to the %d MiB memory limit; their CPU time is in its %s", collected, limit>>20, took.Round(time.Millisecond))
-	}
-	return took, nil
-}
-
-// windowMemoryLimit is the most memory timedWindow lets a window grow the heap to with the
-// collector stopped, unless the process already runs under a lower limit. A window times the parse
-// of one body that a test holds to a budget (heavyBodyCPUBudget), or of many runs of a smaller one
-// that hold about 50 of the clock's steps of work (cputest.Measure), around a second's even at
-// gVisor's 10 ms step.
-const windowMemoryLimit = 3 << 30
-
-// gcCycles is how many collections this process has completed.
-func gcCycles() uint64 {
-	sample := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}}
-	metrics.Read(sample)
-	return sample[0].Value.Uint64()
-}
-
-// collectorSettings is GOGC and the memory limit as they stand, read without changing either.
-func collectorSettings() (percent int, limit int64) {
-	sample := []metrics.Sample{{Name: "/gc/gogc:percent"}}
-	metrics.Read(sample)
-	return int(int64(sample[0].Value.Uint64())), debug.SetMemoryLimit(-1)
-}
-
-// leaking counts how many of each what (timedWithDeadline's label) are currently
-// running past their own deadline - a count, not a single flag, so two concurrently leaking calls
-// sharing one label cannot be mistaken for one clearing when either returns. Go cannot cancel a
-// goroutine mid-computation, so this is the only way a later call can tell that measuring right
-// now would share processCPUTime's process-wide counter with CPU a still-running earlier call
-// keeps spending. runWithDeadline adds to it the instant a deadline misses and removes from it
-// only once that call's own goroutine finally returns; leakedCallGuard reads it.
-var leaking struct {
-	mu   sync.Mutex
-	what map[string]int
-}
-
-// leakedCallGuard reports what, if anything, is still running past its own deadline - the message
-// timedWithDeadline fails a new call with before ever starting it, naming the call still leaking
-// CPU into this process's RUSAGE_SELF rather than inventing a ratio out of a measurement that
-// shared it. heavy_bodies_test.go's workOf refuses to count a call's bytes the same way, since the
-// heap's allocations are the whole process's too. A pure function (no *testing.T) so a unit test
-// can assert it directly: see TestLeakedCallBlocksTheNextMeasurement.
-func leakedCallGuard(what string) string {
-	leaking.mu.Lock()
-	defer leaking.mu.Unlock()
-	if len(leaking.what) == 0 {
-		return ""
-	}
-	labels := make([]string, 0, len(leaking.what))
-	for label, count := range leaking.what {
-		if count > 1 {
-			label = fmt.Sprintf("%s (x%d)", label, count)
-		}
-		labels = append(labels, label)
-	}
-	sort.Strings(labels) // a fixed order, not map iteration's, so the message is reproducible
-	return fmt.Sprintf("%s: refusing to measure while %s is still running past its own deadline (this process's CPU time and the heap's allocations are the whole process's, so measuring now would attribute that call's ongoing work to this one)", what, strings.Join(labels, ", "))
-}
-
-// runWithDeadline runs op, labelled what, in its own goroutine and reports whether it returned
-// within deadline. Go cannot cancel a goroutine mid-computation, so an op that does not return in
-// time is left running - registered under what in leaking until it eventually returns and
-// deregisters itself, so leakedCallGuard can refuse a later call that would otherwise share its
-// ongoing CPU - rather than stopped; the point of the deadline is only to stop waiting for it and
-// report that promptly, not to free its resources. A deregistration goroutine is spawned only on
-// a deadline miss, and only then: on a call that truly never returns, it stays parked on result's
-// receive, at no CPU cost, for as long as the test binary runs. cleared, non-nil only on a
-// deadline miss, closes the instant that goroutine deregisters op's own entry - the signal
-// waitForLeakToClear waits on, rather than polling. err is op's own, a timed window's verdict
-// (timedWindow), handed back only with an op that returned in time: a late op's is dropped with it,
-// since no test waits for it any more. It hands back the collector's settings as it found them on
-// either return, since an op stopped inside timedWindow that misses its deadline would
-// otherwise leave the collector stopped for every later test in the binary.
-func runWithDeadline(what string, deadline time.Duration, op func() (time.Duration, error)) (took time.Duration, onTime bool, cleared <-chan struct{}, err error) {
-	percent, limit := collectorSettings()
-	defer debug.SetMemoryLimit(limit)
-	defer debug.SetGCPercent(percent)
-	type outcome struct {
-		took time.Duration
-		err  error
-	}
-	result := make(chan outcome, 1)
-	go func() {
-		took, err := op()
-		result <- outcome{took, err}
-	}()
-	select {
-	case got := <-result:
-		return got.took, true, nil, got.err
-	case <-time.After(deadline):
-		leaking.mu.Lock()
-		if leaking.what == nil {
-			leaking.what = make(map[string]int)
-		}
-		leaking.what[what]++
-		leaking.mu.Unlock()
-		done := make(chan struct{})
-		go func() {
-			<-result
-			leaking.mu.Lock()
-			leaking.what[what]--
-			if leaking.what[what] == 0 {
-				delete(leaking.what, what)
-			}
-			leaking.mu.Unlock()
-			close(done)
-		}()
-		return 0, false, done, nil
-	}
-}
-
-// timedWithDeadline refuses to run op, naming whatever is still leaking (leakedCallGuard), then
-// runs it under runWithDeadline and fails t, naming what and deadline, if it did not return in
-// time, and reports op's error, naming what, if it did. Both are reported here, on t's own
-// goroutine, never from inside op, which can outlive t.
-func timedWithDeadline(t *testing.T, what string, deadline time.Duration, op func() (time.Duration, error)) time.Duration {
-	t.Helper()
-	if msg := leakedCallGuard(what); msg != "" {
-		t.Fatal(msg)
-	}
-	took, onTime, _, err := runWithDeadline(what, deadline, op)
-	if !onTime {
-		t.Fatalf("%s did not return within %s", what, deadline)
-	}
-	if err != nil {
-		t.Errorf("%s: %v", what, err)
-	}
-	return took
-}
-
-// TestRunWithDeadlineReportsAHangPromptly proves runWithDeadline's own guarantee directly: a
-// synthetic op that blocks far longer than its deadline is reported late (onTime=false) promptly -
-// close to the deadline itself, not close to how long op actually blocks - the property
-// timedWithDeadline relies on to fail fast and name its call instead of waiting out go test's own
-// default timeout with none attached.
-func TestRunWithDeadlineReportsAHangPromptly(t *testing.T) {
-	const deadline = 20 * time.Millisecond
-	release := make(chan struct{})
-	started := time.Now()
-	_, onTime, cleared, _ := runWithDeadline("synthetic prompt hang", deadline, func() (time.Duration, error) {
-		<-release // blocked until this test has its verdict, however the scheduler runs it
-		return 0, nil
-	})
-	if elapsed := time.Since(started); elapsed > 10*deadline {
-		t.Errorf("runWithDeadline took %s to report a hang against a %s deadline, want close to immediate", elapsed, deadline)
-	}
-	if onTime {
-		t.Error("runWithDeadline reported onTime=true for an op still blocked past its deadline")
-	}
-	close(release)
-	waitForLeakToClear(t, cleared)
-}
-
-// TestLeakedCallBlocksTheNextMeasurement proves leakedCallGuard directly: once a synthetic op has
-// missed its own deadline and is still running, a second, otherwise-healthy call through
-// timedWithDeadline refuses to start - naming the first call - rather than silently sharing its
-// still-accruing CPU (processCPUTime is this whole process's, not per-goroutine). The op is held
-// until the guard has answered, so it is still running when asked, however late the test runs.
-func TestLeakedCallBlocksTheNextMeasurement(t *testing.T) {
-	const deadline = 20 * time.Millisecond
-	release := make(chan struct{})
-	_, onTime, cleared, _ := runWithDeadline("synthetic leaked hang", deadline, func() (time.Duration, error) {
-		<-release
-		return 0, nil
-	})
-	if onTime {
-		close(release)
-		t.Fatal("runWithDeadline reported onTime=true for an op still blocked past its deadline")
-	}
-	if msg := leakedCallGuard("a second call"); msg == "" {
-		t.Error("leakedCallGuard let a second call measure while the first was still registered as leaked, want it refused")
-	} else {
-		t.Logf("leakedCallGuard correctly refused: %s", msg)
-	}
-	close(release)
-	waitForLeakToClear(t, cleared)
-}
-
-// TestAMissedDeadlineLeavesTheCollectorAsItWas proves runWithDeadline hands back the collector as
-// it found it when a call misses its deadline inside timedWindow, where the collector is
-// stopped: the call may never return to restore it, and a collector left stopped would hold every
-// later test in this binary to the window's memory limit with no collection below it.
-func TestAMissedDeadlineLeavesTheCollectorAsItWas(t *testing.T) {
-	percent, limit := collectorSettings()
-	stopped, release := make(chan struct{}), make(chan struct{})
-	runtime.GC() // so the window's own collection takes no part of the deadline
-	_, onTime, cleared, _ := runWithDeadline("synthetic hang inside a timed window", time.Second, func() (time.Duration, error) {
-		return timedWindow(func() {
-			close(stopped)
-			<-release
-		})
-	})
-	if onTime {
-		close(release)
-		t.Fatal("runWithDeadline reported onTime=true for an op still blocked past its deadline")
-	}
-	select {
-	case <-stopped:
-	default:
-		close(release)
-		waitForLeakToClear(t, cleared)
-		t.Fatal("the op had not stopped the collector by its deadline, so this test proves nothing")
-	}
-	gotPercent, gotLimit := collectorSettings()
-	if gotPercent != percent || gotLimit != limit {
-		t.Errorf("after a missed deadline the collector reads GOGC %d and a %d-byte memory limit, want %d and %d as before the call", gotPercent, gotLimit, percent, limit)
-	}
-	close(release)
-	waitForLeakToClear(t, cleared)
-}
-
-// TestALateCallFinishingAfterItsTestDoesNotPanic proves a timed call that misses its deadline and
-// returns only after its test has ended, with a collection in its window, reports nothing through
-// that test: testing panics the whole binary on a Fail from a goroutine whose test has completed,
-// which would turn one missed deadline into a crash of every test in pmdoc. The call runs in a
-// child process so that crash, if it happens, is this test's failure rather than the binary's; the
-// child's own verdict is the missed deadline, reported on its test's goroutine.
-func TestALateCallFinishingAfterItsTestDoesNotPanic(t *testing.T) {
-	t.Parallel()
-	child := exec.Command(os.Args[0], "-test.run", "^TestALateCallFinishingAfterItsTestDoesNotPanicHelper$", "-test.count=1", "-test.v")
-	child.Env = append(os.Environ(), lateCallHelperEnv+"=1")
-	output, _ := child.CombinedOutput() // the helper fails by design: its call misses its deadline
-	if strings.Contains(string(output), "panic:") {
-		t.Fatalf("a call that finished after its test had ended crashed the test binary:\n%s", output)
-	}
-	if !strings.Contains(string(output), lateCallWhat+" did not return within") || !strings.Contains(string(output), lateCallFinished) {
-		t.Fatalf("the child process did not report the missed deadline and then outlive the late call:\n%s", output)
-	}
-}
-
-const (
-	// lateCallHelperEnv names the child process TestALateCallFinishingAfterItsTestDoesNotPanic
-	// starts.
-	lateCallHelperEnv = "PMDOC_LATE_CALL_HELPER"
-	// lateCallWhat labels the child's call.
-	lateCallWhat = "synthetic call finishing after its test"
-	// lateCallFinished is what the child logs once the late call has returned.
-	lateCallFinished = "the late call returned after its test had ended"
-)
-
-// TestALateCallFinishingAfterItsTestDoesNotPanicHelper is that child process: a subtest whose call
-// misses its deadline through timedWithDeadline, as heavyBodyCPUBudget's measurement does, then the
-// call's release once the subtest has ended, a collection inside its window, and a wait until it
-// has returned.
-func TestALateCallFinishingAfterItsTestDoesNotPanicHelper(t *testing.T) {
-	if os.Getenv(lateCallHelperEnv) == "" {
-		t.Skip("the child process of TestALateCallFinishingAfterItsTestDoesNotPanic")
-	}
-	stopped, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	runtime.GC() // so the window's own collection takes no part of the deadline
-	t.Run("a call that misses its deadline", func(t *testing.T) {
-		timedWithDeadline(t, lateCallWhat, time.Second, func() (time.Duration, error) {
-			defer close(finished)
-			return timedWindow(func() {
-				close(stopped)
-				<-release
-				runtime.GC() // a collection inside the window, once its test has ended
-			})
-		})
-	})
-	select {
-	case <-stopped:
-	default:
-		t.Fatal("the op had not opened its window by its deadline, so this test proves nothing")
-	}
-	close(release)
-	select {
-	case <-finished:
-		t.Log(lateCallFinished)
-	case <-time.After(10 * time.Second):
-		t.Fatal("the late call never returned")
-	}
-}
-
-// waitForLeakToClear blocks until cleared closes or fails t: the deregistration goroutine
-// runWithDeadline spawned on a deadline miss closes cleared the instant it has removed its own
-// entry from leaking, so a later test in this same binary never starts measuring while this
-// test's own synthetic leak is still registered. 10s (packages/envoy/internal/cistore/burst_test.go's
-// waitAll uses the same bound for the same kind of wait) is far more than the handoff needs; past
-// it, something is wrong.
-func waitForLeakToClear(t *testing.T, cleared <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-cleared:
-	case <-time.After(10 * time.Second):
-		t.Fatal("a synthetic leaked call never deregistered")
-	}
-}
-
-// perCallReportMargin is what perCallDeadline leaves of the test binary's own deadline, so a
-// measured call that hangs fails by name (timedWithDeadline) while go test's own timeout is still
-// some way off.
-const perCallReportMargin = 60 * time.Second
-
-// perCallHangCap bounds a measured call when the run has no deadline to read (-timeout 0): a
-// hang still has to be reported, and half an hour is far past any healthy call at these sizes.
-const perCallHangCap = 30 * time.Minute
-
-// perCallDeadline bounds a call that timedWithDeadline measures: what the test binary's own
-// deadline leaves after perCallReportMargin (testwait.Remaining), capped at perCallHangCap. It is
-// read from the deadline rather than fixed because each measured call is a CPU-time measurement
-// (cpuTimeOf, cputest.Measure) that repeats its operation until a window reaches the measurement's
-// resolution, so the wall time it takes is the CPU it needs multiplied by whatever contention the
-// runner is under; a fixed wall-clock bound over a CPU-time budget fails healthy calls on a
-// loaded shared runner, which is what this file's own history records. For scale: a healthy
-// '<a b="x;a@b.cc ">' call at the 1 MiB tag shape, measured under -race in a two-CPU gVisor pod on
-// 2026-11-03, took 50.26s - 84% of the 60s bound this replaced, which is why the bound had to go
-// rather than be raised. A run whose deadline leaves no more than the margin fails once, by name,
-// saying whether the -timeout was too short or the tests before used it up.
-func perCallDeadline(t *testing.T) time.Duration {
-	t.Helper()
-	return min(perCallHangCap, testwait.Remaining(t, perCallReportMargin))
-}
-
-// sizeText is size, a count of bytes, in KiB or MiB.
-func sizeText(size int) string {
-	if size >= 1<<20 && size%(1<<20) == 0 {
-		return fmt.Sprintf("%d MiB", size>>20)
-	}
-	return fmt.Sprintf("%d KiB", size>>10)
 }

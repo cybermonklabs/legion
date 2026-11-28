@@ -17,8 +17,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -43,11 +43,19 @@ type countedShape struct {
 	sizes            [2]int
 	limitChildren    bool
 	prepare          func(t *testing.T, size int) (units, characters int, run func() string)
+	// prepareWalks prepares the ygo comparison using the same input as prepare.
+	prepareWalks func(t *testing.T, size int) (units, characters int, run func() string)
 }
 
 // countedRows lets the child find the same shape and operation that the parent selected.
 var countedRows = map[string]func() []countedShape{
-	"TestCountedBracketParagraph": countedBracketShapes,
+	"TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText": delimiterAndOpenerShapes,
+	"TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds":       runsAndLabelsShapes,
+	"TestParseIsLinearInATableOfEscapedPipes":                  escapedPipeTableShapes,
+	"TestParseIsLinearInFootnoteReferences":                    footnoteReferenceShapes,
+	"TestBareURLShapesParseAndRenderLinearly":                  bareURLShapes,
+	"TestUnclosedRawHTMLShapesParseAndRenderLinearly":          unclosedRawHTMLShapes,
+	"TestUpdateIsLinearInTheBlockCount":                        updateShapes,
 }
 
 // countedStages keeps the four independent readings around the operation, not its preparation.
@@ -239,7 +247,11 @@ var countedChildSlots = make(chan struct{}, 2)
 func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSample {
 	t.Helper()
 	t.Parallel()
-	countedBuild.buildOnce.Do(func() { countedBuild.buildErr = buildCounted(t) })
+	countedBuild.buildOnce.Do(func() {
+		started := time.Now()
+		countedBuild.buildErr = buildCounted(t)
+		t.Logf("shared counted build (package list and compile): %v", time.Since(started))
+	})
 	if countedBuild.buildErr != nil {
 		t.Fatal(countedBuild.buildErr)
 	}
@@ -262,7 +274,14 @@ func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSampl
 	}
 	var samples [2]countedSample
 	for i, size := range leaf.sizes {
-		samples[i] = readCountedSample(t, row, leaf, size, none)
+		samples[i] = readCountedSample(t, row, leaf, size, none, false)
+		if leaf.prepareWalks != nil {
+			walks := readCountedSample(t, row, leaf, size, nil, true)
+			if walks.units != samples[i].units || walks.characters != samples[i].characters {
+				t.Fatalf("%s at %d: Update and its ygo comparison built different inputs", leaf.name, size)
+			}
+			samples[i].walks = &walks
+		}
 	}
 	failures, readings := countedVerdict(leaf.countedLeaf, samples)
 	t.Log(readings)
@@ -276,23 +295,31 @@ func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSampl
 // total. It checks that the difference agrees with the sum of statements times the count change
 // in each block. For heavy bodies it also subtracts the startup-only child from the whole child,
 // so that reading includes the work of preparing the input.
-func readCountedSample(t *testing.T, row string, leaf countedShape, size int, none *countedStatementRun) countedSample {
+func readCountedSample(t *testing.T, row string, leaf countedShape, size int, none *countedStatementRun, walks bool) countedSample {
 	t.Helper()
 	what := fmt.Sprintf("%s at %d", leaf.name, size)
+	suffix := ""
+	if walks {
+		what += " (ygo Delete and Insert)"
+		suffix = "-walks"
+	}
 	env := func(mode string) []string {
 		return []string{countedModeEnv + "=" + mode, countedRowEnv + "=" + row, countedShapeEnv + "=" + leaf.shape,
 			countedOpEnv + "=" + leaf.operation, countedSizeEnv + "=" + strconv.Itoa(size)}
 	}
-	preparation, prepared, err := runProfiledCountedChild(t, "the prepare-only run of "+what, env("prepare")...)
+	preparation, prepared, err := runProfiledCountedChild(t, "the prepare-only run of "+what, env("prepare"+suffix)...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	measured, whole, err := runProfiledCountedChild(t, "the whole run of "+what, env("whole")...)
+	measured, whole, err := runProfiledCountedChild(t, "the whole run of "+what, env("whole"+suffix)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if preparation.Size != size || measured.Size != size {
 		t.Fatalf("%s: the prepare-only and whole children built sizes %d and %d, want both to build %d", what, preparation.Size, measured.Size, size)
+	}
+	if preparation.Units != size || measured.Units != size {
+		t.Fatalf("%s: the prepare-only and whole children built %d and %d units, want %d", what, preparation.Units, measured.Units, size)
 	}
 	if preparation.Characters != measured.Characters {
 		t.Fatalf("%s: the prepare-only and whole children built %d and %d characters", what, preparation.Characters, measured.Characters)
@@ -359,8 +386,9 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 		printCountedMeasurement(t, countedMeasurement{})
 		return
 	}
-	if mode != "prepare" && mode != "whole" && mode != "plain" {
-		t.Fatalf("%s = %q, want prepare, whole, plain, none, or census", countedModeEnv, mode)
+	walks := mode == "prepare-walks" || mode == "whole-walks"
+	if !walks && mode != "prepare" && mode != "whole" && mode != "plain" {
+		t.Fatalf("%s = %q, want prepare, whole, prepare-walks, whole-walks, plain, none, or census", countedModeEnv, mode)
 	}
 	row, shape, operation := os.Getenv(countedRowEnv), os.Getenv(countedShapeEnv), os.Getenv(countedOpEnv)
 	shapes, ok := countedRows[row]
@@ -375,9 +403,16 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 		if leaf.shape != shape || leaf.operation != operation {
 			continue
 		}
-		units, characters, run := leaf.prepare(t, size)
+		prepare := leaf.prepare
+		if walks {
+			prepare = leaf.prepareWalks
+			if prepare == nil {
+				t.Fatalf("%s has no ygo comparison", leaf.name)
+			}
+		}
+		units, characters, run := prepare(t, size)
 		measured := countedMeasurement{Size: size, Units: units, Characters: characters}
-		if mode != "prepare" {
+		if mode != "prepare" && mode != "prepare-walks" {
 			measured = measureCountedOperation(measured, run)
 		}
 		printCountedMeasurement(t, measured)
@@ -516,52 +551,9 @@ func parseCountedProfile(r io.Reader, modules map[string]string) (countedProfile
 	return result, nil
 }
 
-// countedBracketShapes uses a small paragraph to exercise the shared build and both kinds of
-// child. Its ASCII fold also gives the profile reader a fixture with only a few active blocks.
-func countedBracketShapes() []countedShape {
-	return []countedShape{{
-		countedLeaf: countedLeaf{
-			name: "bracket paragraph", unit: "character", heavyBody: true,
-			reading: countedReading{past: 322, most: 323.677734375, scanMost: 1},
-		},
-		shape: "brackets", operation: "read", sizes: [2]int{2 << 10, 16 << 10},
-		prepare: func(_ *testing.T, size int) (int, int, func() string) {
-			body := strings.Repeat("[A", size/2)
-			budget := readBackBudget()
-			return len(body), len(body), func() string {
-				if _, err := parseStamped(fold.ASCII(body), budget); err != nil {
-					return err.Error()
-				}
-				return ""
-			}
-		},
-	}}
-}
-
-// TestCountedBracketParagraph proves the real build, snapshots, invoking child and verdict agree
-// on a small input. Preparation must add work, but must not enter the operation-only count.
-func TestCountedBracketParagraph(t *testing.T) {
-	for _, sample := range runCountedLeaf(t, t.Name(), countedBracketShapes()[0]) {
-		if sample.outcome != "" {
-			t.Errorf("at %d characters: read failed: %s", sample.characters, sample.outcome)
-		}
-		if sample.withPreparation <= sample.operation {
-			t.Errorf("at %d characters: %d statements with preparation, want more than the %d operation-only statements", sample.characters, sample.withPreparation, sample.operation)
-		}
-	}
-}
-
-// TestTheCountedProfileReaderRefusesWhatItCannotCount uses the whole run of the 2048-character
-// bracket child. From the package directory, with the counted binary at "$d/pmdoc.test":
-//
-//	PMDOC_COUNTED_MODE=whole PMDOC_COUNTED_ROW=TestCountedBracketParagraph \
-//	  PMDOC_COUNTED_SHAPE=brackets PMDOC_COUNTED_OP=read PMDOC_COUNTED_SIZE=2048 \
-//	  "$d/pmdoc.test" -test.run='^TestHeavyBodiesCountedHelper$' -test.v \
-//	  -test.count=1 -test.timeout=0 -test.coverprofile="$d/whole.txt"
-//	grep -E '^(mode:|github\.com/sjawhar/envoy/internal/fold/)' "$d/whole.txt" > testdata/counted-profile.txt
-//
-// Testing writes all covered packages to the profile, so the filter keeps just the fold package.
-//
+// TestTheCountedProfileReaderRefusesWhatItCannotCount uses the fold package's slice of
+// the profile captured from the original 2048-character bracket proof leaf. That leaf
+// has been replaced by the delimiter row's [a render.
 // In profile order the total is 1*1 + 1*2 + 2*1 + 1*2047 + 1*1024 + 1*1 + 1*0 + 1*0 = 3077.
 func TestTheCountedProfileReaderRefusesWhatItCannotCount(t *testing.T) {
 	t.Parallel()
