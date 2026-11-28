@@ -353,9 +353,11 @@ func startCopysListener(t *testing.T, what, binary, issuer, accounts string) (*c
 }
 
 // healthRead is one read of a listener's /healthz: the status it answered and the body it decoded,
-// or the transport error the read ended with, and, on a read that is not healthy, the listener's
-// output so far, so that a wait that gives up prints it. Exported for the reason statusRead's
-// fields are.
+// or the transport error the read ended with beside the status and body of the last answer before
+// it, and, on a read that is not healthy, the listener's output so far, so that a wait that gives
+// up prints them. The wait asks once more after its request's context (testwait.Context) has
+// expired, so its last read can end in a transport error, and the answer that read carries is then
+// the one the give-up shows. Exported for the reason statusRead's fields are.
 type healthRead struct {
 	Status int
 	Health map[string]any
@@ -370,6 +372,7 @@ type healthRead struct {
 func healthyAt(t *testing.T, what string, p *cmdtest.Process, base string) map[string]any {
 	t.Helper()
 	ctx := testwait.Context(t)
+	var last healthRead // the Status and Health of the last read a request was answered with
 	read := testwait.Until(t, what+" to answer /healthz healthy", func() (healthRead, bool) {
 		select {
 		case <-p.Exited:
@@ -382,12 +385,13 @@ func healthyAt(t *testing.T, what string, p *cmdtest.Process, base string) map[s
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			return healthRead{Err: err, Output: p.Output.String()}, false
+			return healthRead{Status: last.Status, Health: last.Health, Err: err, Output: p.Output.String()}, false
 		}
 		health := map[string]any{}
 		_ = json.NewDecoder(response.Body).Decode(&health)
 		_ = response.Body.Close()
 		answer := healthRead{Status: response.StatusCode, Health: health}
+		last = answer
 		if health["status"] != "healthy" {
 			answer.Output = p.Output.String()
 			return answer, false
