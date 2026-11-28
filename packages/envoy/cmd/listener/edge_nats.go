@@ -29,7 +29,7 @@ import (
 )
 
 // connectListenerBus opens the listener's main client. Its start, every listener's, an edge one's
-// included, waits out a refusal of its credential for up to start's wait (natsStart.option,
+// included, waits out a refusal of its credential for up to start's wait (natsStart.options,
 // bus.WithCredentialWait), handing each refusal to start, which /healthz answers 503 naming while
 // it lasts and which forgets it once the connect has got in (natsStart.admitted). Every listener
 // but an edge one (edge nil) owns the stream (bus.ConnectOwningStream, listenerStreamOptions): it
@@ -47,10 +47,10 @@ import (
 // refused; no keeper raises a bucket after.
 func connectListenerBus(cfg config.Service, edge *edgeGrant, start *natsStart) (*bus.Client, error) {
 	if edge == nil {
-		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), start.option())...)
+		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), start.options()...)...)
 	}
 	readStream := bus.WithStartCheck(func(client *bus.Client) error { return edgeStreamPresent(client, edgeStreamRead) })
-	return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), readStream, start.option())...)
+	return bus.Connect(cfg.NATSURLs, append(append(edge.connectOptions(), bus.WithSilentCutDetection(), readStream), start.options()...)...)
 }
 
 // edgeStreamRead bounds an edge listener's read of the stream at its start.

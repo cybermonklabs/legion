@@ -436,7 +436,7 @@ var tossedKeys = map[string]string{
 // own text (Config.Warnings, readKeys), which boot logs and `legion config check`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
-	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml. review_round_cap is the one cap left on an issue's review rounds, and it moves nothing: after that many counted review rounds (recordRound in internal/workflow/review.go counts them, less the conflict rounds) the daemon posts a message on the issue and sends the architect a pr-blocked notice, once for each value the cap holds, and the work goes on (dispatch://INFRA-956 R4)",
 	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
 	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
 }
@@ -1368,7 +1368,19 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.StateDir == nil || strings.TrimSpace(*file.StateDir) == "" {
 		return Config{}, errors.New("state_dir is required")
 	}
-	cfg.StateDir = underConfig(*file.StateDir, configDir)
+	// The state directory is absolute from the load on, made so against the configuration file's
+	// directory and then the working directory, and every reader takes this path: the start's
+	// registry, the worker stream socket, the panes' files and their home, and the tmux workspace
+	// directory each phase task's working copy line names. So the line break the line ends at is
+	// refused here, in the very path the daemon uses.
+	absolute, err := filepath.Abs(underConfig(*file.StateDir, configDir))
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve state_dir %q: %w", *file.StateDir, err)
+	}
+	if strings.ContainsAny(absolute, "\n\r") {
+		return Config{}, fmt.Errorf("state_dir %q holds a line break, which a state directory may not hold: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break", absolute)
+	}
+	cfg.StateDir = absolute
 
 	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
 	postgresKey := "LEGION_POSTGRES_DSN"

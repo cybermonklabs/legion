@@ -7895,7 +7895,7 @@
     },
     "/api/v1/issues/{key}/results": {
       "get": {
-        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check, subject, program), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks, unreadable_links}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, merged, learned_at: {at, kind}}, merged true for a merged pull request's final head, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time on GitHub, as the read that wrote the head answered it (event_at), is the later of the two. Those are the open and merged pull requests of the check's issue, each at the head its stored row holds now: a pull request whose URL (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) the issue links is the issue's in any repository, and the head of one in a repository the issue does not resolve to also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository), read_failed (a read Dispatch makes did not answer), head_not_read (Dispatch has not read the head of a pull request of the issue yet) or issue_not_known (Dispatch does not know yet whether a pull request it read is this issue's). A before_merge check also carries heads_not_read, each pull request of its issue whose head Dispatch has not read, as {number, refused_as, refused_since}. Such a pull request has no results row yet, or a read of GitHub is owed for it. It is no basis, and no pass stands by it. refused_as (app_not_installed, repository_unreadable or pull_request_not_found) and refused_since, the time of the first refusal, are set where GitHub refuses the read that is owed. A check carries issues_not_known, each {number}, for each pull request of the issue's repository whose answer is not known and that the check's answer turns on: its facts name no issue that Dispatch holds, and its commit messages are not read. heads_not_read never names such a pull request. Each check also carries pass_stands {answer, roles, reason, subjects}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, where a head is not read or an issue is not known and no pass stands, and, with reason read_failed, for a check CI proves with no subject whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. A before_merge check compared with pull request heads names its subjects, the heads a pass must stand at: the head of each open pull request of the issue, or with none open the final head of the newest merged one, the one that merged last; each {basis, answer, reason, roles, results, ci}, its state from the results at its own commit alone: yes, no for fail or no_result, or unknown for pass_and_fail (a pass and a fail at that commit) or read_failed (a check CI proves whose check runs at that head could not be read), results the results that decide it. A pass of the check stands only where one stands at each subject, and its roles are the roles that passed at each; unknown takes the reason pass_and_fail where a subject holds a pass and a fail. Where Dispatch cannot tell which merged pull request merged last, since one holds no time of its merge, it names no subject and answers unknown for read_failed. Each result states two facts apart from each other. commit_stands {answer, basis, reason, possible_head, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed, head_not_read, issue_not_known). possible_head {repo, pull_request, commit} names the pull request whose answer is not known where the commit is its head. It is set only with the reason issue_not_known, and basis is empty there. An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded: true where the result's check_sha256 is not the check's digest and its check_version is not the check's version, since a check whose stored text another renderer version spelled keeps its version under a new digest. The result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It is read from that run at the head of each open pull request of the issue, each in that pull request's own repository, or with none open at the final head of the newest merged one; its ci {run, state, case, detail, line, commit, repo, result} is the read of the open pull request of the highest number, and each subject carries the read at its own head: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue), read_failed (Dispatch cannot tell which merged pull request merged last, and read no head; state unread), github_unreadable (state unread), head_not_read (state unread: a read of GitHub is owed for a head it would be read at, so no check run is read) or issue_not_known (state unread: a pull request of the repository whose answer is not known can come before the newest head, or no head is found, so no check run is read); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check; commit and repo the head read, and result the id of the result the read derived, for a pass or a fail. A result is derived from that run at each head read, for a pass or a fail alone, and is stored nowhere: id ci-run:\u003ccheck run id\u003e, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session \"\", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is, and stands at the head its run was read at. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull request head, or with none open the final head of the newest merged one, as on every read, so a derived result stands at the named commit only where that commit is the head it was read at. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. unreadable_links, present where there is one, lists each {url, refused_since} of the issue's links to a pull request or an issue of a repository the App is not installed on: GitHub refused its read at refused_since, and no pass reads it again until a new link or an event of its pull request owes the read again, or until the App is installed on the repository; no check's answer turns on it.",
+        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check, subject, program), serves (the references of the statements its block's serves attribute names, each as the block writes it, in the block's order; absent where the block names none), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks, unreadable_links}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, merged, learned_at: {at, kind}}, merged true for a merged pull request's final head, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time on GitHub, as the read that wrote the head answered it (event_at), is the later of the two. Those are the open and merged pull requests of the check's issue, each at the head its stored row holds now: a pull request whose URL (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) the issue links is the issue's in any repository, and the head of one in a repository the issue does not resolve to also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository), read_failed (a read Dispatch makes did not answer), head_not_read (Dispatch has not read the head of a pull request of the issue yet) or issue_not_known (Dispatch does not know yet whether a pull request it read is this issue's). A before_merge check also carries heads_not_read, each pull request of its issue whose head Dispatch has not read, as {number, refused_as, refused_since}. Such a pull request has no results row yet, or a read of GitHub is owed for it. It is no basis, and no pass stands by it. refused_as (app_not_installed, repository_unreadable or pull_request_not_found) and refused_since, the time of the first refusal, are set where GitHub refuses the read that is owed. A check carries issues_not_known, each {number}, for each pull request of the issue's repository whose answer is not known and that the check's answer turns on: its facts name no issue that Dispatch holds, and its commit messages are not read. heads_not_read never names such a pull request. Each check also carries pass_stands {answer, roles, reason, subjects}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, where a head is not read or an issue is not known and no pass stands, and, with reason read_failed, for a check CI proves with no subject whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. A before_merge check compared with pull request heads names its subjects, the heads a pass must stand at: the head of each open pull request of the issue, or with none open the final head of the newest merged one, the one that merged last; each {basis, answer, reason, roles, results, ci}, its state from the results at its own commit alone: yes, no for fail or no_result, or unknown for pass_and_fail (a pass and a fail at that commit) or read_failed (a check CI proves whose check runs at that head could not be read), results the results that decide it. A pass of the check stands only where one stands at each subject, and its roles are the roles that passed at each; unknown takes the reason pass_and_fail where a subject holds a pass and a fail. Where Dispatch cannot tell which merged pull request merged last, since one holds no time of its merge, it names no subject and answers unknown for read_failed. Each result states two facts apart from each other. commit_stands {answer, basis, reason, possible_head, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed, head_not_read, issue_not_known). possible_head {repo, pull_request, commit} names the pull request whose answer is not known where the commit is its head. It is set only with the reason issue_not_known, and basis is empty there. An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded: true where the result's check_sha256 is not the check's digest and its check_version is not the check's version, since a check whose stored text another renderer version spelled keeps its version under a new digest. The result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It is read from that run at the head of each open pull request of the issue, each in that pull request's own repository, or with none open at the final head of the newest merged one; its ci {run, state, case, detail, line, commit, repo, result} is the read of the open pull request of the highest number, and each subject carries the read at its own head: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue), read_failed (Dispatch cannot tell which merged pull request merged last, and read no head; state unread), github_unreadable (state unread), head_not_read (state unread: a read of GitHub is owed for a head it would be read at, so no check run is read) or issue_not_known (state unread: a pull request of the repository whose answer is not known can come before the newest head, or no head is found, so no check run is read); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check; commit and repo the head read, and result the id of the result the read derived, for a pass or a fail. A result is derived from that run at each head read, for a pass or a fail alone, and is stored nowhere: id ci-run:\u003ccheck run id\u003e, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session \"\", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is, and stands at the head its run was read at. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull request head, or with none open the final head of the newest merged one, as on every read, so a derived result stands at the named commit only where that commit is the head it was read at. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. unreadable_links, present where there is one, lists each {url, refused_since} of the issue's links to a pull request or an issue of a repository the App is not installed on: GitHub refused its read at refused_since, and no pass reads it again until a new link or an event of its pull request owes the read again, or until the App is installed on the repository; no check's answer turns on it.",
         "operationId": "getApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -9730,7 +9730,7 @@
     },
     "/api/v1/me/replies": {
       "get": {
-        "description": "The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark.",
+        "description": "The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), root_author, the actor who wrote the thread's root in the shape of the reply's author (the ask's asker, the root comment's author or the root message's author, as stored, so a root the Legion daemon wrote reads as its session legion-daemon:\u003cPROJECT\u003e; an agent row carries none), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark.",
         "operationId": "getApiV1MeReplies",
         "parameters": [
           {
@@ -12716,6 +12716,123 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Suggestions"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/results": {
+      "get": {
+        "description": "Every result CI jobs wrote for checks of the spec files at ?commit= (40 lowercase hex, else 400 INVALID_QUERY), of ?check= alone when given: {results}, each {id, seq, kind, attestation}, newest first by seq, Dispatch's record order. A results token is refused it.",
+        "operationId": "getApiV1ProjectsByKeyResults",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commit",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "check",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecCheckResults"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Record one result of one check of the spec files, written by the CI job that ran it {commit, check, verdict, observed}: only a results token, which the secrets broker mints for one GitHub Actions run, writes it (403 RESULTS_SCOPE_REQUIRED for every other credential), and any other body member is 400 RESULT_INPUT naming it. Dispatch reads the rest from the token, from GitHub and from .dispatch/spec at the run's commit: commit must be the run's (403 COMMIT_NOT_THE_RUNS), the run's repository must be the project's default repository, in any case and under the name the repository has now (403 REPOSITORY_NOT_THE_PROJECTS), GitHub must name the run's check run at that commit (403 CHECK_RUN_NOT_THE_RUNS; 403 CHECK_RUN_NOT_SHOWN when GitHub answers 403 or 404 for it), the graph logic must take the files as spec-check does (409 SPEC_FILES_REFUSED naming the first problem), and the files must hold the check (409 CHECK_NOT_IN_FILES) with its job the check run's job, as the run's workflow file at the commit shows it (409 CHECK_NOT_THIS_JOBS saying why not; 409 WORKFLOW_NOT_SHOWN when GitHub answers 403 or 404 for that file): a check run named exactly the check's job is that job's only where the file has one job of that name, with no matrix, and no matrix job whose leg can make the name; a name that is the job's name and a leg in parentheses is a leg of that job only where the file makes the job a matrix job, no job with no matrix has the name and no other matrix job's leg can make it; a job named by an expression leaves every name unproven. 503 CHECK_RUN_UNREADABLE, FILES_UNREADABLE or WORKFLOW_UNREADABLE when GitHub does not answer. A result keeps 2000 characters of observed: a longer text is its first 500 characters, a line that says the middle was cut, and its last characters. Answers 201 with the stored row {id, seq, kind, attestation}, an in-toto statement of the run whose recorder is the run's session and principal, and no person. Each result is a new row, and none is changed.",
+        "operationId": "postApiV1ProjectsByKeyResults",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecCheckResultInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecCheckResult"
                 }
               }
             }
@@ -17035,6 +17152,27 @@
         ],
         "type": "object"
       },
+      "AttestationSubject": {
+        "properties": {
+          "digest": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "digest"
+        ],
+        "type": "object"
+      },
       "AttributionCounts": {
         "properties": {
           "facts_left": {
@@ -17717,6 +17855,12 @@
           },
           "run": {
             "type": "string"
+          },
+          "serves": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "sha256": {
             "type": "string"
@@ -27253,6 +27397,9 @@
           "reply": {
             "$ref": "#/components/schemas/MyReplyReply"
           },
+          "root_author": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "session": {
             "$ref": "#/components/schemas/MyReplySession"
           },
@@ -30535,6 +30682,223 @@
         "required": [
           "method",
           "path"
+        ],
+        "type": "object"
+      },
+      "SpecCheckAttestation": {
+        "properties": {
+          "_type": {
+            "type": "string"
+          },
+          "predicate": {
+            "$ref": "#/components/schemas/SpecCheckPredicate"
+          },
+          "predicateType": {
+            "type": "string"
+          },
+          "subject": {
+            "items": {
+              "$ref": "#/components/schemas/AttestationSubject"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "_type",
+          "subject",
+          "predicateType",
+          "predicate"
+        ],
+        "type": "object"
+      },
+      "SpecCheckPredicate": {
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          },
+          "leg": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "string"
+          },
+          "procedure_digest": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorder": {
+            "$ref": "#/components/schemas/SpecCheckRecorder"
+          },
+          "run": {
+            "$ref": "#/components/schemas/SpecCheckRun"
+          },
+          "test": {
+            "$ref": "#/components/schemas/SpecCheckTest"
+          },
+          "verdict": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "check",
+          "procedure_digest",
+          "test",
+          "verdict",
+          "observed",
+          "job",
+          "leg",
+          "run",
+          "recorder",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "SpecCheckRecorder": {
+        "properties": {
+          "principal": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "principal"
+        ],
+        "type": "object"
+      },
+      "SpecCheckResult": {
+        "properties": {
+          "attestation": {
+            "$ref": "#/components/schemas/SpecCheckAttestation"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "kind",
+          "attestation"
+        ],
+        "type": "object"
+      },
+      "SpecCheckResultInput": {
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit",
+          "check",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "SpecCheckResults": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SpecCheckResult"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "SpecCheckRun": {
+        "properties": {
+          "attempt": {
+            "type": "integer"
+          },
+          "check_run_id": {
+            "type": "string"
+          },
+          "event_name": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "runner_environment": {
+            "type": "string"
+          },
+          "workflow_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "workflow_ref",
+          "ref",
+          "event_name",
+          "run_id",
+          "attempt",
+          "check_run_id",
+          "runner_environment"
+        ],
+        "type": "object"
+      },
+      "SpecCheckTest": {
+        "properties": {
+          "job": {
+            "type": "string"
+          },
+          "runner": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runner",
+          "selector",
+          "job"
         ],
         "type": "object"
       },

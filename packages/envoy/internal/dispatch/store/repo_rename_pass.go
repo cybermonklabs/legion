@@ -33,8 +33,11 @@ import (
 // The pass writes no other column, updated_at included, and appends no event. It never writes
 // repo_projects, the event log, the text of documents, comments, asks and messages, the reference
 // tables read from that text (refs, block_refs, graph_edges), architecture_snapshots.files, a
-// daemon's own readings (legion_current, legion_observations) or github_rate_limits, whose scope
-// names no repository.
+// daemon's own readings (legion_current, legion_observations), the results of spec checks
+// (spec_check_results) or github_rate_limits, whose scope names no repository. A row of
+// spec_check_results is the record of one CI run, with its repository as the run's results token
+// named it, which the row's in-toto statement holds too: nothing updates or deletes such a row,
+// and no read selects or compares by its repository column.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.

@@ -303,12 +303,14 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
 // intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
 // root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
-// (withoutGateBasis, gateBasisContract's row), the three other rows of stateNarrowings above the
-// contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no
-// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row)
-// and no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row),
-// and every other key as a caller at shapedAnswersContract is served it, since no other
-// row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// (withoutGateBasis, gateBasisContract's row), no issue's `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason` (withoutRepositoryCorrection,
+// repositoryCorrectionContract's row), the three other rows of stateNarrowings above the contract
+// it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no claim
+// view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row) and
+// no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row), and every
+// other key as a caller at shapedAnswersContract is served it, since no other row of
+// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
 // shapedAnswersContract's row stands at or below the contract it is served at, which is why the
 // golden carries `lowestPluginContract` and each claim view's `updateState`; the populated state
 // holds no pause, so it carries no `paused`. The mark's `daemon` names this daemon's own contract,
@@ -847,7 +849,12 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
 	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
-	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
+	// The controller's retry of a failed tester whose phase's start waits for its issue's slot
+	// (dispatch://INFRA-5649 R1): the claim stays failed, and the sentence names the wait.
+	golden(t, "agent-retry.json", AgentActionResponse{
+		State:             string(supervise.StateFailed),
+		PhaseNotRestarted: "legion-legion-legion-209-tester stays failed, and the start of its phase testing waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state",
+	})
 	golden(t, "agent-suspend.json", AgentActionResponse{
 		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
 	})
@@ -874,7 +881,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 			ID:    "a",
 			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
-	})})
+	}, []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}})})
 	golden(t, "task-stop.json", EmptyResponse{})
 }
 

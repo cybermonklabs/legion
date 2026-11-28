@@ -38,21 +38,29 @@ type drivenStatement struct {
 	readable bool
 	marked   bool
 	conn     uint32
+	oracle   bool
 }
+
+// writingOracle marks only the writing-token comparison request and work deriving its context.
+// That request may persist results metadata; it is not a read-only request under test.
+type writingOracle struct{}
 
 // poolStatements records every statement run on the pool it traces, whatever context it runs on:
 // the request's own, the work a request detaches from it, and the server's own context, where a
 // read can start a statistics refresh or a roster fetch, and where every duty of the rig runs.
-// Each statement of a batch is recorded on its own, and a copy as the insert it is. It also keeps
-// when the pool last ran a write, which is when a window may close (window).
+// Each statement of a batch is recorded on its own, and a copy as the insert it is. waitWork joins
+// every worker the world's reads can leave running before a window closes (window).
 type poolStatements struct {
 	mu         sync.Mutex
 	statements []drivenStatement
-	lastWrite  time.Time
+	waitWork   func(context.Context) error
+	// checked is the next unaudited statement in a read-only world. It is touched only by the
+	// world's serial request driver; record uses mu for the statements it appends.
+	checked   int
+	checkGaps bool
 }
 
 func (p *poolStatements) record(ctx context.Context, conn *pgx.Conn, sql string) {
-	now := time.Now()
 	writes, readable := driveWritesOf(sql)
 	var backend uint32
 	if conn != nil {
@@ -62,10 +70,8 @@ func (p *poolStatements) record(ctx context.Context, conn *pgx.Conn, sql string)
 	defer p.mu.Unlock()
 	p.statements = append(p.statements, drivenStatement{
 		sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil, conn: backend,
+		oracle: ctx.Value(writingOracle{}) != nil,
 	})
-	if len(writes) > 0 || !readable {
-		p.lastWrite = now
-	}
 }
 
 func (p *poolStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -106,59 +112,89 @@ func (p *poolStatements) since(from int) []drivenStatement {
 	return slices.Clone(p.statements[from:])
 }
 
-func (p *poolStatements) lastWriteAt() time.Time {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lastWrite
-}
-
-const (
-	// driveWindowAfterAnswer is how long a window stays open after its request is answered, at
-	// least.
-	driveWindowAfterAnswer = 2 * time.Second
-	// driveWindowQuiet is how long the pool must have run no write before a window closes.
-	driveWindowQuiet = 500 * time.Millisecond
-	// driveWindowLimit is how long after it opened a window that has not closed fails its drive.
-	driveWindowLimit = 20 * time.Second
-)
-
-// window opens a window on the pool, runs send, and closes the window no sooner than
-// driveWindowAfterAnswer after send returned and only once the pool has run no write for
-// driveWindowQuiet, so work a request starts and does not wait on lands inside it. A window still
-// open driveWindowLimit after it opened fails the drive, naming what. It answers every statement
-// the pool ran while it was open.
-func (p *poolStatements) window(t *testing.T, what string, send func()) []drivenStatement {
+// auditGap checks every statement since the preceding window's snapshot. Advancing by exactly
+// that snapshot's length leaves a concurrently appended statement for the next check.
+func (p *poolStatements) auditGap(t *testing.T, what string) {
 	t.Helper()
-	opened := time.Now()
-	from := p.count()
-	send()
-	answered := time.Now()
-	for {
-		now := time.Now()
-		if now.Sub(answered) >= driveWindowAfterAnswer && now.Sub(p.lastWriteAt()) >= driveWindowQuiet {
-			return p.since(from)
-		}
-		if now.Sub(opened) >= driveWindowLimit {
-			t.Errorf("%s: the window was still open %s after it opened, the pool writing within %s of every moment: %v",
-				what, driveWindowLimit, driveWindowQuiet, writesIn(p.since(from)))
-			return p.since(from)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !p.checkGaps {
+		return
 	}
+	statements := p.since(p.checked)
+	p.checked += len(statements)
+	// Between windows no route's read runs, so no rolled-back write is a route's (readMayRollBack).
+	requireReadsWrites(t, "between windows "+what, "", nonOracleStatements(statements))
 }
 
-// quiet waits until the pool has run no write for driveWindowQuiet, so a window opened next
-// holds nothing an earlier request left running, and fails what past driveWindowLimit.
-func (p *poolStatements) quiet(t *testing.T, what string) {
-	t.Helper()
-	started := time.Now()
-	from := p.count()
-	for time.Since(p.lastWriteAt()) < driveWindowQuiet {
-		if time.Since(started) >= driveWindowLimit {
-			t.Errorf("%s: the pool never ran no write for %s within %s: %v", what, driveWindowQuiet, driveWindowLimit, writesIn(p.since(from)))
-			return
+// nonOracleStatements filters a snapshot in place, never the tracer's recorded statements.
+// Only the writer comparison's own context and contexts derived from it are exempt.
+func nonOracleStatements(statements []drivenStatement) []drivenStatement {
+	checked := statements[:0]
+	for _, statement := range statements {
+		if !statement.oracle {
+			checked = append(checked, statement)
 		}
-		time.Sleep(20 * time.Millisecond)
+	}
+	return checked
+}
+
+// driveWindowLimit bounds each request's work and each extra background observation.
+const driveWindowLimit = 20 * time.Second
+
+// driveCalibrationWindow is the two-second observation used before and after a world's rows to
+// catch background writers outside the known workers' completion barriers.
+const driveCalibrationWindow = 2 * time.Second
+
+// window records the request and all its background work, including a worker that runs no SQL
+// until after the response. waitWork joins those workers. An optional observation then keeps the
+// window open for unknown writers before or after the rows. The same driveWindowLimit bounds both.
+func (p *poolStatements) window(t *testing.T, what string, observation time.Duration, send func()) []drivenStatement {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
+	defer cancel()
+	p.auditGap(t, "before "+what)
+	from := p.count()
+	if p.checkGaps {
+		from = p.checked
+	}
+	send()
+	p.finish(t, ctx, what, from)
+	if observation > 0 {
+		timer := time.NewTimer(observation)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("%s: observation did not finish within %s: %v; window writes: %v", what, driveWindowLimit, err, writesIn(p.since(from)))
+		}
+	}
+	statements := p.since(from)
+	if p.checkGaps {
+		p.checked = from + len(statements)
+	}
+	return statements
+}
+
+// settle joins the preceding request's work, so the next window contains none of it.
+func (p *poolStatements) settle(t *testing.T, what string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
+	defer cancel()
+	p.finish(t, ctx, what, p.count())
+	p.auditGap(t, what)
+}
+
+func (p *poolStatements) finish(t *testing.T, ctx context.Context, what string, from int) {
+	t.Helper()
+	if p.waitWork == nil {
+		t.Fatal("the traced pool has no completion barrier")
+	}
+	if err := p.waitWork(ctx); err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("%s: request work did not finish within %s: %v; window writes: %v", what, driveWindowLimit, err, writesIn(p.since(from)))
+		}
+		t.Fatalf("%s: request work failed: %v; window writes: %v", what, err, writesIn(p.since(from)))
 	}
 }
 
