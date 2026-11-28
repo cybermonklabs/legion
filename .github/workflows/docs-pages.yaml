@@ -138,6 +138,7 @@ on:
       - 'packages/envoy/go.mod'
       - 'packages/envoy/go.sum'
       - 'packages/envoy/agentloop/**'
+      - 'packages/envoy/awsbody/**'
       - 'packages/envoy/cicase/**'
       - 'packages/envoy/cipheraddr/**'
       - 'packages/envoy/cipherclient/**'

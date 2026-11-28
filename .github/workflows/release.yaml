@@ -107,7 +107,7 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/cicase/ packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchblocks/
+    packages/envoy/awsbody/ packages/envoy/cicase/ packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchblocks/
     packages/envoy/dispatchbody/ packages/envoy/fileerr/ packages/envoy/githubrate/ packages/envoy/httpoutage/
     packages/envoy/internal/cipher/oauthwire/ packages/envoy/internal/cipherclient/
     packages/envoy/internal/clock/ packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
@@ -121,7 +121,7 @@ env:
     packages/envoy/migrationid/ packages/envoy/natsconn/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/
     packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
-    packages/envoy/go.mod packages/envoy/go.sum
+    packages/envoy/go.mod packages/envoy/go.sum go.work
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
 
   # why: .github/ci-notes/release.md#why-goproxy-falls-through-to-direct

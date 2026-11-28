@@ -28,9 +28,11 @@
 //     rig error), which it also prints as one line of JSON. A rig error takes away the run's
 //     score.json and judge-input.md. Run it again once judgment.json is written: it reads the
 //     verdicts. Exit 0 for either row; 2 for a name of no scored scenario's run.
-//   score.ts cells <runs dir> <scenario>
+//   score.ts cells <runs dir> <scenario> [<counts json>]
 //     Each cell of the scenario's runs (scored-runs.ts cells), one CellLine of JSON a line, from
-//     each run's row.json and world.json; stderr names each run that is in no cell.
+//     each run's row.json and world.json; stderr names each run that is in no cell. The counts are
+//     an object of `<label>\t<case>` to the count that batch ran that cell to; a control form's
+//     cell keeps its own.
 //   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
 //     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
 //     prints: a case form's at <count>, and a control form's the control's own over every owner,
@@ -3938,6 +3940,24 @@ function scoreScoredRun(runsDir: string, name: string): void {
   console.log(text);
 }
 
+/** Every scenario score.ts scores: the name a run's directory starts with. The scorers map below
+ * is keyed by this list, so the two cannot drift, and the command line refuses any other name
+ * rather than printing an empty table of it. */
+const SCENARIOS = [
+  "ask-on-message",
+  "measure-before-ask",
+  "tester-proof",
+  "brainstorm",
+  "askgate",
+  "spec-writing",
+  "spec-rewrite",
+  "reviewer-own-head",
+  "reviewer-pass-and-fail",
+  "architect-pass-and-fail",
+  "ci-pass-and-fail",
+  "tester-reads-no-ci",
+] as const;
+
 function scoreRuns(runsDir: string, only: string | undefined) {
   const rows: Row[] = [];
   const errors: { run: string; key: string; reason: string }[] = [];
@@ -3954,11 +3974,13 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const sharing = sharingOf(runsDir);
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
-  // case, and that of a heads scenario's world that names one, comes from its directory
-  // (CASED_RUNS, from askgate-cases.txt and heads-scenarios.txt). A table, so a name it does not
-  // hold reads no scorer, whatever every object inherits.
-  const scorers = table<(dir: string, run: string, label: string, dirCase: string) => Row>({
+  // Each scenario's scorer, keyed by the name its runs' directories start with, one for each name
+  // of SCENARIOS and no other (the `satisfies` below). An askgate run's case, and that of a heads
+  // scenario's world that names one, comes from its directory (CASED_RUNS, from askgate-cases.txt
+  // and heads-scenarios.txt). A table, so a name it does not hold reads no scorer, whatever every
+  // object inherits.
+  type Scorer = (dir: string, run: string, label: string, dirCase: string) => Row;
+  const scorers = table<Scorer>({
     "ask-on-message": askOnMessage,
     "measure-before-ask": measureBeforeAsk,
     "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
@@ -3979,7 +4001,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
           ? headsTester(dir, run, label)
           : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
     "tester-reads-no-ci": headsTesterReadsNoCI,
-  });
+  } satisfies Record<(typeof SCENARIOS)[number], Scorer>);
   // A catalog row whose scenario has no scorer here, such as a typo of one that has, would leave
   // its runs read as runs of a label: refused before any run is scored.
   const noScorer = HEADS_SCENARIOS.filter((scenario) => scorers[scenario] === undefined);
@@ -3992,7 +4014,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const fixtureOnly: string[] = [];
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const match = name.exec(run);
-    const score = scorers[match?.[1] ?? ""];
+    const score = scorers[(match?.[1] ?? "") as (typeof SCENARIOS)[number]];
     if (!match || !score) continue;
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
@@ -4135,13 +4157,62 @@ if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
   if (command === "live-read" && rest.length === 3) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
-  } else if (command === "runs" && rest.length === 3 && rest[1] === "--run") {
+  } else if (command === "runs" && rest[1] === "--run") {
+    // `--run` with no name read the whole directory and printed an empty table at exit 0, as an
+    // unknown scenario and a surplus argument did: `cell` refuses each of those, and these are
+    // its siblings, so they refuse too.
+    if (rest.length !== 3 || (rest[2] ?? "") === "") {
+      console.error("score.ts: runs --run takes one run's name: runs <runs dir> --run <name>");
+      process.exit(2);
+    }
     scoreScoredRun(rest[0] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
+    if (rest.length > 2) {
+      console.error(
+        `score.ts: runs takes a runs directory and at most one scenario, not ${rest.length} arguments`
+      );
+      process.exit(2);
+    }
+    if (rest[1] !== undefined && !SCENARIOS.includes(rest[1] as (typeof SCENARIOS)[number])) {
+      console.error(
+        `score.ts: '${rest[1]}' is no scenario score.ts scores (${SCENARIOS.join(", ")})`
+      );
+      process.exit(2);
+    }
     scoreRuns(rest[0] ?? "", rest[1]);
-  } else if (command === "cells" && rest.length === 2) {
+  } else if (command === "cells" && (rest.length === 2 || rest.length === 3)) {
+    // The counts of `<label>\t<case>` keys, as JSON: rig.sh check-stored reads them from the Job's
+    // own cell lines, one count a case, since a Job runs each case to its form's runs. Anything
+    // else is refused with exit 2, as `cell`'s count is: a number, a list, null or the old
+    // `cells <dir> <scenario> <count>` form would otherwise be read as no counts at all, and every
+    // cell would fall back to its stage's runs with nothing said.
+    let counts: Record<string, number> | undefined;
+    if (rest.length === 3) {
+      let given: unknown;
+      try {
+        given = JSON.parse(rest[2] ?? "");
+      } catch {
+        given = undefined;
+      }
+      const ok =
+        typeof given === "object" &&
+        given !== null &&
+        !Array.isArray(given) &&
+        // isSafeInteger, which is CellLine's own bound: isInteger takes 1e300 and
+        // 9007199254740993, and the cell would then fail that bound with a zod dump and exit 1 in
+        // place of this refusal.
+        Object.values(given).every((value) => Number.isSafeInteger(value) && (value as number) > 0);
+      if (!ok) {
+        console.error(
+          `score.ts: the counts ${rest[2]} are no object of <label>\\t<case> to a positive whole number`
+        );
+        process.exit(2);
+      }
+      counts = given as Record<string, number>;
+    }
     try {
-      for (const cell of cells(rest[0] ?? "", rest[1] ?? "")) console.log(JSON.stringify(cell));
+      for (const cell of cells(rest[0] ?? "", rest[1] ?? "", counts))
+        console.log(JSON.stringify(cell));
     } catch (error) {
       console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
@@ -4156,7 +4227,7 @@ if (import.meta.main) {
     }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> [<counts json>] | cell <runs dir> <scenario> <stage> <label> <case> <count>"
     );
     process.exit(2);
   }
