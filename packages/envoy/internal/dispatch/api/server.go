@@ -92,7 +92,14 @@ type AgentPublisher interface {
 
 // Deps are the API's application dependencies.
 type Deps struct {
-	Store       *store.Store
+	Store *store.Store
+	// System is the system store: the login's own pool, which runs as the table owner and meets no
+	// policy, while Store is the request store, whose statements run as dispatch_app under the
+	// viewer the request's context carries (store.WithViewer). The work before the viewer
+	// (credential resolution and access.Resolve) and the API's own work run on System, and every
+	// read and write a request makes for its caller runs on Store (plan D1, D3).
+	// INFRA-6168 scaffold: work step 2 opens Store as the request store beside it and builds the importer and the GitHub limits from it; work step 5 moves the system call sites to it.
+	System      *store.Store
 	Identity    identity.Identity
 	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
@@ -272,7 +279,9 @@ const defaultStreamHeartbeat = 15 * time.Second
 
 // DepsInput contains raw boot values used to construct API dependencies.
 type DepsInput struct {
-	Store       *store.Store
+	Store *store.Store
+	// System is the system store Deps.System says, which NewDeps hands on as it is.
+	System      *store.Store
 	Identity    identity.Identity
 	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
@@ -444,6 +453,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}
 	deps := Deps{
 		Store:                  input.Store,
+		System:                 input.System,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
 		NewIssueLabel:          newIssue.Label,
@@ -728,6 +738,10 @@ type server struct {
 	// caller's results read takes no claim here and only reads the writers' (Refuses), so it asks
 	// GitHub where a writer's read at that moment would and leaves the claims as it found them.
 	commitPulls delivery.CommitPullReads
+	// viewerResolutions counts the viewers withViewer has resolved, one for each request it
+	// serves, which TestEveryRouteResolvesItsViewer reads around each request it sends.
+	// INFRA-6168 scaffold: work step 5 counts each resolution in withViewer.
+	viewerResolutions atomic.Int64
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of
@@ -1142,6 +1156,18 @@ func routeContext(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r.WithContext(githubrate.WithCaller(store.WithTransactionTracking(r.Context()), GitHubCaller)))
 	}
+}
+
+// withViewer resolves the request's own caller once (optionalActor, never actingPerson's actor,
+// which carries no credential) and the viewer it sees with (access.Resolve, on the system store),
+// counts the resolution (viewerResolutions), and serves handler on a context that carries the
+// viewer (store.WithViewer), so every statement the request store runs for the request runs as
+// dispatch_app under it. An anonymous caller of a public route gets a viewer that sees no project.
+// routeHandler mounts it inside decideBrokerToken and outside resolveIDPrefixes, on every row;
+// a test that serves a handler directly wraps it here too (viewed) (plan D3).
+func (s *server) withViewer(handler http.HandlerFunc) http.HandlerFunc {
+	// INFRA-6168 scaffold: work step 5 resolves and counts the viewer, attaches it, and mounts this layer in routeHandler.
+	return handler
 }
 
 // GitHubCaller is the caller kind of every call to GitHub an API request makes

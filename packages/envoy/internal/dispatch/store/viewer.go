@@ -24,25 +24,29 @@ var ErrRequestPoolRefuses = errors.New("store: the request pool hands out no con
 // step 2 builds it.
 var errRequestPoolNotBuilt = errors.New("store: the request pool and the viewer are not built yet (INFRA-6168 work step 2)")
 
+// viewerKey is the context key WithViewer stores the viewer under.
+type viewerKey struct{}
+
+// systemWorkKey is the context key WithSystemWork marks the server's own work with.
+type systemWorkKey struct{}
+
 // WithViewer returns ctx carrying viewer, as access.Resolve answers it for the request's caller:
 // each statement the request pool runs under ctx runs as dispatch_app with the viewer's settings
 // (plan D2).
 func WithViewer(ctx context.Context, viewer model.Viewer) context.Context {
-	// INFRA-6168 scaffold: work step 2
-	panic(errRequestPoolNotBuilt)
+	return context.WithValue(ctx, viewerKey{}, viewer)
 }
 
 // ViewerFrom is the viewer ctx carries (WithViewer), and false when it carries none.
 func ViewerFrom(ctx context.Context) (model.Viewer, bool) {
-	// INFRA-6168 scaffold: work step 2
-	panic(errRequestPoolNotBuilt)
+	viewer, ok := ctx.Value(viewerKey{}).(model.Viewer)
+	return viewer, ok
 }
 
 // WithSystemWork marks ctx as the server's own work: under it, with no viewer, the request store's
 // pool runs a statement on the system pool it holds; a viewer wins over the mark (plan D3).
 func WithSystemWork(ctx context.Context) context.Context {
-	// INFRA-6168 scaffold: work step 2
-	panic(errRequestPoolNotBuilt)
+	return context.WithValue(ctx, systemWorkKey{}, true)
 }
 
 // RequireViewer refuses (ErrNoViewer) a context that carries no viewer, whatever its mark: a read
