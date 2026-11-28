@@ -9,9 +9,9 @@ import type { DispatchScope } from "../../../packages/contracts/src/dispatch-api
 import { inline, writePage } from "./lib/markdown.ts";
 import { readTable } from "./lib/reference.ts";
 
-/** The release that first serves /api/v2. No build knows the version of its own release (the
- *  Envoy image is built before the release job picks its `legion-envoy` version), so the pages
- *  name it by the pull request it carries. */
+/** The release that first serves /api/v2. The Envoy image does not know the version of its own
+ *  release (it is built from the commit alone, beside the release job that picks its
+ *  `legion-envoy` version), so the pages name it by the pull request it carries. */
 const V2_FIRST_RELEASE = "the first `legion-envoy` release that carries pull request #4274";
 
 /** Who may call a route, by the table's auth value (`routeAuth` in the source). */
@@ -39,7 +39,8 @@ const SCOPES = {
 } satisfies Record<DispatchScope, string>;
 
 /** What a /api/v2 route serves, by its index entry's `kind` (`resourceKind` in the source,
- *  routes_versions.go). A route of the delivery pages, which keeps its /api/v1 shape, names none. */
+ *  routes_versions.go). A route of the delivery pages or of a project's Legion board or daemon,
+ *  which keeps its /api/v1 shape, names none. */
 const KINDS: Record<string, { label: string; meaning: string }> = {
   collection: {
     label: "a list",
@@ -67,7 +68,11 @@ const KINDS: Record<string, { label: string; meaning: string }> = {
       "a read computed from what Dispatch stores that is no list, so it answers no envelope.",
   },
   computation: { label: "a computation", meaning: "a computation that stores nothing." },
-  bytes: { label: "bytes", meaning: "a read that answers bytes: a file, or a document's version." },
+  bytes: {
+    label: "bytes",
+    meaning:
+      "a read that answers bytes: a file's or a document's version, or the block schema's JSON.",
+  },
   stream: { label: "a stream", meaning: "a read that answers server-sent events." },
 };
 
@@ -225,7 +230,11 @@ function routeLinesV2(route: RouteV2): string[] {
   if (route.time_fields.length === 1) {
     lines.push(`- **Time window:** \`from\` and \`to\` on \`${route.time_fields[0]}\``);
   } else if (route.time_fields.length > 1) {
-    const fields = route.time_fields.map((field) => `\`${field}_from\` and \`${field}_to\``);
+    // Each window's keys are its field's name without `_at`: `updated_from` on `updated_at`.
+    const fields = route.time_fields.map((field) => {
+      const window = field.replace(/_at$/, "");
+      return `\`${window}_from\` and \`${window}_to\` on \`${field}\``;
+    });
     lines.push(`- **Time windows:** ${fields.join("; ")}`);
   }
   if (route.position !== null) {
@@ -278,11 +287,11 @@ function renderV2(routes: RouteV2[]): string {
     "",
     "## What every route keeps",
     "",
-    "- A list answers `{items, total, limit, offset}`. A `limit` outside the route's bounds is refused `400 INVALID_LIMIT`, and an `offset` that is not a whole number of 0 or more `400 INVALID_OFFSET`. The global event log (`GET /api/v2/events`) and the caller's dismissed threads (`GET /api/v2/me/threads?state=dismissed`) answer `total: null`, since counting either costs more than its page; every other list answers an exact `total`.",
-    "- A log reads `after` and `before` in its one position field. An `after` past the log's last position, and a value not written as that field is, are refused `400 POSITION_INVALID`, naming the parameter and the field.",
-    "- A refusal is `{code, error}`. Each code is one of one list the server declares, and one condition takes one code on every route.",
+    "- A list answers `{items, total, limit, offset}`. A `limit` outside the route's bounds is refused `400 INVALID_LIMIT`, and an `offset` that is not a whole number of 0 or more `400 INVALID_OFFSET`. A list whose description names an `include` that renders each listed row takes at most 20 items, whatever its own bounds, when the request names that `include`. The global event log (`GET /api/v2/events`) and the caller's dismissed threads (`GET /api/v2/me/threads?state=dismissed`) answer `total: null`, since counting either costs more than its page; every other list answers an exact `total`.",
+    "- A log reads `after` and `before` in its one position field. An `after` past the log's last position, and a value not written as that field is, are refused `400 POSITION_INVALID`, naming the parameter and the field. `GET /api/v2/me/threads` reads them only with `state=dismissed`, and refuses them `400 INVALID_QUERY` in every other state.",
+    "- A refusal holds `{code, error}`, and some codes add members beside them, such as the `candidates` of `409 TARGET_AMBIGUOUS`. Each code is one of one list the server declares, and one condition takes one code on every route.",
     "- A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`, whose body also names the `key` and every key the route `declared`. A body member the route does not declare is ignored.",
-    "- Every `POST`, `PATCH`, `PUT` and `DELETE` takes an `Idempotency-Key` header. A repeat under the same key answers what the first request answered, marked `Idempotency-Replayed: ?1`, and runs nothing again; the mint of a personal agent token, whose answer holds the token, answers a repeat `409 KEY_COMMITTED` instead.",
+    "- Every `POST`, `PATCH`, `PUT` and `DELETE` takes an `Idempotency-Key` header. A repeat under the same key of a request answered `2xx`, or `4xx` other than `401`, `408` and `429`, runs nothing again and is marked `Idempotency-Replayed: ?1`: it answers what the first request answered, where Dispatch kept that answer, or, for a write that delivers to sessions, what that write made as it stands now, after sending any delivery still owed. A request answered `5xx`, `401`, `408` or `429` keeps no answer, and its repeat runs again unless the request committed a write: then the repeat answers what the write made where the write keeps a recovery point, and `409 KEY_COMMITTED` where it does not. The mint of a personal agent token keeps no answer however it is answered, since its answer holds the token: a repeat of a mint that made one answers `409 KEY_COMMITTED`, and of one that made none runs again.",
     "- A `PUT` whose whole body equals the object's present state and fields, sent by whoever set them, answers `200` with the object and writes nothing.",
     "- A path that names an object Dispatch stores, which does not exist, answers `404` with that object's code, such as `ISSUE_NOT_FOUND`. A `{session_id}` and a repository's app installation keep the answer `/api/v1` gives: Dispatch cannot tell a session that never existed from one that has gone, and GitHub answers alike for a missing repository and one the App cannot see.",
     "- A path no route serves answers `404 NO_ROUTE`.",

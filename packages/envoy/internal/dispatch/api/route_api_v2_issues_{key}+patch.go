@@ -21,11 +21,14 @@ var _ = declareRow(func(s *server) routeRow {
 			"design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, "+
 			"artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the "+
 			"issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers "+
-			"by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and "+
+			"by the project's gated_steps), or [] for none; a design_gates write of any set appends no event and "+
+			"notifies nobody; and "+
 			"refuse_open_foreign_children, true beside a status of "+
 			"retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open "+
-			"(any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each "+
-			"such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is "+
+			"(any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming in "+
+			"issues [{key, project, status}], in key order, each such child but one of a private project that the "+
+			"request's credential, naming one project, does not name, so issues can be empty. A design_gates step "+
+			"named twice, one that is "+
 			"none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are "+
 			"400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an "+
 			"external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. "+
@@ -40,7 +43,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"false asks for nothing and is taken as absent. The server checks "+
 			"the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and "+
 			"the progress of a keyed attempt. A dry run returns the plan without writing. This form answers "+
-			"{issue, changed}; a refusal carries the changes that committed before it. Closing with include_children "+
+			"{issue, changed}; a refusal of the status change carries the changes that committed before it, but a "+
+			"404 ISSUE_NOT_FOUND, and a 401 to a request with no Idempotency-Key, are answered before the options "+
+			"are read and carry no changed. Closing with include_children "+
 			"requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that "+
 			"takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a "+
 			"session that is no person, no architect of the issue or of an issue above it, and not the session of the "+
@@ -50,13 +55,18 @@ var _ = declareRow(func(s *server) routeRow {
 			"project, which this check does not judge. When Legion runs the issue, or an issue under it, before the "+
 			"move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that "+
 			"is no person and no architect of each such issue or of an issue above it where it stands. Neither check "+
-			"of a move passes the session of the project's Legion daemon. With DISPATCH_LEGION_STATUS_SCOPE on, three "+
+			"of a move passes the session of the project's Legion daemon. Each of these checks holds only once a "+
+			"role-holder publication has marked the issue's project, and while the project's proven_sessions is on "+
+			"it also refuses an architect's or the daemon's session on a credential that does not prove it. With "+
+			"DISPATCH_LEGION_STATUS_SCOPE on, three "+
 			"writes of a Legion issue (one that carries the legion label in any case, or is under an issue of its own "+
 			"project that does) need a credential that holds the person scope or legion-status, in both forms: a "+
 			"status write (the status the issue holds included) where the issue is a Legion issue before the call or "+
 			"after it, the removal of its legion label, and a move after which it is no longer a Legion issue. A "+
 			"credential that holds neither is 403 LEGION_STATUS_SCOPE_REQUIRED, with an insufficient_scope challenge "+
-			"naming legion-status, decided before the first write and before PARENT_STATUS_CONFLICT. The one "+
+			"naming legion-status, decided before PARENT_STATUS_CONFLICT and before the write's first field or event "+
+			"(in the status-change form, before its first step), though in the plain form a refused close can still "+
+			"have settled the issue's documents. The one "+
 			"exception is the owning architect's status write: a broker-issued token whose session the Legion "+
 			"daemon's own token published as the architect of an issue above, of the issue's own project, before the "+
 			"call and after it, writes done, backlog, icebox or triage, with neither unlink_children nor "+
@@ -84,11 +94,13 @@ var _ = declareRow(func(s *server) routeRow {
 				{Status: http.StatusConflict, Body: foreignChildOpenError{}},
 				{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
 				{Status: http.StatusConflict, Body: statusChangeConflict{}},
-				// The status-change form's refusals carry changed at every status the handler
-				// or the keyed layer answers one at (writeStatusChangeRefusal,
-				// refuseStatusChangeKey): the keyed layer resolves the caller, so a credential
-				// that does not resolve is refused there at 401, 429 or 503, and a close's or a
-				// reopen's document work refuses at 503.
+				// The status-change form's refusals carry changed at every status the keyed layer
+				// or the status change itself answers one at (refuseStatusChangeKey,
+				// writeStatusChangeRefusal): the keyed layer resolves the caller of a keyed
+				// request, so a credential that does not resolve is refused there at 401, 429 or
+				// 503, and a close's or a reopen's document work refuses at 503. patchIssueV2's
+				// own 404 for a missing issue, and its 401 to a request with no Idempotency-Key,
+				// come before it reads the options and carry none.
 				{Status: http.StatusConflict, Body: statusChangeRefusal{}},
 				{Status: http.StatusBadRequest, Body: statusChangeRefusal{}},
 				{Status: http.StatusUnauthorized, Body: statusChangeRefusal{}},

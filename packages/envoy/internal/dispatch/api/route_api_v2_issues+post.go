@@ -22,16 +22,19 @@ var _ = declareRow(func(s *server) routeRow {
 			"credential does not name are alike 404 NOT_FOUND, with nothing created. assignee defaults to the creating person, the personal token's owner, "+
 			"the parent's assignee when the parent is of the issue's own project, or the project's default "+
 			"assignee. A title over %d "+
-			"characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 "+
-			"POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an "+
+			"characters is 400 CAP_EXCEEDED. An unforced create, not an import, whose title is a near copy of an issue "+
+			"of the same project that is not done and is not its ancestor is 409 POSSIBLE_DUPLICATE with the "+
+			"candidates; a near-copy read that does not answer in time lets the create in. Answers 201 the issue with advice beside it, and 200 the issue an "+
 			"external ref already imported. After the write commits, a related-item check searches the project by "+
 			"meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found "+
 			"related items (outcome found, none or not_made with the reason in missing), how it searched, the three items "+
 			"most like the new issue with each ask item's answer state, words to search with by hand (search_query), and "+
 			"under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on "+
 			"itself through its parent is 409 ISSUE_CYCLE. When Legion runs the new issue, because it or an issue of its "+
-			"own project above it carries the label legion, a create under a parent by a session that is no person and "+
-			"no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. A create under a "+
+			"own project above it carries the label legion, and once a role-holder publication has marked the project, "+
+			"a create under a parent by a session that is no person and no architect of the parent or of an issue "+
+			"above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so, while the project's proven_sessions is on, is one "+
+			"by such an architect on a credential that does not prove its session. A create under a "+
 			"parent of another project is judged as a root of the new issue's own project, which this check does not "+
 			"judge. A priority of 0 needs the p0 scope: a create that names priority 0 makes the new issue's own "+
 			"priority P0, and from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under "+

@@ -15,13 +15,15 @@ var _ = declareRow(func(s *server) routeRow {
 			"confirmation code as the person typed it, which the secrets broker checks on both. The broker is " +
 			"sent code alone, never the scopes POST /api/v1/credential-requests/{id}/approve relays for a Dispatch " +
 			"sign-in, so it refuses a sign-in's approval here 400 SCOPES_REQUIRED. The broker " +
-			"decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE " +
-			"naming its page on the broker in approve_url, and refuses a code that is missing or not the login's " +
+			"decides whether the caller is its approver, refuses a secret request with 403 JUDGE_DECIDES while the " +
+			"model judge holds it and otherwise with 403 DECIDE_ON_BROKER_PAGE, naming its page on the broker in " +
+			"approve_url where the broker serves one, and refuses a code that is missing or not the login's " +
 			"own. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted " +
 			"member. A request " +
-			"the broker already holds in that state, sent by a caller the broker would let decide it, is answered " +
-			"as it stands: an approval of a service's machine login sent by anyone signed in, and a decision of " +
-			"another sent by the person its approver names, relaying nothing. A deny of a service's machine login " +
+			"the broker already holds in that state, sent by a caller the broker's rule of who decides it admits, is " +
+			"answered as it stands, relaying nothing: an approval of an approved service's machine login sent by " +
+			"anyone signed in (the broker approves no service's login now), and a decision of another sent by the " +
+			"person its approver names. A deny of a service's machine login " +
 			"is relayed, since the broker alone asks what kind of member its caller is, and where the code read the " +
 			"login already denied, the broker's refusal of a decided login (below) is answered 200 that login as it " +
 			"stands. Answers 200 the request as the broker " +
@@ -34,11 +36,13 @@ var _ = declareRow(func(s *server) routeRow {
 			"broker does not let decide or dismiss a request is 403 NOT_APPROVER, saying why; a request that can " +
 			"still be decided is 409 RECORD_PENDING to a dismissal, and one that was decided, or cancelled before " +
 			"its deadline, is 409 RECORD_TERMINAL to a decision and a dismissal alike; and while the broker cannot " +
-			"ask Dispatch what kind of member the caller is, a deny of a service's machine login, and a dismissal " +
+			"ask Dispatch what kind of member the caller is, and did not keep the caller as a full member within the " +
+			"hour, a deny of a service's machine login, and a dismissal " +
 			"of a secret request or of a service's machine login, is 503 MEMBER_KIND_UNCHECKABLE, writing nothing. " +
 			"Whichever the state, a secret request " +
 			"of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as is an id the broker " +
-			"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. Deciding " +
+			"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch and keeps " +
+			"no answer from within the hour that showed the caller the project. Deciding " +
 			"needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is " +
 			"refused. An approve-only token (the secrets broker's proxy for a person's approvals) may decide, and " +
 			"may dismiss nothing: state dismissed is 403 APPROVE_ONLY_TOKEN. " + brokerRelayText + ".",

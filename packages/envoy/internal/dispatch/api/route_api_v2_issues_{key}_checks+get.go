@@ -14,16 +14,22 @@ var _ = declareRow(func(s *server) routeRow {
 			"its words last changed in and their digest, and results, every result recorded against it from any issue, " +
 			"newest first by when the recording transaction began. Each check carries compared_with, the commits and " +
 			"branches its results are compared with: for a before_merge check every pull request head Dispatch holds " +
-			"for the check's issue, {kind: pull_request, commit, pull_request, learned_at, repo?}: the open and merged " +
+			"for the check's issue, {kind: pull_request, commit, pull_request, merged?, learned_at, repo?}, merged true " +
+			"on a merged pull request's final head: the open and merged " +
 			"pull requests attributed to the issue, and those its external links name " +
 			"(https://github.com/<owner>/<repo>/pull/<n>) in a repository it does not resolve to, a linked one's head " +
-			"carrying that repository as repo (owner/name); for an after_merge check " +
-			"{kind: branch, branch} for the branch that issue's pull request merged into and the repository's default " +
-			"branch; for a default_branch check the default branch alone. Where that list is empty the check carries " +
+			"carrying that repository as repo (owner/name); for an after_merge check {kind: branch, branch, " +
+			"merge_commit?}, merge_commit where Dispatch holds the work's merge on that branch, for the branch the " +
+			"issue's newest merged pull request merged into and the repository's default branch once the work has " +
+			"reached it (with no merged pull request in that repository, its default branch alone; where Dispatch " +
+			"cannot tell which merged last, every merged one's branch and the default branch); for a default_branch " +
+			"check the repository's default branch; each repository in which the issue links a merged pull request " +
+			"adds its own such branches after them, each carrying repo. Where that list is empty the check carries " +
 			"compared_nothing: no_pull_request (the check's issue holds no pull request), no_repository (the issue " +
-			"resolves to no repository), repository_unreadable (Dispatch's GitHub App cannot read the repository) or " +
-			"read_failed (a read Dispatch makes did not answer). Each check carries pass_stands {answer, roles, " +
-			"reason, subjects}, yes with the roles whose passes stand, no, or unknown. A before_merge check compared " +
+			"resolves to no repository), repository_unreadable (Dispatch's GitHub App cannot read the repository), " +
+			"read_failed (a read Dispatch makes did not answer) or not_merged (an after_merge check whose issue " +
+			"Dispatch holds no merge of, in its own repository or through a linked pull request). Each check carries " +
+			"pass_stands {answer, roles, reason, subjects, results, commit, deploy}, yes with the roles whose passes stand, no, or unknown. A before_merge check compared " +
 			"with pull request heads names its subjects, the heads a pass must stand at: the head of each open pull " +
 			"request of the issue, or with none open the final head of the newest merged one, the one that merged " +
 			"last; each {basis, answer, reason, roles, results, ci}, its state from the results at its own commit " +
@@ -34,7 +40,7 @@ var _ = declareRow(func(s *server) routeRow {
 			"repo} (at_basis, other_commit, or unknown). A result whose commit the record took to be of a linked " +
 			"repository is decided by that repository: a before_merge one by the pull request heads compared with, and " +
 			"an after_merge or default_branch one by that repository's branches (for after_merge the branch its merged " +
-			"linked pull request merged into, then its default branch). A basis in a linked repository carries it as " +
+			"linked pull request merged into, then its default branch once the work has reached it). A basis in a linked repository carries it as " +
 			"repo, and an other_commit or unknown answer that repository decided names it as repo, so a reader can " +
 			"tell it from the issue's own repository, which carries none. Each result also carries check_words_moved, " +
 			"and retracted {reason, actor, created_at} where a " +

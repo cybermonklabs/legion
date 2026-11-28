@@ -24,7 +24,7 @@ var _ = declareRow(func(s *server) routeRow {
 			"out on purpose: a review records an approval or a changes request in a person's name, "+
 			"dispatch_project_update turns a check of a project on or off, and the loop that proposes operations "+
 			"must never propose either. Every action is on one page unless the "+
-			"request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}.",
+			"request names a limit (any of 1 or more) or an offset; {items, total, limit, offset}.",
 			len(goingToolRoutesV2), len(contracts.DispatchTools)),
 		Handler:  s.listGoingActionsV2,
 		Resource: "going-actions", Kind: kindCollection,

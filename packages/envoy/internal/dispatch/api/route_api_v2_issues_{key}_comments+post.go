@@ -10,8 +10,9 @@ var _ = declareRow(func(s *server) routeRow {
 		Description: "Comment on an issue, a quote of one of its documents, or an ask {body, anchor?, reply_to?, " +
 			"reply_to_block?, quote?, occurrence?, ask_id?, mentions?, delivery?, turn?, suggestion?}, a bearer naming its session in actor: a " +
 			"reply names the comment it answers in reply_to and one block of it in reply_to_block; with ask_id in place of " +
-			"reply_to, reply_to_block names one part of that ask. mentions [{target}] (at most 10, role:<name> or " +
-			"session:<id>) deliver the comment in delivery's mode (btw, aside or steer, the default), and a suggestion " +
+			"reply_to, reply_to_block names one part of that ask. mentions [{target}] (role:<name> or session:<id>; at " +
+			"most 10 parties that get the comment delivered, those the body names outside code included) deliver the " +
+			"comment in delivery's mode (btw, aside or steer, the default), and a suggestion " +
 			"{replace_with} proposes text for its anchored quote. A reply to a resolved thread reopens it, unless the root " +
 			"is a decided suggestion. A closed issue takes a comment but refuses a suggestion, 409 ISSUE_CLOSED; a " +
 			"reply to a deleted comment is 409 POST_DELETED, a withdrawn post taking no new text. Answers " +

@@ -25,8 +25,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"INVALID_QUERY). " + askRowText + " sort=priority (the default: the issue's priority, unset last, then whose " +
 			"turn it is, the person's before the agent's, then the latest activity, newest first) or created_at (oldest " +
 			"first), each reversed after a -. " + includedPageLimitText(v2AskList, askListV2Query{}) + " {items, total, limit, offset, count, " +
-			"waiting_on_human, waiting_on_agent, as_of}: count the asks the filters keep, as total does, the two waiting_on " +
-			"counts the asks among them whose state is open by whose turn it is (under state=open, the open asks on open " +
+			"waiting_on_human, waiting_on_agent, as_of}: count the rows the filters keep, as total does (under source=, " +
+			"one per question block, so an ask two blocks hold counts twice), the two waiting_on counts the rows among " +
+			"them whose state is open by whose turn it is (under state=open, the open asks on open " +
 			"issues and project documents; under another state, every ask of state open it keeps, one on a closed issue " +
 			"among them), and as_of the database time the read was made at.",
 		Handler:  s.listAsksV2,

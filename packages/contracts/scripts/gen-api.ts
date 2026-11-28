@@ -60,7 +60,7 @@ const OWNED_BY_THE_SPLIT: Record<string, true> = {
 
 // The two documents `envoy-dispatch openapi` writes, one per version of the API, and the module
 // each renders into. Each is a module of its own because the two documents share schema names
-// (`Issue`, `Project`, ...): `/api/v1`'s is re-exported by the `dispatch-api.ts` barrel with the
+// (`Issue`, `Actor`, ...): `/api/v1`'s is re-exported by the `dispatch-api.ts` barrel with the
 // hand-written split, and `/api/v2`'s by `dispatch-api-v2.ts` alone, under the subpath export
 // `@legion/contracts/dispatch-api-v2`, so no `export type *` of one name meets another (TS2308).
 // Only `/api/v1`'s module has a split beside it, so only it leaves the split's names out and

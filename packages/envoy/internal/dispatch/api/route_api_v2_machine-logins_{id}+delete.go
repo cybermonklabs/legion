@@ -18,9 +18,11 @@ var _ = declareRow(func(s *server) routeRow {
 			"login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A caller " +
 			"Dispatch calls a restricted member revokes their own logins alone: a service's login is answered them " +
 			"as an id no login has, and so it is to any caller while the broker cannot ask Dispatch what kind of " +
-			"member the caller is, who still revokes their own. 204. Needs the person and approve scopes; a " +
-			"credential scoped to one project is refused. 404 MACHINE_LOGIN_NOT_FOUND for an id the broker holds " +
-			"no machine login of, and " + brokerRelayText + ".",
+			"member the caller is, unless the broker kept the caller as a full member within the hour, and the caller " +
+			"still revokes their own. 204. Needs the person and approve scopes; a " +
+			"credential scoped to one project is refused. 404 MACHINE_LOGIN_NOT_FOUND for a uuid the broker holds " +
+			"no machine login of (an id that is not a uuid is the broker's 400 CREDENTIAL_ID_INPUT), and " +
+			brokerRelayText + ".",
 		Handler:  s.revokeMachineLoginV2,
 		Resource: "machine-logins", Kind: kindItem, Key: "{id}",
 		Shape:       routeShape{Status: http.StatusNoContent, Refusals: brokerRefusalAnswers(brokerRevokeMachineLoginCall)},

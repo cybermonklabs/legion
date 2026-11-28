@@ -14,7 +14,7 @@ var _ = declareRow(func(s *server) routeRow {
 			"other credential, a personal token holding the person scope included, since the kind names the " +
 			"credential and not the act. person is the lowercase email of the person the credential acts for: the " +
 			"person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared " +
-			"token and for a broker-issued token that names a service. session is the session the credential proved, " +
+			"token, a service-account token and a broker-issued token that names a service. session is the session the credential proved, " +
 			"null for every credential but an access token the secrets broker issued; service is a verified " +
 			"service-account token's Kubernetes subject, or the service a broker-issued token naming no person " +
 			"names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account " +
@@ -23,7 +23,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"whose entry names public among them; a token that names a project writes other projects' objects as a " +
 			"credential that names none does, a private project it does not name excepted. project_scope is the project scope of an access token the secrets " +
 			"broker issued, null for every other credential: named for a token an operator's or a job's entry mapped " +
-			"to its project, and for an exchange entry's token naming its account and no project, public for a job's " +
+			"to its project, for a restricted member's machine login, which names its person and its one project, " +
+			"and for an exchange entry's token naming its account and no project, public for a job's " +
 			"token that names no one project, person for a person's own token and for a machine's token that names " +
 			"no person, and none for a read entry's token; a token narrowed to reading answers the word it narrows. " +
 			"scopes is the " +

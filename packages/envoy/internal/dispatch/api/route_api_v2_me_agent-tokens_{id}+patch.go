@@ -11,8 +11,9 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodPatch, Pattern: "/me/agent-tokens/{id}", Auth: authAny, Versions: onlyV2,
 		Description: "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to " +
-			"hold, with the mint's refusals. A change to or from read only is always 400 TOKEN_SCOPES_INPUT; mint " +
-			"a new token instead. A set that names a scope the caller does not hold itself is 403 " +
+			"hold, with the mint's refusals. A set that names read is always 400 TOKEN_SCOPES_INPUT, and so is any " +
+			"other set for a read-only token once the set's own checks pass (a scope the caller does not hold is the " +
+			"403 below first); mint a new token instead. A set that names a scope the caller does not hold itself is 403 " +
 			"OAUTH_SCOPE_REQUIRED: only a credential that holds p0 names p0 in a set, also for a token that holds it " +
 			"already, since the set sent is the whole set. Answers the token, with no plaintext. Needs the person and " +
 			"approve scopes. " +

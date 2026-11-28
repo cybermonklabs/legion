@@ -24,8 +24,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"body equal to the comment's present state, from the caller who set it, answers 200 and writes nothing (an " +
 			"accept's answer with lost null), and {state: resolved} from the person who accepted or rejected a suggestion " +
 			"is such a body; an open thread records no setter, so a body of open on an open thread writes nothing whoever " +
-			"sends it. Answers the comment; 400 STATE_INVALID for any other state, 409 ISSUE_CLOSED on a closed issue, 404 " +
-			"COMMENT_NOT_FOUND.",
+			"sends it. Answers the comment; 400 STATE_INVALID for any other state, 409 ISSUE_CLOSED on a closed issue " +
+			"for every body but one that writes nothing and a resolve of a decided suggestion, 404 COMMENT_NOT_FOUND.",
 		Handler:  s.putCommentStateV2,
 		Resource: "state", Kind: kindState,
 		Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{

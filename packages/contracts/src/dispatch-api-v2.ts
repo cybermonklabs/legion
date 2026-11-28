@@ -8,6 +8,6 @@
  *
  * Reached as `@legion/contracts/dispatch-api-v2`, never from the barrel: the `/api/v1` document's
  * module, which `dispatch-api.ts` re-exports, declares many of the same schema names (`Issue`,
- * `Project`, ...), and two `export *` of one name do not build (TS2308).
+ * `Actor`, ...), and two `export *` of one name do not build (TS2308).
  */
 export type * from "./dispatch-api-v2.generated";

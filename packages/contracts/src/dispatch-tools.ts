@@ -285,7 +285,8 @@ export function uploadStoredName(name: string): string {
  * letters, marks and digits, `_`, `-` and `+` (`gz` in x.tar.gz, `jsonl_`, `данные`), and at most
  * 32 of them; else the name has none: `x.`, `notes.md/`, `Dr. Smith's notes`, `notes v2. draft`.
  * The bound is there because a longer tail is no type, and the type lookup (`x.<extension>`,
- * packages/envoy-client/src/dispatch-commands/documents.ts) must never get a path the OS refuses.
+ * `uploadedFile` in packages/envoy-client/src/dispatch-commands/stored-text.ts) must never get a
+ * path the OS refuses.
  */
 export function uploadExtensionOf(name: string): string | undefined {
   const trimmed = uploadStoredName(name);

@@ -3409,8 +3409,9 @@ describe("the dispatch entry as its own process", () => {
     expect(new Set(userAgents)).toEqual(new Set([DISPATCH_COMMAND_SOURCE_USER_AGENT]));
   });
 
-  // The bundle a host plugin ships, built as both hosts build it, under a manifest of its own: the
-  // name it sends is the plugin's beside the bundle, never envoy-client's, which it was built from.
+  // The bundle a host plugin ships, built as pi-envoy builds it (build-dispatch-cli.sh; claude-envoy
+  // builds its own with Bun.build in its scripts/build.ts), under a manifest of its own: the name it
+  // sends is the plugin's beside the bundle, never envoy-client's, which it was built from.
   // A record's dry run (`dispatch result --dry-run`) runs through a call of its own, so it is
   // checked beside the record's.
   test("a host plugin's bundle names the plugin and its release in every request's User-Agent", async () => {

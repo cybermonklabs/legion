@@ -20,7 +20,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"where the daemon said " +
 			"nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, " +
 			"holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its " +
-			"claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; " +
+			"claim is in, read from the Envoy listener, each null where there is none; where the listener did not " +
+			"answer, a route's route_status is unknown with route_status_reason unreachable or refilling, a session " +
+			"holder's holder_state is unknown, and route_holder, last_seen and takeable_at are null; " +
 			"referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, " +
 			"runs_revision}, its Legion state from what the Legion intake recorded of the daemon of its project, the body a " +
 			"/ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion " +

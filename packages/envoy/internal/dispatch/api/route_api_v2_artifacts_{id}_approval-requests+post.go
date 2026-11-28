@@ -13,11 +13,14 @@ var _ = declareRow(func(s *server) routeRow {
 			"any authenticated caller: include_verification puts the issue's Verification document beside the spec, each " +
 			"at its own current version (409 NO_VERIFICATION_DOCUMENT when it has none, 409 NOT_SPEC_DOCUMENT on any document " +
 			"but the issue's spec). A document a person approved before carries that approval on the ask. An open request " +
-			"over a document it names is renewed or handed back to its person rather than a second one opened, and a " +
-			"document approved throughout at its current version needs none. Answers {ask, artifact_id, version, approval, " +
-			"coverage, coverage_unread?}: 201 when the request wrote anything, 200 when it stood as asked (ask null when " +
-			"nothing is asked); coverage is one line per requirement of the spec with no check, or `the spec marks no " +
-			"requirements`, and refuses nothing. 409 PLAN_APPROVED_BY_REVIEW for a plan, 409 NO_VERSION, 409 ISSUE_CLOSED, " +
+			"over a document it names is renewed or handed back to its person rather than a second one opened, but one " +
+			"that waits on the person is 409 APPROVAL_WAITS_ON_HUMAN when this request gives another summary or another " +
+			"document; a document approved throughout at its current version needs none. Answers {ask, artifact_id, " +
+			"version, approval, coverage, coverage_unread?}: 201 when the request opened, reworded or handed back the " +
+			"request, 200 when it stood as asked, a follow it added included (ask null when nothing is asked); coverage, " +
+			"on a request for the issue's spec, is one line per requirement with no check, or `the spec marks no " +
+			"requirements`, empty for any other document and where coverage_unread says its read failed, and refuses " +
+			"nothing. 409 PLAN_APPROVED_BY_REVIEW for a plan, 409 NO_VERSION, 409 ISSUE_CLOSED, " +
 			"400 SUMMARY_INPUT for a blank summary, 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND.",
 		Handler:  s.requestArtifactApprovalV2,
 		Resource: "approval-requests", Kind: kindCollection, Key: "{id}",

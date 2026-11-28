@@ -112,8 +112,8 @@ test("a rejected create shows its error until the next keystroke clears it", asy
   }
 });
 
-/** A repository name of 36 characters, which gives the 43-character `repo:` label Dispatch writes
- *  when it imports one of the repository's issues through the default project. */
+/** A repository name of 36 characters, which gives the 43-character `repo:` label an import of one
+ *  of the repository's issues through the default project wrote, before #4457 ended those imports. */
 const ownRepo = `o/${"r".repeat(36)}`;
 const ownRepoLabel = `repo:${ownRepo}`;
 /** The GitHub issue link that import records: the reference the issue's own `repo:` label names. */

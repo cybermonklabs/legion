@@ -56,7 +56,8 @@ const server = Bun.serve({
     const record = (sent?: unknown) =>
       posts.push({ method: request.method, path: pathname, ledger: ledgerText, sent });
     if (request.method === "POST" && pathname === ARTIFACTS) {
-      // A create that stores nothing posts its name as JSON; every other upload posts a form.
+      // A create that stores nothing and an upload of inline text post JSON; an upload of a file
+      // (--path) posts a form.
       if (request.headers.get("content-type")?.startsWith("application/json") === true) {
         record(await request.json());
       } else {
@@ -667,7 +668,8 @@ describe("AskGate at the dispatch CLI", () => {
   });
 
   // A name alone makes an empty document, which writes no text, so it is no gated write: the CLI
-  // posts it with no marker, as pi's gate, which reviews no upload without --path, lets it run.
+  // posts it with no marker, as pi's gate, which reviews no upload that carries no --path, no
+  // inline text and no --name-file or --path-file, lets it run.
   test("a name-only upload under a live record posts with no marker", async () => {
     writeRecord();
     const { code, stdout } = await run(["artifact", "--issue", "DSP-1", "--name", "x.markdown"]);

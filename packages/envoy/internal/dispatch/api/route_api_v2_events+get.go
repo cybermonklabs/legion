@@ -18,8 +18,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"times its page for a reader near the oldest event (measured 2026-11-16), so a reader pages by after until a page " +
 			"comes back short. An after above the highest event id written, or an after or a before that is no integer of 0 " +
 			"or more, is 400 POSITION_INVALID naming the parameter and id. An event's actor carries proven: true when the " +
-			"write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the " +
-			"request only named it.",
+			"credential of the write it records proved it (a browser's person, a broker-issued token's session), and no " +
+			"proven when the request only named it or the event was written before Dispatch recorded the mark.",
 		Handler:  s.listEventLogV2,
 		Resource: "events", Kind: kindLog, Position: eventIDPosition,
 		Query:    eventLogV2Query{},

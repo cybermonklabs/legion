@@ -124,8 +124,9 @@ const refusal = (status: number, code: string, error: string) =>
 /** The upload's route, whose declared answer each stored upload serves (`routeAnswer`). */
 const UPLOAD = "POST /api/v1/issues/{key}/artifacts";
 
-/** The slugs of the documents that play a role on an issue (`roleSlugs` in Dispatch's
- *  `artifacts.go`): an issue's plan, Verification document and decisions document. */
+/** The slugs of the documents that play a role on an issue (`model.RoleDocumentSlugs` in
+ *  Dispatch's `model/model.go`, which `documentRole` in `artifacts.go` reads): an issue's plan,
+ *  Verification document and decisions document. */
 const ROLE_SLUGS: readonly string[] = ["plan-md", "verification-md", "decisions-md"];
 
 /** One upload, answered as Dispatch answers it. */
@@ -158,10 +159,12 @@ function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precon
     );
   }
   if (target.kind !== kind) {
-    // R15: a Markdown upload under the name of a role document that an earlier upload stored as
-    // a file or a picture becomes that artifact's next version and makes it a document, as
-    // Dispatch takes it (POST /api/v1/issues/{key}/artifacts); every other upload of another kind
-    // is refused under that name.
+    // R15: a Markdown upload with content and no token under the name of a role document that an
+    // earlier upload stored as a file or a picture becomes that artifact's next version and makes
+    // it a document, as Dispatch takes it (POST /api/v1/issues/{key}/artifacts). Dispatch refuses
+    // such an upload that names a token 409 PRECONDITION_FAILED, where this stub takes one whose
+    // token names the standing version; every other upload of another kind is refused under that
+    // name.
     if (kind === "doc" && ROLE_SLUGS.includes(target.slug)) {
       const standing = target.versions.at(-1);
       if (

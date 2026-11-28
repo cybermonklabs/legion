@@ -14,8 +14,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, " +
 			"the revision GET /api/v2/comments/{id}?include=blocks gave, so each block keeps its id; without them the " +
 			"ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED. " +
-			"Answers the comment and appends comment.edited. 400 INVALID_COMMENT for an empty body or blocks without " +
-			"base_revision, 400 CAP_EXCEEDED past a bound, 404 COMMENT_NOT_FOUND.",
+			"Answers the comment and appends comment.edited. 400 INVALID_COMMENT for an empty body, blocks without " +
+			"base_revision, or blocks naming an id the comment does not hold at base_revision, naming one twice, or " +
+			"giving a from outside the body or out of order, 400 CAP_EXCEEDED past a bound, 404 COMMENT_NOT_FOUND.",
 		Handler:  s.editCommentV2,
 		Resource: "comments", Kind: kindItem, Key: "{id}",
 		Body:  requestBody{Kind: bodyJSON, Type: editCommentInput{}},

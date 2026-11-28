@@ -25,8 +25,10 @@ var _ = declareRow(func(s *server) routeRow {
 			"given name_tree on each row: its name as the tree a reader is shown. Each list is in the order of the node's " +
 			"kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the " +
 			"rows of the list. The answer carries an ETag over the page it answers, its relation and its rows " +
-			"whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that " +
-			"reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 " +
+			"whole; If-None-Match answers 304. Every statement of the reference read (the links out, the links in and " +
+			"the names of their nodes) shares one 2 s budget, and a read that reaches it reads nothing and answers 503 " +
+			"REFERENCES_TIMEOUT, to be asked again later; the issue's existence check and the read of each listed " +
+			"document's row run outside it. 404 " +
 			"ISSUE_NOT_FOUND.",
 		Handler:  s.listIssueReferencesV2,
 		Resource: "references", Kind: kindCollection,
