@@ -584,7 +584,7 @@ func entryMessages(e *entry) ([]llmMessage, error) {
 		if e.Attribution != nil {
 			attribution = *e.Attribution
 		}
-		return customMessages(customType, e.Content, attribution, "custom message "+e.ID, entryMillis(e.Timestamp))
+		return customMessages(customType, e.Content, attribution, "custom message "+e.ID, entryMillis(e.Timestamp), false)
 	case "branch_summary":
 		if e.Summary == "" {
 			return nil, nil
@@ -654,12 +654,18 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 			synthetic: synthetic, notExecuted: synthetic && string(details["executed"]) == "false", rewriteAt: m.PrunedAt,
 			providerMetadata: m.ProviderMetadata, timestamp: m.Timestamp}}, nil
 	case "custom":
-		return customMessages(m.CustomType, m.Content, m.Attribution, where, m.Timestamp)
+		return customMessages(m.CustomType, m.Content, m.Attribution, where, m.Timestamp, false)
+	case "hookMessage":
+		return customMessages(m.CustomType, m.Content, m.Attribution, where, m.Timestamp, true)
+	case "fileMention":
+		if m.Files != nil {
+			return fileMentionMessages(m), nil
+		}
 	case "bashExecution", "pythonExecution":
 		if m.ExcludeFromContext {
 			return nil, nil
 		}
-		return nil, conversation.Unknown("%s message %s in the context", m.Role, e.ID)
+		return []llmMessage{executionMessage(m)}, nil
 	}
 	return nil, conversation.Unknown("message role %q", m.Role)
 }
@@ -667,9 +673,15 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 // customMessages is convertToLlm's custom message: a collaborator's prompt in the steering
 // envelope and a skill the user invoked as user turns, images split into a user turn of their own,
 // anything else a developer message.
-func customMessages(customType string, content json.RawMessage, attribution, where string, timestamp *float64) ([]llmMessage, error) {
+func customMessages(customType string, content json.RawMessage, attribution, where string, timestamp *float64, hook bool) ([]llmMessage, error) {
+	markerType := customType
+	if hook {
+		// Continuation and interrupted-thinking markers are custom messages,
+		// not legacy hooks whose labels happen to match.
+		markerType = ""
+	}
 	one := func(blocks []block) llmMessage {
-		return llmMessage{role: "user", blocks: blocks, customType: customType, timestamp: timestamp}
+		return llmMessage{role: "user", blocks: blocks, customType: markerType, timestamp: timestamp}
 	}
 	developer := func(blocks []block) llmMessage {
 		turn := one(blocks)
@@ -686,11 +698,13 @@ func customMessages(customType string, content json.RawMessage, attribution, whe
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case customType == collabPromptType && attribution == "user":
-		return []llmMessage{one(steeringBlocks(blocks))}, nil
-	case customType == skillPromptType && attribution == "user":
-		return []llmMessage{one(blocks)}, nil
+	if !hook && attribution == "user" {
+		switch customType {
+		case collabPromptType:
+			return []llmMessage{one(steeringBlocks(blocks))}, nil
+		case skillPromptType:
+			return []llmMessage{one(blocks)}, nil
+		}
 	}
 	var texts, images []block
 	for _, b := range blocks {

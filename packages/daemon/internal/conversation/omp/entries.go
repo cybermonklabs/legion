@@ -91,7 +91,16 @@ type message struct {
 	// custom
 	CustomType string `json:"customType"`
 	// bashExecution, pythonExecution
-	ExcludeFromContext bool `json:"excludeFromContext"`
+	ExcludeFromContext bool          `json:"excludeFromContext"`
+	Command            string        `json:"command"`
+	Code               string        `json:"code"`
+	Output             string        `json:"output"`
+	ExitCode           *float64      `json:"exitCode"`
+	Cancelled          bool          `json:"cancelled"`
+	Images             []block       `json:"images"`
+	Meta               executionMeta `json:"meta"`
+	// fileMention
+	Files []mentionedFile `json:"files"`
 }
 
 // block is a content block of a message, with the fields of every block type.
@@ -115,6 +124,15 @@ type block struct {
 	CustomWireName   string          `json:"customWireName"`
 	Namespace        string          `json:"namespace"`
 	ProviderMetadata json.RawMessage `json:"providerMetadata"`
+	NativeBlock      json.RawMessage `json:"block"`
+	From             json.RawMessage `json:"from"`
+	To               json.RawMessage `json:"to"`
+}
+
+type mentionedFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Image   *block `json:"image"`
 }
 
 // parsed is a session's records as Oh My Pi's loader reads them.

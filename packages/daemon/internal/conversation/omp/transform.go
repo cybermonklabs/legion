@@ -23,6 +23,8 @@ type target struct {
 	anthropicSystem   bool
 	anthropicEffort   bool
 	anthropicReplay   bool
+	anthropicFallback bool
+	blobResolver      func(string) ([]byte, error)
 }
 
 // toRequest applies the pinned history transforms and projects the target encoder's
@@ -67,7 +69,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 			rewritten := latestRewrite != nil && m.timestamp != nil && *m.timestamp <= *latestRewrite
 			out[i], err = assistantMessage(m, t, i == latest, rewritten, ids)
 		case "toolResult":
-			out[i], err = toolResultMessage(m)
+			out[i], err = toolResultMessage(m, t)
 			if err == nil {
 				out[i].Content[0].ToolCallID = ids.result(m.toolCallID)
 			}
@@ -117,7 +119,7 @@ func replaceHistoryImages(blocks []block) []block {
 func userMessage(m llmMessage, t target) (conversation.Message, error) {
 	msg := conversation.Message{Role: conversation.User, Native: m.native}
 	for _, b := range m.blocks {
-		converted, keep, err := inputBlock(b)
+		converted, keep, err := inputBlock(b, t)
 		if err != nil {
 			return conversation.Message{}, err
 		}
@@ -143,11 +145,11 @@ func userMessage(m llmMessage, t target) (conversation.Message, error) {
 	return msg, nil
 }
 
-func toolResultMessage(m llmMessage) (conversation.Message, error) {
+func toolResultMessage(m llmMessage, t target) (conversation.Message, error) {
 	result := conversation.Block{Type: conversation.ToolResult, ToolCallID: m.toolCallID, ToolName: m.toolName, IsError: m.isError,
 		ProviderMetadata: m.providerMetadata}
 	for _, b := range m.blocks {
-		converted, keep, err := inputBlock(b)
+		converted, keep, err := inputBlock(b, t)
 		if err != nil {
 			return conversation.Message{}, err
 		}
@@ -158,20 +160,29 @@ func toolResultMessage(m llmMessage) (conversation.Message, error) {
 	return conversation.Message{Role: conversation.Tool, Content: []conversation.Block{result}}, nil
 }
 
-// inputBlock is a text or image block of a user message or tool result. An image Oh My Pi moved
-// to its blob store (data "blob:sha256:…") refuses the session: the reader does not read the store.
-func inputBlock(b block) (conversation.Block, bool, error) {
+// inputBlock selects the image source the target encoder uses.
+func inputBlock(b block, t target) (conversation.Block, bool, error) {
 	switch b.Type {
 	case "text":
 		return conversation.Block{Type: conversation.Text, Text: b.Text}, true, nil
 	case "image":
-		if strings.HasPrefix(b.Data, "blob:") {
-			return conversation.Block{}, false, conversation.Unknown("an image held in Oh My Pi's blob store")
+		image := conversation.Block{Type: conversation.Image, Detail: b.Detail}
+		// File IDs are scoped to the provider family of the encoder.
+		if b.ProviderFile.ID != "" &&
+			((t.api == conversation.AnthropicMessages && b.ProviderFile.Provider == "anthropic") ||
+				(t.api == conversation.OpenAIResponses && b.ProviderFile.Provider == "openai")) {
+			image.ImageFileID = b.ProviderFile.ID
+		} else if b.URL != "" {
+			image.ImageURL = b.URL
+		} else {
+			var err error
+			image.ImageData, err = resolveImageBlob(b.Data, t.blobResolver)
+			if err != nil {
+				return conversation.Block{}, false, err
+			}
+			image.MediaType = b.MimeType
 		}
-		if b.URL != "" || b.ProviderFile.ID != "" {
-			return conversation.Block{}, false, conversation.Unknown("an image held at a URL or in a provider's file store")
-		}
-		return conversation.Block{Type: conversation.Image, MediaType: b.MimeType, ImageData: b.Data, Detail: b.Detail}, true, nil
+		return image, true, nil
 	}
 	return conversation.Block{}, false, nil
 }
@@ -242,11 +253,25 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			}
 		case "anthropicServerTool":
 			if anthropicReplay && !crossProvider {
-				return conversation.Message{}, conversation.Unknown("a native Anthropic server tool block from provider %s", m.provider)
+				if !allObjects([]json.RawMessage{b.NativeBlock}) {
+					return conversation.Message{}, conversation.Unknown("an Anthropic server tool with no wire block")
+				}
+				converted[i] = &conversation.Block{Type: conversation.AnthropicServerTool, NativeBlock: b.NativeBlock}
 			}
 		case "fallback":
 			if anthropicTarget {
-				return conversation.Message{}, conversation.Unknown("an Anthropic server-side fallback boundary")
+				converted[i] = &conversation.Block{Type: conversation.AnthropicFallback}
+				if t.officialAnthropic && t.anthropicFallback {
+					raw, err := json.Marshal(struct {
+						Type string          `json:"type"`
+						From json.RawMessage `json:"from,omitempty"`
+						To   json.RawMessage `json:"to,omitempty"`
+					}{"fallback", b.From, b.To})
+					if err != nil {
+						return conversation.Message{}, err
+					}
+					converted[i].NativeBlock = raw
+				}
 			}
 		case "toolCall":
 			id := b.ID
@@ -287,6 +312,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			converted[i] = &conversation.Block{Type: conversation.RedactedThinking, Data: b.Data}
 		}
 	}
+	if anthropicTarget && !(t.officialAnthropic && t.anthropicFallback) {
+		collapseFallbackReasoning(converted)
+	}
 	signed := false
 	for _, block := range converted {
 		if block != nil && block.Type == conversation.Thinking && !blank(block.Signature) {
@@ -323,39 +351,44 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 	return msg, nil
 }
 
-// nativeHistory is the OpenAI Responses history a turn carries when the target replays it: an
-// openaiResponsesHistory payload of a turn on the target's API and model, from the target's
-// provider. A payload of a type Oh My Pi does not write refuses the session.
+// nativeHistory returns an assistant payload only when the target encoder can
+// replay it. Cursor and Gemini native history have no replay on the supported
+// targets. An unrecognized payload type refuses the session.
 func nativeHistory(m llmMessage, t target) (*conversation.Native, error) {
 	if len(m.payload) == 0 || string(m.payload) == "null" {
 		return nil, nil
 	}
 	var payload struct {
-		Type     string            `json:"type"`
-		Provider *string           `json:"provider"`
-		DT       bool              `json:"dt"`
-		Items    []json.RawMessage `json:"items"`
+		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(m.payload, &payload); err != nil {
 		return nil, conversation.Unknown("an assistant providerPayload Oh My Pi's shape does not fit: %v", err)
 	}
 	switch payload.Type {
 	case string(conversation.OpenAIResponsesHistory):
-	case "cursorHistory":
+	case "cursorHistory", "geminiNativeContent":
 		return nil, nil
 	case string(conversation.AnthropicCompaction):
-		return nil, conversation.Unknown("an assistant turn carrying an Anthropic compaction block")
+		return assistantAnthropicCompaction(m.payload, t), nil
 	default:
 		return nil, conversation.Unknown("providerPayload type %q", payload.Type)
 	}
-	provider := m.provider
-	if payload.Provider != nil {
-		provider = *payload.Provider
+	var history struct {
+		Provider *string           `json:"provider"`
+		DT       bool              `json:"dt"`
+		Items    []json.RawMessage `json:"items"`
 	}
-	if m.api != t.api || m.model != t.model || provider != t.provider || payload.Items == nil {
+	if err := json.Unmarshal(m.payload, &history); err != nil {
+		return nil, conversation.Unknown("an assistant providerPayload Oh My Pi's shape does not fit: %v", err)
+	}
+	provider := m.provider
+	if history.Provider != nil {
+		provider = *history.Provider
+	}
+	if m.api != t.api || m.model != t.model || provider != t.provider || history.Items == nil {
 		return nil, nil
 	}
-	return &conversation.Native{Kind: conversation.OpenAIResponsesHistory, Provider: provider, Incremental: payload.DT, Items: payload.Items, Payload: m.payload}, nil
+	return &conversation.Native{Kind: conversation.OpenAIResponsesHistory, Provider: provider, Incremental: history.DT, Items: history.Items, Payload: m.payload}, nil
 }
 
 var validAnthropicToolCallID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
@@ -625,7 +658,7 @@ func pairToolResults(source []llmMessage, messages []conversation.Message, key f
 			}
 			if len(m.Content) > 0 || m.Native != nil {
 				out = append(out, m)
-				if len(turnCalls) == 0 && (m.Native == nil || m.Native.Kind != conversation.AnthropicCompaction) {
+				if len(turnCalls) == 0 && source[i].role == "assistant" {
 					out = files.flushLegacy(out)
 				}
 			}

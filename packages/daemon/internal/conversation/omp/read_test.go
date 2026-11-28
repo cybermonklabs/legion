@@ -878,8 +878,7 @@ func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T)
 	}
 }
 
-// Images reach the request as their media type and data; an image Oh My Pi moved to its blob
-// store refuses the session.
+// Inline images reach the request as their media type and data.
 func TestReadCarriesImages(t *testing.T) {
 	f := newFixture()
 	f.add(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","data":"iVBORw0K","mimeType":"image/png"}],"timestamp":1}}`)
@@ -887,13 +886,6 @@ func TestReadCarriesImages(t *testing.T) {
 	s := read(t, f.bytes())
 	if got := s.Messages[0].Content; len(got) != 2 || !reflect.DeepEqual(got[1], conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "iVBORw0K"}) {
 		t.Errorf("user content = %+v", got)
-	}
-
-	f = newFixture()
-	f.add(`{"type":"message","message":{"role":"user","content":[{"type":"image","data":"blob:sha256:abc","mimeType":"image/png"}],"timestamp":1}}`)
-	f.add(claudeEntry("stop", `[{"type":"text","text":"seen"}]`))
-	if _, err := Read(f.bytes(), Options{}); !errors.Is(err, conversation.ErrUnknownFormat) {
-		t.Errorf("a blob-store image: Read = %v, want ErrUnknownFormat", err)
 	}
 }
 
@@ -978,7 +970,8 @@ func TestReadRefusesWhatItDoesNotKnow(t *testing.T) {
 		{"no header", `{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"hi"}}` + "\n"},
 		{"a message role", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"narrator","content":"hi"}}` + "\n"},
 		{"a content block type", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":[{"type":"audio","data":"x"}]}}` + "\n"},
-		{"an assistant block type", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"claude-x","stopReason":"stop","content":[{"type":"fallback","from":{"model":"a"},"to":{"model":"b"}}]}}` + "\n"},
+		{"an assistant block type", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"claude-x","stopReason":"stop","content":[{"type":"audio","data":"x"}]}}` + "\n"},
+		{"a server tool without its native block", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"claude-x","stopReason":"stop","content":[{"type":"anthropicServerTool"}]}}` + "\n"},
 		{"a provider payload type", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"claude-x","stopReason":"stop","content":[{"type":"text","text":"hi"}],"providerPayload":{"type":"geminiHistory"}}}` + "\n"},
 		{"a provider API", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","api":"google-generative-ai","provider":"google","model":"gemini-3","stopReason":"stop","content":[{"type":"text","text":"hi"}]}}` + "\n"},
 		{"a mistyped field", fixtureHeader + "\n" + `{"type":"compaction","id":"a","parentId":null,"summary":7,"firstKeptEntryId":"x"}` + "\n"},
@@ -996,10 +989,6 @@ func TestReadRefusesWhatItDoesNotKnow(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, entry, what string }{
 		{"a snapcompact archive", `{"type":"compaction","summary":"s","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}`, "the newest compaction is a snapcompact archive, which the reader does not rebuild (dispatch://INFRA-6438)"},
-		{"a bash execution", `{"type":"message","message":{"role":"bashExecution","command":"ls","output":""}}`, "bashExecution message e0000002 in the context"},
-		{"a python execution", `{"type":"message","message":{"role":"pythonExecution","code":"print(1)","output":"1","cancelled":false,"truncated":false,"timestamp":1}}`, "pythonExecution message e0000002 in the context"},
-		{"a file mention message", `{"type":"message","message":{"role":"fileMention","files":[{"path":"note.txt","content":"plum"}],"timestamp":1}}`, `message role "fileMention"`},
-		{"a legacy hook message", `{"type":"message","message":{"role":"hookMessage","customType":"note","content":"a note","display":false,"timestamp":1}}`, `message role "hookMessage"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()

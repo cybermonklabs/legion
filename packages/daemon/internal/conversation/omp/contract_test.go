@@ -626,6 +626,13 @@ func blankedResult(was, is conversation.Message) (string, bool) {
 // PRUNE_IDLE_FLUSH_MS (90 minutes) old. assertBlankedOnly checks for changes of that kind alone.
 func assertResumeMatches(t *testing.T, before *Session, content []byte, request anthropicRequest, followUp string) []wireTurn {
 	t.Helper()
+	resumed, got := compareResumeRequest(t, before, content, request, followUp)
+	assertBlankedOnly(t, before, resumed)
+	return got
+}
+
+func compareResumeRequest(t *testing.T, before *Session, content []byte, request anthropicRequest, followUp string) (*Session, []wireTurn) {
+	t.Helper()
 	resumed := resumedSession(t, before, content, standInEndpoint, followUp)
 	got := request.turns(t, content)
 	want := append(readerTurns(t, resumed.Messages), wireTurn{Role: "user", Blocks: []wireBlock{{Type: "text", Text: followUp}}})
@@ -639,8 +646,7 @@ func assertResumeMatches(t *testing.T, before *Session, content []byte, request 
 	if resumed.Model != standInAnthropic+"/"+standInModel || resumed.API != conversation.AnthropicMessages {
 		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
-	assertBlankedOnly(t, before, resumed)
-	return got
+	return resumed, got
 }
 
 func TestThePinnedOhMyPiPlacesAnthropicDevelopersWithCompaction(t *testing.T) {
@@ -932,6 +938,15 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 		{"a custom message", func(_ map[string]string, leaf string) string {
 			return `{"type":"custom_message","customType":"envoy-message","content":"A message from a peer arrived.","display":true,"id":"6f6f6f6f","parentId":"` + leaf + `","timestamp":"` + stamp() + `"}` + "\n"
 		}},
+		{"saved executions, hook, file and Gemini turn", func(_ map[string]string, leaf string) string {
+			return fmt.Sprintf(`{"type":"message","id":"69000001","parentId":%q,"timestamp":%q,"message":{"role":"assistant","provider":"factory-droid","api":"google-generative-ai","model":"gemini-3","stopReason":"stop","timestamp":%d,"usage":%s,"content":[{"type":"text","text":"Gemini text."}],"providerPayload":{"type":"geminiNativeContent","digest":"saved","content":{"role":"model","parts":[{"text":"Native Gemini only."}]}}}}`+"\n"+
+				`{"type":"message","id":"69000002","parentId":"69000001","message":{"role":"bashExecution","command":"printf plum","output":"plum","exitCode":2,"timestamp":%d,"meta":{"truncation":{"direction":"tail","truncatedBy":"bytes","totalLines":4,"outputLines":1,"maxBytes":1280,"shownRange":{"start":4,"end":4}}}}}`+"\n"+
+				`{"type":"message","id":"69000003","parentId":"69000002","message":{"role":"pythonExecution","code":"print('plum')","output":"","cancelled":true,"timestamp":%d}}`+"\n"+
+				`{"type":"message","id":"69000004","parentId":"69000003","message":{"role":"hookMessage","customType":"notice","content":"Legacy hook text.","display":false,"timestamp":%d}}`+"\n"+
+				`{"type":"message","id":"69000005","parentId":"69000004","message":{"role":"fileMention","files":[{"path":"note.txt","content":"plum"}],"timestamp":%d}}`+"\n",
+				leaf, stamp(), time.Now().UnixMilli(), handWrittenUsage, time.Now().UnixMilli(), time.Now().UnixMilli(), time.Now().UnixMilli(), time.Now().UnixMilli()) +
+				`{"type":"message","id":"69000006","parentId":"69000005","message":{"role":"assistant","provider":"anthropic","api":"anthropic-messages","model":"claude-test","stopReason":"stop","usage":` + handWrittenUsage + `,"content":[{"type":"text","text":"Back on Claude."}]}}` + "\n"
+		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			model := newAnthropicStandIn(t, firstRunReplies()...)
@@ -970,7 +985,26 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 				t.Fatal(err)
 			}
 			rig.run(t, file, "What colour is the fruit?")
-			got := assertResumeMatches(t, before, sessionContent(t, file), model.lastAnthropic(t), "What colour is the fruit?")
+			content = sessionContent(t, file)
+			request := model.lastAnthropic(t)
+			const followUp = "What colour is the fruit?"
+			if testCase.name == "saved executions, hook, file and Gemini turn" {
+				resumed, _ := compareResumeRequest(t, before, content, request, followUp)
+				// A saved Python execution prompts a new eval-state-context notice
+				// at startup. It is compared with the pinned wire above.
+				if len(resumed.Messages) != len(before.Messages)+1 {
+					t.Fatalf("expected one startup notice after %d saved messages, got %d", len(before.Messages), len(resumed.Messages))
+				}
+				last := resumed.Messages[len(before.Messages)]
+				if last.Role != conversation.User || len(last.Content) != 1 ||
+					!strings.Contains(last.Content[0].Text, "Eval runtime state is host-retained, not reconstructed from transcript text.") {
+					t.Fatalf("expected the eval startup notice, got %+v", last)
+				}
+				resumed.Messages = resumed.Messages[:len(before.Messages)]
+				assertBlankedOnly(t, before, resumed)
+				return
+			}
+			got := assertResumeMatches(t, before, content, request, followUp)
 			if testCase.name == "an OpenAI tool call between text blocks" {
 				index := carriedOnce(t, got, func(turn wireTurn, b wireBlock) bool {
 					return turn.Role == "assistant" && b.Type == "text" && b.Text == "Before."

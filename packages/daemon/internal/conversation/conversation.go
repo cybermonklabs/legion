@@ -60,6 +60,10 @@ const (
 	// is the logical name before the sender applies the endpoint's wire naming rules.
 	ToolAddition BlockType = "tool_addition"
 	ToolRemoval  BlockType = "tool_removal"
+	// AnthropicServerTool is an opaque server tool call or result.
+	AnthropicServerTool BlockType = "anthropic_server_tool"
+	// AnthropicFallback marks a server-side model change.
+	AnthropicFallback BlockType = "anthropic_fallback"
 )
 
 // Block is one content block. Which fields it uses depends on its Type.
@@ -106,6 +110,13 @@ type Block struct {
 	// Detail is an Image block's detail as recorded by the session, empty when
 	// unrecorded. Read fills it. Append refuses a block that sets it.
 	Detail string
+	// ImageFileID or ImageURL selects the saved reference instead of inline bytes.
+	// Read selects the reference for the target API. Append refuses both fields.
+	ImageFileID string
+	ImageURL    string
+	// NativeBlock is the wire block for AnthropicServerTool or AnthropicFallback.
+	// Append refuses this field.
+	NativeBlock json.RawMessage
 }
 
 // NativeKind is the kind of provider-native history a message carries.
@@ -116,8 +127,8 @@ const (
 	// items with encrypted content, function calls, and messages. The sender selects eligible
 	// items for replay on that API and model.
 	OpenAIResponsesHistory NativeKind = "openaiResponsesHistory"
-	// AnthropicCompaction is the Anthropic API's compaction block. The sender
-	// encodes it before the assistant message's other blocks, if any.
+	// AnthropicCompaction is native Anthropic compaction history. The sender
+	// encodes Payload and then any Items before the assistant's other blocks.
 	AnthropicCompaction NativeKind = "anthropicCompaction"
 	// AnthropicMessageControls adds clear_at or output_config alongside the message blocks.
 	AnthropicMessageControls NativeKind = "anthropicMessage"
@@ -132,6 +143,8 @@ type Native struct {
 	// It is unused on user turns, whose items stand in for that turn's fallback text.
 	Incremental bool
 	// Items are the OpenAIResponsesHistory items, including any reader-side replay repairs.
+	// For AnthropicCompaction, Items holds additional compaction payloads
+	// folded into this turn after Payload, in replay order.
 	Items []json.RawMessage
 	// Payload preserves the session's bytes for native history, or the derived Responses
 	// compaction payload.
@@ -372,6 +385,12 @@ func (b Block) readOnlyField() string {
 		return "Namespace"
 	case len(b.ProviderMetadata) != 0:
 		return "ProviderMetadata"
+	case b.ImageFileID != "":
+		return "ImageFileID"
+	case b.ImageURL != "":
+		return "ImageURL"
+	case len(b.NativeBlock) != 0:
+		return "NativeBlock"
 	default:
 		return ""
 	}

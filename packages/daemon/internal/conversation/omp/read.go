@@ -67,7 +67,7 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // model selection with the API recorded on a turn for that model. A current registry is needed
 // to resolve aliases, model availability, fallback, an unrecorded API or a new effective level.
 // The configured thinking selector, service tier and mode are request parameters that the
-// answer loop sets. Read does not restore injected TTSR rule names. Read is for stopped sessions:
+// sender supplies. Read does not restore injected TTSR rule names. Read is for stopped sessions:
 // it has no in-flight tool call IDs.
 //
 // Read always uses the journal's active leaf. It does not accept a temporary leaf override.
@@ -80,13 +80,18 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // so a trailing developer message normally stays a user turn. Read preserves recorded tool
 // changes by logical name and sets controls on the messages that carry them. The sender
 // applies wire tool names and any endpoint overrides.
-// Request-level effort and tools are parameters that the answer loop sets. To generate
-// historical markers, a sender would also need each assistant turn's saved requestControls.
+// The sender supplies request-level effort and tools. To generate historical
+// markers, a sender would also need each assistant turn's saved requestControls.
 // Read does not return those snapshots or insert their markers.
 //
 // With ReplayAnthropicCompaction, Read replaces eligible summary text with the
 // native compaction block, inserts its file notes, then places developer messages.
+// It also retains an assistant's eligible native compaction before its other output.
 // Without it, Read returns the summary text and does not insert separate file notes.
+//
+// AnthropicServerSideFallback supplies the current request's beta choice.
+// When the request does not send the boundary, Read uses it to select thinking
+// and then drops it. Server tools replay only on their source provider and API.
 //
 // Read assumes that the Anthropic request does not suppress all thinking or exclude individual
 // blocks after a provider rejection. Reproducing those branches needs the current request's
@@ -101,12 +106,12 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // The sender groups adjacent Tool messages as one Anthropic user turn and puts any following
 // error-result attachment note and images at its end. It encodes empty successful tool output
 // as an empty string. It needs the endpoint and authentication policy to encode tool names
-// and to add the tool-result id alias where required. When an image is kept, Read refuses
-// blob-store, URL, and provider file references. The neutral model carries inline data only.
-// The sender needs the bytes, a file ID, or a URL for those images. For Responses, Read carries
-// the recorded detail. The sender defaults unrecorded detail to auto and clamps original to
-// auto if the resolved endpoint does not support original. The session does not record
-// images.blockImages or whether a route strips images while its model still advertises image input.
+// and to add the tool-result id alias where required. Read selects the target API's
+// file reference, then a URL, then inline image data. BlobResolver supplies saved bytes.
+// For Responses, Read carries the recorded detail. The sender defaults unrecorded detail
+// to auto and clamps original to auto if the resolved endpoint does not support original.
+// The session does not record images.blockImages or whether a route strips images
+// while its model still advertises image input.
 //
 // On Responses the sender supplies the effective system prompts (including any applicable
 // recorded base) and the policy for placing and redacting them. Read represents saved developer
@@ -155,10 +160,6 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //     sends it.
 //   - The Anthropic encoder's default ID normalizer always returns a valid ID for a nonblank
 //     call. The fallback for a caller-supplied normalizer that returns an invalid ID is unused.
-//   - Read refuses a server tool on its original Anthropic Messages provider. It also refuses a
-//     fallback boundary on Anthropic Messages, where even a request that does not send the
-//     boundary can use it to select thinking. The neutral model cannot carry these blocks.
-//     When the pin drops either block for the target, Read drops it too.
 //
 // Read checks the restored target, not the models that wrote earlier turns. It accepts only
 // anthropic with anthropic-messages and a claude- model of class anthropic, or openai with
@@ -180,6 +181,13 @@ type Options struct {
 	// On a non-compaction request, the sender sends the replay edit when the
 	// replayed block has encryptedContent and no signature.
 	ReplayAnthropicCompaction bool
+	// AnthropicServerSideFallback enables fallback boundaries on the official endpoint.
+	AnthropicServerSideFallback bool
+	// BlobResolver reads a canonical SHA-256 digest from the session's blob store.
+	// Return nil bytes and no error if the blob is absent. With no resolver or
+	// no blob, Read leaves the reference unchanged, as Oh My Pi does.
+	// ReadSQL uses the session database if no resolver is supplied.
+	BlobResolver func(hash string) ([]byte, error)
 }
 
 // Read reads a session's content.
@@ -222,6 +230,8 @@ func Read(content []byte, opts Options) (*Session, error) {
 		officialAnthropic: provider == "anthropic" && !opts.NonOfficialAnthropicEndpoint,
 		textOnly:          opts.TextOnly,
 		anthropicReplay:   opts.ReplayAnthropicCompaction,
+		anthropicFallback: opts.AnthropicServerSideFallback,
+		blobResolver:      opts.BlobResolver,
 	})
 	if err != nil {
 		return nil, err
@@ -258,6 +268,11 @@ func ReadSQL(ctx context.Context, conn *ompsessions.Conn, path string, opts Opti
 	}
 	if !ok {
 		return nil, fmt.Errorf("session %s: %w", path, os.ErrNotExist)
+	}
+	if opts.BlobResolver == nil {
+		opts.BlobResolver = func(hash string) ([]byte, error) {
+			return ompsessions.ReadBlob(ctx, conn, hash)
+		}
 	}
 	s, err := Read(content, opts)
 	if err != nil {

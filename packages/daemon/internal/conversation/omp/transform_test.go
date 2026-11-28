@@ -2,7 +2,6 @@ package omp
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -67,31 +66,30 @@ func TestReadDropsThinkingAfterAPrecedingRewrite(t *testing.T) {
 func TestTransformNativeAnthropicBlocks(t *testing.T) {
 	for _, tc := range []struct {
 		name, kind, source, sourceAPI, provider, api, model string
-		refused                                             bool
+		keep                                                bool
 	}{
 		{"server tool across providers", "anthropicServerTool", "other", conversation.AnthropicMessages, "anthropic", conversation.AnthropicMessages, "claude-test", false},
 		{"server tool across APIs", "anthropicServerTool", "anthropic", conversation.OpenAIResponses, "anthropic", conversation.AnthropicMessages, "claude-test", false},
 		{"server tool same provider", "anthropicServerTool", "anthropic", conversation.AnthropicMessages, "anthropic", conversation.AnthropicMessages, "claude-test", true},
-		{"fallback on Anthropic", "fallback", "anthropic", conversation.AnthropicMessages, "anthropic", conversation.AnthropicMessages, "claude-test", true},
+		{"fallback on Anthropic", "fallback", "anthropic", conversation.AnthropicMessages, "anthropic", conversation.AnthropicMessages, "claude-test", false},
 		{"fallback on Responses", "fallback", "anthropic", conversation.AnthropicMessages, "openai", conversation.OpenAIResponses, "gpt-test", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
-			f.add(assistantEntry(tc.source, tc.sourceAPI, "claude-test", "stop", `[{"type":`+quote(tc.kind)+`},{"type":"text","text":"answer"}]`))
+			const serverTool = `{"type":"server_tool_use","id":"srvtoolu_one","name":"web_search","input":{"query":"plums"}}`
+			f.add(assistantEntry(tc.source, tc.sourceAPI, "claude-test", "stop", `[{"type":`+quote(tc.kind)+`,"block":`+serverTool+`},{"type":"text","text":"answer"}]`))
 			f.add(userEntry("next"))
 			f.add(assistantEntry(tc.provider, tc.api, tc.model, "stop", `[{"type":"text","text":"next answer"}]`))
 			s, err := Read(f.bytes(), Options{})
-			if tc.refused {
-				if !errors.Is(err, conversation.ErrUnknownFormat) {
-					t.Fatalf("Read = %v, want ErrUnknownFormat", err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
 			}
+			want := []conversation.Block{text("answer")}
+			if tc.keep {
+				want = append([]conversation.Block{{Type: conversation.AnthropicServerTool, NativeBlock: json.RawMessage(serverTool)}}, want...)
+			}
 			assertMessages(t, s.Messages[:1], []conversation.Message{{Role: conversation.Assistant, Provider: tc.source,
-				API: tc.sourceAPI, Model: "claude-test", Content: []conversation.Block{text("answer")}}})
+				API: tc.sourceAPI, Model: "claude-test", Content: want}})
 		})
 	}
 }

@@ -37,6 +37,59 @@ func compactionString(raw json.RawMessage) string {
 	return s
 }
 
+// An assistant can carry the compaction block before its other output.
+func assistantAnthropicCompaction(raw json.RawMessage, t target) *conversation.Native {
+	if t.api != conversation.AnthropicMessages || !t.anthropicReplay {
+		return nil
+	}
+	var state struct {
+		Provider         string  `json:"provider"`
+		Content          string  `json:"content"`
+		Signature        *string `json:"signature"`
+		EncryptedContent *string `json:"encryptedContent"`
+	}
+	if json.Unmarshal(raw, &state) != nil || state.Provider != t.provider || state.Content == "" ||
+		(state.Signature == nil && state.EncryptedContent == nil) {
+		return nil
+	}
+	return &conversation.Native{Kind: conversation.AnthropicCompaction, Provider: state.Provider, Payload: raw}
+}
+
+// The encoder keeps reasoning from the last fallback segment with reasoning.
+// The input already reflects the common replay filter.
+func collapseFallbackReasoning(blocks []*conversation.Block) {
+	segment, lastReasoning := 0, 0
+	for _, b := range blocks {
+		if b == nil {
+			continue
+		}
+		switch b.Type {
+		case conversation.AnthropicFallback:
+			segment++
+		case conversation.Thinking, conversation.RedactedThinking:
+			lastReasoning = segment
+		}
+	}
+	if segment == 0 {
+		return
+	}
+	segment = 0
+	for i, b := range blocks {
+		if b == nil {
+			continue
+		}
+		switch b.Type {
+		case conversation.AnthropicFallback:
+			segment++
+			blocks[i] = nil
+		case conversation.Thinking, conversation.RedactedThinking:
+			if segment != lastReasoning {
+				blocks[i] = nil
+			}
+		}
+	}
+}
+
 type compactionFileNote struct {
 	text  string
 	after float64
@@ -53,7 +106,7 @@ func (f *anthropicCompactionFiles) beforeTurn(out []conversation.Message, m conv
 	if f == nil {
 		return out
 	}
-	if m.Native != nil && m.Native.Kind == conversation.AnthropicCompaction {
+	if source.role != "assistant" && m.Native != nil && m.Native.Kind == conversation.AnthropicCompaction {
 		var state struct {
 			FilesText     json.RawMessage `json:"filesText"`
 			RetainedFiles json.RawMessage `json:"retainedFiles"`
@@ -171,8 +224,16 @@ func mergeAndSeparateAnthropicAssistants(messages []conversation.Message) []conv
 		current, next := &messages[i], &messages[i+1]
 		if current.Role == conversation.Assistant && next.Role == conversation.Assistant &&
 			current.Native != nil && current.Native.Kind == conversation.AnthropicCompaction &&
-			len(current.Content) == 0 && next.Native == nil {
-			next.Native = current.Native
+			len(current.Content) == 0 && len(current.Native.Items) == 0 {
+			if next.Native == nil {
+				next.Native = current.Native
+			} else {
+				// The pin folds a standalone compaction into the next assistant,
+				// including when that turn already opens with a compaction block.
+				folded := *current.Native
+				folded.Items = append([]json.RawMessage{next.Native.Payload}, next.Native.Items...)
+				next.Native = &folded
+			}
 			messages = slices.Delete(messages, i, i+1)
 		}
 	}
@@ -371,6 +432,8 @@ func anthropicInput(blocks []conversation.Block, textOnly bool) []conversation.B
 				continue
 			}
 			sawText = true
+		} else if b.ImageFileID != "" || b.ImageURL != "" {
+			sawImage = true
 		} else {
 			mime := strings.ToLower(strings.TrimFunc(b.MediaType, isJSSpace))
 			if mime == "image/jpg" {

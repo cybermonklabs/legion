@@ -43,6 +43,9 @@ func TestAppendValidateRefusesReadOnlyBlockFields(t *testing.T) {
 		{"Namespace", func(a *Append) { a.Turns[0].Content[0].Namespace = "workspace" }},
 		{"call provider metadata", func(a *Append) { a.Turns[0].Content[0].ProviderMetadata = []byte(`{"type":"computer"}`) }},
 		{"result provider metadata", func(a *Append) { a.Turns[0].Results[0].ProviderMetadata = []byte(`{"type":"computer"}`) }},
+		{"image file reference", func(a *Append) { a.Turns[0].Results[0].Content[0].ImageFileID = "file_1" }},
+		{"image URL reference", func(a *Append) { a.Turns[0].Results[0].Content[0].ImageURL = "https://example.invalid/p.png" }},
+		{"native block", func(a *Append) { a.Turns[0].Content[0].NativeBlock = []byte(`{"type":"server_tool_use"}`) }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			a := Append{
