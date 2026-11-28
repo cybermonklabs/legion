@@ -1021,6 +1021,111 @@ test("watched workflows: a topic told it waits is told it waits again in the ses
   }
 });
 
+// A `/new` or `/resume` ends the old session's watched task at once, before the re-claim queues.
+// An attempt of the old session's that was in flight at the change answers afterwards: pi-envoy
+// refuses it, since the context's session has moved, or answers it 503. Either way the pane's new
+// session is told no failure and no wait of that attempt, the old task asks for no topic left, and
+// the re-claim's own subscriptions, once it has registered, are told as any claim's are.
+for (const { answer, oldAnswer } of [
+  {
+    answer: "a refusal",
+    oldAnswer: () =>
+      new Error(
+        `Envoy has no active session for Legion notice subscription: ${CONTROLLER_SESSION}`
+      ),
+  },
+  { answer: "a 503", oldAnswer: withheld },
+] as const) {
+  test(`watched workflows: the old session's watched subscription answered with ${answer} between a /new and the re-claim's registration tells the new session nothing, and the re-claim's own wait and landing are told`, async () => {
+    jest.useFakeTimers();
+    const oldAttempt = Promise.withResolvers<void>();
+    const registration = Promise.withResolvers<void>();
+    let registrations = 0;
+    let scheduleAsks = 0;
+    const run = watchingController({
+      register: async () => {
+        registrations += 1;
+        if (registrations > 1) await registration.promise;
+        return new Response(daemonFixture("register-controller.json"), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+      subscribe: (topic) => {
+        if (topic !== NIGHTLY_SCHEDULE) return Promise.resolve();
+        scheduleAsks += 1;
+        if (scheduleAsks === 1) return oldAttempt.promise;
+        return scheduleAsks === 2 ? Promise.reject(withheld()) : Promise.resolve();
+      },
+    });
+    const after = "ses_controller_after_new";
+    const moved = {
+      ...run.context,
+      sessionManager: { getSessionId: () => after },
+    } as unknown as SessionContext;
+    try {
+      await run.controller.handleSessionStart(run.context);
+      await turnsUntil(
+        () => asked(run, NIGHTLY_SCHEDULE) === 1,
+        "the old session's first watched topic asked for",
+        ROW_TURNS
+      );
+      const reclaiming = run.controller.reclaimAfterSessionChange(moved);
+      await turnsUntil(
+        () => registrations === 2,
+        "the re-claim's registration asked for",
+        ROW_TURNS
+      );
+      oldAttempt.reject(oldAnswer());
+      for (let spare = 0; spare < 20; spare++) await settled();
+
+      expect(run.lines).toEqual([]);
+      expect(run.told).toEqual([]);
+      expect(asked(run, NIGHTLY_DISPATCH)).toBe(0);
+
+      registration.resolve();
+      await reclaiming;
+      await turnsUntil(() => run.lines.length > 0, "the re-claim's 503 log line", ROW_TURNS);
+      jest.advanceTimersByTime(1_000);
+      await turnsUntil(
+        () => asked(run, NIGHTLY_DISPATCH) === 1,
+        "the re-claim's next watched topic asked for",
+        ROW_TURNS
+      );
+      for (let spare = 0; spare < 20; spare++) await settled();
+
+      expect(
+        run.subscribedFor.filter(
+          (each) => each.endsWith(NIGHTLY_SCHEDULE) || each.endsWith(NIGHTLY_DISPATCH)
+        )
+      ).toEqual([
+        `${CONTROLLER_SESSION} ${NIGHTLY_SCHEDULE}`,
+        `${after} ${NIGHTLY_SCHEDULE}`,
+        `${after} ${NIGHTLY_SCHEDULE}`,
+        `${after} ${NIGHTLY_DISPATCH}`,
+      ]);
+      expect(run.lines).toEqual([
+        {
+          level: "warn",
+          message: expect.stringContaining(
+            "was answered 503 at attempt 1; subscribing it again in 1000 ms"
+          ),
+        },
+      ]);
+      const told = toldWatched(run);
+      expect(told).toHaveLength(2);
+      expect(told[0]).toContain(WITHHELD);
+      expect(told[1]).not.toContain(WITHHELD);
+      expect(told[1]).toContain(NIGHTLY_SCHEDULE);
+      expect(run.exits).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+      registration.resolve();
+      run.controller.stop();
+      run.stopSink();
+    }
+  });
+}
+
 // A refusal other than a 503 gives the topic up for that claim and leaves its landed notice owed.
 // The session was told the subscription failed after it was told the topic waits, so the next
 // claim whose subscription of the topic Envoy answers 503 tells it again that the topic waits, and
@@ -1064,6 +1169,54 @@ test("watched workflows: after a refusal that follows a 503, the next claim's 50
     expect(told[2]).toContain(WITHHELD);
     for (const notice of [WITHHELD, refusal]) expect(told[3]).not.toContain(notice);
     expect(told[3]).toContain(NIGHTLY_SCHEDULE);
+    expect(run.exits).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    run.controller.stop();
+    run.stopSink();
+  }
+});
+
+// A refusal other than a 503 that follows a 503 leaves the landed notice owed with no session
+// told, so the next 503 tells the wait again. A later claim whose subscription of the topic lands
+// at its first try, with no 503 between, still tells the session that it landed.
+test("watched workflows: after a refusal that follows a 503, a later claim whose subscription of that topic lands at its first try tells the session it landed", async () => {
+  jest.useFakeTimers();
+  const refusal = "POST /v1/interests/subscribe failed with 400: the topic is not a subject";
+  const answers = [withheld(), new Error(refusal)];
+  let asks = 0;
+  const run = watchingController({
+    subscribe: (topic) => {
+      if (topic !== NIGHTLY_SCHEDULE) return Promise.resolve();
+      const answer = answers[asks++];
+      return answer === undefined ? Promise.resolve() : Promise.reject(answer);
+    },
+  });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await turnsUntil(() => run.lines.length > 0, "the first claim's 503 log line", ROW_TURNS);
+    jest.advanceTimersByTime(1_000);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 1,
+      "the refused topic given up and the next one asked for",
+      ROW_TURNS
+    );
+    await run.controller.claim(run.context);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 2,
+      "the typed claim's next watched topic asked for",
+      ROW_TURNS
+    );
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(asked(run, NIGHTLY_SCHEDULE)).toBe(3);
+    expect(run.lines).toHaveLength(2);
+    const told = toldWatched(run);
+    expect(told).toHaveLength(3);
+    expect(told[0]).toContain(WITHHELD);
+    expect(told[1]).toContain(refusal);
+    for (const notice of [WITHHELD, refusal]) expect(told[2]).not.toContain(notice);
+    expect(told[2]).toContain(NIGHTLY_SCHEDULE);
     expect(run.exits).toEqual([]);
   } finally {
     jest.useRealTimers();

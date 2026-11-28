@@ -7,15 +7,15 @@ body: |-
   restores none of them, in the same removal as the Slack topics a daemon-launched controller
   already drops: those topics belong to the controller role, and a restored one would have an
   edge listener that cannot read the project's repositories refuse the role claim and every other
-  topic. A Legion plugin's subscription that lasts while the session holds a role, asked while it
-  does not hold that role, is refused with `RoleNotHeldError`, which the Legion plugin reads by its
-  name. A Legion plugin's subscription whose registration fails unfollows its topic only when
-  that subscription followed it: a renewed subscription of a topic the session already follows,
-  as each claim of a Legion controller makes for its watched and Slack topics, leaves that topic
-  followed and its role mark in place, and one that is the session's own gives a role topic's
-  subject it took over back to that role. Subscriptions of one topic, through the plugin
-  interface or the model's `envoy_subscribe`, run one after another, so a later one follows the
-  topic again after an earlier one failed. The log line of a failed removal now names the resumed
+  topic. A Legion plugin's subscription through the plugin interface always names the role it
+  lasts for (`whileHolding` is required), and one asked while the session does not hold that
+  role is refused with `RoleNotHeldError`, which the Legion plugin reads by its name. A Legion
+  plugin's subscription whose registration fails unfollows its topic only when that
+  subscription followed it: a renewed subscription of a topic the session already follows, as
+  each claim of a Legion controller makes for its watched and Slack topics, leaves that topic
+  followed and its role mark in place. Subscriptions of one topic, through the plugin interface
+  or the model's `envoy_subscribe`, run one after another, so a later one follows the topic
+  again after an earlier one failed. The log line of a failed removal now names the resumed
   controller's retired role-owned topics. Plugin interface version 7, which pi-envoy reads;
   install it with the `@sjawhar/pi-legion` released beside it.
 time: 2026-11-27T23:28:09Z

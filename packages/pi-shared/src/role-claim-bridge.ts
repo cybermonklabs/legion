@@ -20,20 +20,20 @@ export type LegionRoleClaim = (
 ) => Promise<void>;
 
 /**
- * `whileHolding` names a role this session holds: the subscription then lasts as long as the
- * session holds that role and closes when it stops holding it: another live session takes it, a
- * `new` or `resume` switch leaves it behind, a `/fork`, `/branch`, `/handoff` or tree navigation
- * reclaims the role its transcript records when that is another one, or a claim through this
- * bridge moves the session to another role. The model's `envoy_role_set`
- * refuses to move the session off such a role, and its `envoy_unsubscribe` keeps such a
- * subscription open and reports it kept. It is never registered with the listener, so a resumed
- * process gets it back only by claiming the role again.
+ * `whileHolding` names a role this session holds, and every subscription through the bridge names
+ * one: the subscription lasts as long as the session holds that role and closes when it stops
+ * holding it: another live session takes it, a `new` or `resume` switch leaves it behind, a
+ * `/fork`, `/branch`, `/handoff` or tree navigation reclaims the role its transcript records when
+ * that is another one, or a claim through this bridge moves the session to another role. The
+ * model's `envoy_role_set` refuses to move the session off such a role, and its
+ * `envoy_unsubscribe` keeps such a subscription open and reports it kept. It is never registered
+ * with the listener, so a resumed process gets it back only by claiming the role again.
  */
 export type LegionNoticeSubscription = (
   sessionID: string,
   topic: string,
-  context?: SessionContext,
-  whileHolding?: string
+  context: SessionContext | undefined,
+  whileHolding: string
 ) => Promise<void>;
 
 /**
@@ -115,10 +115,10 @@ export type LegionRoleClaimBridge = {
 };
 
 /**
- * Why a subscription that lasts while the session holds a role (`LegionNoticeSubscription`'s
- * `whileHolding`) is refused when the session does not hold that role: the Envoy entry throws it,
- * and the Legion controller reads it (`refusedForRoleNotHeld`) to stop subscribing its role's
- * topics with one log line rather than giving each of them up.
+ * Why a notice subscription (`LegionNoticeSubscription`) is refused when the session does not hold
+ * the role its `whileHolding` names: the Envoy entry throws it, and the Legion controller reads it
+ * (`refusedForRoleNotHeld`) to stop subscribing its role's topics with one log line rather than
+ * giving each of them up.
  */
 export class RoleNotHeldError extends Error {
   override readonly name = "RoleNotHeldError";
@@ -180,15 +180,15 @@ export async function claimEnvoyRole(
 }
 
 /**
- * Adds a persisted direct subscription through the Envoy adapter that owns delivery and recovery,
- * the instance serving that session (`boundInstance`); with `whileHolding`, only for as long as
- * this session holds that role.
+ * Adds a direct subscription through the Envoy adapter that owns delivery and recovery, the
+ * instance serving that session (`boundInstance`), for as long as this session holds the role
+ * `whileHolding` names (`LegionNoticeSubscription`).
  */
 export async function subscribeLegionNotice(
   sessionID: string,
   topic: string,
-  context?: SessionContext,
-  whileHolding?: string
+  context: SessionContext | undefined,
+  whileHolding: string
 ): Promise<void> {
   await boundInstance(sessionID, "a notice subscription").subscribe(
     sessionID,

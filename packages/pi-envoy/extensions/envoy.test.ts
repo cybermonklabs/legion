@@ -7099,11 +7099,11 @@ console.log(JSON.stringify(args));
       expect(left).toContain(base);
       expect(left).not.toContain(`${base}.>`);
 
-      // A plugin's subscription that lasts beyond any role is the session's own too: back on the
-      // role, whose open follows `base.>` for it alone, the plugin subscribes to `base.>` with no
-      // role, and the role's end leaves it followed.
+      // The session's own subscription of `base.>`, which the role's open follows for the role
+      // alone, is its own too: back on the role, the session subscribes to it, and the role's end
+      // leaves it followed.
       await tool("envoy_role_set").execute("", { role: "legion-controller" });
-      await subscribeLegionNotice("ses_two_claims", `${base}.>`, context);
+      await tool("envoy_subscribe").execute("", { topics: [`${base}.>`] });
       await tool("envoy_role_set").execute("", { role: "legion-reviewer" });
       left = await followedTopics(fixture.tools, context);
       expect(left).toContain(`${base}.>`);
@@ -8646,7 +8646,8 @@ console.log(JSON.stringify(args));
         const subscribed = subscribeLegionNotice(
           `${id}_f2`,
           "notifications.legion.ACME.other",
-          toSecond
+          toSecond,
+          "legion-controller"
         ).catch(() => undefined);
         second = Promise.all([
           subscribed,
@@ -10665,8 +10666,16 @@ console.log(JSON.stringify(args));
     test(`a plugin's ${call} for a session the host switched to before pi-envoy's handler opens that session first`, async () => {
       const { live } = await gatedRoleFixture(`bridge-${call}-first`, "ses_bf");
       const forked = live("ses_bf_fork");
-      if (call === "claim") await claimEnvoyRole("ses_bf_fork", "legion-controller", forked);
-      else await subscribeLegionNotice("ses_bf_fork", "notifications.legion.ACME.other", forked);
+      if (call === "claim") {
+        await claimEnvoyRole("ses_bf_fork", "legion-controller", forked);
+      } else {
+        await subscribeLegionNotice(
+          "ses_bf_fork",
+          "notifications.legion.ACME.other",
+          forked,
+          "legion-controller"
+        );
+      }
       expect(natsState.controls.get("notifications.agent.ses_bf_fork")?.active()).toBe(true);
     });
   }
@@ -11625,37 +11634,6 @@ console.log(JSON.stringify(args));
     expect(answer.isError).toBeFalsy();
     expect(answer.details).toMatchObject({ added: [topic], already: [] });
     expect(waited).toBe(true);
-  });
-
-  // A plugin's subscription that lasts beyond any role makes a subject the held role's topics
-  // follow the session's own too (`claimOwn`). One whose registration fails opened nothing, so it
-  // gives that subject back to the role, and the role's end closes it.
-  test("a plugin's subscription with no role of a subject only the held role's topics follow, whose registration fails, leaves the subject the role's, so the role's end drops it", async () => {
-    const alerts = "notifications.slack.*.C0ALERTS.message";
-    const previous = process.env.ENVOY_ROLE_TOPICS;
-    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ "legion-controller": [alerts] });
-    try {
-      // A fresh module instance, as every row of this file takes one: the query keys the cache,
-      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
-      const { fixture, context, roleTool, refuseRegistrations } = await gatedRoleFixture(
-        "unbound-subscribe-of-role-subject-fails",
-        "ses_unbound_fail"
-      );
-      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
-      const refused = refuseRegistrations(2);
-      await expect(subscribeLegionNotice("ses_unbound_fail", alerts, context)).rejects.toThrow(
-        "listener unavailable"
-      );
-      await refused;
-      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
-
-      const moved = await roleTool.execute("", { role: "reviewer" });
-      expect(moved.isError).toBeFalsy();
-      expect(await followedTopics(fixture.tools, context)).not.toContain(alerts);
-    } finally {
-      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
-      else process.env.ENVOY_ROLE_TOPICS = previous;
-    }
   });
 
   test("injects a post-takeover forwarded role event into B only", async () => {
@@ -21047,7 +21025,12 @@ console.log(JSON.stringify(args));
       expect(result.isError).toBe(true);
       expect(result.content[0]?.text).toBe(refusal);
       await expect(
-        subscribeLegionNotice("ses_inbound_off", "notifications.dispatch.ACME", context)
+        subscribeLegionNotice(
+          "ses_inbound_off",
+          "notifications.dispatch.ACME",
+          context,
+          "legion-controller"
+        )
       ).rejects.toThrow(refusal);
       expect(natsState.connects).toEqual([]);
     };

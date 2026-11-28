@@ -4976,17 +4976,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     callerContext,
     whileHolding
   ) => {
-    // A subscription that lasts while this session holds a role is part of that role's claim:
-    // once this session's stop has begun it is refused in the claim's words
-    // (`RoleClaimStoppingError`), at its start as the claim is, and after each wait and when a
-    // step fails, so the Legion controller reads it as its session's stop. The stop hands the
-    // role back next.
-    if (whileHolding !== undefined) {
-      refuseBridgeWhileStopping(targetSessionID, whileHolding, "notice subscription");
-    }
-    const refuseWhileStopping = (): void => {
-      if (whileHolding !== undefined) refuseClaimWhileStopping(whileHolding);
-    };
+    // A subscription through the bridge lasts while this session holds the role `whileHolding`
+    // names, so it is part of that role's claim: once this session's stop has begun it is refused
+    // in the claim's words (`RoleClaimStoppingError`), at its start as the claim is, and after
+    // each wait and when a step fails, so the Legion controller reads it as its session's stop.
+    // The stop hands the role back next.
+    refuseBridgeWhileStopping(targetSessionID, whileHolding, "notice subscription");
     const context = callerContext ?? activeSessionContext;
     if (context === undefined || context.sessionManager.getSessionId() !== targetSessionID) {
       throw new Error(
@@ -5001,62 +4996,48 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       try {
         await establishForBridge(context);
       } catch (error) {
-        refuseWhileStopping();
+        refuseClaimWhileStopping(whileHolding);
         throw error;
       }
     }
-    let marked: readonly string[] = [];
-    if (whileHolding !== undefined) {
-      // A role move still in flight could end the role just after the subscription opens, so the
-      // role is read once every move started before this call has landed.
-      await registrationState.roleMoves.settled();
-      refuseWhileStopping();
-      // In words the Legion plugin reads by name (`refusedForRoleNotHeld`): its controller stops
-      // subscribing its role's watched workflows on it.
-      if (!registrationState.holdsRoleTopic(ROLE_TOPIC_PREFIX + whileHolding)) {
-        throw new RoleNotHeldError(targetSessionID, whileHolding);
-      }
-      // Marked before the subscription opens, so the registration it leads to already carries
-      // them as the role's, which the role's end closes and unregisters together, and a move the
-      // model starts from here on sees them.
-      marked = registrationState.markRoleBoundSubjects(
-        expandSubscriptionTopics([topic]),
-        whileHolding
-      );
+    // A role move still in flight could end the role just after the subscription opens, so the
+    // role is read once every move started before this call has landed.
+    await registrationState.roleMoves.settled();
+    refuseClaimWhileStopping(whileHolding);
+    // In words the Legion plugin reads by name (`refusedForRoleNotHeld`): its controller stops
+    // subscribing its role's watched workflows on it.
+    if (!registrationState.holdsRoleTopic(ROLE_TOPIC_PREFIX + whileHolding)) {
+      throw new RoleNotHeldError(targetSessionID, whileHolding);
     }
+    // Marked before the subscription opens, so the registration it leads to already carries
+    // them as the role's, which the role's end closes and unregisters together, and a move the
+    // model starts from here on sees them.
+    const marked = registrationState.markRoleBoundSubjects(
+      expandSubscriptionTopics([topic]),
+      whileHolding
+    );
     // How many roles had ended once the subjects were marked, nothing awaited between the two: a
     // role that ends after it drops those marks itself.
-    const { endsBefore } = registrationState.roleSnapshot(topic);
+    const endsBefore = registrationState.roleEndCount();
     // The subjects this call newly followed, which a failure takes back.
     const followedHere = followNew(topic);
-    // A subscription that lasts beyond any role is the session's own, even on a subject the
-    // deployment's role topics already follow: claimed here, the role's end leaves it. The
-    // subjects only the role followed before it are noted, which a failure gives back to the role.
-    const claimedHere =
-      whileHolding === undefined
-        ? expandSubscriptionTopics([topic]).filter(roleTopicFollows.roleOnly)
-        : [];
-    if (whileHolding === undefined) roleTopicFollows.claimOwn(topic);
     try {
       // The registration is what tells the listener this session follows the topic, so a
       // subscription is open only once it lands.
       await registerSession();
     } catch (error) {
-      // Nothing opened, so nothing this call followed, marked or claimed may outlast it: it takes
-      // back the subjects it newly followed and the ones it marked, and gives the subjects it
-      // claimed from the role's topics back to the role (`releaseOwn`), so the role's end closes
-      // them. A renewal of a subscription the session already holds, as every claim of the Legion
-      // controller makes, followed and marked nothing, so its failure leaves the working
-      // subscription followed and bound to its role. No later subscription of this topic, through
-      // the bridge or the model's `envoy_subscribe`, has started yet (`inTopicTurns`), so none of
-      // them followed what this takes back. A role that ended meanwhile already dropped these
-      // marks, and a newer subscription may hold them now.
+      // Nothing opened, so nothing this call followed or marked may outlast it: it takes back the
+      // subjects it newly followed and the ones it marked. A renewal of a subscription the session
+      // already holds, as every claim of the Legion controller makes, followed and marked nothing,
+      // so its failure leaves the working subscription followed and bound to its role. No later
+      // subscription of this topic, through the bridge or the model's `envoy_subscribe`, has
+      // started yet (`inTopicTurns`), so none of them followed what this takes back. A role that
+      // ended meanwhile already dropped these marks, and a newer subscription may hold them now.
       if (registrationState.roleEndCount() === endsBefore) {
         for (const subject of followedHere) followed.delete(subject);
         registrationState.unmarkRoleBoundSubjects(marked);
       }
-      for (const subject of claimedHere) roleTopicFollows.releaseOwn(subject);
-      refuseWhileStopping();
+      refuseClaimWhileStopping(whileHolding);
       throw error;
     }
   };

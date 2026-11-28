@@ -128,7 +128,9 @@ function tellWatched(pi: PiApi, content: string): void {
  * session holds the role no more (`refusedForRoleNotHeld`) ends the watched subscriptions with
  * one log line. Any other failure is logged and told, and gives this topic up alone: a landed
  * notice it owed stays owed, and the next claim's 503 tells the wait again. Once `signal` aborts -
- * the stop, or a later registration - nothing more is asked or said.
+ * the stop, a session change or a later registration - nothing more is asked or said: an attempt
+ * in flight at the abort says nothing whatever it is answered, a 503 included, since
+ * `claimRoleAgainOnBusy` calls no `log` once the signal has aborted.
  */
 async function subscribeWatchedTopic(
   { pi, sessionID, claimToken, envoyContext, stopHeard, toldWaiting }: WatchedClaim,
@@ -193,8 +195,8 @@ async function subscribeWatchedTopic(
  * The daemon's registration deadline would retire a controller that never reported ready while
  * an edge listener withheld its GitHub topics. The task subscribes `topics` one after the other
  * (`subscribeWatchedTopic`). A failure the task did not expect ends it with one error line, and
- * reaches the claim no more than the notices do (`tellWatched`). Once `signal` aborts, no further
- * topic is asked for.
+ * reaches the claim no more than the notices do (`tellWatched`). Once `signal` aborts (the stop, a
+ * session change or a later registration), no further topic is asked for.
  */
 export function subscribeWatchedTopics(
   claim: WatchedClaim,

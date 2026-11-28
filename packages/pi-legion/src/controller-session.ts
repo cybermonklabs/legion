@@ -154,19 +154,21 @@ export function createControllerSession(
   // The watched topics whose landed notice this process owes: each one it told a session waits
   // after a 503 and has not yet told landed (`subscribeWatchedTopic`), with the session it told the
   // wait, or undefined once a failure other than a 503 followed it, so the next 503 tells it again.
-  // A later registration ends the watched task of the claim that told it, so the map is the
-  // process's: whichever claim's subscription of such a topic lands tells the session it landed,
-  // and a claim for a session the map does not name tells that session the topic waits.
+  // A later registration or a session change ends the watched task of the claim that told it, so
+  // the map is the process's: whichever claim's subscription of such a topic lands tells the
+  // session it landed, and a claim for a session the map does not name tells that session the
+  // topic waits.
   const watchedToldWaiting = new Map<string, string | undefined>();
-  // The watched subscriptions of the last claim that finished, which a later registration aborts:
-  // the claim they were made for is replaced, and a claim of the new one makes its own.
+  // The watched subscriptions of the last claim that finished, which a later registration aborts,
+  // and a session change's re-claim as it starts (`reclaimAfterSessionChange`): the claim they were
+  // made for is replaced, and a claim of the new one makes its own.
   let watchedSubscriptions: AbortController | undefined;
 
   /**
    * Subscribes this process's watched workflows for the session of a claim that has just finished
    * (`claimWith`), in a task the claim does not wait for (`subscribeWatchedTopics`). Each claim
    * subscribes the same list for its own session, as each claim subscribes the Slack channels. A
-   * later registration or the session's stop ends the task.
+   * later registration, a session change or the session's stop ends the task.
    */
   const subscribeWatchedWorkflows = (
     sessionID: string,
@@ -788,6 +790,12 @@ export function createControllerSession(
       }
       return;
     }
+    // The watched task running now, if any, was made for another session or transcript: its
+    // attempts name a session that Envoy may no longer serve, and what they are answered would be
+    // told to this session. So it ends here, not once the re-claim below has queued and
+    // registered, which it may never do; that re-claim makes its own once it has.
+    watchedSubscriptions?.abort();
+    watchedSubscriptions = undefined;
     const notices: { readonly message: string; readonly level: "info" | "warning" }[] = [];
     let shown = false;
     const notify = (message: string, level: "info" | "warning"): void => {
