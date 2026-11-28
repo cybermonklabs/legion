@@ -837,6 +837,72 @@ check "a review thread's comments that stop short fail" "$(is "$status" 1)"
 check "names the thread and both counts" \
   "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 comments in review thread 1 of #7 but listed 20,")"
 
+echo "case: a list GitHub's GraphQL API counts other than it lists is read again, then refused"
+# GitHub's count of a list and the items it lists can disagree for a moment while an item lands:
+# run 46114422660 refused #5960 with its reviews counted 5 and listed 6, and a run of the same head
+# passed 84 s later. The stand-in counts a list one short of its items in its first N answers that
+# carry it (miscount.<list>); the check reads the list again, whole, from its first page, and
+# refuses it only when its third read still disagrees.
+for list in comments reviews threads; do
+  case $list in
+    comments) pages=comments name="issue comments" ;;
+    reviews) pages=reviews name=reviews ;;
+    threads) pages=review-comments name="review threads" ;;
+  esac
+  alone=$(jq -nc --arg list "$list" \
+    '{full: false, commits: false, history: false, comments: false, reviews: false, threads: false}
+      | .[$list] = true')
+  clean_pr
+  items 9001 "fine" 9002 "fine" > "$work/$pages.1"
+  echo 1 > "$work/miscount.$list"
+  run_pr_text
+  asking=$(grep "^graphql PrText .*\"$list\":true" "$work/calls" || true)
+  check "$name counted one short at their first read pass at their second" "$(is "$status" 0)"
+  check "$name: says they are read again, naming both counts" \
+    "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 1 $name of #7 but listed 2, so they are read again in 0 s\$")"
+  check "$name: two reads ask for them" "$(is "$(wc -l <<< "$asking")" 2)"
+  check "$name: the second asks for them alone" "$(contains "$(sed -n 2p <<< "$asking")" "${alone:1:-1}")"
+  check "$name: the second asks for them from their first page, with no cursor" \
+    "$(is "$(contains "$(sed -n 2p <<< "$asking")" "\"${list}After\"")" false)"
+  echo 3 > "$work/miscount.$list"
+  run_pr_text
+  check "$name counted one short at all three reads fail" "$(is "$status" 1)"
+  check "$name: the refusal names the list and the last read's counts" \
+    "$(contains "$out" "^::error::GitHub's GraphQL API reports 1 $name of #7 but listed 2, so not every one can be checked")"
+  check "$name: three reads asked for them" "$(is "$(grep -c "^graphql PrText .*\"$list\":true" "$work/calls")" 3)"
+done
+# One review thread of three comments, counted one short in the first N answers that carry them:
+# PrText's first page of the thread, then each ThreadComments read.
+clean_pr
+items 9101 "fine" 9102 "fine" 9103 "fine" | jq -c '[.]' > "$work/review-comments.1"
+echo 1 > "$work/miscount.thread"
+run_pr_text
+check "a review thread's comments counted one short at their first read pass at their second" \
+  "$(is "$status" 0)"
+check "says the thread's comments are read again, naming both counts" \
+  "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 2 comments in review thread 1 of #7 but listed 3, so they are read again in 0 s\$")"
+check "reads them again once, by the thread's id from their first page" \
+  "$(is "$(grep '^graphql ThreadComments ' "$work/calls")" 'graphql ThreadComments {"thread":"thread-1-0","after":null}')"
+echo 3 > "$work/miscount.thread"
+run_pr_text
+check "a review thread's comments counted one short at all three reads fail" "$(is "$status" 1)"
+check "the refusal names the thread and the last read's counts" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 2 comments in review thread 1 of #7 but listed 3,")"
+check "after two reads again by the thread's id from their first page" \
+  "$(is "$(grep -c '^graphql ThreadComments {"thread":"thread-1-0","after":null}$' "$work/calls")" 2)"
+# The waits are gh-read.sh's ladder: GH_RETRY_SECONDS seconds before the second read and twice as
+# many before the third. The library sets it to 0 for every case; this run sets 1.
+clean_pr
+items 9201 "fine" 9202 "fine" > "$work/reviews.1"
+echo 3 > "$work/miscount.reviews"
+GH_RETRY_SECONDS=1 run_pr_text
+check "reviews counted one short at all three reads, with waits of GH_RETRY_SECONDS=1, fail" \
+  "$(is "$status" 1)"
+check "waits 1 s before the second read" \
+  "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 1 reviews of #7 but listed 2, so they are read again in 1 s\$")"
+check "and 2 s before the third" \
+  "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 1 reviews of #7 but listed 2, so they are read again in 2 s\$")"
+
 echo "case: a read GitHub's GraphQL API does not answer is refused by name"
 clean_pr
 jq -nc --argjson author "$app" '[range(1; 101) | {id: (1000 + .), body: "fine"} + $author]' > "$work/comments.1"

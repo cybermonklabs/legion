@@ -70,6 +70,9 @@ planted_owner="lanternfish/harbor-map"
 planted_terms=$(printf '%s\n' "$planted" "$planted_dotted" "$planted_owner")
 export GITHUB_EVENT_NAME=pull_request
 export PRIVATE_NAME_TERMS=$planted_terms
+# gh-read.sh's knob for the waits of its ladder, which check-pr-text.sh also waits by before it
+# reads a list again: no case waits for a read again unless it sets its own.
+export GH_RETRY_SECONDS=0
 
 # names_planted <text>: true/false for check; whether text holds a planted term, or either half of
 # the owner/repository one, in any case.
@@ -164,7 +167,8 @@ GREP
 # the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
 # the run checks (its base and head sha, and its one commit). The stand-in `gh` stands in for
 # GitHub's GraphQL server for the script's two queries (`gh api graphql --input -`: PrText, and
-# ThreadComments for a review thread's comments past its first 20). It answers only the fields a
+# ThreadComments for a review thread's comments past its first 20, or from their first page when
+# it names no cursor, which it answers as PrText answers that page). It answers only the fields a
 # round asks for (each `@include` flag), in GraphQL's own shapes, so the real filters that feed the
 # required check run for real, rather than filters the stub fakes; it refuses a read of another
 # repository or pull request, or one not sent as --input -. The files it answers from keep the
@@ -188,7 +192,11 @@ GREP
 # come with PrText too, 100 a page (`$work/cutoff-commits`, one list, else none, so the rule is
 # inactive). `$work/cut.<list>` (commits, history, comments, reviews, threads, or thread for each
 # thread's comments) holding N makes page N say no more follow while the totalCount still counts
-# every page, as GitHub's comparison does at 1000 commits; `$work/base-gone` answers no base
+# every page, as GitHub's comparison does at 1000 commits; `$work/miscount.<list>` (history,
+# comments, reviews, threads, or thread for each thread's comments) holding N makes the first N
+# answers that carry that list (for thread, PrText's that ask for the threads and every
+# ThreadComments answer) report a totalCount one fewer than the items they list, as GitHub's
+# answer did on #5960 (5 counted, 6 listed) while a review landed; `$work/base-gone` answers no base
 # branch; `$work/compare-not-found` answers the comparison as GitHub answers one it cannot make,
 # null with a NOT_FOUND error at its path, on which gh fails; `$work/graphql-fails` holding N
 # fails the Nth GraphQL call as gh fails on an answer that carries an error; and
@@ -265,6 +273,21 @@ if [ "$1 $2" = "api graphql" ]; then
       cuts=$(jq -c --arg list "$list" --argjson n "$(< "$dir/cut.$list")" '.[$list] = $n' <<< "$cuts")
     fi
   done
+  # The lists whose totals this answer counts one short (miscount.<list>), by the answers that
+  # carry each so far, this one included: the call is logged above before it is answered.
+  miscounts='{}'
+  for list in history comments reviews threads thread; do
+    [ -e "$dir/miscount.$list" ] || continue
+    if [ "$list" = thread ]; then
+      answers=$(grep -c -e '^graphql PrText .*"threads":true' -e '^graphql ThreadComments ' \
+        "$dir/calls")
+    else
+      answers=$(grep -c "^graphql PrText .*\"$list\":true" "$dir/calls")
+    fi
+    if [ "$answers" -le "$(< "$dir/miscount.$list")" ]; then
+      miscounts=$(jq -c --arg list "$list" '.[$list] = true' <<< "$miscounts")
+    fi
+  done
   if [ "$(jq -r '.head' <<< "$variables")" = "$(jq -r '.pull_request.head.sha' "$dir/event.json")" ]; then
     jq -s '.' "$dir/compare" > "$answer_dir/compare"
   else
@@ -284,6 +307,7 @@ if [ "$1 $2" = "api graphql" ]; then
     --slurpfile compare "$answer_dir/compare" --slurpfile history "$answer_dir/history" \
     --slurpfile comments "$answer_dir/comments" --slurpfile reviews "$answer_dir/reviews" \
     --slurpfile threads "$answer_dir/review-comments" --argjson cut "$cuts" \
+    --argjson miscount "$miscounts" \
     --argjson first "$(cat "$dir/thread-first" 2> /dev/null || echo 100)" \
     --argjson base_gone "$([ -e "$dir/base-gone" ] && echo true || echo false)" '
     def item: {fullDatabaseId: (.id | if type == "number" then tostring else . end), body,
@@ -307,6 +331,8 @@ if [ "$1 $2" = "api graphql" ]; then
          pageInfo: {hasNextPage: ($n < ($pages | length) and ($cut == null or $n < $cut)), endCursor: "\($n)"},
          nodes: (if ($nodes | type) == "array" then [$nodes[] | f] else $nodes end)};
     def total($pages): [$pages[] | if type == "array" then length else 0 end] | add // 0;
+    # miscounted($list): a total, one fewer where this answer counts that list short.
+    def miscounted($list): if $miscount[$list] then . - 1 else . end;
     # thread_pages: the comments of a thread as GitHub pages them for the script: as many as PrText
     # asks for on its first page ($first), then 100 a page.
     def thread_pages: [.[0:$first]] + [range($first; length; 100) as $i | .[$i:$i + 100]];
@@ -316,13 +342,15 @@ if [ "$1 $2" = "api graphql" ]; then
     | ($threads | to_entries | map((.key + 1) as $n | .value
       | if type == "array" then
           [to_entries[] | .key as $i | .value | thread_comments as $all
-            | {id: "thread-\($n)-\($i)", comments: page($all | thread_pages; null; $cut.thread; $all | length; item)}]
+            | {id: "thread-\($n)-\($i)", comments: page($all | thread_pages; null; $cut.thread;
+                $all | length | miscounted("thread"); item)}]
         else . end)) as $thread_pages
     | if $operation == "ThreadComments" then
         ($v.thread | capture("^thread-(?<n>[0-9]+)-(?<i>[0-9]+)$")? // null) as $t
         | if $t == null then {data: {node: null}} else
             ($threads[($t.n | tonumber) - 1][$t.i | tonumber] | thread_comments) as $all
-            | {data: {node: {comments: page($all | thread_pages; $v.after; $cut.thread; $all | length; item)}}}
+            | {data: {node: {comments: page($all | thread_pages; $v.after; $cut.thread;
+                $all | length | miscounted("thread"); item)}}}
           end
       else
         $pull[0] as $pull
@@ -336,13 +364,16 @@ if [ "$1 $2" = "api graphql" ]; then
                     {commits: page([$compare[] | .commits]; $v.commitsAfter; $cut.commits;
                       $compare[0].total_commits; commit)}} else {} end)
                 + (if $v.history then {target: {history: page($history; $v.historyAfter; $cut.history;
-                    total($history); {oid: .sha})}} else {} end)
+                    total($history) | miscounted("history"); {oid: .sha})}} else {} end)
               end)}
-            + (if $v.comments then {comments: page($comments; $v.commentsAfter; $cut.comments; total($comments); item)}
+            + (if $v.comments then {comments: page($comments; $v.commentsAfter; $cut.comments;
+                total($comments) | miscounted("comments"); item)}
               else {} end)
-            + (if $v.reviews then {reviews: page($reviews; $v.reviewsAfter; $cut.reviews; total($reviews); item)}
+            + (if $v.reviews then {reviews: page($reviews; $v.reviewsAfter; $cut.reviews;
+                total($reviews) | miscounted("reviews"); item)}
               else {} end)
-            + (if $v.threads then {reviewThreads: page($thread_pages; $v.threadsAfter; $cut.threads; total($threads); .)}
+            + (if $v.threads then {reviewThreads: page($thread_pages; $v.threadsAfter; $cut.threads;
+                total($threads) | miscounted("threads"); .)}
               else {} end)
           )}}}
       end'
@@ -406,7 +437,7 @@ write_pr_text() {
   rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.* "$work/cutoff-commits" \
     "$work"/release.* "$work"/commit.* "$work/pr-files" "$work"/cut.* "$work/base-gone" \
     "$work/compare-not-found" "$work/graphql-fails" "$work/compare-rest" "$work/graphql-rate-limited" \
-    "$work/rate-reset"
+    "$work/rate-reset" "$work"/miscount.*
 }
 run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi
