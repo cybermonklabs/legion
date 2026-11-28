@@ -1381,13 +1381,14 @@ func outcomeOf(parts []measures.DayPart) string {
 // repository and name), most failures first; otherwise, keyed by the job's name, each job's
 // figures, its unlisted `job:<name>` day rows of the range folded by measures.FoldTiming, by name,
 // or with sort median the one ranking the Pipeline's slowest-jobs table shows the first
-// measures.SlowestJobs of (measures.FoldSlowestJobs): every job with the job series' min_n timed
-// results over the range's days, and one at least (eval_series `job:*`, slowestJobsFloor, which
-// the answer names in min_n), slowest first. A series filter names one job's series. An eval with
-// no job series answers none. Each job links to its `job:<name>` day rows over the range as it was
-// asked for (read.rng.start and end), which the items route reads as the same days: the range's
-// whole days are a day longer where it starts inside one, and past the 84 days the route takes
-// where it was 84 days long.
+// measures.SlowestJobs of (measures.FoldSlowestJobs), with each job's cell over the range's days
+// alone (measures.SlowestJobTotals): every job with the job series' min_n timed results over the
+// range's days, and one at least (eval_series `job:*`, slowestJobsFloor, which the answer names in
+// min_n), slowest first. A series filter names one job's series. An eval with no job series
+// answers none. Each job links to its `job:<name>` day rows over the range as it was asked for
+// (read.rng.start and end), which the items route reads as the same days: the range's whole days
+// are a day longer where it starts inside one, and past the 84 days the route takes where it was
+// 84 days long.
 func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	index := slices.IndexFunc(read.entry.Series, isJobSeries)
 	if index < 0 {
@@ -1420,8 +1421,8 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	if read.request.sort == evalSortMedian {
 		// The range's own days: its day rows are of no other.
 		shown := evalRangeDays(read.rng.days)
-		for _, job := range measures.FoldSlowestJobs(parts, shown, slowestJobsFloor(read.entry.Series[index])) {
-			cells = append(cells, jobCell{job.Name, job.Total})
+		for _, job := range measures.SlowestJobTotals(parts, shown, slowestJobsFloor(read.entry.Series[index])) {
+			cells = append(cells, jobCell{job.Name, job.Cell})
 		}
 	} else {
 		byJob := map[string][]measures.DayPart{}

@@ -263,6 +263,36 @@ func TestTheSlowestJobsTableIsTheHeadOfTheRankingByTheMinNItIsGiven(t *testing.T
 	}
 }
 
+// TestTheSlowestJobTotalsAreTheRankingsTotals (dispatch://INFRA-2918, D25 step 6): pr-ci's items
+// sorted by median list each ranked job's cell over the range and no day of it, so their fold
+// (SlowestJobTotals) ranks the jobs FoldSlowestJobs ranks, in its order, each with its Total, cell
+// for cell, at every min_n: here six jobs over the shown days, with results on a day before them
+// that neither counts, and a job whose one result has no duration, which neither ranks.
+func TestTheSlowestJobTotalsAreTheRankingsTotals(t *testing.T) {
+	var c ciRuns
+	jobs := []ciJob{job("a", 10), job("b", 60), job("c", 30, "failure"), job("d", 40), job("e", 50), job("f", 20)}
+	for i := range SlowestMinResults - 1 {
+		c.add(int64(100+i), 27+i%6, 95, "success", 8, jobs[:3+i%4]...)
+	}
+	parts := prChecksParts(c.runs, c.jobs, pipelineDays)
+	before := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	parts = append(parts,
+		timingPart(before, JobSeriesPrefix+"a", []sample{{outcome: OutcomeSuccess, minutes: new(500.0)}}),
+		timingPart(time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), JobSeriesPrefix+"no duration", []sample{{outcome: OutcomeSuccess}}))
+	for _, minResults := range []int{0, 1, SlowestMinResults / 2, SlowestMinResults - 1, SlowestMinResults} {
+		ranked := FoldSlowestJobs(parts, pipelineDays, minResults)
+		totals := SlowestJobTotals(parts, pipelineDays, minResults)
+		want := make([]JobCell, len(ranked))
+		for i, job := range ranked {
+			want[i] = JobCell{Name: job.Name, Cell: job.Total}
+		}
+		if !reflect.DeepEqual(totals, want) {
+			t.Errorf("SlowestJobTotals at min_n %d = %+v, want FoldSlowestJobs' totals %+v", minResults, totals, want)
+		}
+		t.Logf("min_n %d ranks %d jobs", minResults, len(totals))
+	}
+}
+
 // failingFixture is test_pipeline.py:114-137's runs with the roll-up checks-complete, plus the two
 // rows the prototype never stores and Dispatch does (/tmp/plan567s23/dump-failing.py): a skipped
 // docs job on run 3, and a fifth run cancelled at 11:10 on Oct 2 with a failed build / unit job.

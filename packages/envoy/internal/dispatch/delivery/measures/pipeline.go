@@ -242,12 +242,26 @@ func timingByDay(parts []DayPart, days []string, fold func([]DayPart) Cell) Timi
 func foldShownDays[C, D any](parts []DayPart, days []string, fold func([]DayPart) C, dayOf func(day string, partial bool, cell C) D) ([]D, C) {
 	byDay := partsByDay(parts)
 	perDay := make([]D, len(days))
-	var shown []DayPart
 	for i, d := range days {
 		perDay[i] = dayOf(d, i == len(days)-1, fold(byDay[d]))
+	}
+	return perDay, fold(shownParts(byDay, days))
+}
+
+// foldShown is foldShownDays' fold of the shown days' parts together, alone: the parts of each
+// shown day, oldest first, folded by fold.
+func foldShown[C any](parts []DayPart, days []string, fold func([]DayPart) C) C {
+	return fold(shownParts(partsByDay(parts), days))
+}
+
+// shownParts is the parts of each of days in byDay, a range's parts by day (partsByDay), in days'
+// order, each day's in the order byDay holds them.
+func shownParts(byDay map[string][]DayPart, days []string) []DayPart {
+	var shown []DayPart
+	for _, d := range days {
 		shown = append(shown, byDay[d]...)
 	}
-	return perDay, fold(shown)
+	return shown
 }
 
 // onShownDays is each shown day's UTC midnight and the rows whose time is on it, oldest first; a
@@ -328,15 +342,22 @@ func PRChecksDay(day time.Time, runs []delivery.DeliveryRun, jobsByRun map[int64
 	return parts
 }
 
-// jobTimings is each PR-checks job's timing by name over the shown days: each job series of
-// pr-ci's parts, folded per day and over the shown days.
-func jobTimings(parts []DayPart, days []string) map[string]Timing {
+// jobSeries is each job series of pr-ci's parts, by series: what jobTimings and SlowestJobTotals
+// fold.
+func jobSeries(parts []DayPart) map[string][]DayPart {
 	bySeries := map[string][]DayPart{}
 	for _, part := range parts {
 		if strings.HasPrefix(part.Series, JobSeriesPrefix) {
 			bySeries[part.Series] = append(bySeries[part.Series], part)
 		}
 	}
+	return bySeries
+}
+
+// jobTimings is each PR-checks job's timing by name over the shown days: each job series of
+// pr-ci's parts, folded per day and over the shown days.
+func jobTimings(parts []DayPart, days []string) map[string]Timing {
+	bySeries := jobSeries(parts)
 	timings := make(map[string]Timing, len(bySeries))
 	for series, jobParts := range bySeries {
 		timings[strings.TrimPrefix(series, JobSeriesPrefix)] = timingByDay(jobParts, days, func(parts []DayPart) Cell { return cellOf(parts, series) })
@@ -346,9 +367,9 @@ func jobTimings(parts []DayPart, days []string) map[string]Timing {
 
 // FoldSlowestJobs is pr-ci's ranking of its jobs over parts (pipeline.py:137-142), the one ranking
 // both the Pipeline's slowest-jobs table, its first SlowestJobs (PRChecksTimings), and pr-ci's
-// items sorted by median read: every job with minResults timed results over the shown days, the
-// job series' min_n, and at least one, by its median over those days, slowest first, then by
-// name, each with its cell of every shown day; never nil.
+// items sorted by median read (SlowestJobTotals): every job with minResults timed results over the
+// shown days, the job series' min_n, and at least one, by its median over those days, slowest
+// first, then by name (slowerJob), each with its cell of every shown day; never nil.
 func FoldSlowestJobs(parts []DayPart, days []string, minResults int) []JobTiming {
 	slowest := []JobTiming{}
 	for name, timing := range jobTimings(parts, days) {
@@ -358,14 +379,40 @@ func FoldSlowestJobs(parts []DayPart, days []string, minResults int) []JobTiming
 			slowest = append(slowest, JobTiming{Name: name, Timing: timing})
 		}
 	}
-	slices.SortFunc(slowest, func(a, b JobTiming) int {
-		// A ranked job has a timed result, so its median is set.
-		if c := cmp.Compare(*b.Total.MedianMinutes, *a.Total.MedianMinutes); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.Name, b.Name)
-	})
+	slices.SortFunc(slowest, func(a, b JobTiming) int { return slowerJob(a.Name, a.Total, b.Name, b.Total) })
 	return slowest
+}
+
+// JobCell is one job's cell over the shown days, as SlowestJobTotals ranks it.
+type JobCell struct {
+	Name string
+	Cell Cell
+}
+
+// SlowestJobTotals is FoldSlowestJobs' ranking with each job's cell over the shown days alone, its
+// Total, and no day's: pr-ci's items sorted by median list each ranked job's cell over the range
+// (api's jobItemRows), and a fold of each of the range's days apart, which FoldSlowestJobs makes
+// for the Pipeline's days, was most of that read's fold. Each total folds the parts
+// FoldSlowestJobs' does, in its order (foldShown), so the two answer one cell; never nil.
+func SlowestJobTotals(parts []DayPart, days []string, minResults int) []JobCell {
+	slowest := []JobCell{}
+	for series, jobParts := range jobSeries(parts) {
+		total := foldShown(jobParts, days, func(parts []DayPart) Cell { return cellOf(parts, series) })
+		if total.N >= max(minResults, 1) {
+			slowest = append(slowest, JobCell{Name: strings.TrimPrefix(series, JobSeriesPrefix), Cell: total})
+		}
+	}
+	slices.SortFunc(slowest, func(a, b JobCell) int { return slowerJob(a.Name, a.Cell, b.Name, b.Cell) })
+	return slowest
+}
+
+// slowerJob orders two ranked jobs, each with a timed result and so a median: the slower median
+// first, then by name.
+func slowerJob(aName string, a Cell, bName string, b Cell) int {
+	if c := cmp.Compare(*b.MedianMinutes, *a.MedianMinutes); c != 0 {
+		return c
+	}
+	return cmp.Compare(aName, bName)
 }
 
 // prChecksParts is pr-ci's parts of each shown day, built from the runs started on it.
