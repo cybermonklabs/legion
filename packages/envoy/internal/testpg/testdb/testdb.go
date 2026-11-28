@@ -139,16 +139,32 @@ func otherPairs(rawQuery string, names ...string) []string {
 // A shorter connect_timeout in the URL would make the test depend on load again, so it is
 // replaced. Where t names no deadline (ConnectEnd says which callers) it is
 // NoDeadlineConnectTimeout, two minutes. Every other pair of the query is kept byte for byte
-// (otherPairs), as databaseURL keeps them, so an options pair still connects. A failure prints
-// only what url.Parse wraps, since the URL carries a credential.
+// (otherPairs), as databaseURL keeps them, so an options pair still connects. It is WithConnectEnd
+// with t's ConnectEnd, and fails t with WithConnectEnd's error, which prints only what url.Parse
+// wraps, since the URL carries a credential.
 func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	t.Helper()
+	end, bounded := ConnectEnd(t)
+	bound, err := WithConnectEnd(databaseURL, end, bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bound
+}
+
+// WithConnectEnd is WithConnectDeadline for a caller that has no t, such as a TestMain, which
+// names the end its connects must end by instead (testwait.MainGiveUpAt): it returns databaseURL
+// with connect_timeout set to the whole seconds left until end (TimeoutUntil), or to
+// NoDeadlineConnectTimeout without bounded, in place of any connect_timeout the URL names, and
+// keeps every other pair of the query byte for byte. Its error carries only what url.Parse wraps,
+// never the URL, which carries a credential.
+func WithConnectEnd(databaseURL string, end time.Time, bounded bool) (string, error) {
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse the URL of the test database: %v", errors.Unwrap(err))
+		return "", fmt.Errorf("parse the URL of the test database: %w", errors.Unwrap(err))
 	}
-	parsed.RawQuery = strings.Join(append(otherPairs(parsed.RawQuery, "connect_timeout"), "connect_timeout="+connectTimeout(t)), "&")
-	return parsed.String()
+	parsed.RawQuery = strings.Join(append(otherPairs(parsed.RawQuery, "connect_timeout"), "connect_timeout="+connectTimeout(end, bounded)), "&")
+	return parsed.String(), nil
 }
 
 // serverKey is adminURL without its connect_timeout pairs, the server and query a test names apart
@@ -163,10 +179,9 @@ func serverKey(adminURL string) string {
 	return parsed.String()
 }
 
-// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds
-// (TimeoutUntil of ConnectEnd), and NoDeadlineConnectTimeout where t names no deadline.
-func connectTimeout(t testing.TB) string {
-	end, bounded := ConnectEnd(t)
+// connectTimeout is the connect_timeout WithConnectEnd sets for end, in whole seconds
+// (TimeoutUntil), and NoDeadlineConnectTimeout without bounded.
+func connectTimeout(end time.Time, bounded bool) string {
 	if !bounded {
 		return strconv.FormatInt(int64(NoDeadlineConnectTimeout/time.Second), 10)
 	}

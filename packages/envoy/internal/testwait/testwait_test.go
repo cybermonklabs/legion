@@ -243,7 +243,7 @@ func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	if ok != bounded || ok && fromFlag.After(end) {
 		t.Fatalf("a wait in a testing.TB without Deadline gives up at %v (%t), want no later than %v (%t)", fromFlag, ok, end, bounded)
 	}
-	if inMain, ok := mainGiveUpAt(); ok != bounded || !inMain.Equal(fromFlag) {
+	if inMain, ok := MainGiveUpAt(); ok != bounded || !inMain.Equal(fromFlag) {
 		t.Fatalf("a wait in TestMain gives up at %v (%t), want where a testing.TB without Deadline does, %v (%t)", inMain, ok, fromFlag, bounded)
 	}
 }
@@ -474,7 +474,7 @@ func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 // reading, which the parent finds no line for, and the count row fails. Every later wait but the
 // last then begins at the margin, a wait in a cleanup included, and asks once, and a row reads that
 // each timer they armed was for the margin or before it (ReceiveInHelper's is TestMain's moment,
-// mainGiveUpAt, which is no later), fired once its wait waited on it, and had its tick taken, so
+// MainGiveUpAt, which is no later), fired once its wait waited on it, and had its tick taken, so
 // no wait waited for a later moment of its own. Eventually, which gives up a second before the
 // deadline, is not among them. The last wait runs in a testing/synctest bubble (Bubble), whose
 // clock the child moves its stepClock to. It runs only when the parent re-executes this binary.
@@ -860,7 +860,7 @@ func TestNoDeadlineChild(t *testing.T) {
 	if end, ok := GiveUpAt(noDeadline{t}); ok {
 		t.Errorf("under -timeout 0 a wait in a testing.TB without Deadline gives up at %v, want never", end)
 	}
-	if end, ok := mainGiveUpAt(); ok {
+	if end, ok := MainGiveUpAt(); ok {
 		t.Errorf("under -timeout 0 a wait in TestMain gives up at %v, want never", end)
 	}
 	expired, stop := expiry(t)
