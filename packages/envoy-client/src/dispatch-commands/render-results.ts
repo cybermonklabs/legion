@@ -132,8 +132,8 @@ function commitStandsText(stands: CheckResult["commit_stands"], asOf: string | u
 }
 
 /** R4's other fact: whether the check's words moved after the result was recorded. Both versions
- *  are named either way, because they are the handles a reader reads the two wordings with. At a
- *  cut (`asOf`) the fact and the check's version are left out where no index holds the version. */
+ *  are named either way, because they are the handles a reader reads the two wordings with. At
+ *  every cut (`asOf`) the server leaves out the fact, the check's version and its digest. */
 function checkWordsText(check: CheckBlock, result: CheckResult, asOf: string | undefined): string {
   const version: number | undefined = check.version;
   const versions = `result version ${result.check_version}, check version ${orLeftOut(version, asOf)}`;

@@ -1081,10 +1081,12 @@ func checkBlocksOfRendering(artifactID, markdown string, texts map[string]string
 	return checks, nil
 }
 
-// checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
-// digest filled in. The reference is built from the document's own slug, which is a property of
-// the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
+// checkBlocksOf is checkBlocksIn with each block's reference and issue filled in (addressChecks),
+// and from the block index the version its words last changed in and their digest. A check that
+// the index does not hold keeps neither. The reference is built from the document's own slug,
+// which is a property of the artifacts row and not of a block row, so a Verification document
+// whose blocks the index does not hold yet still answers a reference every check can be
+// addressed by.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
 	if err != nil {
@@ -1112,14 +1114,18 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
-	addressChecks(checks, artifact, indexed)
+	for index := range checks {
+		if block, ok := indexed[checks[index].BlockID]; ok {
+			checks[index].Version, checks[index].SHA256 = block.Version, block.SHA256
+		}
+	}
+	addressChecks(checks, artifact)
 	return checks, nil
 }
 
-// addressChecks fills in each of checks, the check blocks of artifact, its issue, its reference,
-// and from indexed, what the block index holds of each check by block id, the version its words
-// last changed in and their digest. A check that indexed does not hold keeps neither.
-func addressChecks(checks []model.CheckBlock, artifact model.Artifact, indexed map[string]model.CheckBlock) {
+// addressChecks fills in each of checks, the check blocks of artifact, its issue and its
+// reference.
+func addressChecks(checks []model.CheckBlock, artifact model.Artifact) {
 	issueKey := ""
 	if artifact.IssueKey != nil {
 		issueKey = *artifact.IssueKey
@@ -1129,9 +1135,6 @@ func addressChecks(checks []model.CheckBlock, artifact model.Artifact, indexed m
 		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
 			Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: checks[index].BlockID,
 		})
-		if block, ok := indexed[checks[index].BlockID]; ok {
-			checks[index].Version, checks[index].SHA256 = block.Version, block.SHA256
-		}
 	}
 }
 

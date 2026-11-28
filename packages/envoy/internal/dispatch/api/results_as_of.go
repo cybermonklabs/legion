@@ -30,9 +30,9 @@ func refuseResultsCommitAtCut(w http.ResponseWriter, r *http.Request) bool {
 // version at the cut of artifact, the Verification document, parsed as the present read parses
 // the live text (checkBlocksOfRendering), with its issue and its reference. The text of a check's
 // tree is the text that the index recorded, as the present read takes it from the live text. It
-// reads no check's version or digest (reason E). The block index of a version can be written
-// after the version is saved: a write defers it (docs' IndexDocumentReferences), and the
-// reconciliation re-indexes a version in place. No record gives the time of that write, so no
+// reads and fills in no check's version or digest (reason E). The block index of a version can
+// be written after the version is saved: a write defers it (docs' IndexDocumentReferences), and
+// the reconciliation re-indexes a version in place. No record gives the time of that write, so no
 // record gives what the index held at the cut, and the answer leaves both out (checksAtTheCut).
 // One batch reads the version and what the index recorded of its blocks, and nothing is read
 // from the live document.
@@ -48,7 +48,7 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 	if len(checks) == 0 {
 		return []model.CheckBlock{}, nil
 	}
-	addressChecks(checks, artifact, nil)
+	addressChecks(checks, artifact)
 	return checks, nil
 }
 

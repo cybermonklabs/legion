@@ -42,10 +42,10 @@ func (s *server) newestEventIDAtTheCut(ctx context.Context) (int64, error) {
 //   - of each ask event, referenced_by_count: the reference graph gives it now, and keeps no
 //     history (reason G). A read at a cut reads no count (queueAskDetails);
 //   - of each event of an ask, the revision of its parts, the id of each option and the id of the
-//     answer (reason P): at no cut the read adds them to the payload from the present ask_blocks
-//     (attachAskEventFields), which a read at a cut does not read (queueAskDetails). No writer
-//     stores them in an ask's events, so no record gives them at the cut. An event's own wording
-//     is the payload its write stored, so the answer gives it;
+//     answer (reason P, leaveOutAskParts): at no cut the read adds them to the payload from the
+//     present ask_blocks (attachAskEventFields), which a read at a cut does not read
+//     (queueAskDetails). An event's own wording is the payload its write stored, so the answer
+//     gives it;
 //   - of each event of a comment or a message that its author deleted after the cut, the body,
 //     which attachPostMarks took out with the present delete of the post (reason T, decision 14).
 //     An event of a post deleted at or before the cut gave no body at the cut either, so nothing

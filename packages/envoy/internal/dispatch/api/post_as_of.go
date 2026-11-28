@@ -206,12 +206,12 @@ func messagesAtTheCut(ctx context.Context, reads []messageRead, at func(index in
 // follows the cut: the block index keeps no state of the blocks with its time, and the
 // block-index reconciliation rewrites them with no event, dating what it writes from the post's
 // own last edit (refs.IndexOwedItemBlocks), so a re-index after the cut of a post that no event
-// changed after it reads as written before the cut. Nor does any record give a part of an ask:
-// no writer stores an ask's revision or part ids in its events (reason P). The tree is read from
-// the text the index holds now, so it goes out with the text. The block of a post deleted at any
-// time reads removed with no text, as the post reads deleted at the cut (decision 14), and nothing
-// of it is left out. The block's node, id and reference are the reply's own, which no write
-// changes, and its post's edit time and delete mark are the shadow's.
+// changed after it reads as written before the cut. Nor does any record give a part of an ask
+// (reason P, leaveOutAskParts). The tree is read from the text the index holds now, so it goes
+// out with the text. The block of a post deleted at any time reads removed with no text, as the
+// post reads deleted at the cut (decision 14), and nothing of it is left out. The block's node,
+// id and reference are the reply's own, which no write changes, and its post's edit time and
+// delete mark are the shadow's.
 func replyBlocksAtTheCut(ctx context.Context, blocks []*model.ReplyBlock, at func(index int) string, trees bool) {
 	for index, block := range blocks {
 		if block == nil || block.DeletedAt != nil {

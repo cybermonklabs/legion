@@ -20,7 +20,7 @@ import (
 // reach and the holder's liveness, which only the route roster gives, now; it leaves out its
 // design gates and its backlink count, which keep no history; and both its open asks, the one
 // answered after the cut and the one that did not change, leave out their revision and their
-// options' part ids, which the present tables give now and no writer stores in an ask's events.
+// options' part ids, which the present tables give now (reason P, leaveOutAskParts).
 // Progress counts the task items of the spec's version at the cut, not those of the version a
 // write after the cut stored a count for (decision 9). The present read gives every one of those
 // members, so the test cannot pass on an answer that leaves out nothing. A refusal at the cut, of

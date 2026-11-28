@@ -22,7 +22,7 @@
 -- and asof.TestTheShadowsUseTheirIndexes reads the plan.
 --
 -- Why `created_at is not null`. Every read of this index compares created_at with a cut (the asks
--- shadow's `created_at <= cut`, asof.AsksChangedAfterStatement's `created_at > $2`), which
+-- shadow's `created_at <= cut`, asof.AsksWordingUnknownStatement's `created_at > $2`), which
 -- implies it, since the comparison is strict. A present read of an ask's events names no time, so
 -- it cannot take this index, and its plan stays the plan it had before this index. With the type
 -- list alone, three present reads (the edits and answers of an issue's asks and of one ask, and an

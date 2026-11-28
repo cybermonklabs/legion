@@ -182,32 +182,6 @@ func replyBlockIn(t *testing.T, doc any, id, blockID string) (string, map[string
 	return pointerJoin(posts[0].path, "reply_block"), block
 }
 
-// shownAskParts is an ask's part state as an answer shows it: its revision, the part id of each of
-// its options and the part id of its answer, 0 and "" where the answer shows none.
-type shownAskParts struct {
-	revision int
-	options  []string
-	answer   string
-}
-
-// partsShownBy is the part state that ask, an ask object of a decoded answer, shows.
-func partsShownBy(ask map[string]any) shownAskParts {
-	var parts shownAskParts
-	if revision, given := ask["revision"]; given {
-		parts.revision, _ = strconv.Atoi(fmt.Sprint(revision))
-	}
-	options, _ := ask["options"].([]any)
-	for _, element := range options {
-		option, _ := element.(map[string]any)
-		id, _ := option["id"].(string)
-		parts.options = append(parts.options, id)
-	}
-	if answer, _ := ask["answer"].(map[string]any); answer != nil {
-		parts.answer, _ = answer["id"].(string)
-	}
-	return parts
-}
-
 // requireAskPartsNow fails t unless the present read of ask id gives its revision and the part id
 // of each of its options and of its answer: an answer at a cut that leaves them out then leaves
 // out what the present gives.
@@ -220,9 +194,21 @@ func requireAskPartsNow(t *testing.T, handler http.Handler, id string) {
 	}
 	read, _ := decodeAnswer(t, target, response).(map[string]any)
 	ask, _ := read["ask"].(map[string]any)
-	parts := partsShownBy(ask)
-	if _, answered := ask["answer"].(map[string]any); parts.revision <= 0 || slices.Contains(parts.options, "") || answered && parts.answer == "" {
-		t.Fatalf("the present read of ask %s shows the parts %+v, want its revision and each part id: %s", id, parts, abbreviateValue(ask))
+	revision, _ := strconv.Atoi(fmt.Sprint(ask["revision"]))
+	shown := revision > 0
+	options, _ := ask["options"].([]any)
+	for _, element := range options {
+		option, _ := element.(map[string]any)
+		part, _ := option["id"].(string)
+		shown = shown && part != ""
+	}
+	if answer, answered := ask["answer"].(map[string]any); answered {
+		part, _ := answer["id"].(string)
+		shown = shown && part != ""
+	}
+	if !shown {
+		t.Fatalf("the present read of ask %s does not show its revision and each part id: %s",
+			id, abbreviateValue(ask))
 	}
 }
 
@@ -801,14 +787,14 @@ func TestAnAnswersPollWithASinceAfterTheCutAnswersNothing(t *testing.T) {
 }
 
 // TestAReplyBlockAtACutIsLeftOut: no record gives at a cut the block a reply names. The block
-// index keeps no record of the blocks of a comment or a message at the cut, and no writer stores
-// an ask's revision or part ids in its events, so no record gives a part of an ask either, whether
-// or not the ask changed after the cut (one ask answered after it, one not). So every route that
-// shows a reply to such a block leaves out the block's text and whether it is removed, and names
-// both absent (reason E), for a comment or a message edited after the cut and for a comment that
-// was not. A read with display trees leaves out the tree of that text too, and names it absent,
-// so no word written after the cut reaches the answer through the tree; a read with none gives no
-// tree and names none. The block's node and id are the reply's own, and are given.
+// index keeps no record of the blocks of a comment or a message at the cut, and no record gives a
+// part of an ask either (reason P, leaveOutAskParts), whether or not the ask changed after the
+// cut (one ask answered after it, one not). So every route that shows a reply to such a block
+// leaves out the block's text and whether it is removed, and names both absent (reason E), for a
+// comment or a message edited after the cut and for a comment that was not. A read with display
+// trees leaves out the tree of that text too, and names it absent, so no word written after the
+// cut reaches the answer through the tree; a read with none gives no tree and names none. The
+// block's node and id are the reply's own, and are given.
 func TestAReplyBlockAtACutIsLeftOut(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOB")
 	handler := world.handler
@@ -1017,15 +1003,15 @@ func TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt(t *testing.T) {
 }
 
 // TestAnAsksPartsAreLeftOutAtEveryCut: an ask's revision and the part ids of its options and of
-// its answer come from the block index now, and no writer stores them in an ask's events, so no
-// record gives them at a cut. An answer at a cut leaves them out and names them absent (reason P)
-// for every ask, also for one that did not change after the cut: an ask with options, one with no
-// option, and one answered before the cut. Each route that gives the ask leaves them out (its own
-// read, the issue's ask list, the issue read's open asks and the inbox), and so does each of its
-// events in the issue's event log, whose payloads the read fills with the present parts. So is
-// the text of the block of a reply to one of its parts, whether the block is removed and, with
-// display trees, the text's tree. The present read gives each ask's parts (requireAskPartsNow).
-// No write changed a wording with no event, so each ask's read gives its wording.
+// its answer come from the block index now, and no record gives them at a cut. An answer at a cut
+// leaves them out and names them absent (reason P, leaveOutAskParts) for every ask, also for one
+// that did not change after the cut: an ask with options, one with no option, and one answered
+// before the cut. Each route that gives the ask leaves them out (its own read, the issue's ask
+// list, the issue read's open asks and the inbox), and so does each of its events in the issue's
+// event log, whose payloads the read fills with the present parts. So is the text of the block of
+// a reply to one of its parts, whether the block is removed and, with display trees, the text's
+// tree. The present read gives each ask's parts (requireAskPartsNow). No write changed a wording
+// with no event, so each ask's read gives its wording.
 func TestAnAsksPartsAreLeftOutAtEveryCut(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOK")
 	handler := world.handler

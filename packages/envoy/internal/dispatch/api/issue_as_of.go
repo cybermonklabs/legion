@@ -177,8 +177,8 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 // place at(index) names in the answer (decision 5):
 //   - referenced_by_count, which the reference graph gives now (reason G);
 //   - revision, each option's id and the answer's id, the ask's parts as the present tables hold
-//     them (reason P), of every ask: no writer stores them in an ask's events, so no record gives
-//     them at the cut. A read at a cut reads none of them (queueAskDetails, attachAskReadFields);
+//     them, of every ask (reason P, leaveOutAskParts). A read at a cut reads none of them
+//     (queueAskDetails, attachAskReadFields);
 //   - the question, the options, multiple and the urgency, and the question's tree where the
 //     answer carries display trees (trees), for an ask whose wording at the cut no record gives:
 //     a restore changed it with no event, at a time no record gives (reason E,

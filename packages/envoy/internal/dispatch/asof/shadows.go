@@ -263,7 +263,7 @@ var MachineryTables = map[string]string{
 var CutReadTables = map[string]string{
 	"ask_block_texts": "Only the texts of the parts that a meaning hit covers, of an ask whose text did not change after the cut.",
 	"ask_blocks": "Only the node and the id of the part that a reply names, which the reply's own row names: " +
-		"no writer stores an ask's part ids in its events, so an answer leaves out the part ids of every ask, " +
+		"an answer leaves out the part ids of every ask (reason P, api's leaveOutAskParts), " +
 		"and the text of each part that a reply names, and whether it is removed.",
 	"comment_block_texts": "Only the texts of the blocks that a meaning hit covers, of a comment whose text did not change after the cut.",
 	"comment_blocks": "Only the node and the id of the block that a reply names, which the reply's own row names, " +
