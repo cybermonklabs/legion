@@ -70,17 +70,17 @@ read_other_cluster() {
   # The writes of a binding or a role in each namespace that holds a RoleBinding are reviewed
   # beside the guard rights, and live_named reads the rules that limit any of them by name from
   # this cluster's own roles; step-rbac.sh says why.
-  guard_rights="$(with_rights "$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$POWER_RIGHTS")" "$BINDING_RIGHTS")"
+  join_rights guard_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS" "$ADMISSION_RIGHTS" "$POWER_RIGHTS" "$BINDING_RIGHTS"
   # A cluster that is no GKE cluster runs kube-controller-manager's own approver of kubelet client
   # certificates (NODE_CLIENT_RIGHTS).
-  [ "$groups_mode" != own ] || guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"
+  [ "$groups_mode" != own ] || join_rights guard_rights "$guard_rights" "$NODE_CLIENT_RIGHTS"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
   [ "$accounts" -gt 0 ] ||
     unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces, though every cluster has default/default, so its list cannot be read as whole"
   if [ "$((accounts + BOUND))" -eq 0 ]; then
     unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject to review, so there is no principal to review"
-  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then
+  elif ! review "$KUBE" "$WORK/principals.rec" "$guard_rights"; then
     unknown "$cstep" "$REVIEW_ERROR"
   elif judge_reviews "$cstep" "$where" "$principal"; then
     live_named "$KUBE" "$cstep" "$where" "$principal" "$guard_rights"
@@ -101,8 +101,11 @@ if [ "$CLUSTERS_LISTED" != true ]; then
 else
   [ "$CLUSTERS_COMPLETE" = true ] ||
     unknown "$step" "the project's cluster list is incomplete (live: clusters), so a cluster it leaves out is not read"
-  if [ "$CLUSTERS_COMPLETE" = true ] && [ "$OPERATOR_FOUND" = true ] && [ "$(wc -l <"$WORK/clusters.tsv")" -eq 1 ]; then
-    pass "$step" "the project runs the operator's cluster $CLUSTER alone"
+  if [ "$CLUSTERS_COMPLETE" = true ] && [ "$OPERATOR_FOUND" = true ]; then
+    # The list's lines, counted by the shell as `wc -l` counts them: each that ends in a line break.
+    cluster_lines=0
+    while IFS= read -r _; do cluster_lines=$((cluster_lines + 1)); done <"$WORK/clusters.tsv"
+    [ "$cluster_lines" -ne 1 ] || pass "$step" "the project runs the operator's cluster $CLUSTER alone"
   fi
   while IFS=$'\t' read -r -u 5 cluster location; do
     label="$PROJECT/$location/$cluster"

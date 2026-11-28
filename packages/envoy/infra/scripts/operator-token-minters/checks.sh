@@ -104,23 +104,18 @@ iam_verdict() {
     dm) NOTE="$NOTE, by which Deployment Manager creates a deployment's resources as the project's Google APIs service agent, which holds roles/editor there" ;;
   esac
 }
-# held_text CHECK PERMISSIONS_CSV: the check's permissions among PERMISSIONS, in the check's order.
-held_text() {
-  local permission out=""
+# held CHECK PERMISSIONS_CSV: sets HELD_TEXT to the check's permissions among PERMISSIONS, in the
+# check's order, and HELD_LIST to the same separated by $US, for the report; where the answer names
+# none of them, each holds every permission the check asks about. The shell sets them, so a
+# finding's text starts no process.
+held() {
+  local permission
+  HELD_TEXT="" HELD_LIST=""
   for permission in ${CHECK_PERMS[$1]}; do
-    case ",$2," in *",$permission,"*) out="${out:+$out, }$permission" ;; esac
+    case ",$2," in *",$permission,"*) HELD_TEXT="${HELD_TEXT:+$HELD_TEXT, }$permission" HELD_LIST="${HELD_LIST:+$HELD_LIST$US}$permission" ;; esac
   done
-  printf '%s' "${out:-a permission of ${CHECK_PERMS[$1]// /, }}"
-}
-# held_list CHECK PERMISSIONS_CSV: the same, separated by $US, for the report: every permission the
-# check asks about where the answer names none of them.
-held_list() {
-  local permission out=""
-  for permission in ${CHECK_PERMS[$1]}; do
-    case ",$2," in *",$permission,"*) out="${out:+$out$US}$permission" ;; esac
-  done
-  [ -n "$out" ] || out="${CHECK_PERMS[$1]// /$US}"
-  printf '%s' "$out"
+  [ -n "$HELD_TEXT" ] || HELD_TEXT="a permission of ${CHECK_PERMS[$1]// /, }"
+  [ -n "$HELD_LIST" ] || HELD_LIST="${CHECK_PERMS[$1]// /$US}"
 }
 
 # --- Roles. ---

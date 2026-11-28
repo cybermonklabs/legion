@@ -103,10 +103,14 @@ if [ -n "$POOL_PROJECT" ] && [ "$POOL_PROJECT" != "$PROJECT" ]; then
   fi
 fi
 
+# kube_file NAME: sets KUBE to $WORK/kube/NAME, each byte of NAME outside A-Za-z0-9._- made _ in the
+# C locale, as `tr -c 'A-Za-z0-9._-' '_'` makes it, with no process.
+kube_file() { local LC_ALL=C; KUBE="$WORK/kube/${1//[^A-Za-z0-9._-]/_}"; }
 # kube_for NAME LOCATION PROJECT: sets KUBE to a kubeconfig of this run's own for the GKE cluster;
 # returns 1 with KUBE_ERROR. The caller's own kubeconfig is never read or written.
 kube_for() {
-  KUBE="$WORK/kube/$(printf 'gke_%s_%s_%s' "$3" "$2" "$1" | tr -c 'A-Za-z0-9._-' '_')" KUBE_ERROR=""
+  kube_file "gke_${3}_${2}_${1}"
+  KUBE_ERROR=""
   if ! have kubectl; then
     KUBE_ERROR="kubectl is not on PATH"
     return 1
@@ -139,7 +143,8 @@ groups_config_of() {
 # kube_for_membership ID LOCATION: the same for a member of the pool project's fleet that is no GKE
 # cluster, through the Connect gateway.
 kube_for_membership() {
-  KUBE="$WORK/kube/$(printf 'membership_%s_%s' "$2" "$1" | tr -c 'A-Za-z0-9._-' '_')" KUBE_ERROR=""
+  kube_file "membership_${2}_${1}"
+  KUBE_ERROR=""
   if ! have kubectl; then
     KUBE_ERROR="kubectl is not on PATH"
     return 1

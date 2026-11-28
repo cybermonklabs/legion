@@ -64,10 +64,21 @@
 # policies' and bindings' create, update and patch are among the admission rights, and their delete
 # and deletecollection are asked beside them once the fence is credited (FENCE_WRITE_RIGHTS).
 
-FENCE_CONTRACT="$(jq -c . "$LIB/broker-fence.json")"
-IFS=$'\t' read -r FENCE_NS FENCE_ACCOUNT FENCE_PREFIX < <(jq -r '[.namespace, .account, .prefix] | @tsv' <<<"$FENCE_CONTRACT")
+# The contract (compact), its namespace, account and prefix, its policies' names and the fence's own
+# writes (FENCE_WRITE_RIGHTS), a line each from one jq.
+{
+  IFS= read -r FENCE_CONTRACT
+  IFS=$'\t' read -r FENCE_NS FENCE_ACCOUNT FENCE_PREFIX
+  IFS= read -r FENCE_POLICIES
+  IFS= read -r FENCE_WRITE_RIGHTS
+} < <(jq -r -c '., ([.namespace, .account, .prefix] | @tsv),
+  ([.objects[] | select(.kind == "ValidatingAdmissionPolicy") | .name] | join(", ")),
+  [("validatingadmissionpolicies", "validatingadmissionpolicybindings") as $res
+   | ("delete", "deletecollection")
+   | {verb: ., group: "admissionregistration.k8s.io", resource: $res, sub: "", ns: "", name: "", why: "which removes the broker'"'"'s pod fence",
+      label: "\(.) \($res).admissionregistration.k8s.io cluster-wide, which removes the broker'"'"'s pod fence"}
+   | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$LIB/broker-fence.json")
 FENCE_PAIR="$FENCE_NS/$FENCE_ACCOUNT"
-FENCE_POLICIES="$(jq -r '[.objects[] | select(.kind == "ValidatingAdmissionPolicy") | .name] | join(", ")' <<<"$FENCE_CONTRACT")"
 # FENCE_GUARDED: whether the fence's pair is guarded, without which it is never read. FENCE_DIRECT:
 # whether it is the one guarded pair in its namespace (fence_refuses).
 FENCE_GUARDED=false FENCE_DIRECT=true
@@ -91,11 +102,6 @@ FENCE_DECLARED="" FENCE_DECLARED_WHY="the renders were not read" FENCE_CREDITED=
 # held until the live step reads the cluster's fence (fence_settle); CODE_PASS: the code step's PASS
 # sentence while it waits on them.
 CODE_PENDING=() CODE_PASS=""
-FENCE_WRITE_RIGHTS="$(jq -n -c '[("validatingadmissionpolicies", "validatingadmissionpolicybindings") as $res
-  | ("delete", "deletecollection")
-  | {verb: ., group: "admissionregistration.k8s.io", resource: $res, sub: "", ns: "", name: "", why: "which removes the broker'"'"'s pod fence",
-     label: "\(.) \($res).admissionregistration.k8s.io cluster-wide, which removes the broker'"'"'s pod fence"}
-  | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
 
 # no_credit STEP WHY: the fence is not credited, so what it would refuse stays a finding; printed once.
 no_credit() {
@@ -106,49 +112,56 @@ no_credit() {
 }
 # fence_json: the fence fence_fields reads ({namespace, account, direct}).
 fence_json() { jq -c --argjson direct "$FENCE_DIRECT" '{namespace, account, direct: $direct}' <<<"$FENCE_CONTRACT"; }
-# fence_spec_digest FILE KIND NAME: the sha256 of the canonical spec of fence_read's object KIND NAME
-# in FILE, its keys sorted (jq -S), as broker-fence.json writes a digest.
+# fence_spec_digest FILE KIND NAME: sets SPEC_DIGEST to the sha256 of the canonical spec of
+# fence_read's object KIND NAME in FILE, its keys sorted (jq -S), as broker-fence.json writes a
+# digest. The shell takes the hash from sha256sum's line (its first field, as `cut -d' ' -f1`
+# takes it), and a hash of what jq printed is the digest whatever jq's status, as before.
 fence_spec_digest() {
-  echo "sha256:$(jq -S -c --arg kind "$2" --arg name "$3" '.objects[] | select(.kind == $kind and .name == $name) | .spec' "$1" |
-    sha256sum | cut -d' ' -f1)"
+  local sum
+  sum="$(jq -S -c --arg kind "$2" --arg name "$3" '.objects[] | select(.kind == $kind and .name == $name) | .spec' "$1" | sha256sum)" || true
+  SPEC_DIGEST="sha256:${sum%% *}"
 }
 # fence_verdict FILE WHERE: fence_read's answer in FILE judged; sets FENCE_DIGEST, the sha256 of the
 # canonical policies and bindings (fence_digest, the version the report names), when they are the
 # reviewed fence, each object the contract holds by a digest hashing to it, else FENCE_WHY, naming
 # WHERE.
 fence_verdict() {
-  local kind name want digest why=""
+  local kind name want digest why="" sum
   FENCE_DIGEST="" FENCE_WHY=""
   case "$(jq -r .state "$1")" in
     read)
       while IFS=$'\t' read -r kind name want; do
-        digest="$(fence_spec_digest "$1" "$kind" "$name")"
+        fence_spec_digest "$1" "$kind" "$name"
+        digest="$SPEC_DIGEST"
         [ "$digest" = "$want" ] || why="${why:+$why; }the $kind $name's rules hash to $digest, not to the reviewed $want"
       done < <(jq -r '.objects[] | select(.digest != "") | [.kind, .name, .digest] | @tsv' "$1")
       if [ -n "$why" ]; then
         FENCE_WHY="in $2, $why"
       else
-        FENCE_DIGEST="sha256:$(jq -c -L "$LIB" 'include "broker-fence"; fence_digest' "$1" | jq -S -c . | sha256sum | cut -d' ' -f1)"
+        # One jq, its keys sorted at its output (jq -S), prints what a second `jq -S -c .` of it would.
+        sum="$(jq -S -c -L "$LIB" 'include "broker-fence"; fence_digest' "$1" | sha256sum)"
+        FENCE_DIGEST="sha256:${sum%% *}"
       fi
       ;;
     absent) FENCE_WHY="$2 hold none of its policies and bindings" ;;
     *) FENCE_WHY="$(jq -r --arg where "$2" '"in \($where), " + ([.objects[] | select(.state != "read") | "the \(.kind) \(.name) \(.why)"] | join("; "))' "$1")" ;;
   esac
 }
-# fence_declared: the renders' fence (the code step reads them; a render that is not JSON is that
-# step's UNKNOWN), into FENCE_DECLARED or FENCE_DECLARED_WHY.
+# fence_declared: the renders' fence (the code step reads them, with renders_jq; a render that is not
+# JSON is that step's UNKNOWN), into FENCE_DECLARED or FENCE_DECLARED_WHY.
 fence_declared() {
   [ "$FENCE_GUARDED" = true ] || return 0
-  if ! cat -- "${RBAC_RENDERS[@]}" | jq -c -n -L "$LIB" --argjson contract "$FENCE_CONTRACT" \
-    'include "rec"; include "broker-fence"; [inputs | objs] | fence_read($contract)' >"$WORK/fence-declared.json" 2>"$WORK/fence-declared.err"; then
+  if ! renders_jq "$WORK/fence-declared.err" -c -n -L "$LIB" --argjson contract "$FENCE_CONTRACT" \
+    'include "rec"; include "broker-fence"; [inputs | objs] | fence_read($contract)' >"$WORK/fence-declared.json"; then
     FENCE_DECLARED_WHY="the renders could not be read for it: $(first_line "$WORK/fence-declared.err")"
     return 0
   fi
   fence_verdict "$WORK/fence-declared.json" "the renders"
   FENCE_DECLARED="$FENCE_DIGEST" FENCE_DECLARED_WHY="$FENCE_WHY"
 }
-# fence_declared_json: the fence code-rbac.jq reads in the code step: the declared one, or null.
-fence_declared_json() { if [ -n "$FENCE_DECLARED" ]; then fence_json; else echo null; fi; }
+# fence_declared_json: sets FENCE_DECLARED_JSON to the fence code-rbac.jq reads in the code step: the
+# declared one (fence_json), or null, which starts no process.
+fence_declared_json() { FENCE_DECLARED_JSON=null; [ -z "$FENCE_DECLARED" ] || FENCE_DECLARED_JSON="$(fence_json)" || true; }
 # fence_live KUBECONFIG STEP: on the operator's cluster, after admission_rights read its discovery,
 # admission_power its webhooks (WEBHOOK_SERVICES) and the token Secrets of the guarded namespaces
 # were listed: sets FENCE_CREDITED, the fence fence_json writes with the declared and live digests,
@@ -225,11 +238,20 @@ fence_live() {
     no_credit "$step" "a webhook calls a Service in $FENCE_NS, whose pods the fence does not keep anyone from entering: $backends"
     return 0
   fi
-  FENCE_CREDITED="$(fence_json | jq -c --arg declared "$FENCE_DECLARED" --arg live "$FENCE_DIGEST" --slurpfile read "$WORK/fence-live.json" \
+  # fence_json's object, made by the same jq that adds the rest to it, from the contract on stdin.
+  FENCE_CREDITED="$(jq -c --argjson direct "$FENCE_DIRECT" --arg declared "$FENCE_DECLARED" --arg live "$FENCE_DIGEST" --slurpfile read "$WORK/fence-live.json" \
     --argjson contract "$FENCE_CONTRACT" '
-    . + {declared: $declared, live: $live, residual: $contract.residual,
+    {namespace, account, direct: $direct} + {declared: $declared, live: $live, residual: $contract.residual,
          versions: ([$read[0].objects[] | {name, v: "\(.kind) \(.name) generation \(.generation) resourceVersion \(.resourceVersion)"}]
-           | group_by(.name) | map({(.[0].name): (map(.v) | join("; "))}) | add)}')"
+           | group_by(.name) | map({(.[0].name): (map(.v) | join("; "))}) | add)}' <<<"$FENCE_CONTRACT")"
+}
+# CREDIT_FIELDS (by policy) and RESIDUAL_FIELDS: the line of what credit and residual_allowance
+# report from FENCE_CREDITED, which jq reads once a run for each, while FENCE_CREDITED is FIELDS_OF:
+# FENCE_CREDITED is set once, by the live step, and a credit or an ALLOWANCE comes after it.
+declare -A CREDIT_FIELDS=()
+RESIDUAL_FIELDS="" FIELDS_OF=""
+fields_of_credited() {
+  [ "$FIELDS_OF" = "$FENCE_CREDITED" ] || { CREDIT_FIELDS=() RESIDUAL_FIELDS="" FIELDS_OF="$FENCE_CREDITED"; }
 }
 # credit PRINCIPAL RIGHT RESOURCE GRANTED_AT POLICY [RESIDUAL]: one grant whose use on the broker's
 # pods the credited fence's POLICY refuses (bound by its binding of the same name), printed as
@@ -243,7 +265,10 @@ credit() {
   local key="C$principal"$'\t'"$right" declared live
   [ -z "${RECORDED["$key"]:-}" ] || return 0
   RECORDED["$key"]=1
-  IFS=$'\t' read -r declared live < <(jq -r --arg p "$policy" '[.declared, "\(.live); \(.versions[$p])"] | @tsv' <<<"$FENCE_CREDITED")
+  fields_of_credited
+  [ -n "${CREDIT_FIELDS[$policy]+set}" ] ||
+    CREDIT_FIELDS[$policy]="$(jq -r --arg p "$policy" '[.declared, "\(.live); \(.versions[$p])"] | @tsv' <<<"$FENCE_CREDITED")" || true
+  IFS=$'\t' read -r declared live <<<"${CREDIT_FIELDS[$policy]}"
   CREDITS+=("$principal"$'\t'"$right"$'\t'"$resource"$'\t'"$granted"$'\t'"$policy"$'\t'"$declared"$'\t'"$live")
   echo "CREDIT $principal: $right, its use on $FENCE_PREFIX* pods refused by the ValidatingAdmissionPolicy $policy (bound Deny, failurePolicy Fail), declared and live alike"
   [ "${6:-}" != residual ] || residual_allowance "$1" "$2" "$3" "$4"
@@ -259,7 +284,10 @@ residual_allowance() {
   local key="R$principal"$'\t'"$right" text tracked
   [ -z "${RECORDED["$key"]:-}" ] || return 0
   RECORDED["$key"]=1
-  IFS=$'\t' read -r text tracked < <(jq -r '.residual | [(.text // "" | gsub("[\t\r\n]"; " ")), (.tracked_by // "")] | @tsv' <<<"$FENCE_CREDITED")
+  fields_of_credited
+  [ -n "$RESIDUAL_FIELDS" ] ||
+    RESIDUAL_FIELDS="$(jq -r '.residual | [(.text // "" | gsub("[\t\r\n]"; " ")), (.tracked_by // "")] | @tsv' <<<"$FENCE_CREDITED")" || true
+  IFS=$'\t' read -r text tracked <<<"$RESIDUAL_FIELDS"
   RESIDUALS+=("$principal"$'\t'"$right"$'\t'"$resource"$'\t'"$granted"$'\t'"$text"$'\t'"$tracked")
   echo "ALLOWANCE $principal: $right, $text"
 }

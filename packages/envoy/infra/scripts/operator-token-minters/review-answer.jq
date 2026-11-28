@@ -12,12 +12,14 @@
 # review), matched to its question by the subject and the attributes the answer echoes; or else one
 # `short` record (the pairs answered, the reviews asked, the documents) unless every principal and
 # right pair asked is answered, each once, in as many documents as reviews asked. $principals and
-# $rights each come from a file (--slurpfile), and must hold one JSON array (one_array).
+# $rights each come from a file (--slurpfile), and must hold one JSON array (one_array). The lookup
+# tables of the rights by key and of the principals by subject are each built in one pass, each
+# later entry of a key over an earlier one.
 include "rec";
 include "broker-fence";
 one_array($principals; "the principals") as $principals | one_array($rights; "the rights") as $rights
-| (($rights | map({(.key): .}) | add) // {}) as $by_key
-| (($principals | map({("\(.user)|\(.groups | join(","))"): .principal}) | add) // {}) as $names
+| (reduce $rights[] as $r ({}; .[$r.key] = $r)) as $by_key
+| (reduce $principals[] as $p ({}; .["\($p.user)|\($p.groups | join(","))"] = $p.principal)) as $names
 | (to_entries
    | map(select((.value | type) != "object" or .value.kind != "SubjectAccessReview" or (.value.status | type) != "object"
                or (.value.status.allowed | type) != "boolean"))

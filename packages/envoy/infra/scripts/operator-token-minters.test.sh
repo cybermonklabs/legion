@@ -32,43 +32,115 @@
 # the run to its exit and to the line naming what it planted. A row of a list of rights instead
 # plants the whole list in one world: each right on a ServiceAccount of its own (plant_rights), or
 # each permission through a role of its own on one member (plant_permissions), and holds one run a
-# world to each right's line (want_planted); row bf is two worlds. The rows are in eight files of
-# operator-token-minters/, by concern, each listing its rows in its header. After the world and its
-# helpers, each file's rows run in a process of their own, beside the other files' (run_row_file):
+# world to each right's line (want_planted); row bf is two worlds. The rows are in 24 files of
+# operator-token-minters/, by concern, each listing its rows in its header; a concern whose rows
+# take more than 26 CPU-seconds is split into numbered files of at most that each, but a row over
+# it, alone in its file. After the world and its helpers, each file's rows run in a process of
+# their own, beside the other files' (run_row_file):
 #
-#   - test-rows-run.sh: the run as a whole: a clean world, the permission names, reads that saw
-#     nothing, each step's witness, a refused identity, the admin tag, the report and its fixture,
-#     and a copy missing a part;
+#   - test-rows-run-1.sh: the run as a whole: a clean world, each step's witness, the report;
+#   - test-rows-run-2.sh: the run as a whole: pasted text, broken parts, the test's own readings;
 #   - test-rows-code.sh: the code read of the RBAC render and the IAM preview;
-#   - test-rows-rbac.sh: Kubernetes RBAC: each right of the list, who can become a holder, rights
-#     limited by name, custom resources, and the subjects a binding names;
-#   - test-rows-iam.sh: Google IAM: GKE IAM, the minters of the operator's and the broker's
-#     accounts, the hold writers, IAM impersonation and IAM writers, and a fleet member's project;
-#   - test-rows-pool.sh: the pool's other clusters: the project's other clusters, the pool
-#     project's own clusters, and the fleet's members;
-#   - test-rows-admission.sh: admission power: the rights on the admission objects, and outside
-#     them a webhook's backend, a policy engine's resources, and an admission policy's parameter
-#     objects;
+#   - test-rows-rbac-1.sh: Kubernetes RBAC: each right of the list, and who can become a holder;
+#   - test-rows-rbac-2.sh: Kubernetes RBAC: custom resources, and rights limited by name;
+#   - test-rows-rbac-3.sh: Kubernetes RBAC: the Users and Groups a binding names;
+#   - test-rows-rbac-4.sh: Kubernetes RBAC: writes to a binding, and client certificates;
+#   - test-rows-rbac-5.sh: Kubernetes RBAC: token Secrets, and rights a live role limits by name;
+#   - test-rows-iam-1.sh: Google IAM: GKE IAM, the accounts' minters, and the hold writers;
+#   - test-rows-iam-2.sh: Google IAM: IAM writers, and a fleet member's project;
+#   - test-rows-iam-3.sh: Google IAM: Google's service agents, and Deployment Manager;
+#   - test-rows-pool-1.sh: the pool's other clusters: the project's, and the fleet's members;
+#   - test-rows-pool-2.sh: the pool's other clusters: a fleet member's subjects, escalation rights;
+#   - test-rows-pool-3.sh: the pool's other clusters: the pool project's own, and the settings;
+#   - test-rows-admission-1.sh: admission power: the rights on the admission objects;
+#   - test-rows-admission-2.sh: admission power: a webhook's backend;
+#   - test-rows-admission-3.sh: admission power: policy engines, and a policy's parameters;
+#   - test-rows-admission-4.sh: each kubectl -o json answer not as the API server wrote it;
+#   - test-rows-admission-5.sh: the answer to the reviews, review's calls, and their CPU pins;
 #   - test-rows-become.sh: who can become a principal with a finding through a right a live role
 #     limits by name;
-#   - test-rows-fence.sh: the broker's pod fence, which credits what it refuses only when the
-#     renders and the cluster hold it as reviewed.
+#   - test-rows-fence-1.sh: the broker's pod fence as reviewed, its writers, and its residual;
+#   - test-rows-fence-2.sh: the broker's pod fence: each way it fails and credits nothing;
+#   - test-rows-fence-3.sh: the broker's pod fence: each binding spec its contract holds;
+#   - test-rows-fence-4.sh: the broker's pod fence: its verdict's fields, rules, and other grants.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
 # OPERATOR_MINTERS_TEST_ROWS="b p" runs those rows alone, as a control run by hand does, and
 # OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against; a copy keeps the
-# directory operator-token-minters/ beside it, whose parts it sources (the rows files are this
-# test's own, beside it). A row of one plant per item runs up to 8 items at a time, each in a world
-# of its own (each). Up to one row file a core runs at a time, longest first;
-# OPERATOR_MINTERS_TEST_SLOTS names another count. Each file's rows print in the order of the list
-# above once every file has ended, with the seconds the file took.
-# CI runs it in envoy-go-checks (.github/workflows/ci-job-envoy-go-checks.yaml).
+# directory operator-token-minters/ beside it, whose files it sources (the rows files are this
+# test's own, beside it). Each row file is a part, test-rows-<part>.sh, and the test runs in three
+# forms. With --parts it prints the parts, one a line, longest first, and runs nothing else. With a
+# part's name it runs the setup and that part's rows alone, printing each row as it passes, then the
+# part's count and seconds and `all <n> rows passed`; any other argument, or more than one, exits 2
+# before the setup, naming the parts. With no argument it runs every part, up to one row file a
+# core at a time, longest first, and prints each file's rows in the order of the list above once
+# every file has ended, with the seconds the file took. OPERATOR_MINTERS_TEST_SLOTS names another
+# count, and bounds a row's items too: a row of one plant per item runs its items each in a world
+# of its own (each), up to 8 at a time and never more than the slots, so under
+# OPERATOR_MINTERS_TEST_SLOTS=1 a part runs one process at a time. CI runs each part as a pool
+# entry of its own, one process at a time, in envoy-go-checks
+# (.github/workflows/ci-job-envoy-go-checks.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly check="${OPERATOR_MINTERS_SCRIPT:-$script_dir/operator-token-minters.sh}"
+
+# The row files of operator-token-minters/, test-rows-<name>.sh, in the header's reading order, which
+# is the order their rows print in. Each is a part, which the command line below names.
+readonly row_files=(run-1 run-2 code rbac-1 rbac-2 rbac-3 rbac-4 rbac-5 iam-1 iam-2 iam-3 pool-1
+  pool-2 pool-3 admission-1 admission-2 admission-3 admission-4 admission-5 become fence-1 fence-2
+  fence-3 fence-4)
+# The same files longest first, the order their processes start in, so a file started last is not
+# the one the run waits for, and the order --parts prints them in. The CPU-seconds are what each
+# file's rows took, one process at a time, in Job infra6357-profile-z6vrd (the PERROW lines of the
+# harness at 83341d57), where the whole test took 478.1: fence-2 36.9, admission-4 35.7,
+# admission-2 33.4, rbac-2 22.5, run-2 22.5, pool-2 21.9, pool-3 21.3, run-1 21.3, rbac-1 21.2,
+# pool-1 20.3, rbac-3 19.9, admission-3 19.7, admission-5 19.4, fence-1 18.9, rbac-4 18.8, iam-1
+# 18.1, rbac-5 17.5, fence-3 17.1, iam-2 16.0, iam-3 15.9, code 11.3, admission-1 10.1, fence-4
+# 9.4, become 8.8.
+readonly row_file_schedule=(fence-2 admission-4 admission-2 rbac-2 run-2 pool-2 pool-3 run-1 rbac-1
+  pool-1 rbac-3 admission-3 admission-5 fence-1 rbac-4 iam-1 rbac-5 fence-3 iam-2 iam-3 code
+  admission-1 fence-4 become)
+# The two lists and the files on disk must hold the same names, so that a row file on disk is a
+# part and every part is listed; the test stops before anything else when they do not.
+on_disk=("$script_dir"/operator-token-minters/test-rows-*.sh)
+on_disk=("${on_disk[@]##*/test-rows-}")
+on_disk=("${on_disk[@]%.sh}")
+if [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${row_file_schedule[@]}" | sort)" ] ||
+  [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${on_disk[@]}" | sort)" ]; then
+  echo "FAIL: the row files in reading order (${row_files[*]}), in start order (${row_file_schedule[*]}) and on disk (${on_disk[*]}) differ" >&2
+  exit 1
+fi
+# The command line, read before the setup, so that --parts and a refused argument make nothing.
+# --parts prints the parts in their start order and exits; a part's name runs that part alone
+# (part); no argument runs every part; any other argument, or more than one, exits 2 naming them.
+part=""
+if [ "$#" -gt 1 ]; then
+  echo "usage: operator-token-minters.test.sh [--parts | PART]" >&2
+  echo "operator-token-minters.test.sh: $# arguments, where it takes one at most; the parts are: ${row_file_schedule[*]}" >&2
+  exit 2
+elif [ "${1-}" = --parts ]; then
+  printf '%s\n' "${row_file_schedule[@]}"
+  exit 0
+elif [ "$#" -eq 1 ]; then
+  for name in "${row_file_schedule[@]}"; do
+    [ "$1" != "$name" ] || part="$1"
+  done
+  [ -n "$part" ] || {
+    echo "operator-token-minters.test.sh: no part $1; the parts are: ${row_file_schedule[*]}" >&2
+    exit 2
+  }
+fi
+# slots: how many row files run at a time, and the bound on a row's items (each runs at most
+# min(8, slots) at once), held to a count before the setup.
+slots="${OPERATOR_MINTERS_TEST_SLOTS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+[[ $slots =~ ^[1-9][0-9]*$ ]] || {
+  echo "FAIL: OPERATOR_MINTERS_TEST_SLOTS is $slots, which is no count of row files to run at a time" >&2
+  exit 2
+}
+
 # test_root holds what every row reads (the fakes, the world each row starts from, the fence's copy
 # of the check) and a directory for each row file's process. temporary_dir is where the running rows
 # write: test_root until the rows start, then each row file's own (run_row_file).
@@ -189,6 +261,7 @@ grade_member() {
 # cluster_admin CLUSTER SUBJECT: the built-in cluster-admin role bound to SUBJECT there.
 cluster_admin() { subject_grant "$1" "$2" "*" "*" "*" "*" "" ""; }
 grade_step="live: Workload Identity on fleet member grade (cluster example-grade/us-east1/grade-cluster)"
+fleet_step="live: Workload Identity: the fleet of project $project"
 # A fleet member that is no GKE cluster, edge, on the cluster edge-cluster.
 edge_member() {
   make_cluster edge-cluster
@@ -200,9 +273,21 @@ refuse_live() {
   : >"$world/clusters/operator-cluster/refuse-sar"
   : >"$world/refuse-analyze"
 }
-# The broker's pod fence's world (broker-fence.sh), which test-rows-fence.sh's rows and the report
-# fixture's (z) run in: comment-delivery's Google account, the broker's Workload Identity member,
-# and the contract the check under test carries.
+# hook_config SELECTOR CLIENT [RULES]: one MutatingWebhookConfiguration, hook-config, of one webhook,
+# pods.example.com, calling CLIENT; SELECTOR exclude names the guarded namespaces out, legion names
+# legion alone in, and empty sets none; RULES, a JSON array, its rules (none when absent).
+hook_config() {
+  jq -n --arg selector "${1:-}" --argjson client "$2" --argjson rules "${3:-null}" '[{kind: "MutatingWebhookConfiguration", metadata: {name: "hook-config"},
+    webhooks: [{name: "pods.example.com", clientConfig: $client}
+      + (if $selector == "exclude" then {namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "NotIn",
+          values: ["envoy-operator", "secrets-broker"]}]}}
+         elif $selector == "legion" then {namespaceSelector: {matchLabels: {"kubernetes.io/metadata.name": "legion"}}}
+         else {} end)
+      + (if $rules != null then {rules: $rules} else {} end)]}]'
+}
+# The broker's pod fence's world (broker-fence.sh), which the rows of test-rows-fence-1.sh to
+# test-rows-fence-4.sh and the report fixture's (z) run in: comment-delivery's Google account, the
+# broker's Workload Identity member, and the contract the check under test carries.
 readonly comment_delivery=comment-delivery@example-project.iam.gserviceaccount.com
 readonly fence_wi_member="serviceAccount:example-project.svc.id.goog[dispatch/envoy-broker]"
 fence_contract="$(dirname "$check")/operator-token-minters/broker-fence.json"
@@ -302,6 +387,38 @@ fence_edit() {
 # names one) with the full flags, the broker as dispatch/envoy-broker with its database login there,
 # then ARGS, against the current world; sets output and status as run does.
 fence_run() { run_script="${run_script:-$fence_check}" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db "$@"; }
+# The CREDIT and ALLOWANCE lines (fa) wants, and the FINDING lines the same grants are once the fence
+# is not credited. A credit's sentence names the use the policy refuses; the allowance's, the
+# residual of broker-fence.json.
+credit_line() { echo "CREDIT $1: $2, its use on envoy-broker-* pods refused by the ValidatingAdmissionPolicy $3 (bound Deny, failurePolicy Fail), declared and live alike"; }
+fence_residual="$(jq -r .residual.text "$fence_contract")"
+readonly fence_residual
+allowance_line() { echo "ALLOWANCE $1: $2, $fence_residual"; }
+fence_credits_want=(
+  "serviceAccount:$comment_delivery|create pods/exec in dispatch|broker-pod-connect"
+  "serviceAccount:$comment_delivery|get pods/exec in dispatch|broker-pod-connect"
+  "system:serviceaccount:legion:dispatch-measure|create pods/exec in dispatch|broker-pod-connect"
+  "system:serviceaccount:legion:worker|create pods/portforward in dispatch|broker-pod-connect"
+  "serviceAccount:$comment_delivery|create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery|broker-pod-connect"
+  "serviceAccount:$comment_delivery|get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery|broker-pod-connect"
+)
+want_fence_credits() {
+  local entry principal right policy
+  for entry in "${fence_credits_want[@]}"; do
+    IFS='|' read -r principal right policy <<<"$entry"
+    want_line "$(credit_line "$principal" "$right" "$policy")" "$1"
+    want_line "$(allowance_line "$principal" "$right")" "$1"
+  done
+}
+want_fence_findings() {
+  local entry principal right policy
+  for entry in "${fence_credits_want[@]}"; do
+    IFS='|' read -r principal right policy <<<"$entry"
+    want_line "FINDING $principal: $right" "$1"
+  done
+  [ "$(count_prefix "CREDIT ")" -eq 0 ] || fail "$1: a CREDIT line"
+  [ "$(count_prefix "ALLOWANCE ")" -eq 0 ] || fail "$1: an ALLOWANCE line"
+}
 
 # The checked permissions of roles/container.admin, as `gcloud iam roles describe` lists them, with
 # a few beside them it also holds.
@@ -528,6 +645,16 @@ count_prefix() { grep -c "^$1" <<<"$output" || true; }
 want_status() { [ "$status" -eq "$1" ] || fail "$2: exit $status, want $1"; }
 want_line() { has_line "$1" || fail "$2: no line '$1'"; }
 want_text() { has_prefix "$1" || fail "$2: no line holding '$1'"; }
+# want_line_with PREFIX SUFFIX WHAT: one line of the output both starts with PREFIX and ends with
+# SUFFIX, read as text by one awk (index and substr, no regex of either), so one line holding an
+# item's own text and another ending with another item's resource and role do not pass as one.
+want_line_with() {
+  line_prefix="$1" line_suffix="$2" awk '
+    BEGIN { prefix = ENVIRON["line_prefix"]; suffix = ENVIRON["line_suffix"] }
+    index($0, prefix) == 1 && substr($0, length($0) - length(suffix) + 1) == suffix { found = 1; exit }
+    END { exit !found }' <<<"$output" ||
+    fail "$3: no line starting '$1' and ending '$2'"
+}
 # want_step_unknown STEP TEXT WHAT: the step STEP (as its lines name it: `RBAC on operator-cluster`)
 # read UNKNOWN holding TEXT, the run reached its end with no finding (its last line says so, which a
 # run that stopped mid-way does not), exit 2, and the step did not pass. The rows that break a read
@@ -570,14 +697,19 @@ plant_rights() {
 }
 # plant_permissions ATTACHED MEMBER PERMISSION...: each PERMISSION held by MEMBER on ATTACHED through
 # a role of its own that grants nothing else, projects/<project>/roles/only.<permission>; adds to
-# OWN_FINDINGS the finding each must print.
+# OWN_FINDINGS the finding each must print. The jq that writes each role refuses a name roles.json
+# already holds, so a row that plants a role its world (or another of its items) wrote stops there,
+# under set -e, naming the role, rather than replace it; role writes over a name, for the rows that
+# change an existing role on purpose.
 plant_permissions() {
-  local attached="$1" member="$2" permission
+  local attached="$1" member="$2" permission only
   shift 2
   for permission in "$@"; do
-    role "projects/$project/roles/only.$permission" "$permission"
-    iam "$attached" "projects/$project/roles/only.$permission" "$member"
-    OWN_FINDINGS+=("$member"$'\t'"$permission on $attached through projects/$project/roles/only.$permission, granted at $attached")
+    only="projects/$project/roles/only.$permission"
+    edit "$world/roles.json" 'if has($r) then error("the role \($r) is already in roles.json") else . + {($r): $ARGS.positional} end' \
+      --arg r "$only" --args "$permission"
+    iam "$attached" "$only" "$member"
+    OWN_FINDINGS+=("$member"$'\t'"$permission on $attached through $only, granted at $attached")
   done
 }
 # planted_problems MODE: each way the run's output departs from OWN_FINDINGS, one a line:
@@ -605,6 +737,18 @@ planted_problems() {
     }
     END { for (k in want) if (!(k in seen)) { sub(/\t/, ": ", k); print "missing: FINDING " k } }' "$planted" - <<<"$output"
 }
+# want_own_principals WHAT: no two entries of OWN_FINDINGS are on one principal (the text before an
+# entry's tab), as items that share a world must not be: the check prints one principal's sentence
+# once, and the fake answers each review by subject. Fails naming the principal two entries share.
+want_own_principals() {
+  local entry principal
+  local -A seen=()
+  for entry in "${OWN_FINDINGS[@]}"; do
+    principal="${entry%%$'\t'*}"
+    [ -z "${seen["p$principal"]:-}" ] || fail "$1: two entries of OWN_FINDINGS share the principal $principal"
+    seen["p$principal"]=1
+  done
+}
 # want_planted WHAT MODE: the run printed each finding OWN_FINDINGS holds and, with MODE own or only,
 # nothing planted_problems names, and exited 1; it fails once, listing every problem, before it
 # reads the exit. With MODE own or only it holds itself to its control: the output with the last
@@ -625,6 +769,53 @@ want_planted() {
   fi
   OWN_FINDINGS=()
 }
+# new_container_rows PERMISSION...: each permission held by an agent's Google service account on the
+# project through a role of its own that grants nothing else (plant_permissions), all in one world
+# and one run; each is a finding naming its role.
+new_container_rows() {
+  base_world
+  plant_permissions "$project_res" "serviceAccount:$worker_gsa" "$@"
+  run
+  want_planted "$* held by $worker_gsa, each through a role of its own" lines
+  # An UNKNOWN beside the findings (a permission name the role does not hold) leaves exit 1 but
+  # means the world is not the clean one plus these grants.
+  [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "$* held by $worker_gsa: an UNKNOWN beside the findings"
+}
+# recorded_differ: why the counts of the check's last line do not stand, one line, or nothing when
+# they do. A run that reaches the exit block (operator-token-minters.sh's result) ends on one of its
+# three lines, since nothing prints after it; any other last line (the crash report's, a copy
+# missing a part's, a --report that cannot be written, a usage error's text) is named. Otherwise its
+# finding and unknown counts (no finding and nothing unknown are 0) must equal the lines the run
+# printed that start `FINDING ` and `UNKNOWN `, which finding() and unknown() alone print, so a line
+# printed and not recorded is named. The last line is the shell's own tail -n 1 of the output.
+recorded_differ() {
+  local last="${output##*$'\n'}" findings unknowns printed_findings printed_unknowns
+  local exit1='^operator-token-minters: ([1-9][0-9]*) finding\(s\), (0|[1-9][0-9]*) unknown: exit 1$'
+  local exit2='^operator-token-minters: no finding, ([1-9][0-9]*) unknown: exit 2$'
+  if [[ $last =~ $exit1 ]]; then
+    findings="${BASH_REMATCH[1]}" unknowns="${BASH_REMATCH[2]}"
+  elif [[ $last =~ $exit2 ]]; then
+    findings=0 unknowns="${BASH_REMATCH[1]}"
+  elif [ "$last" = "operator-token-minters: no finding and nothing unknown: exit 0" ]; then
+    findings=0 unknowns=0
+  else
+    printf "the run did not reach the exit block; its last line is '%s'\n" "$last"
+    return 0
+  fi
+  printed_findings="$(count_prefix 'FINDING ')"
+  printed_unknowns="$(count_prefix 'UNKNOWN ')"
+  if [ "$findings" -ne "$printed_findings" ] || [ "$unknowns" -ne "$printed_unknowns" ]; then
+    printf 'the last line counts %s finding(s) and %s unknown; the run printed %s FINDING and %s UNKNOWN lines\n' \
+      "$findings" "$unknowns" "$printed_findings" "$printed_unknowns"
+  fi
+}
+# want_recorded WHAT: the counts of the check's last line stand (recorded_differ prints nothing), else
+# the row fails with WHAT and why.
+want_recorded() {
+  local differ
+  differ="$(recorded_differ)"
+  [ -z "$differ" ] || fail "$1: $differ"
+}
 rows=0
 passed() {
   rows=$((rows + 1))
@@ -633,9 +824,11 @@ passed() {
 # row LETTER: whether a row runs: every row, or those OPERATOR_MINTERS_TEST_ROWS names.
 row() { [ -z "${OPERATOR_MINTERS_TEST_ROWS:-}" ] || [[ " $OPERATOR_MINTERS_TEST_ROWS " == *" $1 "* ]]; }
 # each FUNCTION ITEM...: FUNCTION ITEM for each item, each in a subshell with a world of its own,
-# up to 8 at a time; fails naming each item whose run failed, with what it printed.
+# up to min(8, slots) at a time, so that OPERATOR_MINTERS_TEST_SLOTS bounds the items as it bounds
+# the row files (one at a time under one slot); fails naming each item whose run failed, with what
+# it printed.
 each() {
-  local fn="$1" i=0 running=0 failed=0
+  local fn="$1" i=0 running=0 failed=0 each_slots=$((slots < 8 ? slots : 8))
   shift
   for item in "$@"; do
     i=$((i + 1))
@@ -648,7 +841,7 @@ each() {
       echo "$?" >"$temporary_dir/$fn-$i.status"
     } &
     running=$((running + 1))
-    if [ "$running" -ge 8 ]; then
+    if [ "$running" -ge "$each_slots" ]; then
       wait -n
       running=$((running - 1))
     fi
@@ -662,30 +855,13 @@ each() {
   done
   [ "$failed" -eq 0 ] || { echo "FAIL: $failed of the $# items of $fn failed" >&2; exit 1; }
 }
+# cpus_first LIST: the first CPU of LIST, a Cpus_allowed_list value of /proc/<pid>/status (`0-3,8`
+# or `3`); cpus_one LIST: whether LIST is one CPU. Each is the shell alone, no process. Rows (cy) and
+# (cz) pin their items with them, and row (de) holds them to lists Linux printed.
+cpus_first() { printf '%s\n' "${1%%[,-]*}"; }
+cpus_one() { [[ $1 =~ ^[0-9]+$ ]]; }
 
 # --- The rows. ---
-
-# The row files of operator-token-minters/, test-rows-<name>.sh, in the header's reading order, which
-# is the order their rows print in.
-readonly row_files=(run code rbac iam pool admission become fence)
-# The same files longest first, the order their processes start in, so a file started last is not
-# the one the run waits for. The seconds are what each file's rows took in envoy-go-checks job
-# 140612446150 (artifact harness-times-140612446150), where the whole test took 475.0 s in one
-# process: rbac 109, run 101, iam 88, pool 58, fence 47, admission 45, code 17, become 9.
-readonly row_file_schedule=(rbac run iam pool fence admission code become)
-on_disk=("$script_dir"/operator-token-minters/test-rows-*.sh)
-on_disk=("${on_disk[@]##*/test-rows-}")
-on_disk=("${on_disk[@]%.sh}")
-if [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${row_file_schedule[@]}" | sort)" ] ||
-  [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${on_disk[@]}" | sort)" ]; then
-  echo "FAIL: the row files in reading order (${row_files[*]}), in start order (${row_file_schedule[*]}) and on disk (${on_disk[*]}) differ" >&2
-  exit 1
-fi
-slots="${OPERATOR_MINTERS_TEST_SLOTS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
-[[ $slots =~ ^[1-9][0-9]*$ ]] || {
-  echo "FAIL: OPERATOR_MINTERS_TEST_SLOTS is $slots, which is no count of row files to run at a time" >&2
-  exit 2
-}
 
 # now_ms: the clock in milliseconds. A `date` with no %N, which is BSD's, gives whole seconds, so a
 # file's time is read in seconds there rather than failing the arithmetic below.
@@ -697,11 +873,11 @@ now_ms() {
 }
 # run_row_file NAME: test-rows-NAME.sh's rows in a process of their own, which writes only under a
 # directory of its own (its temporary_dir, holding its world), so no row reads a file another
-# file's rows wrote; what they print, how many passed, the process's exit and its milliseconds go to
-# files of its own under test_root. The process runs under set -e, as `each` runs an item: a
-# subshell an `||` tested would run with it off. A row file's rows set variables of any name at its
-# top level (test-rows-rbac.sh reads a `name` there), so the file the count goes to is named, and
-# made readonly, before they run.
+# file's rows wrote; what they print goes to the function's own stdout and stderr, which its caller
+# names, and how many passed, the process's exit and its milliseconds go to files of its own under
+# test_root. The process runs under set -e, as `each` runs an item: a subshell an `||` tested would
+# run with it off. A row file's rows set variables of any name at its top level (test-rows-rbac-2.sh
+# reads a `name` there), so the file the count goes to is named, and made readonly, before they run.
 run_row_file() {
   local name="$1" started
   started=$(now_ms)
@@ -716,27 +892,40 @@ run_row_file() {
     # shellcheck source=/dev/null # operator-token-minters/test-rows-NAME.sh, one of row_files
     . "$script_dir/operator-token-minters/test-rows-$name.sh"
     echo "$rows" >"$passed_file"
-  ) >"$test_root/rows-$name.out" 2>"$test_root/rows-$name.err"
+  )
   echo "$?" >"$test_root/rows-$name.status"
   echo "$(($(now_ms) - started))" >"$test_root/rows-$name.ms"
 }
+# With no argument, every part, up to slots row files at a time, longest first, each file's output
+# held in files of its own under test_root until every file has ended. With a part, that part's file
+# alone, its output printed as its rows pass, never held, so that a reader of the log (the CI pool
+# stamps each line with the time it was written) sees when each row passed.
 running=0
 for name in "${row_file_schedule[@]}"; do
+  [ -z "$part" ] || [ "$name" = "$part" ] || continue
   if [ "$running" -ge "$slots" ]; then
     wait -n || true
     running=$((running - 1))
   fi
-  run_row_file "$name" &
+  if [ -n "$part" ]; then
+    run_row_file "$name" &
+  else
+    run_row_file "$name" >"$test_root/rows-$name.out" 2>"$test_root/rows-$name.err" &
+  fi
   running=$((running + 1))
 done
 wait
 
-# Each file's output whole, in reading order. A file's process that did not exit 0 with its count
-# of passed rows written as its last act failed, whatever it printed.
+# Each file's output whole, in reading order (a part run alone printed its own as it ran). A file's
+# process that did not exit 0 with its count of passed rows written as its last act failed, whatever
+# it printed.
 failed=()
 for name in "${row_files[@]}"; do
-  cat "$test_root/rows-$name.out"
-  cat "$test_root/rows-$name.err" >&2
+  [ -z "$part" ] || [ "$name" = "$part" ] || continue
+  if [ -z "$part" ]; then
+    cat "$test_root/rows-$name.out"
+    cat "$test_root/rows-$name.err" >&2
+  fi
   exited="$(cat "$test_root/rows-$name.status" 2>/dev/null || echo none)"
   file_rows="$(cat "$test_root/rows-$name.passed" 2>/dev/null || true)"
   milliseconds="$(cat "$test_root/rows-$name.ms" 2>/dev/null || echo 0)"

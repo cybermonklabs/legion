@@ -698,8 +698,11 @@ mkdir -p "$WORK/kube" "$WORK/roles"
 
 # The steps run in the header's order, each part in its own file of operator-token-minters/ beside
 # this script, sourced here so that all of them share this run's state; a part's large jq programs
-# are .jq files there, read with jq -f.
-LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
+# are .jq files there, read with jq -f. The script's directory is its path less the last part, as
+# dirname reads it, made by the shell.
+lib_dir="${BASH_SOURCE[0]%/*}"
+[ "$lib_dir" != "${BASH_SOURCE[0]}" ] || lib_dir=.
+LIB="$(cd "${lib_dir:-/}" && pwd)/operator-token-minters"
 # Every part and jq file must be readable before any is sourced: a missing one would stop the run
 # before output.sh defines its report, or leave a step that needs it unread.
 missing=""

@@ -26,8 +26,6 @@ covers() {
     *) return 1 ;;
   esac
 }
-resource_of() { if [ "$1" = signing ]; then echo "//secretmanager.googleapis.com/projects/${PROJECT_NUMBER:-$PROJECT}/secrets/$SIGNING_SECRET"; else echo "${CHECK_RESOURCE[$1]}"; fi; }
-
 # The project number, which Secret Manager's resource names use.
 PROJECT_NUMBER="" PROJECT_NUMBER_ERROR=""
 if [ -z "$PROJECT" ]; then
@@ -40,7 +38,8 @@ else
   PROJECT_NUMBER="$(jq -r '.projectNumber // ""' "$WORK/project.json" 2>/dev/null || true)"
   [ -n "$PROJECT_NUMBER" ] || PROJECT_NUMBER_ERROR="gcloud projects describe $PROJECT answered no projectNumber"
 fi
-CHECK_RESOURCE[signing]="$(resource_of signing)"
+# The signing key's resource, by the project number Secret Manager names it by.
+CHECK_RESOURCE[signing]="//secretmanager.googleapis.com/projects/${PROJECT_NUMBER:-$PROJECT}/secrets/$SIGNING_SECRET"
 
 step="code: IAM"
 if [ "${#IAM_PREVIEWS[@]}" -eq 0 ]; then
@@ -90,9 +89,11 @@ else
           attached="$a:$b"
           [ "$a" != serviceaccount ] || attached="//iam.googleapis.com/projects/-/serviceAccounts/${b##*/}"
           iam_verdict "$check" "$e" "$d" "$attached" code
-          [ "$VERDICT" != finding ] ||
-            finding "$e" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE" \
-              "$d" "$(resource_of "$check")" "$(held_list "$check" "$granted")" "$attached"
+          if [ "$VERDICT" = finding ]; then
+            held "$check" "$granted"
+            finding "$e" "$HELD_TEXT on ${CHECK_RESOURCE[$check]} through $d, declared by $f$NOTE" \
+              "$d" "${CHECK_RESOURCE[$check]}" "$HELD_LIST" "$attached"
+          fi
         done
         ;;
     esac

@@ -79,7 +79,7 @@ analyze() {
 # fence's residual (iam_holder).
 live_iam() {
   local check="$1" step="${CHECK_STEP[$1]}" resource="${CHECK_RESOURCE[$1]}" witness_member="${CHECK_WITNESS[$1]:-}"
-  local holders what identity role attached perms how designed hattached text chains=0 allowances
+  local holders what identity role attached perms how designed hattached text chains=0 allowances beside
   if [ -n "${CHECK_MISSING[$check]:-}" ]; then
     unknown "$step" "${CHECK_MISSING[$check]}"
     return
@@ -109,13 +109,18 @@ live_iam() {
   if [ "$check" = dbsecret ] && [ "$RBAC_OK" != true ]; then
     unknown "$step" "the RBAC step's principals' reviews for get on it could not be made (live: RBAC)"
   fi
-  # The holders, each once, and whether the witness is among them, in one read of the records (an
-  # awk that reads them whole: never `cut | grep -q` under pipefail, where grep stops at its first
+  # The holders, each once, and whether the witness is among them, in one read of the records by the
+  # shell before the verdicts (never `cut | grep -q` under pipefail, where grep stops at its first
   # match and a long answer's next write fails the pipeline with SIGPIPE, reading a witness that is
-  # there as one that is not).
-  local witness_listed
-  read -r holders witness_listed < <(WITNESS="$witness_member" awk -F"$US" '$1 == "row" { if (!seen[$2]++) n++; if ($2 == ENVIRON["WITNESS"]) listed = 1 }
-    END { print n + 0, listed + 0 }' "$WORK/analysis.rec")
+  # there as one that is not). A holder's key is prefixed, since an empty one is no array subscript.
+  local witness_listed=0
+  local -A listed=()
+  holders=0
+  while IFS="$US" read -r what identity _; do
+    [ "$what" = row ] || continue
+    [ -n "${listed["h$identity"]:-}" ] || { listed["h$identity"]=1; holders=$((holders + 1)); }
+    [ "$identity" != "$witness_member" ] || witness_listed=1
+  done <"$WORK/analysis.rec"
   if [ -n "$witness_member" ] && [ "$witness_listed" != 1 ]; then
     unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete"
   fi
@@ -127,19 +132,22 @@ live_iam() {
       chains=$((chains + 1))
       [ "$designed" != designed ] || continue
       iam_verdict "$check" "$identity" "$role" "$attached" "$how"
-      [ "$VERDICT" != finding ] ||
-        iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource: $text, granted at $hattached$NOTE" \
-          "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
+      if [ "$VERDICT" = finding ]; then
+        held "$check" "$perms"
+        iam_holder "$check" "$identity" "$HELD_TEXT on $resource: $text, granted at $hattached$NOTE" "$role" "$resource" "$HELD_LIST" "$attached"
+      fi
       continue
     fi
     iam_verdict "$check" "$identity" "$role" "$attached" "$how"
-    [ "$VERDICT" != finding ] ||
-      iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
-        "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
+    if [ "$VERDICT" = finding ]; then
+      held "$check" "$perms"
+      iam_holder "$check" "$identity" "$HELD_TEXT on $resource through $role, granted at $attached$NOTE" "$role" "$resource" "$HELD_LIST" "$attached"
+    fi
   done 3<"$WORK/analysis.rec"
   if unchanged; then
-    allowances="$(allowed)"
-    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$allowances" -eq 0 ] || echo ", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
+    allowances=$((${#RESIDUALS[@]} - MARK_A)) beside=""
+    [ "$allowances" -eq 0 ] || beside=", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE"
+    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$beside"
   fi
 }
 # iam_holder CHECK IDENTITY RIGHT ROLE RESOURCE PERMISSIONS ATTACHED: a holder iam_verdict judged a

@@ -1,35 +1,12 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016,SC2034,SC2154 # the world, its names, its helpers and the output and status a run sets are the test's; each single-quoted $name is a jq variable, not the shell's
-# operator-token-minters/test-rows-run.sh: the rows of operator-token-minters.test.sh on the run as
-# a whole: a clean world, the permission names, reads that saw nothing, each step's witness, a
-# refused identity, the admin tag, the report and its fixture, and a copy missing a part. Sourced
-# by the test after its world and helpers; its header says what the fakes model. The rows:
+# operator-token-minters/test-rows-run-2.sh: the rows of operator-token-minters.test.sh on the run
+# as a whole: reads that saw nothing, a copy missing a part or with a part that fails, the
+# allowances, text pasted into a flag, the token Secrets' lists, a cluster too large for one
+# argument, a pick of the reviews that fails, and the test's own readings (its pipes, want_recorded
+# and each's bound). Sourced by the test after its world and helpers; its header says what the fakes
+# model. The rows:
 #
-#   (a)  a world of people, system namespaces and the Workload Identity member alone exits 0, and a
-#        project with the operator's cluster alone prints that it has no other;
-#   (h)  a permission name missing from roles/container.admin's list fails the run, naming it;
-#   (i)  an empty listing exits 2 with UNKNOWN: agent namespaces holding no ServiceAccount, a Policy
-#        Analyzer answer listing no one, an analysis not fully explored;
-#   (j)  each live step's witness: the operator account's analysis without its Workload Identity
-#        member, and an RBAC read whose cluster-admin binding does not answer, each read UNKNOWN;
-#   (k)  with no identity that may run the live steps, each prints UNKNOWN naming the permission it
-#        needs, and the run exits 2;
-#   (l)  the admin tag: ENVOY_OPERATOR shown without "admin": "true", no such secret, and the scratch
-#        secret ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field;
-#        a session that cannot show it reads UNKNOWN;
-#   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
-#        nothing; row fa holds their entries), unknown and allowances ([] for a run given none), with
-#        a stubbed UNKNOWN step listed under unknown;
-#   (v)  the report's findings carry role, resource, permissions and granted_at beside principal
-#        and right, on an IAM finding and on an RBAC finding;
-#   (z)  the fixture testdata/operator-token-minters-report.json is the --report of fence_check (the
-#        script whose contract holds the test's example workload policies) in the broker's pod
-#        fence's world (fence_world) with an IAM finding, grade-ci's RBAC findings, the fence's
-#        credits and residuals and an UNKNOWN, run_at fixed; the row fails when the committed file
-#        differs (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it, and OPERATOR_MINTERS_FIXTURE names
-#        another file to compare, as the row's control does);
-#   (al) a run that stops mid-way leaves an UNKNOWN report, never the old one, and a usage error
-#        leaves none;
 #   (ba) a get-ancestors answer of [] reads UNKNOWN, and so does another cluster that lists no
 #        ServiceAccount outside its system namespaces though a binding names a subject there;
 #   (bc) a copy of the script missing output.sh, or missing analysis.jq, prints "UNKNOWN run" naming
@@ -60,244 +37,14 @@
 #   (da) no line of the check, its parts or this test's own files reads a status from a pipe into
 #        a grep that stops early (-q or -m), which pipefail and SIGPIPE can read as no match;
 #   (db) a pick of the reviews to judge that stops part way (its awk under a 2 KiB file size limit)
-#        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass.
-
-# --- (a) People, the system namespaces and the Workload Identity member alone. ---
-if row a; then
-  base_world
-  run
-  want_status 0 "a clean world"
-  [ "$(count_prefix 'FINDING ')" -eq 0 ] && [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "a clean world printed a FINDING or an UNKNOWN"
-  want_line "PASS live: Workload Identity: the project runs the operator's cluster operator-cluster alone" "a clean world"
-  for step in "permission names" "code: RBAC" "code: IAM" "live: RBAC on operator-cluster" "live: GKE IAM on project $project" \
-    "live: minters of $gsa" "live: minters of the broker account $broker" "live: hold writers: Cloud SQL users of example-instance" \
-    "live: hold writers: Secret example-db/broker-db-login" "live: hold writers: the broker program's state in gs://example-state" \
-    "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR" \
-    "live: who can register a cluster to, or write namespaces and RBAC on, the fleet of project $project" "live: who can set IAM on organizations/100"; do
-    want_text "PASS $step: " "a clean world's $step"
-  done
-  want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here, and the fleet holds no scope" \
-    "a clean world's fleet"
-  passed "(a) people, the system namespaces and the Workload Identity member alone exit 0, and a project with the operator's cluster alone says so"
-fi
-
-# --- (h) A permission name roles/container.admin's list does not hold. ---
-if row h; then
-  base_world
-  edit "$world/roles.json" '.["roles/container.admin"] -= ["container.pods.exec"]'
-  run
-  want_status 2 "roles/container.admin without container.pods.exec"
-  want_line "UNKNOWN permission names: container.pods.exec is not in roles/container.admin's includedPermissions, so no check that names it can find a holder" \
-    "roles/container.admin without container.pods.exec"
-  passed "(h) a permission name missing from roles/container.admin's list fails the run, naming it"
-fi
-
-# --- (i) Empty listings. ---
-if row i; then
-  base_world
-  mapfile -t args < <(args_without --agent-namespace)
-  run_only "${args[@]}" --agent-namespace 'nobody-*'
-  want_status 2 "agent namespaces holding no ServiceAccount"
-  want_text "UNKNOWN live: RBAC on operator-cluster: the cluster lists no ServiceAccount in the agent namespaces" "agent namespaces holding no ServiceAccount"
-  passed "(i) agent namespaces holding no ServiceAccount exit 2 with UNKNOWN"
-
-  base_world
-  : >"$world/empty-analysis"
-  run
-  want_status 2 "a Policy Analyzer that lists no one"
-  want_text "UNKNOWN live: GKE IAM on project $project: the analysis lists no holder" "a Policy Analyzer that lists no one"
-  passed "(i) a Policy Analyzer answer that lists no one exits 2 with UNKNOWN"
-
-  base_world
-  : >"$world/not-explored"
-  run
-  want_status 2 "an analysis not fully explored"
-  want_text "UNKNOWN live: GKE IAM on project $project: the analysis was not fully explored" "an analysis not fully explored"
-  passed "(i) an analysis not fully explored exits 2 with UNKNOWN"
-fi
-
-# --- (j) Each live step's positive witness. ---
-if row j; then
-  base_world
-  unbind "$gsa_res" roles/iam.workloadIdentityUser
-  run
-  want_status 2 "the operator's account without its Workload Identity member"
-  want_text "UNKNOWN live: minters of $gsa: the analysis does not list $wi_member" "no Workload Identity member"
-  passed "(j) the operator account's analysis without its Workload Identity member reads UNKNOWN"
-
-  base_world
-  : >"$world/clusters/operator-cluster/no-masters"
-  run
-  want_status 2 "an RBAC read whose cluster-admin binding does not answer"
-  want_text "UNKNOWN live: RBAC on operator-cluster: the witness review, the cluster-admin binding's group system:masters, was not allowed" "no witness"
-  passed "(j) an RBAC read whose cluster-admin binding does not answer reads UNKNOWN"
-fi
-
-# --- (k) No identity that may run the live steps. ---
-if row k; then
-  base_world
-  : >"$world/clusters/operator-cluster/refuse-sar"
-  : >"$world/refuse-analyze"
-  run
-  want_status 2 "no identity that may run the live steps"
-  want_text "UNKNOWN live: RBAC on operator-cluster: the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE)" \
-    "a refused review"
-  for step in "live: GKE IAM on project $project" "live: minters of $gsa" "live: hold writers: Cloud SQL users of example-instance"; do
-    want_text "UNKNOWN $step: Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on organizations/$org)" "a refused analysis"
-  done
-  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "no identity that may run the live steps: a finding"
-  passed "(k) with no identity that may run them, the live steps print UNKNOWN naming the permission, and the run exits 2"
-fi
-
-# --- (l) The admin tag. ---
-if row l; then
-  base_world
-  edit "$world/secrets/ENVOY_OPERATOR.json" '.admin = ""'
-  run
-  want_status 1 "ENVOY_OPERATOR without the admin tag"
-  want_line "FINDING secret:ENVOY_OPERATOR: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" "no admin tag"
-  passed "(l) ENVOY_OPERATOR shown without \"admin\": \"true\" exits 1 naming admin"
-
-  base_world
-  edit "$world/secrets/ENVOY_OPERATOR.json" '.tier = "agent"'
-  run
-  want_status 1 "ENVOY_OPERATOR at agent tier"
-  want_line "FINDING secret:ENVOY_OPERATOR: tier is \"agent\", not \"human\"" "agent tier"
-  passed "(l) ENVOY_OPERATOR at agent tier exits 1 naming tier"
-
-  base_world
-  rm "$world/secrets/ENVOY_OPERATOR.json"
-  run
-  want_status 1 "no ENVOY_OPERATOR"
-  want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret"
-  passed "(l) no secret ENVOY_OPERATOR exits 1"
-
-  base_world
-  rm "$world/secrets/ENVOY_OPERATOR.json"
-  : >"$world/old-words"
-  run
-  want_status 1 "no ENVOY_OPERATOR, in the released agent-secrets' words"
-  want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret, in the released agent-secrets' words"
-  passed "(l) no secret ENVOY_OPERATOR exits 1 in gRPC's words too, as legion-envoy-v30.43.0 prints them"
-
-  base_world
-  run --secret ENVOY_OPERATOR_CONTROL
-  want_status 1 "the scratch secret at human tier without --admin"
-  want_line "FINDING secret:ENVOY_OPERATOR_CONTROL: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" \
-    "the scratch secret"
-  passed "(l) the scratch secret ENVOY_OPERATOR_CONTROL at human tier without --admin exits 1 naming admin (the plan's control)"
-
-  base_world
-  : >"$world/refuse-secret-show"
-  run
-  want_status 2 "a session that cannot show the secret"
-  want_text "UNKNOWN admin tag of ENVOY_OPERATOR: agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied" \
-    "a refused show"
-  passed "(l) a session that cannot show the secret's tags reads UNKNOWN naming the refusal"
-fi
-
-# --- (m) The report. ---
-if row m; then
-  base_world
-  iam "$project_res" roles/container.admin "serviceAccount:$ci_gsa"
-  : >"$world/refuse-secret-show"
-  before="$(date -u +%s)"
-  run --report "$temporary_dir/report.json"
-  want_status 1 "a run with a finding and an unknown step"
-  report="$temporary_dir/report.json"
-  [ -s "$report" ] || fail "--report wrote nothing"
-  run_at="$(jq -r '.run_at' "$report")"
-  [[ "$run_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "the report's run_at is '$run_at', not an RFC 3339 UTC time"
-  at="$(date -u -d "$run_at" +%s)"
-  [ "$at" -ge "$((before - 1))" ] && [ "$at" -le "$(date -u +%s)" ] || fail "the report's run_at $run_at is not the run's"
-  jq -e --arg p "serviceAccount:$ci_gsa" 'any(.findings[]; .principal == $p and (.right | startswith("container.serviceAccounts.createToken")))' "$report" >/dev/null ||
-    fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
-  jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
-    fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == [] and .credited == []
-    and .residuals == [] and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
-    and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown and an empty allowances: $(jq -c . "$report")"
-  passed "(m) --report writes run_at, findings, credited, residuals, unknown and allowances, with the stubbed UNKNOWN step under unknown"
-fi
-
-# --- (v) The report's parts of each finding, for a reader matching principal and role. ---
-if row v; then
-  base_world
-  iam "$project_res" roles/container.admin "serviceAccount:$ci_gsa"
-  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods exec envoy-operator ""
-  run --report "$temporary_dir/report.json"
-  want_status 1 "an IAM and an RBAC finding"
-  report="$temporary_dir/report.json"
-  # Every finding carries every field, each of its type.
-  missing="$(jq -r '.findings[] as $f
-    | ((["principal", "right", "role", "resource", "granted_at"][] as $k
-        | select(($f[$k] | type) != "string") | "\($f.principal) has no \($k)"),
-       (select(($f.permissions | type) != "array") | "\($f.principal) has no permissions list"))' "$report" | paste -sd ';' | sed 's/;/; /g')"
-  [ -z "$missing" ] || fail "the report's findings lack fields: $missing"
-  jq -e --arg p "serviceAccount:$ci_gsa" --arg res "$project_res" 'any(.findings[]; .principal == $p and .role == "roles/container.admin"
-      and .resource == $res and .granted_at == $res and (.permissions | index("container.serviceAccounts.createToken") != null))' "$report" >/dev/null ||
-    fail "the IAM finding's parts are not principal, roles/container.admin, $project_res and its permissions: $(jq -c --arg p "serviceAccount:$ci_gsa" '[.findings[] | select(.principal == $p)]' "$report")"
-  jq -e 'any(.findings[]; .principal == "system:serviceaccount:legion:worker" and .role == "create pods/exec in envoy-operator"
-      and .resource == "cluster:operator-cluster" and .permissions == ["create pods/exec in envoy-operator"]
-      and (.granted_at | startswith("RBAC: allowed by")))' "$report" >/dev/null ||
-    fail "the RBAC finding's parts are not its label, cluster:operator-cluster and the API server's reason: $(jq -c '[.findings[] | select(.principal == "system:serviceaccount:legion:worker")]' "$report")"
-  passed "(v) the report's findings carry role, resource, permissions and granted_at, on an IAM finding and on an RBAC finding"
-fi
-
-# --- (z) The report fixture: a fresh --report, run_at fixed, must equal the committed file. ---
-if row z; then
-  fence_world
-  iam "$project_res" roles/container.admin "serviceAccount:$ci_gsa"
-  grade_member
-  cluster_admin grade-cluster "$(user_subject "$grade_ci")"
-  : >"$world/refuse-secret-show"
-  fence_run --guarded "$route_pair" --report "$temporary_dir/fixture-run.json"
-  want_status 1 "the fixture's world"
-  # run_at is the one field a run's clock sets; the fixture fixes it at the epoch, so no reader
-  # takes it for a time something happened.
-  jq '.run_at = "1970-01-01T00:00:00Z"' "$temporary_dir/fixture-run.json" >"$temporary_dir/fixture-fresh.json"
-  jq -e 'any(.findings[]; .role | startswith("roles/")) and any(.findings[]; (.principal | startswith("serviceAccount:grade-ci@")) and (.granted_at | startswith("RBAC: ")))
-      and any(.credited[]; .policy == "broker-pod-connect") and any(.residuals[]; .tracked_by == "INFRA-4604")
-      and (.unknown | length) > 0' "$temporary_dir/fixture-fresh.json" >/dev/null ||
-    fail "the fixture's world gave no IAM finding, no RBAC finding of grade-ci, no credit, no residual or no UNKNOWN: $(jq -c . "$temporary_dir/fixture-fresh.json")"
-  # An RBAC finding's permissions are its one label, whole, though a guarded label holds a comma.
-  split="$(jq -r '.findings[] | select(.granted_at | startswith("RBAC: ")) | select(.permissions != [.role]) | "\(.role): \(.permissions)"' "$temporary_dir/fixture-fresh.json")"
-  [ -z "$split" ] || fail "an RBAC finding's permissions are not its label, whole: $split"
-  if [ "${OPERATOR_MINTERS_WRITE_FIXTURE:-}" = 1 ]; then
-    mkdir -p "$(dirname "$fixture")"
-    cp "$temporary_dir/fixture-fresh.json" "$fixture"
-    echo "wrote $fixture"
-  fi
-  [ -f "$fixture" ] || fail "no fixture at $fixture: run with OPERATOR_MINTERS_WRITE_FIXTURE=1 to write it"
-  cmp -s "$fixture" "$temporary_dir/fixture-fresh.json" ||
-    fail "the fixture $fixture differs from a fresh run (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it): $(diff "$fixture" "$temporary_dir/fixture-fresh.json" | sed -n '1,20p' || true)"
-  passed "(z) the committed report fixture equals a fresh --report of its world"
-fi
-
-# --- (al) A report is this run's or none. A copy whose webhook-backends.jq prints nothing stops the
-# run mid-way (with_rights refuses the empty rights, as row (cx) shows); the old report is replaced
-# by the run's own, which holds its UNKNOWN run. ---
-if row al; then
-  base_world
-  report="$temporary_dir/old-report.json"
-  echo '{"run_at": "2000-01-01T00:00:00Z", "findings": [], "unknown": []}' >"$report"
-  script="$(script_copy al)"
-  echo 'empty' >"$(dirname "$script")/operator-token-minters/webhook-backends.jq"
-  run_script="$script" run --report "$report"
-  want_status 2 "a run that stops mid-way"
-  want_text "UNKNOWN run: the run stopped before its end" "a run that stops mid-way"
-  [ -s "$report" ] || fail "a run that stops mid-way left no report"
-  jq -e '.run_at != "2000-01-01T00:00:00Z" and any(.unknown[]; .step == "run")' "$report" >/dev/null ||
-    fail "a run that stops mid-way left this report, not its own UNKNOWN one: $(jq -c . "$report")"
-  passed "(al) a run that stops mid-way leaves its own UNKNOWN report, not the old one"
-
-  echo '{"run_at": "2000-01-01T00:00:00Z", "findings": [], "unknown": []}' >"$report"
-  run --report "$report" --no-such-flag
-  want_status 2 "a usage error"
-  [ ! -e "$report" ] || fail "a usage error left the old report: $(cat "$report")"
-  passed "(al) a usage error leaves no report"
-fi
+#        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass;
+#   (df) want_recorded reads the check's last line and its FINDING and UNKNOWN lines as ten whole
+#        outputs of real check runs hold them (testdata/operator-token-minters-runs/): the counts
+#        stand on each output that reaches the exit block, a deleted or added line is named, and an
+#        output that ends elsewhere is named by its last line; want_line_with and
+#        want_own_principals each fail their control and pass the case beside it;
+#   (dg) each runs at most min(8, OPERATOR_MINTERS_TEST_SLOTS) of a row's items at once, so one at
+#        a time under one slot.
 
 # --- (ba) Two reads that saw nothing. ---
 saw_nothing_row() {
@@ -675,4 +422,122 @@ if row db; then
   want_rbac_unknown "the reviews to judge could not be picked out of the API server's answer (awk exited " \
     "a pick of the reviews to judge stopped by a file size limit"
   passed "(db) a pick of the reviews to judge that stops part way reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
+fi
+
+# --- (df) want_recorded's reading, held to ten whole outputs of real check runs captured at
+# 98caff1b, in testdata/operator-token-minters-runs/ (its README names each run and the commands
+# that captured it). Each is read into output as run_only holds it. recorded_differ prints nothing
+# for each of the six that reach the exit block; the counts text for each of those with its first
+# FINDING or UNKNOWN line deleted, and for the clean one with a FINDING line added; and, for each of
+# the four that end elsewhere (the crash report, a copy missing a part, a --report that cannot be
+# written, a usage error), the text naming its last line. The row holds want_line_with and
+# want_own_principals to their controls too: each, in a subshell, fails a case it must refuse, and
+# passes the case beside it. The row runs no check. ---
+df_runs="$script_dir/testdata/operator-token-minters-runs"
+# df_differ FIXTURE EDIT TEXT WANT: recorded_differ on TEXT, which is FIXTURE as EDIT leaves it, must
+# print WANT; a wrong answer is added to df_wrong, one a line.
+df_differ() {
+  local output="$3" gave
+  gave="$(recorded_differ)"
+  [ "$gave" = "$4" ] || df_wrong+=$'\n'"  $1 $2 gave '$gave'; it should give '$4'"
+}
+# df_without TEXT PREFIX: TEXT less its first line that starts with PREFIX.
+df_without() { awk -v prefix="$2" '!cut && index($0, prefix) == 1 { cut = 1; next } { print }' <<<"$1"; }
+if row df; then
+  df_wrong=""
+  # Each output that reaches the exit block, with the FINDING and UNKNOWN lines it holds, as its
+  # README's table counts them.
+  for df_run in "exit0-row-a.txt 0 0" "exit1-one-finding-row-u.txt 1 0" "exit1-53-findings-row-b.txt 53 0" \
+    "exit1-findings-and-unknowns-row-fb.txt 6 2" "exit2-one-unknown-row-h.txt 0 1" "exit2-ten-unknowns-row-ba.txt 0 10"; do
+    read -r df_file df_findings df_unknowns <<<"$df_run"
+    df_text="$(<"$df_runs/$df_file")"
+    df_differ "$df_file" "as captured" "$df_text" ""
+    [ "$df_findings" -eq 0 ] || df_differ "$df_file" "with its first FINDING line deleted" "$(df_without "$df_text" 'FINDING ')" \
+      "the last line counts $df_findings finding(s) and $df_unknowns unknown; the run printed $((df_findings - 1)) FINDING and $df_unknowns UNKNOWN lines"
+    [ "$df_unknowns" -eq 0 ] || df_differ "$df_file" "with its first UNKNOWN line deleted" "$(df_without "$df_text" 'UNKNOWN ')" \
+      "the last line counts $df_findings finding(s) and $df_unknowns unknown; the run printed $df_findings FINDING and $((df_unknowns - 1)) UNKNOWN lines"
+  done
+  df_text="$(<"$df_runs/exit0-row-a.txt")"
+  df_differ exit0-row-a.txt "with a line 'FINDING x: y' added before its last line" "${df_text%$'\n'*}"$'\n'"FINDING x: y"$'\n'"${df_text##*$'\n'}" \
+    "the last line counts 0 finding(s) and 0 unknown; the run printed 1 FINDING and 0 UNKNOWN lines"
+  # Each output that ends elsewhere, with its last line.
+  for df_run in "stopped-before-end-row-al.txt=operator-token-minters: stopped before its end, 1 unknown: exit 2" \
+    "no-step-ran-row-bc.txt=operator-token-minters: no step ran, 1 unknown: exit 2" \
+    "report-unwritable-row-co.txt=operator-token-minters: --report cannot be written" \
+    "usage-error-row-al.txt=  --report FILE              also write the result as JSON"; do
+    df_text="$(<"$df_runs/${df_run%%=*}")"
+    df_differ "${df_run%%=*}" "as captured" "$df_text" "the run did not reach the exit block; its last line is '${df_run#*=}'"
+  done
+  # want_line_with's control: one line starting with the prefix and another ending with the suffix
+  # fail it; a line holding both passes.
+  df_prefix="FINDING serviceAccount:perm-1@$project.iam.gserviceaccount.com: "
+  df_suffix=" on $gsa_res through roles/iam.serviceAccountUser, granted at $gsa_res"
+  df_apart="${df_prefix}iam.serviceAccountKeys.create on $gsa_res through roles/iam.serviceAccountKeyAdmin, granted at $gsa_res"
+  df_apart+=$'\n'"FINDING serviceAccount:perm-2@$project.iam.gserviceaccount.com: iam.serviceAccounts.actAs$df_suffix"
+  if df_said="$(output="$df_apart" && want_line_with "$df_prefix" "$df_suffix" "the control" 2>&1)"; then
+    df_wrong+=$'\n'"  want_line_with passed an output with the prefix on one line and the suffix on another"
+  elif [[ $df_said != *"FAIL: the control: no line starting '$df_prefix' and ending '$df_suffix'"* ]]; then
+    df_wrong+=$'\n'"  want_line_with failed the prefix and the suffix on two lines, saying: $df_said"
+  fi
+  df_said="$(output="$df_apart"$'\n'"${df_prefix}iam.serviceAccounts.actAs$df_suffix" &&
+    want_line_with "$df_prefix" "$df_suffix" "the control" 2>&1)" ||
+    df_wrong+=$'\n'"  want_line_with failed a line holding both its prefix and its suffix, saying: $df_said"
+  # want_own_principals' control: two entries on one principal fail it; two on two pass.
+  df_member="serviceAccount:perm-1@$project.iam.gserviceaccount.com"
+  df_signjwt="iam.serviceAccounts.signJwt on $gsa_res through projects/$project/roles/only.iam.serviceAccounts.signJwt, granted at $gsa_res"
+  df_signblob="iam.serviceAccounts.signBlob on $gsa_res through projects/$project/roles/only.iam.serviceAccounts.signBlob, granted at $gsa_res"
+  if df_said="$(OWN_FINDINGS=("$df_member"$'\t'"$df_signjwt" "$df_member"$'\t'"$df_signblob") && want_own_principals "the control" 2>&1)"; then
+    df_wrong+=$'\n'"  want_own_principals passed two entries on $df_member"
+  elif [[ $df_said != *"FAIL: the control: two entries of OWN_FINDINGS share the principal $df_member"$'\n'* ]]; then
+    df_wrong+=$'\n'"  want_own_principals failed two entries on one principal, saying: $df_said"
+  fi
+  df_said="$(OWN_FINDINGS=("$df_member"$'\t'"$df_signjwt" "serviceAccount:perm-2@$project.iam.gserviceaccount.com"$'\t'"$df_signblob") &&
+    want_own_principals "the control" 2>&1)" ||
+    df_wrong+=$'\n'"  want_own_principals failed two entries on two principals, saying: $df_said"
+  [ -z "$df_wrong" ] || fail "(df) want_recorded's reading of the ten outputs, or a helper's control, went wrong:$df_wrong"
+  passed "(df) want_recorded reads the check's last line and its FINDING and UNKNOWN lines as ten real outputs hold them: the counts stand on each output that reaches the exit block, a deleted or added line is named, and an output that ends elsewhere is named by its last line"
+fi
+
+# --- (dg) each's bound. OPERATOR_MINTERS_TEST_SLOTS bounds a row's items as it bounds the row files:
+# each runs at most min(8, slots) of them at once, so under one slot, as CI runs each part (a pool
+# entry the pool counts as one slot), a part is one process at a time. Three probe items each mark
+# themselves running, look five times, 0.1 s apart, for the other items' marks, write down the ones
+# each look found, and take their own mark away; an item that found as many others at once as the
+# bound, or more, ran beside more items than the bound lets run. The bound is read from the
+# harness's own slots, its default where OPERATOR_MINTERS_TEST_SLOTS is unset. The row runs no
+# check. Run by hand, the control is each with a fixed bound of 8, whatever the slots, as it was
+# before the parts: under OPERATOR_MINTERS_TEST_SLOTS=1, p1 found p2 and p3. ---
+# each_probe ITEM: marks ITEM running, writes the other items it finds running once a look, five
+# looks 0.1 s apart, one line a look, and takes its mark away.
+each_probe() {
+  local dir="$temporary_dir/dg" look mark found
+  : >"$dir/running-$1"
+  for look in 1 2 3 4 5; do
+    [ "$look" -eq 1 ] || sleep 0.1
+    found=""
+    for mark in "$dir"/running-*; do
+      [ "$mark" = "$dir/running-$1" ] || [ ! -e "$mark" ] || found+=" ${mark##*/running-}"
+    done
+    printf '%s\n' "${found# }" >>"$dir/saw-$1"
+  done
+  rm "$dir/running-$1"
+}
+if row dg; then
+  dg_bound=$((slots < 8 ? slots : 8))
+  mkdir "$temporary_dir/dg"
+  each each_probe p1 p2 p3
+  dg_over=""
+  for dg_item in p1 p2 p3; do
+    dg_most=""
+    while IFS= read -r dg_look; do
+      read -ra dg_names <<<"$dg_look"
+      read -ra dg_most_names <<<"$dg_most"
+      [ "${#dg_names[@]}" -le "${#dg_most_names[@]}" ] || dg_most="$dg_look"
+    done <"$temporary_dir/dg/saw-$dg_item"
+    read -ra dg_most_names <<<"$dg_most"
+    [ "${#dg_most_names[@]}" -lt "$dg_bound" ] || dg_over+="; $dg_item saw ${dg_most// / and } running at once"
+  done
+  [ -z "$dg_over" ] ||
+    fail "each ran more of a row's items at once than min(8, OPERATOR_MINTERS_TEST_SLOTS), $dg_bound, lets run: ${dg_over#; }"
+  passed "(dg) each runs at most min(8, OPERATOR_MINTERS_TEST_SLOTS) items at once, one at a time under one slot"
 fi

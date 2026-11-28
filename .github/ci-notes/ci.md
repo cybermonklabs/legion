@@ -3086,7 +3086,10 @@ are a slow suite the merge queue runs, and the build and checks beside them stay
 The job keeps the setup they ran under there (Bun, the workspace install, Go and the go-envoy
 restore), so no harness loses a tool it reads. Each step queues its harness through the harness
 pool (#the-harness-pool), so they run beside each other, and the job's last step but the ci-ok
-report is their verdict.
+report is their verdict. The minter check's harness
+(packages/envoy/infra/scripts/operator-token-minters.test.sh) runs as one pool entry for each of
+its row files, one process each, all queued by one step from the harness's own list of them
+(`--parts`).
 
 ## What the envoy-go job runs
 
