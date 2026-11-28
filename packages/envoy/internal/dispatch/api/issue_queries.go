@@ -1259,10 +1259,9 @@ const issueCommentCountStatement = `select count(*) from comments where issue_ke
 // its key: an open one first, since it is the one a reader acts on, else a merged one, which says
 // the work landed, else a closed one. In each state the newest by event_at comes first, a row
 // whose event reported no time after every dated row, and the higher number first where two rows
-// share both, as baseBranchMergedForQuery orders (delivery/pull_request_heads.go). It answers no
-// row for an issue none is attributed to. Its filter is the leading column of
-// pull_request_heads_issue_head (issue_key, head_sha), and an issue's rows are its handful of pull
-// requests. scanIssuePullRequest decodes it.
+// share both. It answers no row for an issue none is attributed to. Its filter is the leading
+// column of pull_request_heads_issue_head (issue_key, head_sha), and an issue's rows are its
+// handful of pull requests. scanIssuePullRequest decodes it.
 const issuePullRequestStatement = `
 		select repo, number, state, url from pull_request_heads
 		where issue_key = $1
