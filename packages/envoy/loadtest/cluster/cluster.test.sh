@@ -200,10 +200,11 @@ if [ "$#" -eq 1 ] && [ "$cluster_test_part" = --parts ]; then
   printf '%s\n' "${cluster_test_parts[@]}"
   exit 0
 fi
+part_known=false
 for part_name in "${cluster_test_parts[@]}"; do
-  [ "$part_name" != "$cluster_test_part" ] || break
+  [ "$part_name" != "$cluster_test_part" ] || part_known=true
 done
-if [ "$#" -ne 1 ] || [ "$cluster_test_part" != "$part_name" ]; then
+if [ "$#" -ne 1 ] || ! "$part_known"; then
   {
     printf 'Usage: bash loadtest/cluster/cluster.test.sh <part>\nParts:\n'
     printf '%s\n' "${cluster_test_parts[@]}"
@@ -1353,6 +1354,15 @@ copy_credentials() {
   printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
 }
 
+# The run's state must identify the checker built from the dispatch commit, with no overlay
+# and with the hash of the binary in run_dir. Keep the record for later comparisons.
+assert_dispatch_checker() {
+  checker=$(jq -c .stored_order "$run_dir/state.json")
+  jq -e --arg c "$commit_ok" --arg s "$(sha256sum <"$run_dir/envoy-dispatch" | cut -d' ' -f1)" \
+    '. == {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: true, sha256: $s}' \
+    <<<"$checker" >/dev/null || fail "$1 does not record the checker built from the dispatch commit and its sha256: $checker"
+}
+
 # job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
 # in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
 # record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
@@ -1664,14 +1674,14 @@ grep -q -- "pass --run $other_run" "$tmp/out" || fail "down's refusal of another
 [ -f "$fake/lock.json" ] || fail "down deleted another run's lock without --run"
 pass "down refuses another run's lock unless --run names it"
 
-# The child gets an empty TMPDIR so any setup it runs leaves a file that this case can see.
+# The child's TMPDIR does not exist. If setup ran, mktemp would create nothing there and
+# set -e would make the child exit 1, not 2.
 local refusal refusal_tmp refusal_rc expected_part listed_parts
 local -a refusal_args
 listed_parts=$(bash "$here/cluster.test.sh" --parts)
 [ -n "$listed_parts" ] || fail "cluster.test.sh --parts listed no parts"
 for refusal in no-argument unknown extra-argument; do
   refusal_tmp=$tmp/$refusal
-  mkdir "$refusal_tmp"
   refusal_args=()
   case $refusal in
     unknown) refusal_args=(no-such-part) ;;
@@ -1681,7 +1691,7 @@ for refusal in no-argument unknown extra-argument; do
   TMPDIR=$refusal_tmp bash "$here/cluster.test.sh" "${refusal_args[@]}" >"$tmp/part-refusal.out" 2>"$tmp/part-refusal.err" ||
     refusal_rc=$?
   ((refusal_rc == 2)) || fail "cluster.test.sh with $refusal exited $refusal_rc, not 2: $(cat "$tmp/part-refusal.err")"
-  [ -z "$(names "$refusal_tmp")" ] || fail "cluster.test.sh with $refusal wrote into TMPDIR: $(names "$refusal_tmp")"
+  [ ! -e "$refusal_tmp" ] || fail "cluster.test.sh with $refusal created TMPDIR: $refusal_tmp"
   while IFS= read -r expected_part; do
     grep -qxF -- "$expected_part" "$tmp/part-refusal.err" ||
       fail "cluster.test.sh with $refusal did not name $expected_part: $(cat "$tmp/part-refusal.err")"
@@ -1727,10 +1737,7 @@ done
 grep -q 'requests .*limits' "$tmp/out" || fail "up did not print the containers' requests and limits"
 # The checker: built from the dispatch commit's own tree (no overlay), in a scratch directory of
 # the cluster root before the lock, then moved into the run directory.
-checker=$(jq -c .stored_order "$run_dir/state.json")
-jq -e --arg c "$commit_ok" --arg s "$(sha256sum <"$run_dir/envoy-dispatch" | cut -d' ' -f1)" \
-  '. == {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: true, sha256: $s}' \
-  <<<"$checker" >/dev/null || fail "state.json does not record the checker built from the dispatch commit and its sha256: $checker"
+assert_dispatch_checker state.json
 grep -qx -- "-C $(cd -- "$here/../../../.." && pwd) archive $commit_ok packages/envoy" "$fake/git.log" ||
   fail "up did not git archive packages/envoy of the dispatch commit $commit_ok from the checkout's git store: $(cat "$fake/git.log")"
 [[ $(cat "$fake/go-dispatch.log") == "GOWORK=off CGO_ENABLED=0 go build -buildvcs=false -o $LOADTEST_CLUSTER_ROOT/.checker."??????"/envoy-dispatch ./cmd/dispatch" ]] ||
@@ -2255,10 +2262,7 @@ run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --browsertype-comm
 ((RC == 0)) || fail "up --browsertype-commit exited $RC"
 run=$(jq -r .data.run "$fake/lock.json")
 run_dir=$LOADTEST_CLUSTER_ROOT/$run
-checker=$(jq -c .stored_order "$run_dir/state.json")
-jq -e --arg c "$commit_ok" --arg s "$(sha256sum <"$run_dir/envoy-dispatch" | cut -d' ' -f1)" \
-  '. == {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: true, sha256: $s}' \
-  <<<"$checker" >/dev/null || fail "the typing run's state.json does not record the checker built from the dispatch commit and its sha256: $checker"
+assert_dispatch_checker "the typing run's state.json"
 jq -e --arg c "$commit_bt" --arg s "$(sha256sum <"$run_dir/browsertype" | cut -d' ' -f1)" '.browsertype == {commit: $c, sha256: $s}' \
   "$run_dir/state.json" >/dev/null || fail "state.json does not record the browsertype commit and binary's sha256: $(jq -c .browsertype "$run_dir/state.json")"
 grep -qx -- "-C $(cd -- "$here/../../../.." && pwd) archive $commit_bt packages/envoy" "$fake/git.log" ||
@@ -3266,14 +3270,14 @@ for ((i = 0; i < 50; i++)); do
 done
 orphan_alive=no
 kill -0 "$orphan_hb" 2>/dev/null && orphan_alive=yes
+[ "$orphan_alive" = no ] ||
+  fail "the heartbeat daemon (pid $orphan_hb) still runs 5 s after the last command of its run ended: it renews the lock for ever, so the lock never goes stale and the copy is never reclaimed"
 orphan_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 # Once the heartbeat's session is gone, nothing in it can patch the lock again.
 wait_for "the heartbeat (pid $orphan_hb) and every process of its session to end after up has returned" \
   session_gone "$orphan_hb"
 orphan_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 run_cluster down --namespace "$ns"
-[ "$orphan_alive" = no ] ||
-  fail "the heartbeat daemon (pid $orphan_hb) still runs 5 s after the last command of its run ended: it renews the lock for ever, so the lock never goes stale and the copy is never reclaimed"
 [ "$orphan_patches_after" = "$orphan_patches" ] ||
   fail "the lock was patched $((orphan_patches_after - orphan_patches)) more times after the last command of the run ended: an abandoned run keeps its lock fresh"
 unset FAKE_FAST_SLEEP
@@ -3358,6 +3362,8 @@ for ((i = 0; i < 200; i++)); do
   }
   sleep 0.1
 done
+[ "$sampler_alive" = no ] ||
+  fail "the sampler daemon (pid $sampler_pid) still runs 20 s after the last command of its run ended and its heartbeat stopped: its eight kubectl execs stay open and it appends an error line of each to cgroup.jsonl every 5 s for ever"
 sampler_lines=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
 # Wait for the whole session so no role loop or its kubectl exec can still be running.
 wait_for "the sampler (pid $sampler_pid) and every role loop and kubectl exec of its session to end after the heartbeat stops" \
@@ -3366,8 +3372,6 @@ sampler_lines_after=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
 # Check before down, which removes the pidfile even if the sampler left it behind.
 [ ! -f "$sampler_dir/sampler.pid" ] || fail "the sampler that stopped left its pidfile $sampler_dir/sampler.pid"
 run_cluster down --namespace "$ns"
-[ "$sampler_alive" = no ] ||
-  fail "the sampler daemon (pid $sampler_pid) still runs 20 s after the last command of its run ended and its heartbeat stopped: its eight kubectl execs stay open and it appends an error line of each to cgroup.jsonl every 5 s for ever"
 [ "$sampler_lines_after" = "$sampler_lines" ] ||
   fail "cgroup.jsonl grew by $((sampler_lines_after - sampler_lines)) lines while the sampler's session was ending: a role loop of it still sampled"
 unset FAKE_FAST_SLEEP
@@ -4454,16 +4458,17 @@ pass "each poll of the disk watcher and of the runner-job wait reads the lock on
 # The gate keeps that nap from ending until a second helper sees that Bash has reaped the watcher.
 # The stop's next liveness check therefore sees the watcher gone, even on a loaded runner.
 start_stop_poll_watcher() {
-  local stop_pid=$1 nap_limit=$2 one_second_limit=$3
+  local stop_pid=$1 nap_limit=$2
   mkdir -- "$watch_fixture"
   (
     trap ': >"$watch_fixture/got-term"' TERM
     printf '%s\n' "$BASHPID" >"$watch_fixture/ready"
+    # The long-wait case's gate holds the third 1 s nap.
     while [ -d "$FAKE_DIR" ] && [ ! -e "$watch_fixture/cancel" ]; do
       if [ -f "$watch_fixture/got-term" ] &&
-        awk -v pid="$stop_pid" -v naps="$nap_limit" -v coarse="$one_second_limit" '
+        awk -v pid="$stop_pid" -v naps="$nap_limit" '
           $1 == pid && NF >= 2 && $2 != "check" { ++total; if ($2 == "1") ++ones }
-          END { exit !(total >= naps || ones >= coarse) }
+          END { exit !(total >= naps || ones >= 3) }
         ' "$FAKE_DIR/naps.log" 2>/dev/null; then
         : >"$watch_fixture/left"
         exit 0
@@ -4520,7 +4525,7 @@ expected_stop_poll_trace() {
 
 assert_stop_poll_watcher_left() {
   [ ! -f "$fake/stop-late" ] ||
-    fail "pg_disk_watch_stop did not return at the CI step's deadline"
+    fail "pg_disk_watch_stop had not returned at the CI step's deadline"
   [ -f "$watch_fixture/got-term" ] && [ -f "$watch_fixture/left" ] ||
     fail "the stand-in disk watcher did not take TERM and leave on its own"
   [ -z "$watcher_present" ] ||
@@ -4542,7 +4547,7 @@ $trace"
 
   watch_fixture=$fake/stop-early
   export FAKE_SLEEP_GATE=$watch_fixture/gate FAKE_SLEEP_GATE_SECONDS=0.05
-  start_stop_poll_watcher "$stop_pid" 1 3
+  start_stop_poll_watcher "$stop_pid" 1
   stop_name=pgearly
   PG_DISK_WATCHER=$watcher PG_DISK_WATCH_STEP=$stop_name
   stop_watchdog "$watcher"
@@ -4572,7 +4577,7 @@ pass "pg_disk_watch_stop returns at its first check after the watcher it signall
   watch_fixture=$fake/stop-long
   export FAKE_FAST_SLEEP=1 FAKE_SLEEP_GATE=$watch_fixture/gate FAKE_SLEEP_GATE_SECONDS=1 FAKE_SLEEP_GATE_FROM=3
   # The watcher also leaves after 41 naps so a stop that never takes a 1 s nap fails by its trace.
-  start_stop_poll_watcher "$stop_pid" 41 3
+  start_stop_poll_watcher "$stop_pid" 41
   stop_name=pglong
   PG_DISK_WATCHER=$watcher PG_DISK_WATCH_STEP=$stop_name
   stop_watchdog "$watcher"

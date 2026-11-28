@@ -102,7 +102,7 @@ jobs:
       # Each cluster part runs in its own process with its own fakes (`cluster.test.sh --parts`
       # lists them), so the pool can run parts beside each other and beside the other harnesses.
       # The parts queue longest first by median so the shorter entries fill the cores around them.
-      # The planner and implementer read these timing records on 2026-11-28. As one pool entry,
+      # These timing records were read on 2026-11-28. As one pool entry,
       # the whole harness took 576.4 s of wall time and 163.4 CPU-seconds in base run 46119586305
       # (job 140901259898, main 562c898d2e2e). It took 279.0 to 571.6 s of wall time in four
       # green merge-group runs on 2026-11-27 (46076851429, 46077299610, 46078481774, 46083105841).
@@ -111,7 +111,8 @@ jobs:
       # typing 43.9 / 62.5, stops 38.4 / 43.2, path 33.5 / 43.1, identity 32.9 / 62.3,
       # checker-quota 27.2 / 29.0, daemons 25.1 / 33.1, units 16.4 / 36.3, and
       # refusals 13.3 / 18.1 (dispatch://INFRA-6321/artifact/cluster-test-cases-md).
-      # Each part keeps the 15 min bound to end a hang; 60 s is the time bar, not a timeout.
+      # Each part keeps the 15 min bound to end a hang. The pool's records show whether each
+      # entry meets the 60 s target of dispatch://INFRA-6321. That target is not a timeout.
       # The pool sets HARNESS_POOL_DEADLINE_MS to the part's start plus the bound less 30 s.
       # The command passes it as LEGION_PROOF_DEADLINE_MS so proof_guard_from_env in proof-wait.sh
       # lets a wait name what it waited for before the pool stops the part, as case (gg) checks.

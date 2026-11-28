@@ -1584,7 +1584,7 @@ pg_disk_watch() {
 # bound it kills the watcher and the children of its act so no path out of a step hangs. The
 # line it writes names the step, since a watcher killed there left its work in the copy half done.
 pg_disk_watch_stop() {
-  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() NOW naps=0
+  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() NOW fine_naps=0
   [ -n "$pid" ] || return 0
   PG_DISK_WATCHER="" PG_DISK_WATCH_STEP=""
   kill -- "$pid" 2>/dev/null || true
@@ -1598,9 +1598,9 @@ pg_disk_watch_stop() {
       note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed"
       break
     fi
-    if ((naps < PG_DISK_STOP_FINE_POLLS)); then
+    if ((fine_naps < PG_DISK_STOP_FINE_POLLS)); then
       sleep "$PG_DISK_STOP_FINE_SECONDS"
-      naps=$((naps + 1))
+      fine_naps=$((fine_naps + 1))
     else
       sleep 1
     fi
