@@ -126,7 +126,9 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 }
 
 // deliveryViewRead is one recompute's read and compute, how long each of its stages took, and
-// the marks it took over from the view (deliveryView.marks), by what made them.
+// the marks it took over from the view (deliveryView.marks), by what made them. p0 is the open P0
+// issues it read (delivery.OpenP0Keys), nil for a view that shows no unowned P0 list, which reads
+// none.
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
@@ -138,6 +140,7 @@ type deliveryViewRead struct {
 	expiry            time.Time
 	issues, ancestors map[string]struct{}
 	sessions          map[string]string
+	p0                map[string]struct{}
 	prs, runs         int
 	unfetchable       int
 	times             deliveryRecomputeTimes
@@ -146,9 +149,12 @@ type deliveryViewRead struct {
 
 // recompute answers one dirty view from a fresh read: the newest change position first, which
 // takes over every mark made until then (read), so a change committed during the read lands past
-// it and marks the view again; then the GET route's population read, the ancestors of the issues
-// it names, and the pure compute. It sends each sub the delta against what it holds (a snapshot to
-// a sub with none), or the refusal its read answered (viewReads.refusal) to a sub not yet told.
+// it and marks the view again; then, for a view that shows the unowned P0 list, the open P0
+// issues, which it installs as the generation's set with what the events heard since the
+// position decided applied over them (installP0Locked); then the GET route's population read, the
+// ancestors of the issues it names, and the pure compute. It sends each sub the delta against
+// what it holds (a snapshot to a sub with none), or the refusal its read answered
+// (viewReads.refusal) to a sub not yet told.
 func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause string) {
 	started := time.Now()
 	h.mu.Lock()
@@ -165,6 +171,12 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	code, message, refused := classes.reads.refusal(err)
 	h.mu.Lock()
 	view.computing, view.readingSeq = false, 0
+	if read.p0 != nil {
+		// The open P0 issues the read found stand whatever its later reads answered, with what
+		// the events heard since its position decided over them; their record ends here either way.
+		g.installP0Locked(read.p0)
+	}
+	g.p0Heard = nil
 	sent := 0
 	switch {
 	case g.views[spec.key] != view:
@@ -237,11 +249,21 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 // read's answer by (reading, recheckHeardLocked). A reset of the change log since the recompute
 // began leaves dirty set: the position may name the old log, so the marks are taken over only
 // while the generation stands at the epoch the recompute read.
+//
+// A view that shows the unowned P0 list then reads the open P0 issues (delivery.OpenP0Keys), which
+// recompute installs as the generation's set, so an issue whose priority, or that of an issue
+// above it, a write moved with no event the hub heard (direct SQL, or a process of a build before
+// dispatch://INFRA-5793 while a release rolls) is in the set or out of it from the next fresh read
+// of such a view on, as it is on that view's unowned P0 list. From the position on, the P0 state
+// each issue event decides is recorded (p0Heard) and applied over what the read finds, since the
+// read may have passed an issue's row before its event committed. A view that shows no such list
+// reads none: the set decides the marks of those views alone (showsIssue).
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
-	ctx := g.readContext()
+	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	classes := spec.classes()
 	var read deliveryViewRead
 	started := time.Now()
-	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
+	head, err := delivery.ChangesHead(ctx, pool)
 	read.times.read = time.Since(started)
 	if err != nil {
 		return read, err
@@ -257,12 +279,25 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		view.dirty, view.immediate = false, false
 		read.marks, view.marks = view.marks, nil
 	}
+	if classes.unownedP0 {
+		g.p0Heard = map[string]bool{}
+	}
 	h.mu.Unlock()
+	if classes.unownedP0 {
+		// The position's read (delivery.ChangesHead) answers when its change was recorded as well,
+		// so the open P0 issues have no read to run beside and are read alone, before the kind's.
+		started = time.Now()
+		read.p0, err = delivery.OpenP0Keys(ctx, pool)
+		read.times.read += time.Since(started)
+		if err != nil {
+			return read, err
+		}
+	}
 	now := h.clock.Now()
 	// The kind's read times its own compute (deliveryLiveClasses.read), and the rest of its call
 	// is its reads; the hub's lock and note between the position and the call time as neither.
 	started = time.Now()
-	body, err := spec.classes().read(h, ctx, spec, now, &read)
+	body, err := classes.read(h, ctx, spec, now, &read)
 	read.times.read += time.Since(started) - read.times.compute
 	if err != nil {
 		return read, err
@@ -456,8 +491,9 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 // deliveryRecomputeTimes is how long each stage of one recompute took, which its log line
 // carries (finishRecompute), so a run whose recomputes slowed says which stage the time went to:
 //
-//   - read, the database reads: the change position and the kind's own reads, with what the kind
-//     does between them (the board's placing of its cards, the closing of its facts at now);
+//   - read, the database reads: the change position, the open P0 issues of a view that shows the
+//     unowned P0 list, and the kind's own reads, with what the kind does between them (the
+//     board's placing of its cards, the closing of its facts at now);
 //   - compute, the body built from what was read, and what the hub keeps of it beside the body
 //     (the issues an event marks the view by, the next expiry);
 //   - encode, the body's JSON encoding and its reading back into the list items, map entries,

@@ -1405,14 +1405,18 @@ func collectPullRequests(rows pgx.Rows) ([]DeliveryPullRequest, error) {
 	return prs, rows.Err()
 }
 
-// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate
-// (openP0Predicate), so the planner proves the index from them and reads the whole of that index,
-// which holds the open P0 issues alone, rather than scanning every issue of every project.
-const openP0KeysQuery = `select key from issues where ` + openP0Predicate
+// openP0KeysQuery is OpenP0Keys' read: the descent of every read of the open P0 issues
+// (openP0Descent in unowned.go), which reads its seeds through issues_open_p0 and issues_done_p0
+// and the issues under them through issues_parent_key, rather than scanning every issue of every
+// project, and keeps what it reaches that is not done.
+var openP0KeysQuery = openP0Descent + `select key from p0 where ` + openP0Rule
 
-// OpenP0Keys is every open P0 issue's key, across every project: the issues whose change can move
-// the measures' unowned_p0 list. The delivery live hub (api/delivery_live_hub.go) loads it at start
-// and after the event log resets, and keeps it current from issue event payloads in between.
+// OpenP0Keys is every open P0 issue's key, across every project: each issue not done whose
+// resolved priority is 0, its own or the one it takes from the nearest issue above it that has
+// one, claimed, routed or neither, the issues whose change can move the measures' unowned_p0
+// list. The delivery live hub (api/delivery_live_hub.go) loads it as it takes its event feed, at
+// start and after a feed closes, and in each recompute of a view that shows that list, and keeps
+// it current from issue event payloads in between.
 func OpenP0Keys(ctx context.Context, pool *store.Pool) (map[string]struct{}, error) {
 	rows, err := pool.Query(ctx, openP0KeysQuery)
 	if err != nil {

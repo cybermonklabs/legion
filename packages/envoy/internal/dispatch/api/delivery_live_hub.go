@@ -267,8 +267,20 @@ type hubGeneration struct {
 	// recompute that read across one stores no change position.
 	change delivery.ChangeCursor
 	epoch  int64
-	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
+	// p0 is the open P0 issues, the issues not done whose resolved priority is 0
+	// (delivery.OpenP0Keys), which decide the marks of the views that show the unowned P0 list
+	// (showsIssue): as the read made with each feed found them (applyFeed), then as each recompute
+	// of such a view found them (installP0Locked), and between those reads kept current from the
+	// issue events' payloads (applyEventLocked).
 	p0 map[string]struct{}
+	// p0Heard is, while a recompute's read of the open P0 issues is under way, from the moment it
+	// took its change position until recompute installs what it found, the P0 state each issue
+	// event heard meanwhile decided, by issue; nil at every other time, and from a feed taken
+	// during that read on (applyFeed), so the set read with the feed stands. The read may have
+	// passed an issue's row before that issue's event committed, so the event's state is applied
+	// over what the read found. One recompute runs at a time (work), so one record serves the
+	// generation.
+	p0Heard map[string]bool
 	// fresh is the freshness row as last heard, and sent the verdict last sent; known is false
 	// until the first recompute sets them, silently.
 	fresh deliveryFreshnessHeard
