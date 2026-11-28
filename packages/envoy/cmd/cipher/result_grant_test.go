@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -177,6 +178,48 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 	}
 	if _, ok := childVar(stdout, "AGENT_SECRETS_MACHINE_IDENTITY"); ok {
 		t.Errorf("the child holds AGENT_SECRETS_MACHINE_IDENTITY, so it could trade the run's identity itself")
+	}
+}
+
+// TestResultGrantsCommandGetsNoOIDCRequest: result-grant asks GitHub for the run's token with the
+// job's OIDC token request (the stand-in runner answers the request bearer alone, and the broker
+// got the token it answered), and its command gets neither variable of that request, with which
+// it could ask GitHub for the run's token and trade it again.
+func TestResultGrantsCommandGetsNoOIDCRequest(t *testing.T) {
+	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t))
+	stdout, stderr, exit := runResultGrant(t, broker)
+	if exit != 0 {
+		t.Fatalf("result-grant exited %d: %s", exit, stderr)
+	}
+	broker.mu.Lock()
+	forms := broker.forms
+	broker.mu.Unlock()
+	if len(forms) != 1 || forms[0].Get("subject_token") != "the-runs-oidc-token" {
+		t.Fatalf("the broker's token endpoint got %v; want one trade of the token the runner answered the request bearer with", forms)
+	}
+	for _, name := range []string{cipherclient.ActionsIDTokenRequestURLVar, cipherclient.ActionsIDTokenRequestTokenVar} {
+		if _, ok := childVar(stdout, name); ok {
+			t.Errorf("the child holds %s, so it could ask GitHub for the run's token itself", name)
+		}
+	}
+}
+
+// TestTheExecFormsChildKeepsTheOIDCRequest: only result-grant drops GitHub's OIDC token request.
+// The exec form's child, a command of the job's own that may ask GitHub for a token, keeps both
+// variables as the job set them.
+func TestTheExecFormsChildKeepsTheOIDCRequest(t *testing.T) {
+	request := []string{
+		cipherclient.ActionsIDTokenRequestURLVar + "=https://runner.example.test/idtoken?api-version=2.0",
+		cipherclient.ActionsIDTokenRequestTokenVar + "=" + runnerRequestToken,
+	}
+	got, err := buildChildEnv(request, map[string]string{"GRANT_ME": "released"}, nil, airlockFiles{})
+	if err != nil {
+		t.Fatalf("buildChildEnv: %v", err)
+	}
+	for _, want := range request {
+		if !slices.Contains(got, want) {
+			t.Errorf("the exec form's child environment %q lacks %q", got, want)
+		}
 	}
 }
 
