@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -158,8 +157,8 @@ type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
 	d      *listenerDeps
-	// ctx bounds the leader read this send's answers confirm the holder by (shownHolder), the
-	// request's own send window (sendToRole).
+	// ctx is the request's own send window (sendToRole): it bounds the leader read this send's
+	// answers confirm the holder by (shownHolder) and the hand-off its give-up makes (noHolder).
 	ctx context.Context
 	// scope is the edge's scope of the request (edgeScopeOf), nil on every other listener: the
 	// holders this send's answers may name (edgeScope.holderConfirmed).
@@ -175,9 +174,13 @@ type roleSend struct {
 	// this send's give-up keeps the message for the role's next holder (noHolder). It is the
 	// send's own rather than the envelope's, so no copy the listener forwards and no answer it
 	// writes carries it.
-	keep    bool
-	arrived time.Time
-	holder  string
+	keep bool
+	// optedOut is the request's handoff field read as "handoff": false: the message is then never
+	// handed to a stopped Legion agent's daemon (noHolder, handOffToLegion), which is how the
+	// daemon's own notices keep their 404 and its outbox row its retry.
+	optedOut bool
+	arrived  time.Time
+	holder   string
 	// shown is the resolution that named holder as this send's answers name it (shownHolder,
 	// edgeScope.holderConfirmed): the resolution itself on every listener but the edge, and at the
 	// edge the resolution of a role no claim holds for a holder the scope does not show, which the
@@ -202,6 +205,10 @@ type roleSend struct {
 	// the message for the holder it went to (sendToRole), so a copy a later duplicate verdict names
 	// may be that forward's (deliveredHeld).
 	unanswered bool
+	// resolvedFromLeaders is whether this send's resolutions are read from the buckets' stream
+	// leaders alone (resolve), which missConfirmed asks to know whether the miss it is to confirm
+	// was read from them already.
+	resolvedFromLeaders bool
 }
 
 // shownHolder is the holder this send's answers may name: result for a holder the scope shows and the
@@ -306,72 +313,131 @@ const noSourceSessionNotKept = "; nothing was kept, because the publish names no
 	"a kept copy that no session took within its hour would expire with no notice to its sender"
 
 // keepTellsNobody reports whether a copy this send kept would expire with no word to anyone: the
-// send asks to be kept and names no source session, and the walk that drops a copy at the end of
-// its hour sends its dead letter to that session and to nobody else (judgeKeptRoleCopy). Such a
-// send is refused rather than kept when its role has no live holder (noHolder), so its sender
-// learns at once that nothing waits for the role, where a 202 kept would have promised a copy
-// whose loss it is never told of.
+// send asks to be kept and its copy is bus.KeptCopyUnanswered, naming no source session and
+// delivering no Dispatch post. The walk that drops a copy at the end of its hour sends its dead
+// letter to the copy's source session and to nobody else, and tells Dispatch of a copy of its
+// delivery of a post with an expiry notice (judgeKeptRoleCopy), which Dispatch settles that
+// delivery's attempt by. A send that would tell nobody is refused rather than kept when its role
+// has no live holder (noHolder), so its sender learns at once that nothing waits for the role,
+// where a 202 kept would have promised a copy whose loss it is never told of. Dispatch's delivery
+// of a post names no source session and is kept, since Dispatch hears of its copy's end.
 func (s *roleSend) keepTellsNobody() bool {
-	return s.keep && s.item.SourceSession == ""
+	return s.keep && bus.ClassifyKeptCopy(s.item) == bus.KeptCopyUnanswered
 }
 
 // resolve resolves the role's holder within ctx (roles.ResolveHolder). Only a send whose keep
-// would tell nobody (keepTellsNobody: it asks to be kept and names no source session) reads the
-// leaders: such a send asks the route to hold the message, and a resolution that finds no live
-// holder refuses it with nothing kept (noHolder). So it reads the role's claim from the role bucket
-// stream's leader (leaderRoleClaims, the read store.Registry.ReadLaneHolders makes) and the
-// holder's record through leaderHolderSessions: never from the registry's watched copy of either
-// bucket, and never by a direct get, which on a replicated bucket a copy that has not applied the
-// newest claim or registration answers, and which would refuse a message a live holder can take.
+// would tell nobody (keepTellsNobody) is resolved from the buckets' stream leaders alone
+// (resolveRoleHolderFromLeaders): such a send asks the route to hold the message, and a
+// resolution that finds no live holder refuses it with nothing kept (noHolder). resolve records
+// that it did (resolvedFromLeaders), which missConfirmed reads.
 //
-// Every other send reads as GET /v1/roles/<role> reads. A send that asks to be kept and names a
-// session is kept when that read finds no live holder, and the keep hands the role's kept lane to
+// Every other send reads as GET /v1/roles/<role> reads (roleHolderSessions), Dispatch's delivery
+// of a post among them. A send that asks to be kept and names a session, or delivers a Dispatch
+// post, is kept when that read finds no live holder, and the keep hands the role's kept lane to
 // the session that holds the role live (keepForNextHolder), so a copy of a bucket that is behind
 // costs the message a pass through the lane and loses it nothing. A `keep: false` send and a send
 // whose keep failed get the 404 with nothing kept on that read: the first asked for no keep and
 // holds the message itself, so a copy that is behind costs it one more send from its own queue,
 // and the second is a keep the bus did not store, whose 404 tells the sender to run its own
-// fallback as every 404 of this route does. So neither pays a read of the leaders on every send.
+// fallback as every 404 of this route does. So neither pays a read of the leaders on every send:
+// only a send whose miss a hand-off could take is resolved again from the leaders before its
+// message is handed off (missConfirmed).
 func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
-	if s.keepTellsNobody() {
-		return roles.ResolveHolder(ctx, leaderRoleClaims{s.d.registry}, leaderHolderSessions{s.d.sessions}, s.role)
+	s.resolvedFromLeaders = s.keepTellsNobody()
+	if s.resolvedFromLeaders {
+		return resolveRoleHolderFromLeaders(ctx, s.d, s.role)
 	}
 	return roles.ResolveHolder(ctx, s.d.registry, roleHolderSessions{s.d.sessions}, s.role)
 }
 
-// noHolder answers a role with no live holder. For a state the listener keeps for (roleKeepable:
-// a role nobody claims, and a claim whose holder is not live), and while this send's own keep
-// flag asks for it, it keeps the message for the role's next live holder and hands the lane to
-// whoever holds the role now, both in the one keep both give-up paths take (keepForNextHolder),
-// and answers kept's 202. A keep that kept nothing - one this send's keep flag turned off, one
-// under a role token no claim can name, a keep that failed, logged by keepRoleMessage - is
-// answered as a send that kept nothing is, since the sender's own fallback must run when the
-// message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
-// daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
-// exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
-// holder failed when its own keep fails. A keep whose publish went out and was never acknowledged
-// (bus.ErrUnacknowledged) is answered so too, as at main, although it may have stored the copy:
-// what each role route answers is unchanged here, and a sender that publishes again after the
-// 404 gives the role's next holder the message once more, which at-least-once delivery allows.
+// noHolder answers a role with no live holder. A Legion role whose newest session's daemon
+// answers for it takes the message through that daemon (handOffToLegion), answered 200 with the
+// stopped agent's session as recipient, whether the role's issue has left the workflow or not:
+// that agent has stopped, failed or been suspended with the role unclaimed, the daemon's idle
+// release among what suspends it, and the daemon answers this message now from its own
+// conversation, or wakes the agent for it. It raises no refusal exception and no wake report
+// either, since nothing was refused and the daemon decides what wakes the agent. A hand-off whose
+// publish failed is answered as any publish the bus refused is. The hand-off costs the sender what
+// its publish stored (senderCharge.published).
 //
-// A send whose keep would tell nobody (keepTellsNobody: no source session) keeps nothing and gets
-// that same 404, with the same reason, holder fields and exception, its error naming the role and
-// saying that nothing was kept and why (noSourceSessionNotKept), recorded role_no_source_session
+// No read can take a hand-off back, so noHolder hands off only once the role's holder, resolved
+// from the buckets' stream leaders alone (resolveRoleHolderFromLeaders), is found not live either
+// (missConfirmed). A send whose keep would tell nobody resolved its holder so from the start
+// (resolve), and result is then that confirmation. Every other send's result is a resolution over
+// this listener's cache of the holder's record and direct gets (roleHolderSessions, sendToRole),
+// which can read as not live a holder the leaders hold live: the cached record, read live when the
+// resolution looks it up, can pass its live deadline before the resolution judges it; on a
+// replicated bucket the role bucket's copy can answer the claim as it stood before a takeover,
+// naming the previous holder, which is not live; and the session bucket's copy can answer that the
+// session that took the role has no record yet. Each way a hand-off would give the daemon of the
+// role's stopped agent a message the role's live holder never receives. A leader resolution that
+// names a live holder, and one that did not answer, hand off nothing, and the message is answered
+// below from result, as such a miss was answered before the hand-off existed: kept, while this
+// send's keep flag asks for it, by the keep that hands the lane to whoever holds the role now
+// after a leader resolution of its own (handOverKeptRole), so a session that took the role
+// receives it at once. The confirmation is asked only of a message the hand-off can take at all
+// (legionHandoff.mayHandOff: this listener has a hand-off, the body did not opt out, the source is
+// not envoy, and the role is a Legion workflow role's), so a publish that can never be handed off,
+// a plain Envoy role's among them, pays no read for it.
+//
+// A role the registry holds no entry for, and one whose project does not answer, hand off
+// nothing, so the message is kept below as it was before the hand-off existed (INFRA-514).
+//
+// For a state the listener keeps for (roleKeepable: a role nobody claims, and a claim whose
+// holder is not live), and while this send's own keep flag asks for it, it keeps the message for
+// the role's next live holder and hands the lane to whoever holds the role now, both in the one
+// keep both give-up paths take (keepForNextHolder), and answers kept's 202. A keep that kept
+// nothing - one this send's keep flag turned off, one under a role token no claim can name, a keep
+// that failed, logged by keepRoleMessage - is answered as a send that kept nothing is, since the
+// sender's own fallback must run when the message was not kept: writeRoleHolderError's 404
+// (unclaimed or holder_lapsed), which the Legion daemon reads as notify.ErrNoHolder, recorded
+// role_unclaimed or role_lapsed, with its refusal exception (publishRefusalException). The role
+// lane counts an unclaimed role skipped and a lapsed holder failed when its own keep fails. A keep
+// whose publish went out and was never acknowledged (bus.ErrUnacknowledged) is answered so too, as
+// at main, although it may have stored the copy: what each role route answers is unchanged here,
+// and a sender that publishes again after the 404 gives the role's next holder the message once
+// more, which at-least-once delivery allows.
+//
+// A send whose keep would tell nobody (keepTellsNobody: no source session, and no Dispatch post
+// delivered) keeps nothing and gets that same 404, with the same reason, holder fields and
+// exception, its error naming the role and saying that nothing was kept and why
+// (noSourceSessionNotKept), recorded role_no_source_session
 // (requestRecord.refuseRoleNoSourceSession). Its resolution was read from the buckets' leaders
-// (resolve). A 404 rather than any other status, because every client of this route already reads
+// (resolve), and is the confirmation a hand-off asks for too (missConfirmed).
+// A 404 rather than any other status, because every client of this route already reads
 // it as "nothing was kept, run your own fallback" (the Legion daemon's notify.ErrNoHolder,
 // envoy-client's EnvoyApiError), and no client retries it: envoy-client retries nothing below 500,
-// and to a plain HTTP client it is no retry signal, as a 429 or a 503 would be.
+// and to a plain HTTP client it is no retry signal, as a 429 or a 503 would be. Dispatch's
+// delivery of a post (bus.KeptCopyDispatchDelivery) names no source session and is kept, and raises the
+// role's wake, as every kept send does: its copy's end is told to Dispatch, which settles the
+// delivery's attempt, recorded queued until then, as undelivered.
 //
-// It is also the one place a message to a Legion role of a released issue pod is seen at all, so
-// it raises the wake report beside the answer, before either answer and waiting for neither
-// (reportRoleWake). Both answers need it: a message kept for the role's next holder waits, for
-// one hour at most, until a live session holds the role again, and a publish with keep: false
-// keeps nothing and is still answered 404, so only the wake brings the released pod back to claim
-// the role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The
-// report names the role and nothing else; which daemon owns it, and whether any claim of that
-// role is released, is for the daemons to decide.
+// It is also the one place a message to a Legion role of a released issue pod that no daemon
+// answers for is seen at all, so once nothing was handed off it raises the wake report beside the
+// answer, before either answer and waiting for neither (reportRoleWake). Both answers need it: a
+// message kept for the role's next holder waits, for one hour at most, until a live session holds
+// the role again, and a publish with keep: false keeps nothing and is still answered 404, so only
+// the wake brings the released pod back to claim the role, drain what was kept for it
+// (drainKeptRole) and take the sender's next attempt. The report names the role and nothing else;
+// which daemon owns it, and whether any claim of that role is released, is for the daemons to
+// decide, and a daemon acts on it only for a released claim of its own, so for a role whose
+// newest agent is not released the wake raised after the hand-off rather than before it changes
+// nothing.
 func (s *roleSend) noHolder(result roles.Resolution) {
+	target := legionHandoffTarget{envelope: s.item, roleToken: s.role, optedOut: s.optedOut}
+	if s.d.handoff.mayHandOff(target) && s.missConfirmed() {
+		handed, err := s.d.handoff.handOffToLegion(s.ctx, target)
+		switch {
+		case err != nil:
+			s.record.charge.published(bus.StoredAck{}, err)
+			s.refused(err)
+			return
+		case handed != nil:
+			s.record.charge.published(handed.ack, nil)
+			s.handedOff(handed)
+			return
+		}
+	}
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
@@ -392,6 +458,48 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 		outcome = sendUnclaimed
 	}
 	s.settle(outcome)
+}
+
+// missConfirmed reports whether the role still has no live holder when its holder is read from the
+// buckets' stream leaders alone (resolveRoleHolderFromLeaders): the confirmation noHolder asks for
+// before a hand-off. noHolder is handed only a resolution of resolve's that found no live holder,
+// so for a send whose resolutions are the leaders' (resolvedFromLeaders) that resolution is the
+// confirmation, and nothing is read again. Every other send's holder is resolved again, within the
+// send's window and roleHolderReadTimeout, whichever ends first. A resolution that names a live
+// holder, or that did not answer, confirms nothing. One that did not answer is logged here, once,
+// with the read's own error: the send's answer and its delivery line come from the first
+// resolution and do not name it.
+func (s *roleSend) missConfirmed() bool {
+	if s.resolvedFromLeaders {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	defer cancel()
+	confirmed, err := resolveRoleHolderFromLeaders(ctx, s.d, s.role)
+	if err != nil {
+		s.d.delivery.logger.Warn("listener role send could not confirm from the leader that its role has no live holder, so nothing is handed off",
+			slog.String("role", s.role),
+			slog.String("event_id", s.item.EventID),
+			slog.String("error", err.Error()))
+		return false
+	}
+	return confirmed.State != roles.Live
+}
+
+// handedOff answers 200 with the envelope and the stopped Legion agent its daemon was handed it
+// for, in place of the holder a delivered send names: the sender reads the answer a delivered
+// message gets, so no client of this route changes. A repeat under one dedupe key whose hand-off
+// the stream already held is answered that hand-off's envelope, read back as a stored forward is
+// and with duplicate where it is another request's (answerHandedOff); one that cannot be read
+// back is answered as a hand-off whose publish failed is (refused), the stored-copy 503.
+func (s *roleSend) handedOff(handed *legionHandedOff) {
+	duplicate, err := answerHandedOff(s.ctx, s.d.client, s.record, s.sender, handed, &s.item)
+	if err != nil {
+		s.refused(err)
+		return
+	}
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: expectsReplyAnswer(s.expectsReply, s.item.ExpectsReply), Recipient: handed.TargetSession, Duplicate: duplicate, Warnings: s.warnings})
+	s.settle(sendDelivered)
 }
 
 // kept answers 202 with the envelope the role's kept lane holds for the message (kept.item): kept
@@ -416,7 +524,8 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // 200, the message is with a live holder; 202, no live session holds the role and the message
 // waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
 // fallback must run, as decided on 2026-10-31. A send that names no source session is never
-// answered 202 (noHolder): no one would be told if its copy expired.
+// answered 202 (noHolder): no one would be told if its copy expired - but Dispatch's delivery of a
+// post, whose copy's end is told to Dispatch (bus.KeptCopyDispatchDelivery).
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()
@@ -448,19 +557,11 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	s.settle(sendKept)
 }
 
-// unresolved answers a first resolution of the holder that did not resolve, as GET
-// /v1/roles/<role> answers it: a claim record no read can decode (store.ErrMalformedRoleClaim) is
-// the 500 that names it, and any other failure - a read that did not answer within its cap or
-// sendRequestBudget among them - the bus-unavailable 503, or the 413 or 400 a refused key gets,
-// which at the edge names no holder for a holder's session read that did not answer
-// (edgeScope.unresolved). Each is recorded under its own outcome.
+// unresolved answers a first resolution of the holder that did not resolve, as a failed read of
+// the role's claim is answered (refuseRoleClaimRead), each under its own outcome; at the edge a
+// holder's session read that did not answer names no holder (edgeScope.unresolved).
 func (s *roleSend) unresolved(err error) {
-	switch {
-	case errors.Is(err, store.ErrMalformedRoleClaim):
-		s.record.refuseRoleClaimUnreadable(s.w, s.role, err)
-	default:
-		s.record.refuseBusUnavailable(s.w, s.scope.unresolved(s.role, err, s.d.delivery.logger))
-	}
+	refuseRoleClaimRead(s.w, s.record, s.role, s.scope.unresolved(s.role, err, s.d.delivery.logger))
 	s.settle(sendFailed)
 }
 
@@ -661,32 +762,36 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 // a role with no live holder - no claim, or a claim whose holder is not live - is kept for the
 // role's next live holder and answered 202 while keep asks for it, the request's own keep field,
 // true when it set none (roleKeepable), else 404 unclaimed or holder_lapsed (noHolder), which a
-// send that names no source session also gets, read from the buckets' leaders (resolve); and for a
-// resolution that failed the lookup's 503 or 500 (unresolved). The first attempt forwards to that
-// holder without reading the claim again; every other attempt resolves the holder again, so a
-// holder that relaunched under a new session between attempts gets the next one. On those
-// attempts an unclaimed role is answered as the first resolution answers it, since the claim
-// itself is gone; a holder that stopped answering keeps its claim and fails that attempt only, as
-// a read that failed does, so a holder that comes back inside the window still gets the message,
-// and a send whose window ends on such attempts is a 504 that kept nothing: the sender is told the
-// send failed for the holder its first resolution read live. Each attempt forwards the same
-// envelope, under the role forward's dedupe key and under one Nats-Msg-Id, the key and the
-// holder's subject (bus.ForwardMsgID), and waits what is left of the send, at most
-// roleForwardTimeout, for the stream's acknowledgement that it stored it; that acknowledgement is
-// the send's 200, since the holder answers nothing and reads the stored copy from its session
-// consumer (startRoleForward). The stream, which captures agent subjects, therefore keeps one copy
-// of the forward however many attempts there are. Every read takes ctx, the send's window, so
-// none outlasts it: a send whose window ends is answered 504, unless its last forward ended while
-// an earlier forward under its Nats-Msg-Id was still in process, which is the 503 maybe_stored
-// (windowEnded). expectsReply is the request's own expects_reply bytes, which each answer writes
-// back for the envelope it answers (expectsReplyAnswer, api.go); the envelope this send forwards
-// and keeps carries the envelope's own value. scope is the edge's scope of the request, nil on
-// every other listener: an answer names only a holder it shows (edgeScope.holderConfirmed), and
-// the send forwards to the holder whatever it names. sender is who the request speaks for
-// (senderOf), which decides how much of a copy the stream or the kept lane already held an answer
-// carries. warnings is what its 200 and 202 name of the topic's old form.
-func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender requestSender, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
-	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, sender: sender, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
+// send that names no source session and delivers no Dispatch post (keepTellsNobody) also gets,
+// read from the buckets' leaders (resolve), unless
+// the daemon of the role's newest Legion session takes it first (handOffToLegion), which
+// optedOutOfHandoff, the body's "handoff": false, turns off; and for a resolution that failed the
+// lookup's 503 or 500 (unresolved). The first attempt forwards to that holder without reading the
+// claim again; every other attempt resolves the holder again, so a holder that relaunched under a
+// new session between attempts gets the next one. On those attempts an unclaimed role is answered
+// as the first resolution answers it, since the claim itself is gone; a holder that stopped
+// answering keeps its claim and fails that attempt only, as a read that failed does, so a holder
+// that comes back inside the window still gets the message, and a send whose window ends on such
+// attempts is a 504 that kept nothing: the sender is told the send failed for the holder its first
+// resolution read live.
+// Each attempt forwards the same envelope, under the role forward's dedupe key and under one
+// Nats-Msg-Id, the key and the holder's subject (bus.ForwardMsgID), and waits what is left of the
+// send, at most roleForwardTimeout, for the stream's acknowledgement that it stored it; that
+// acknowledgement is the send's 200, since the holder answers nothing and reads the stored copy
+// from its session consumer (startRoleForward). The stream, which captures agent subjects,
+// therefore keeps one copy of the forward however many attempts there are. Every read takes ctx,
+// the send's window, so none outlasts it: a send whose window ends is answered 504, unless its
+// last forward ended while an earlier forward under its Nats-Msg-Id was still in process, which
+// is the 503 maybe_stored (windowEnded). expectsReply is the request's own expects_reply bytes,
+// which each answer writes back for the envelope it answers (expectsReplyAnswer, api.go); the
+// envelope this send forwards and keeps carries the envelope's own value. scope is the edge's
+// scope of the request, nil on every other listener: an answer names only a holder it shows
+// (edgeScope.holderConfirmed), and the send forwards to the holder whatever it names. sender is
+// who the request speaks for (senderOf), which decides how much of a copy the stream or the kept
+// lane already held an answer carries. warnings is what its 200 and 202 name of the topic's old
+// form.
+func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender requestSender, expectsReply json.RawMessage, role string, keep, optedOutOfHandoff bool, arrived time.Time, warnings []string) {
+	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, sender: sender, expectsReply: expectsReply, role: role, keep: keep, optedOut: optedOutOfHandoff, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later

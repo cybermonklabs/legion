@@ -254,7 +254,7 @@ func TestANoSessionResolutionNeverJudgesTheCachedHolder(t *testing.T) {
 		t.Fatalf("UNKNOWN: the cache holds %+v in state %s, not the old registration live, so the row tests nothing", entry, state)
 	}
 	armed.Store(true)
-	result, err := roles.ResolveHolder(context.Background(), leaderRoleClaims{harness.registry}, leaderHolderSessions{harness.sessions}, role)
+	result, err := roles.ResolveHolder(context.Background(), leaderRoleClaims{harness.registry}, leaderOnlyHolderSessions{harness.sessions}, role)
 	armed.Store(false)
 	if err != nil {
 		t.Fatalf("resolve %s: %v", role, err)

@@ -65,6 +65,9 @@ type listenerDeps struct {
 	// legionAgents is the Legion agent registry the /v1/legion/agents routes serve, or why it is
 	// unavailable. It keeps no cache, so it is in no list of caches.
 	legionAgents *legionAgentRegistry
+	// handoff hands a send or role publish no live session takes to a stopped Legion agent's
+	// daemon (handOffToLegion); nil hands nothing off.
+	handoff *legionHandoff
 	// ciStore is nil on a listener that mounts no GitHub webhook route, the one route that uses it.
 	ciStore *cistore.Store
 	// roleLane is the role lane's own client (bus.ConnectRoleLane), nil in a test that builds the
@@ -1270,9 +1273,9 @@ func runListener(credentialWait time.Duration) {
 	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic deliveries to a session past the live window that were not made: a push not sent, or an ad-hoc topic send's receipt not waited for; the message is stored for the session either way")
 	// The kept role lanes' outcomes, none labelled by role: a deployment sees unboundedly many
 	// role tokens, and each would be a series of its own for the process's life.
-	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role copies a walk dropped at the end of their hour, whether or not a session held the role, by who kept them (kept_by: listener or dispatch_outbox) and whether the hour had ended more than an hour before the drop with no walk's claim on the copy (stale)")
+	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role copies a walk dropped at the end of their hour, whether or not a session held the role, by who kept them (kept_by: listener, Dispatch's delivery of a post through the publish route among them, or dispatch_outbox) and whether the hour had ended more than an hour before the drop with no walk's claim on the copy (stale)")
 	roleDeadLetters := met.NewCounter("envoy_role_dead_letters_total", "Dead letters sent to the sender session of a kept role copy a walk dropped, by result: stored, or refused for good and not sent again")
-	roleKeptExpiryNotices := met.NewCounter("envoy_role_kept_expiry_notices_total", "Expiry notices sent to Dispatch for a kept role copy Dispatch's outbox kept that a walk dropped at the end of its hour, by result: stored, or refused for good and not sent again")
+	roleKeptExpiryNotices := met.NewCounter("envoy_role_kept_expiry_notices_total", "Expiry notices sent to Dispatch for a kept role copy Dispatch answers for that a walk dropped: one Dispatch's outbox kept, at the end of its hour, or one of Dispatch's delivery of a post, at the end of its hour or when the role's live holder does not take its delivery mode; by result: stored, or refused for good and not sent again")
 	roleKeptUndecodable := met.NewCounter("envoy_role_kept_undecodable_total", "Kept role copies a walk ended because no read can decode them")
 	deliveryDuration := met.NewHistogram("envoy_delivery_duration_seconds", "Duration of message delivery attempts", metrics.DefaultBuckets)
 	// The CI summary loop runs only beside the GitHub webhook route (Phase 6b2), so only a listener
@@ -1660,6 +1663,15 @@ func runListener(credentialWait time.Duration) {
 	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
+	// One hand-off serves the three paths that find no session to deliver to: a send's, a role
+	// publish's (both on /v1) and an agent subject's on the bus. An edge listener hands nothing
+	// off, as it reports no wake: its grant may not publish the hand-off subject
+	// (listenerwire.LegionHandoffSubject, natsgrant.Edge), so each of those paths answers there as
+	// it did before the hand-off existed.
+	var handoff *legionHandoff
+	if edge == nil {
+		handoff = &legionHandoff{client: client, registry: registry, sessions: sessions, agents: legionAgents, logger: logger}
+	}
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
 		edge:              edge,
@@ -1679,7 +1691,8 @@ func runListener(credentialWait time.Duration) {
 		// The walk's other outcomes beside the drop, and the one publish a walk makes that is
 		// not a forward: a dropped copy's dead letter, stored on its sender's agent subject under
 		// the message id every listener gives it (endKeptCopyWithDeadLetter), or, for a copy
-		// Dispatch's outbox kept, its expiry notice to Dispatch (endKeptCopyWithExpiryNotice).
+		// Dispatch answers for - one its outbox kept, or one of its delivery of a post - its
+		// expiry notice to Dispatch (endKeptCopyWithExpiryNotice).
 		roleDeadLetters:       roleDeadLetters,
 		roleKeptExpiryNotices: roleKeptExpiryNotices,
 		roleKeptUndecodable:   roleKeptUndecodable,
@@ -1702,6 +1715,7 @@ func runListener(credentialWait time.Duration) {
 		// tell a lane this listener is draining already (roleKeepGuards, role_keep.go). Every
 		// handler and route built from this one value shares it, as they share the set above.
 		roleKeepDrains: newRoleKeepGuards(),
+		handoff:        handoff,
 		// The listener's one clock for a kept copy's hour: the keep's answer, and the
 		// handovers the claim route, the keep, the registration and the sweep start
 		// (role_keep.go).
@@ -1832,6 +1846,7 @@ func runListener(credentialWait time.Duration) {
 		sessions:     sessions,
 		known:        known,
 		legionAgents: legionAgents,
+		handoff:      handoff,
 		ciStore:      ciStore,
 		caches:       caches,
 		consumer:     consumer,

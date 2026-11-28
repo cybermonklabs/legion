@@ -391,6 +391,9 @@ func TestEdgeReadsListOnlyTheTokensProjects(t *testing.T) {
 	}
 	requireStatus(t, rig.call(t, http.MethodGet, token, "/v1/legion/agents/sessions/"+peer, ""), http.StatusOK, "GET /v1/legion/agents/sessions/"+peer)
 	requireEdgeRefusal(t, rig.call(t, http.MethodPut, token, "/v1/legion/agents", `{"entries":[]}`), http.StatusForbidden, "legion_registry_not_written", "PUT /v1/legion/agents")
+	// A project's answering record is the registry's too, and the edge writes none of it.
+	requireEdgeRefusal(t, rig.call(t, http.MethodPut, token, "/v1/legion/projects/priv", `{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`),
+		http.StatusForbidden, "legion_registry_not_written", "PUT /v1/legion/projects/priv")
 
 	requireEdgeRefusal(t, rig.call(t, http.MethodGet, token, "/v1/interests/", ""), http.StatusForbidden, "session_not_in_project", "GET /v1/interests/")
 	requireEdgeRefusal(t, rig.call(t, http.MethodGet, token, "/v1/interests/ses_infra_agent", ""), http.StatusForbidden, "session_not_in_project", "GET /v1/interests/ses_infra_agent")
