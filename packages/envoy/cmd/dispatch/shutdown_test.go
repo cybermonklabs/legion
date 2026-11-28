@@ -129,7 +129,7 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // as short as that rule lets it be: a build-cluster Job runs the row 20 times and reads, from the
 // row's line "the title change queued behind the issue lock ... after the edit", the largest time
 // from the edit to that point, and the delay is at least five times that largest value, 400 ms
-// while it is at most 80 ms.
+// while it is at most 80 ms. 20 runs on CI's runner size (4 CPU) read at most 6.7 ms.
 const inFlightSettleDelay = 400 * time.Millisecond
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
@@ -1087,8 +1087,9 @@ const quickShutdownProbe = 120 * time.Millisecond
 // fixed part on this real binary - the signal reaching the process, the document service returning
 // with no room to settle, the waits between the drain and the first probe, and the exit after the
 // warning. The rule that sizes it is twice the largest fixed part 20 runs of the row measure, and
-// at least 250 ms.
-const quickShutdownSlack = 500 * time.Millisecond
+// at least 250 ms: 20 runs on CI's runner size (4 CPU) exited 594 to 596 ms after the signal, a
+// fixed part of at most 6 ms past the drain and the probes, so the floor holds.
+const quickShutdownSlack = 250 * time.Millisecond
 
 // A database that stops answering - a failover, a partition - holds every connection waiting on it,
 // and closing the pool waits for every connection in use. Here that is an issue create's: it waits
