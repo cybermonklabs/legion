@@ -487,6 +487,20 @@ func connectBrowser(t *testing.T, serverURL, artifactID, login string) *docstest
 // finished with the same update.
 func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) {
 	t.Helper()
+	recorded, unsubscribe := sendAsBrowser(t, service, artifactID, browser, markdown)
+	defer unsubscribe()
+	select {
+	case <-recorded:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the room did not record the browser's edit within roomWait")
+	}
+}
+
+// sendAsBrowser sends the room the edit editAsBrowser sends and returns at once, with the channel
+// editAsBrowser waits on - closed once the room's update observer has run for that update - and
+// what removes that observer.
+func sendAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) (recorded <-chan struct{}, unsubscribe func()) {
+	t.Helper()
 	// These take the copy's lock themselves, so they are read before the transaction that holds it.
 	fragment := browser.Doc.GetXmlFragment(fragmentName)
 	client := browser.Doc.ClientID()
@@ -495,14 +509,13 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 	if room == nil {
 		t.Fatal("the room is not resident while its browser is connected")
 	}
-	recorded := make(chan struct{})
+	applied := make(chan struct{})
 	var once sync.Once
-	unsubscribe := room.OnUpdate(func([]byte, any) {
+	unsubscribe = room.OnUpdate(func([]byte, any) {
 		if room.StateVector().Clock(client) > sentFrom {
-			once.Do(func() { close(recorded) })
+			once.Do(func() { close(applied) })
 		}
 	})
-	defer unsubscribe()
 	var changeErr error
 	if _, err := browser.Send(func(txn *crdt.Transaction) {
 		current, err := treeOfTransaction(txn, fragment)
@@ -517,13 +530,10 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 		}
 		changeErr = pmdoc.Update(txn, fragment, target)
 	}); err != nil || changeErr != nil {
+		unsubscribe()
 		t.Fatalf("send the browser's edit: %v %v", err, changeErr)
 	}
-	select {
-	case <-recorded:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room did not record the browser's edit within roomWait")
-	}
+	return applied, unsubscribe
 }
 
 // roomWait bounds a wait on a document room's own work - sending a browser the document,
