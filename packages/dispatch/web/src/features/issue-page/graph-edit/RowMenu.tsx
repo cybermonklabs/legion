@@ -95,11 +95,12 @@ import {
  *
  * The moves go through the node's queue (`node-writes.ts`), whose verdict is made again as each
  * one's turn comes; a taken move keeps its row in view and focused (`keepInView`). Delete asks
- * the server what it takes as the menu opens on a node R2 admits (`NodeWrites.count`, once an
- * opening) and nothing on any other; until it answers, Delete says it is counting and cannot be
- * picked; then it names the count, or is grey with the refusal's words, or with a line under it
- * that says the count could not be read, whose pick asks again. A closed menu drops the answer
- * it was waiting for. Delete's pick opens the confirm (`row-edits.tsx`'s `DeleteConfirm`).
+ * the server what it takes as the menu opens on a node R2 admits, or, on a menu opened on a new
+ * row before its node was placed, once the placing turns Delete to `ask` (`NodeWrites.count`,
+ * once an opening), and nothing on any other; until it answers, Delete says it is counting and
+ * cannot be picked; then it names the count, or is grey with the refusal's words, or with a line
+ * under it that says the count could not be read, whose pick asks again. A closed menu drops the
+ * answer it was waiting for. Delete's pick opens the confirm (`row-edits.tsx`'s `DeleteConfirm`).
  */
 
 /** The data attribute that marks the menu's control, as `data-row-lens` marks part W's act. */
