@@ -773,15 +773,13 @@ func init() {
 }
 
 // lsRemoteInherits is which entries of the caller's environment the read with no credential keeps
-// (Guard.lsRemote), by each entry's name, and so do the two reads of what a push's destination
-// holds, which carry no credential either (Guard.advertised, Guard.negotiated). It keeps every
-// name that is not git's own, and of git's own the three that say which transports git may use
-// and which certificates it trusts, none of which can carry a credential. It drops the names
-// libcurl finds a netrc file by: HOME, which each of those reads sets to an empty directory of its
-// own, NETRC, which names the file outright from curl 8.16, and USERPROFILE, libcurl's second home
-// on Windows. The proxy variables libcurl reads (HTTPS_PROXY and the rest) stay, the airlock's
-// among them, so a pod that reaches GitHub through a proxy reaches it the same way here: the read
-// carries no credential for any proxy to read.
+// (Guard.lsRemote), by each entry's name. It keeps every name that is not git's own, and of git's
+// own the three that say which transports git may use and which certificates it trusts, none of
+// which can carry a credential. It drops the names libcurl finds a netrc file by: HOME, which the
+// read sets to an empty directory of its own, NETRC, which names the file outright from curl 8.16,
+// and USERPROFILE, libcurl's second home on Windows. The proxy variables libcurl reads (HTTPS_PROXY
+// and the rest) stay, the airlock's among them, so a pod that reaches GitHub through a proxy
+// reaches it the same way here: the read carries no credential for any proxy to read.
 func lsRemoteInherits(name, _ string) bool {
 	switch name {
 	case "GIT_ALLOW_PROTOCOL", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH":
@@ -791,6 +789,12 @@ func lsRemoteInherits(name, _ string) bool {
 	}
 	return !strings.HasPrefix(name, "GIT_")
 }
+
+// readsNoConfigFile is the environment of the read with no credential (Guard.lsRemote), which
+// must read neither the machine's git configuration nor the user's: GIT_CONFIG_NOSYSTEM=1 and
+// GIT_CONFIG_GLOBAL=/dev/null take away the system file and the user's, the second also the one
+// under XDG_CONFIG_HOME, and with them every file either includes.
+var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
 
 // rateLimitError is a read GitHub refused for a rate limit: whether it is GitHub's secondary
 // limit (githubrest.BudgetSecondary); for the core limit, when it resets (X-RateLimit-Reset),

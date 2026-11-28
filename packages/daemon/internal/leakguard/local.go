@@ -21,9 +21,9 @@ import (
 // environment to the pre-push hook, where Guard.writesOnlyToItsURL reads the variable being set —
 // with any value, empty included — as a push that can write somewhere other than its URL: one
 // Guard.StaysLocal does not clear as local, and one whose commits the guard bounds by the
-// remote-tracking refs alone, with no read of what the URL holds (Guard.pushRecords). The wrapper
-// never unsets it, so a caller that sets it by hand changes only that: the push is not cleared,
-// and its URL is not read.
+// remote-tracking refs alone, with no read of what the URL holds (Guard.readsReachItsRepository).
+// The wrapper never unsets it, so a caller that sets it by hand changes only that: the push is not
+// cleared, and its URL is not read.
 const PushNamesReceivePackVar = "LEGION_PUSH_NAMES_RECEIVE_PACK"
 
 // execPathVar is the variable git reads its exec path from, the directory whose git-receive-pack a
@@ -75,15 +75,20 @@ func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
 }
 
 // writesOnlyToItsURL is whether the push git hands the pre-push hook — to url, from the
-// repository dir and the guard's environment name — can write only to url: whether no program of
-// the caller's choosing makes the push, a receive-pack program, a remote helper or another exec
-// path's git-receive-pack, which can write somewhere else, a host included, while the hook gets
-// url. Guard.StaysLocal clears no push it answers false for, and Guard.pushRecords makes neither
-// read of what url holds (destinationHolds) for one: url then says nothing of what the repository
-// the push writes to holds, and a url that holds the push's commits (`.`, the clone itself, a
-// local mirror) would have every commit read as held while the push wrote them where none is
-// held. The review of cybermonklabs/legion#5914 reproduced that: with the reads made for every
-// push, `git push --receive-pack="git-receive-pack <another path> #" . main:refs/heads/leak` of a
+// repository dir and the guard's environment name — can write only to url by the ways a push to
+// a local path can write elsewhere: whether no program of the caller's choosing stands in for the
+// git-receive-pack of url's repository, a receive-pack program, a remote helper or another exec
+// path's git-receive-pack, each of which can write somewhere else, a host included, while the hook
+// gets url. A push to a host can also connect through a program or a proxy between git and the
+// server, which can send its git-receive-pack to another repository; none serves a push to a
+// local path, the one push Guard.StaysLocal clears, and Guard.readsReachItsRepository adds them
+// for the reads of what url holds. Guard.StaysLocal clears no push it answers false for, and
+// Guard.pushRecords makes neither read of what url holds (destinationHolds) for one: url then says
+// nothing of what the repository the push writes to holds, and a url that holds the push's
+// commits (`.`, the clone itself, a local mirror) would have every commit read as held while the
+// push wrote them where none is held. The review of cybermonklabs/legion#5914 reproduced that:
+// with the reads made for every push,
+// `git push --receive-pack="git-receive-pack <another path> #" . main:refs/heads/leak` of a
 // commit the rules refuse passed, and the other path took the ref. It answers true only when
 // every one of these holds, and false when any read it makes fails:
 //
@@ -110,17 +115,28 @@ func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
 //     whatever the URL holds.
 //
 // Its read of the configuration goes through Guard.git in dir, with the package's pins and the
-// guard's environment.
+// guard's environment (pushConfig).
 func (g *Guard) writesOnlyToItsURL(ctx context.Context, dir, url string) bool {
-	base := g.base()
+	_, only := g.pushConfig(ctx, dir, url, g.base())
+	return only
+}
+
+// pushConfig is writesOnlyToItsURL's answer for the push under base, the guard's environment,
+// and where it is true the configuration it read to give it, the output of `git config -z
+// --list` in dir; where it is false, config is empty. Guard.readsReachItsRepository reads its own
+// conditions from that configuration, so that the configuration is read once for a push.
+func (g *Guard) pushConfig(ctx context.Context, dir, url string, base []string) (config string, only bool) {
 	if _, marked := lookup(base, PushNamesReceivePackVar); marked || strings.Contains(url, "::") {
-		return false
+		return "", false
 	}
 	if !g.ownExecPath(ctx, dir, base) {
-		return false
+		return "", false
 	}
 	config, err := g.git(ctx, dir, "config", "-z", "--list")
-	return err == nil && !namesItsOwnTransport(config)
+	if err != nil || namesItsOwnTransport(config) {
+		return "", false
+	}
+	return config, true
 }
 
 // localURL is whether url names a path on this machine by a spelling that can name nothing else: a

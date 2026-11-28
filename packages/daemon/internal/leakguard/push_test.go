@@ -1247,16 +1247,17 @@ var v0Negotiation = []string{"warning: --negotiate-only requires protocol v2", "
 // then named the destination, which does not hold that commit: the push of a branch on it is
 // refused over it, since where the negotiation answers, no tracking ref bounds the range. In the
 // sixth, the clone's configuration holds url.<an empty bare repository>.insteadOf the
-// destination's URL, which the clone's own `git ls-remote` follows, and the push of the moved
-// case passes all the same: the reads are made of the URL the hook was given, outside the clone's
-// configuration. In the seventh the negotiation fails as against a destination served on protocol
-// v0 (v0Negotiation), on a stand-in git first on the guard's PATH that answers `fetch
-// --negotiate-only` so and runs every other command as the real git: the reads take no
-// configuration of the caller's, so no protocol.version=0 of the caller's reaches them, and the
-// row makes the v0 answer on the client's side, after checking that the real git under
-// protocol.version=0 answers so. The destination moved to a T1 the clone does not hold, the branch
-// starts from the clone's older main, at which its origin/main stands, and the push passes as it
-// did before the reads, bounded by that tracking ref with the advertised commits beside it. In the
+// destination's URL, which the clone's own `git ls-remote` follows: the guard makes neither read,
+// since the reads, which run with the push's configuration, would apply that rewrite to the URL
+// the push's rewrites already led it to (readsReachItsRepository), and the push is judged as it
+// was before the reads, refused over the destination's commit that adds the refused line, which
+// no tracking ref holds; a stand-in git first on the guard's PATH logs each read it runs
+// (readsLogged), and the log stays empty. In the seventh the clone's configuration sets
+// protocol.version=0, which the reads carry as the push's own gits do, so the negotiation fails as
+// against a destination served on protocol v0 (v0Negotiation), as the row first checks that git
+// in the clone answers. The destination moved to a T1 the clone does not hold, the branch starts
+// from the clone's older main, at which its origin/main stands, and the push passes as it did
+// before the reads, bounded by that tracking ref with the advertised commits beside it. In the
 // eighth both reads fail, the destination a git:// URL on 127.0.0.1 nothing listens on, which the
 // clone's origin names and whose tracking ref holds the destination's main: the push is judged as
 // it was before the reads, bounded by the tracking refs, with the same text.
@@ -1272,8 +1273,8 @@ var v0Negotiation = []string{"warning: --negotiate-only requires protocol v2", "
 // and the branch starts from it. The two reads would answer for the destination, which holds that
 // commit, and pass the push; the guard makes neither, the tracking refs bound the range as they
 // did before the reads, and the push is refused over that commit, as it was before them. In every
-// case but the fifth and the ninth, a second commit of the branch that adds the refused line,
-// which the destination does not hold, is refused, alone.
+// case but the fifth, the sixth and the ninth, a second commit of the branch that adds the
+// refused line, which the destination does not hold, is refused, alone.
 func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 	const class = leakguardtest.RulesHostClass
 	refused := "the runner answers at " + leakguardtest.RulesHost + "\n"
@@ -1336,8 +1337,8 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 		r.fixture.Run(r.root, fixturegit.InitBare(second, "main")...)
 		return second
 	}
-	// heldRefused is the ninth case's report: the destination's commit that adds the refused line,
-	// which no tracking ref holds, read as before the reads.
+	// heldRefused is the report of the sixth case and of the ninth: the destination's commit that
+	// adds the refused line, which no tracking ref holds, read as before the reads.
 	heldRefused := []string{"held.md: " + class}
 	for _, tc := range []struct {
 		name string
@@ -1351,6 +1352,10 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 		// second is whether a second commit of the branch, which adds the refused line, is
 		// pushed too, and refused alone.
 		second bool
+		// unread is whether the guard must make neither read of the destination: a stand-in git
+		// first on the guard's PATH logs each read it runs (readsLogged), and the log must stay
+		// empty.
+		unread bool
 	}{
 		{
 			name: "current",
@@ -1423,7 +1428,8 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 				}
 				return repo, start, "origin", r.destination
 			},
-			second: true,
+			want:   heldRefused,
+			unread: true,
 		},
 		{
 			name: "protocol v0",
@@ -1432,18 +1438,13 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 				repo := cloned(t, r, r.destination)
 				start := trackedMain(r, repo)
 				later(t, r)
-				out, err := r.fixture.Try(repo, "git", "-c", "protocol.version=0", "fetch", "--negotiate-only", "--negotiation-tip="+start, "file://"+r.destination)
+				r.fixture.Run(repo, "git", "config", "protocol.version", "0")
+				out, err := r.fixture.Try(repo, "git", "fetch", "--negotiate-only", "--negotiation-tip="+start, r.destination)
 				var exit *exec.ExitError
 				if !errors.As(err, &exit) || exit.ExitCode() != 255 || out != strings.Join(v0Negotiation, "\n")+"\n" {
-					t.Fatalf("the real git's negotiation under protocol.version=0 answered %q (%v), want %q and exit 255: the stand-in answers as no git does", out, err, v0Negotiation)
+					t.Fatalf("the negotiation in the clone under its protocol.version=0 answered %q (%v), want %q and exit 255: the case would prove nothing", out, err, v0Negotiation)
 				}
 				return repo, start, "origin", r.destination
-			},
-			env: func(t *testing.T) []string {
-				bin := t.TempDir()
-				writeProgram(t, bin, "git", "case \" $* \" in\n*\" --negotiate-only \"*) "+printsToStderr(v0Negotiation...)+"  exit 255 ;;\nesac\n"+
-					"exec "+shQuote(fixturegit.CompiledGit(t))+" \"$@\"\n")
-				return []string{pathWith(bin)}
 			},
 			second: true,
 		},
@@ -1542,6 +1543,12 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 			if tc.env != nil {
 				env = tc.env(t)
 			}
+			var reads string
+			if tc.unread {
+				var path string
+				path, reads = readsLogged(t)
+				env = append(env, path)
+			}
 			push := func(t *testing.T, head string) error {
 				t.Helper()
 				guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, env...)
@@ -1560,6 +1567,11 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 			} else {
 				reports(t, refusal(t, err).Lines, tc.want...)
 			}
+			if tc.unread {
+				if n := countLines(t, reads); n != 0 {
+					t.Errorf("the guard made %d reads of what the destination holds, want none", n)
+				}
+			}
 			if !tc.second {
 				return
 			}
@@ -1567,6 +1579,22 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 			reports(t, refusal(t, push(t, named)).Lines, "work.md: "+class)
 		})
 	}
+}
+
+// readsLogged is a stand-in git for the guard's PATH, written to a directory of the test's own,
+// that appends a line to reads, a file of the test's own, for each read of what a push's
+// destination holds it is asked to run, an ls-remote or a fetch --negotiate-only, and runs the
+// real git for every call. It answers the PATH entry that puts it first.
+func readsLogged(t *testing.T) (path, reads string) {
+	t.Helper()
+	bin := t.TempDir()
+	reads = filepath.Join(t.TempDir(), "reads")
+	writeProgram(t, bin, "git", `case " $* " in
+*" ls-remote "* | *" --negotiate-only "*) printf '%s\n' "$*" >> `+shQuote(reads)+` ;;
+esac
+exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
+`)
+	return pathWith(bin), reads
 }
 
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for

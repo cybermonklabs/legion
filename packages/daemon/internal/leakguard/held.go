@@ -2,9 +2,9 @@ package leakguard
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -35,23 +35,15 @@ func init() {
 // commit's files do not, since a commit read in a partial clone needs the blobs it lacks fetched.
 var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 
-// readsNoConfigFile is the environment of a read that must read neither the machine's git
-// configuration nor the user's (Guard.advertised, Guard.negotiated, Guard.lsRemote):
-// GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the user's,
-// the second also the one under XDG_CONFIG_HOME, and with them every file either includes.
-var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
-
 // destinationHolds is what a push's destination says it holds, read once a push
 // (Guard.pushRecords) by its two reads of the URL git handed the hook: not, a line ^<id> for each
 // commit of each read that answered, which Guard.commits feeds rev-list, and negotiated, whether
 // the fetch negotiation answered. tips are the local commits of the push's updates, which the
 // negotiation walks (Guard.negotiated); the advertised refs are read whole (Guard.advertised).
 // The two reads run at the same time, the negotiation in a goroutine of its own, so a destination
-// that answers neither holds the push for one heldReadBound, not two. pushRecords makes them only
-// where the push can write to that URL alone (writesOnlyToItsURL): a push that can write
-// somewhere else, through a receive-pack program of its own, a remote helper or another exec
-// path's git-receive-pack, writes where that program writes, and what the URL holds says nothing
-// of that repository.
+// that answers neither holds the push for one heldReadBound, not two. Each connects as the push
+// connects (Guard.heldRead), and pushRecords makes them only where they reach the repository the
+// push writes to (readsReachItsRepository).
 //
 // Where the negotiation answers, the remote-tracking refs bound nothing (Guard.commits): they can
 // be stale, since the clone may not have fetched the destination since it moved; no remote may
@@ -64,9 +56,9 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // fails and the advertised read answers (a destination served on protocol v0 or v1, which the
 // negotiation needs v2 of, or a negotiation past its bound), the advertised commits are added to
 // the remote-tracking refs: each is a commit the destination holds, so the push reads no commit
-// it would read without them. Where both fail, and for a push that can write somewhere other than
-// the URL, not is empty and the remote-tracking refs bound the push alone, as they did before
-// these reads.
+// it would read without them. Where both fail, not is empty and the remote-tracking refs bound
+// the push alone, as they did before these reads and as they do for a push pushRecords makes
+// neither read for.
 //
 // A read that fails refuses nothing. A stop by ctx itself, the caller's deadline or its cancel,
 // is the answer, as it is of every git a push's read runs (Guard.git): the push is then refused
@@ -101,6 +93,203 @@ func (g *Guard) destinationHolds(ctx context.Context, dir, url string, tips []st
 	return lines.String(), negotiatedErr == nil, nil
 }
 
+// readsReachItsRepository is whether pushRecords makes the two reads of what the push's
+// destination holds (destinationHolds) for the push git hands the pre-push hook, to url from the
+// repository dir and the guard's environment name: whether those reads, which connect as the push
+// connects (Guard.heldRead), reach the repository the push writes to. Where it answers false, the
+// remote-tracking refs bound the push alone, as they did before these reads, so that a read never
+// stands for a repository the push does not write to (R10 of dispatch://INFRA-3524's spec). It
+// answers false where a read it makes fails, and in each of these cases, a condition of its own:
+//
+//   - The push can write somewhere other than url (writesOnlyToItsURL, by pushConfig): a
+//     receive-pack program of its own, a remote helper or another exec path's git-receive-pack
+//     writes where that program writes, and what url holds says nothing of that repository.
+//   - A key of the configuration is one routedKeys names: a program or a proxy between git and
+//     the server, or a transport key of a remote that a read of a URL does not apply.
+//   - The guard's environment sets one of routedNames: a program or a proxy between git and the
+//     server, named by the variable git or libcurl reads it from.
+//   - A url.<base>.insteadOf of the configuration rewrites url (rewritesURL).
+//   - url is also the name of a remote of the repository (urlNamesARemote).
+//
+// The configuration is read once for the push, `git config -z --list` in dir through Guard.git
+// (pushConfig), which reads it as the push's own gits read it: every scope down to the command
+// line's (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook, and a GIT_CONFIG_COUNT block),
+// under the guard's whole environment, a GIT_DIR there included.
+func (g *Guard) readsReachItsRepository(ctx context.Context, dir, url string) bool {
+	base := g.base()
+	config, only := g.pushConfig(ctx, dir, url, base)
+	if !only {
+		return false
+	}
+	if setsKeyOf(config, routedKeys) {
+		return false
+	}
+	if setsNameOf(base, routedNames) {
+		return false
+	}
+	if rewritesURL(config, url) {
+		return false
+	}
+	if g.urlNamesARemote(ctx, dir, config, url) {
+		return false
+	}
+	return true
+}
+
+// configKey is a key of git's configuration in its three parts, as `git config -z --list` writes
+// one (keyParts): its section, its subsection and its variable. In routedKeys a subsection of "*"
+// stands for any subsection, and "" for none.
+type configKey struct{ section, subsection, variable string }
+
+// routedKeys are the configuration keys under which the two reads of what a push's destination
+// holds need not reach the repository the push writes to (readsReachItsRepository), set in any
+// scope with any value, empty included.
+var routedKeys = []configKey{
+	// A program between git and the server, which git runs for the connection and hands the
+	// service it asks for: an ssh command (core.sshCommand) and the proxy command of a git:// URL
+	// (core.gitProxy). Such a program sees whether it serves a read (git-upload-pack) or the push
+	// (git-receive-pack), and can send the two to different repositories: measured by
+	// dispatch://INFRA-3524's tester at 917b2071, a push through each landed a commit the rules
+	// refuse in a second repository while the reads answered for the hook's URL.
+	{"core", "", "sshcommand"},
+	{"core", "", "gitproxy"},
+	// A proxy between git and an http(s) server, which sees each request's service in its path and
+	// can do the same: http.proxy, an http.<url>.proxy of any URL, and a remote.<name>.proxy of
+	// any remote, which a push by that remote's name applies and a read of a URL does not.
+	{"http", "", "proxy"},
+	{"http", "*", "proxy"},
+	{"remote", "*", "proxy"},
+	// A transport key of a remote that a read of a URL does not apply, so that a push by that
+	// remote's name connects in a way neither read does: remote.<name>.proxyAuthMethod, beside
+	// remote.<name>.proxy above.
+	{"remote", "*", "proxyauthmethod"},
+}
+
+// routedNames are the environment variables under which the two reads of what a push's
+// destination holds need not reach the repository the push writes to (readsReachItsRepository),
+// each set in the guard's environment with any value, empty included.
+var routedNames = []string{
+	// A program between git and the server, for core.sshCommand's and core.gitProxy's reason
+	// (routedKeys), as git reads one from its environment: an ssh command (GIT_SSH_COMMAND, and
+	// GIT_SSH, a program run in ssh's place) and the proxy command of a git:// URL.
+	"GIT_SSH_COMMAND", "GIT_SSH", "GIT_PROXY_COMMAND",
+	// A proxy between git and an http(s) server, for http.proxy's reason, as git and libcurl
+	// read one from the environment.
+	"http_proxy", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY",
+}
+
+// keyParts is key, a key as `git config -z --list` writes it, in its three parts: its first
+// dot-part the section, its last the variable, and what lies between them the subsection, which
+// can hold dots, "" where there is none. git writes the section and the variable in lower case
+// and the subsection as it was written. A key with no dot is none git writes, and answers false.
+func keyParts(key string) (configKey, bool) {
+	section, rest, ok := strings.Cut(key, ".")
+	if !ok {
+		return configKey{}, false
+	}
+	last := strings.LastIndexByte(rest, '.')
+	if last < 0 {
+		return configKey{section: section, variable: rest}, true
+	}
+	return configKey{section: section, subsection: rest[:last], variable: rest[last+1:]}, true
+}
+
+// setsKeyOf is whether config, the output of `git config -z --list`, holds a key one of keys
+// names: the same section and variable, each read without case as git reads them, and a
+// subsection where keys has "*", none where it has "".
+func setsKeyOf(config string, keys []configKey) bool {
+	for entry := range strings.SplitSeq(config, "\x00") {
+		name, _, _ := strings.Cut(entry, "\n")
+		key, ok := keyParts(name)
+		if !ok {
+			continue
+		}
+		for _, named := range keys {
+			if strings.EqualFold(key.section, named.section) && strings.EqualFold(key.variable, named.variable) &&
+				(named.subsection == "*") == (key.subsection != "") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// setsNameOf is whether env sets one of names, with any value, empty included.
+func setsNameOf(env, names []string) bool {
+	for _, entry := range env {
+		if name, _, ok := strings.Cut(entry, "="); ok && slices.Contains(names, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// rewritesURL is whether config, the output of `git config -z --list`, holds a
+// url.<base>.insteadOf whose value url begins with, an empty value included: git reads a URL that
+// begins with such a value as <base> and the rest, so a read of url in the repository reaches
+// what <base> names. git hands the hook the URL its rewrites have already led the push to, and a
+// rewrite applied to it again can lead elsewhere: under url.<base>.pushInsteadOf, which git
+// applies to the push URL alone, the URL the hook is handed can be one a url.<base>.insteadOf
+// rewrites. The review of cybermonklabs/legion#3946 reproduced that on git 2.47.3: with origin at
+// https://example.invalid/fork, url.<real.git>.pushInsteadOf that URL and url.<fake.git>.insteadOf
+// <real.git>, the push landed in real.git, the hook was handed real.git, and a git ls-remote of it
+// in the clone listed fake.git's refs. The section and the variable are read without case, and
+// the base is any.
+func rewritesURL(config, url string) bool {
+	for entry := range strings.SplitSeq(config, "\x00") {
+		name, value, _ := strings.Cut(entry, "\n")
+		key, ok := keyParts(name)
+		if ok && strings.EqualFold(key.section, "url") && strings.EqualFold(key.variable, "insteadof") && strings.HasPrefix(url, value) {
+			return true
+		}
+	}
+	return false
+}
+
+// urlNamesARemote is whether url, the URL git hands the hook, is also the name of a remote of the
+// repository in dir. git ls-remote and git fetch read their repository argument as a remote's
+// name first (remote.c's remote_get), and then read that remote's URL and its other keys,
+// remote.<name>.uploadpack among them, rather than url itself, while a push by another remote
+// whose URL is url writes to url. Measured with git 2.47.3 on 2026-11-28: with origin at
+// file://…/dest.git and remote."file://…/dest.git".url=…/other.git, git ls-remote
+// file://…/dest.git in the clone listed other.git's main, while a push by origin writes to
+// dest.git; a remote."file://…/dest.git".uploadpack of `git-upload-pack '…/other.git' #` led git
+// ls-remote and git fetch --negotiate-only there too, as a remotes/<name> or branches/<name> file
+// naming other.git led git ls-remote of the bare name there.
+//
+// url names a remote where a key of config, the output of `git config -z --list`, is
+// remote.<url>.<variable> for any variable, the subsection compared exactly, as git compares a
+// remote's name. Where url is a name git reads the legacy files for (valid_remote_nick: not
+// empty, not `.` or `..`, and no `/`), it also names one where remotes/<url> or branches/<url>
+// exists under the repository's git directory, the two paths read with one
+// `git rev-parse --path-format=absolute --git-path remotes/<url> --git-path branches/<url>` in
+// dir, and only then. A read that fails answers true, which keeps the push to the base's bound.
+func (g *Guard) urlNamesARemote(ctx context.Context, dir, config, url string) bool {
+	for entry := range strings.SplitSeq(config, "\x00") {
+		name, _, _ := strings.Cut(entry, "\n")
+		if key, ok := keyParts(name); ok && strings.EqualFold(key.section, "remote") && key.subsection == url {
+			return true
+		}
+	}
+	if url == "" || url == "." || url == ".." || strings.Contains(url, "/") {
+		return false
+	}
+	paths, err := g.git(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", "remotes/"+url, "--git-path", "branches/"+url)
+	if err != nil {
+		return true
+	}
+	files := strings.Split(strings.TrimSuffix(paths, "\n"), "\n")
+	if len(files) != 2 {
+		return true
+	}
+	for _, file := range files {
+		if _, err := os.Lstat(file); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+	}
+	return false
+}
+
 // advertised are the commits the repository at url holds at its branches and tags, of those the
 // repository at dir has: commits a push to url need not publish again (destinationHolds). The
 // read is of url itself, never of a ref of dir's own, which says nothing reliable of what url
@@ -108,50 +297,27 @@ func (g *Guard) destinationHolds(ctx context.Context, dir, url string, tips []st
 //
 //	git -c credential.helper= ls-remote --heads --tags -- <url>
 //
-// run outside dir, in /, a directory only root can write, so that git finds no repository there
-// and no configuration of dir's applies to the read. git hands the hook the URL dir's
-// configuration has already led the push to, and a rewrite read a second time can lead the read
-// to another repository: under url.<base>.pushInsteadOf, which git applies to the push URL alone,
-// the URL the hook is handed can be one a url.<base>.insteadOf of dir's rewrites, and a read made
-// in dir would list the refs of the repository that rewrite names, not of the one the push writes
-// to. The review of cybermonklabs/legion#3946 reproduced that on git 2.47.3: with origin at
-// https://example.invalid/fork, url.<real.git>.pushInsteadOf that URL and
-// url.<fake.git>.insteadOf <real.git>, the push landed in real.git, the hook was handed real.git,
-// and a git ls-remote of it in the clone listed fake.git's refs. So a URL that is a relative local
-// path is read against dir (againstDir), as git read it for the push, and the read reads no git
-// configuration but its own command line's (heldRead): of the caller's environment it keeps what
-// the guard's read with no credential keeps (lsRemoteInherits), of git's own names only
-// GIT_ALLOW_PROTOCOL, GIT_SSL_CAINFO and GIT_SSL_CAPATH, so no GIT_DIR, which git hands a pre-push
-// hook for a push made with `git --git-dir <dir>`, as `jj git push` makes it, and under which git
-// reads dir's configuration from any directory, and no GIT_CONFIG_COUNT block and no
-// GIT_CONFIG_PARAMETERS, whose url.<base>.insteadOf would lead the read elsewhere as dir's would;
-// and it reads neither the system file nor the user's (readsNoConfigFile). A git wrapper of a
-// host's own can still add to its command line, the case `legion git --after` runs.
-//
-// The read carries no credential (heldRead). The `--` keeps a URL that starts with a dash from
-// being read as an option. Each sha it prints is kept where dir has it as a commit, an annotated
-// tag's peeled commit (<tag>^{}) too; one cat-file --batch-check of them all, run in dir, answers
-// which. A line whose first field is no object id as git prints one, 40 or 64 lower-case hex
-// digits (isObjectID), holds nothing and is not asked of: cat-file reads a name or an expression,
-// HEAD or main~1, as a revision of dir's, and would take the commit it names in dir as one url
-// holds. A sha dir does not have holds nothing, since rev-list cannot walk from it: where it is a
-// commit ahead of dir's, the commits of dir's beneath it are left to the negotiation
-// (Guard.negotiated), where that fails to the remote-tracking refs, and past those they are read,
-// which is the fail-closed direction. The cat-file fetches nothing (fetchesNothing), so that in a
-// partial clone, as an issue pod's fork clones are (--filter=blob:none), a sha dir lacks is
-// answered missing rather than fetched from the promisor remote. An empty answer, a repository
-// with no branch and no tag, holds nothing. A git that cannot be run, that exits other than 0, or
-// that its bound stops is an error, as Guard.git's is, and destinationHolds reads it as a read
-// that failed.
+// run in dir, as the push's own gits run, so that it connects to url as the push did (heldRead):
+// a URL that is a relative local path is read from dir, where git read it for the push, and each
+// transport setting the push uses carries the read too. It carries no credential (heldRead). The
+// `--` keeps a URL that starts with a dash from being read as an option. Each sha it prints is
+// kept where dir has it as a commit, an annotated tag's peeled commit (<tag>^{}) too; one
+// cat-file --batch-check of them all, run in dir, answers which. A line whose first field is no
+// object id as git prints one, 40 or 64 lower-case hex digits (isObjectID), holds nothing and is
+// not asked of: cat-file reads a name or an expression, HEAD or main~1, as a revision of dir's,
+// and would take the commit it names in dir as one url holds. A sha dir does not have holds
+// nothing, since rev-list cannot walk from it: where it is a commit ahead of dir's, the commits of
+// dir's beneath it are left to the negotiation (Guard.negotiated), where that fails to the
+// remote-tracking refs, and past those they are read, which is the fail-closed direction. The
+// cat-file fetches nothing (fetchesNothing), so that in a partial clone, as an issue pod's fork
+// clones are (--filter=blob:none), a sha dir lacks is answered missing rather than fetched from
+// the promisor remote. An empty answer, a repository with no branch and no tag, holds nothing. A
+// git that cannot be run, that exits other than 0, or that its bound stops is an error, as
+// Guard.git's is, and destinationHolds reads it as a read that failed.
 func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, error) {
 	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&heldReadBound))
 	defer cancel()
-	home, err := os.MkdirTemp("", "legion-held-read-")
-	if err != nil {
-		return nil, fmt.Errorf("the empty home for git ls-remote could not be made: %w", err)
-	}
-	defer os.RemoveAll(home)
-	out, err := g.heldRead(bounded, "/", home, nil, "ls-remote", "--heads", "--tags", "--", againstDir(dir, url))
+	out, err := g.heldRead(bounded, dir, nil, "ls-remote", "--heads", "--tags", "--", url)
 	if err != nil {
 		return nil, err
 	}
@@ -192,73 +358,37 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 // advertised refs name nothing dir has (Guard.advertised), and the negotiation still finds the
 // commits beneath them that dir has:
 //
-//	git -c credential.helper= --shallow-file <dir's shallow file> fetch --negotiate-only \
-//	    --negotiation-tip=<tip>... -- <url>
+//	git -c credential.helper= fetch --negotiate-only --no-write-fetch-head \
+//	    --no-auto-maintenance --negotiation-tip=<tip>... -- <url>
 //
-// run in an empty bare repository that the guard makes for the read in a private temporary
-// directory (os.MkdirTemp, 0700) and removes after, whose objects are dir's through
-// GIT_ALTERNATE_OBJECT_DIRECTORIES (`git rev-parse --path-format=absolute --git-path objects` in
-// dir), so that git walks dir's commits and no configuration of dir's applies to the read: run in
-// dir, a url.<base>.insteadOf of dir's led it to another repository, and run so it answered for
-// the URL it was given (measured on 2026-11-27 with git 2.47.3). The URL is joined to dir as
-// Guard.advertised joins it (againstDir), and the read keeps of the caller's environment, reads
-// of git configuration and carries of a credential what that read does (heldRead), and fetches
-// nothing (fetchesNothing). git fetches nothing and writes no ref for it, in dir or in the bare:
-// it prints each commit the destination acknowledged as one it holds, one a line, and stops. A
-// line that is no object id (isObjectID) holds nothing.
-//
-// git is named dir's shallow file (`--git-path shallow`) whether or not dir is shallow. Where dir
-// is shallow, its walk stops at dir's shallow commits as a walk in dir does: without it, git
-// 2.47.3 printed `error: Could not read <parent>` for a shallow commit's parent the alternate
-// does not hold, and still answered. Where dir is not, the file does not exist, and git reads a
-// missing shallow file as a repository that is not shallow and creates none (measured with git
-// 2.47.3 on 2026-11-27). The bare repository's object format is dir's (`--show-object-format`),
-// so that the two read one another's ids.
+// run in dir, as Guard.advertised's read runs, so that it connects to url as the push did
+// (heldRead), and fetching nothing (fetchesNothing). git walks dir's own commits, and in a shallow
+// clone stops at its shallow commits, since it reads dir's shallow file as every git run in dir
+// does. It fetches nothing and writes no ref: it prints each commit the destination acknowledged
+// as one it holds, one a line, and stops; measured with git 2.47.3 on 2026-11-28, in a clone it
+// wrote no FETCH_HEAD, no ref and no object. --no-write-fetch-head and --no-auto-maintenance say
+// so on its command line all the same, so that no FETCH_HEAD is written and no maintenance runs
+// after it, whatever dir's configuration says of either. A line that is no object id
+// (isObjectID) holds nothing.
 //
 // The negotiation needs protocol v2: a destination served on v0 or v1 fails it (git 2.47.3 printed
 // `warning: --negotiate-only requires protocol v2` and `fatal: the remote end hung up
 // unexpectedly`, exit 255), and so do a destination with no commit at all (`fatal: expected
-// 'acknowledgments', received 'packfile'`, exit 128) and one that asks for a credential. A clone
-// whose object directory's path holds a colon fails it too, since
-// GIT_ALTERNATE_OBJECT_DIRECTORIES reads a colon as a separator, and git then holds none of the
-// tips. Each tip is a `--negotiation-tip` argument of its own, which git reads from its command
-// line alone, so a push of so many refs that their arguments pass the system's limit on a
-// command's arguments fails to start the read, and the push keeps the base's bound
-// (destinationHolds). The read runs for at most heldReadBound in all, and an error of any of its
-// gits, as Guard.git's is, is a read that failed (destinationHolds).
+// 'acknowledgments', received 'packfile'`, exit 128) and one that asks for a credential. Each tip
+// is a `--negotiation-tip` argument of its own, which git reads from its command line alone, so a
+// push of so many refs that their arguments pass the system's limit on a command's arguments
+// fails to start the read, and the push keeps the base's bound (destinationHolds). The read runs
+// for at most heldReadBound, and an error of its git, as Guard.git's is, is a read that failed
+// (destinationHolds).
 func (g *Guard) negotiated(ctx context.Context, dir, url string, tips []string) ([]string, error) {
 	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&heldReadBound))
 	defer cancel()
-	paths, err := g.git(bounded, dir, "rev-parse", "--path-format=absolute", "--git-path", "objects", "--git-path", "shallow", "--show-object-format")
-	if err != nil {
-		return nil, err
-	}
-	answer := strings.Split(strings.TrimSuffix(paths, "\n"), "\n")
-	if len(answer) != 3 {
-		return nil, fmt.Errorf("git rev-parse printed %q, want the object directory, the shallow file and the object format", paths)
-	}
-	objects, shallow, format := answer[0], answer[1], answer[2]
-	args := []string{"--shallow-file", shallow}
-	scratch, err := os.MkdirTemp("", "legion-negotiation-")
-	if err != nil {
-		return nil, fmt.Errorf("the repository for git fetch --negotiate-only could not be made: %w", err)
-	}
-	defer os.RemoveAll(scratch)
-	home, bare := filepath.Join(scratch, "home"), filepath.Join(scratch, "repo.git")
-	if err := os.Mkdir(home, 0o700); err != nil {
-		return nil, err
-	}
-	// --template= copies no template, so the repository holds nothing but what git needs.
-	if _, err := g.heldRead(bounded, scratch, home, nil, "init", "--quiet", "--bare", "--template=", "--object-format="+format, bare); err != nil {
-		return nil, err
-	}
-	args = append(args, "fetch", "--negotiate-only")
+	args := append(make([]string, 0, len(tips)+6), "fetch", "--negotiate-only", "--no-write-fetch-head", "--no-auto-maintenance")
 	for _, tip := range tips {
 		args = append(args, "--negotiation-tip="+tip)
 	}
-	args = append(args, "--", againstDir(dir, url))
-	env := append([]string{"GIT_DIR=" + bare, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + objects}, fetchesNothing...)
-	out, err := g.heldRead(bounded, bare, home, env, args...)
+	args = append(args, "--", url)
+	out, err := g.heldRead(bounded, dir, fetchesNothing, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -272,75 +402,44 @@ func (g *Guard) negotiated(ctx context.Context, dir, url string, tips []string) 
 }
 
 // heldRead runs one git of a read of what a push's destination holds (Guard.advertised,
-// Guard.negotiated) in dir, with args after `-c credential.helper=`, and answers its standard
-// output alone, its standard error taken apart, failing as Guard.git fails. It reads no git
-// configuration but its command line's and carries no credential:
+// Guard.negotiated) in dir, with args after `-c credential.helper=` and env on top of the guard's
+// environment, and answers its standard output alone, its standard error taken apart, failing as
+// Guard.git fails. It connects as the push connects: it runs in the push's own repository, with
+// the push's own configuration, every scope of it, and the guard's whole environment, which is
+// the hook's, GIT_DIR, GIT_CONFIG_PARAMETERS, a GIT_CONFIG_COUNT block and HOME included. So each
+// transport setting the push uses, an http or curl setting or a protocol setting, carries the
+// read too, and the read answers for the destination the push reaches through it; where the push
+// reaches its server through a program or a proxy of its own, which can send a read and the push
+// to two repositories, no read is made (Guard.readsReachItsRepository). It uses no credential:
 //
-//   - of the caller's environment it keeps what the guard's read with no credential keeps
-//     (lsRemoteInherits): every name that is not git's own, and of git's own GIT_ALLOW_PROTOCOL,
-//     GIT_SSL_CAINFO and GIT_SSL_CAPATH alone, so no GIT_DIR, no GIT_CONFIG_COUNT block, no
-//     GIT_CONFIG_PARAMETERS and no GIT_ASKPASS of the caller's; and none of the names libcurl
-//     finds a netrc file by, HOME, NETRC and USERPROFILE;
-//   - HOME is home, an empty directory of the read's own, so no .netrc of the caller's reaches it,
-//     and it reads neither the system's configuration file nor the user's (readsNoConfigFile);
-//   - `-c credential.helper=` empties the helper list again on its command line, after anything a
-//     git wrapper of a host's own put in front of it, and the guard's prompt settings
-//     (promptsNothing) leave git's askpass and its terminal prompt nothing to answer with.
+//   - `-c credential.helper=` empties the list of credential helpers on its command line, which
+//     git reads after every other scope: measured with git 2.47.3, it empties a
+//     credential.<url>.helper of the repository's own file, and one a GIT_CONFIG_COUNT block or
+//     GIT_CONFIG_PARAMETERS gives, as it empties credential.helper;
+//   - the guard's prompt settings (promptsNothing) leave git's askpass, ssh's askpass and git's
+//     terminal prompt nothing to answer with.
 //
-// So over HTTP(S) no credential helper runs for it and no netrc file reaches it, and it reads no
-// REST API: the `legion git-credential` that an issue pod's configuration names for github.com,
-// which makes a REST read for an owner the bundle does not serve, never runs for it. A destination
-// that asks for a credential fails it, as does a push whose destination is reached only through a
-// transport setting made in git configuration (a core.sshCommand, an http.proxy, an
-// http.sslCAInfo), where the environment variables that make the same settings reach it. Over
-// ssh, SSH_AUTH_SOCK stays and ssh finds the user's keys by the home of the password database,
-// not by HOME, so an ssh destination can still be read with the user's key: that is git's own
-// transport, and no REST read. env goes on top.
-func (g *Guard) heldRead(ctx context.Context, dir, home string, env []string, args ...string) (string, error) {
+// So no credential helper runs for it and nothing is prompted, and it reads no REST API: the
+// `legion git-credential` that an issue pod's configuration names for github.com, which makes a
+// REST read for an owner the bundle does not serve, never runs for it. The rules run only for a
+// destination that reads as public, which answers a read with no credential, and a destination
+// that asks for one fails both reads. Over ssh, the user's key still reaches the server through
+// ssh's own files and SSH_AUTH_SOCK: that is git's own transport, and no REST read.
+func (g *Guard) heldRead(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	var stderr strings.Builder
 	status, out, err := g.run(ctx, child{
-		argv:    gitArgv(append([]string{"-c", "credential.helper="}, args...)...),
-		dir:     dir,
-		inherit: func([]string) func(name, value string) bool { return lsRemoteInherits },
-		env:     slices.Concat([]string{"HOME=" + home}, readsNoConfigFile, env),
-		stderr:  &stderr,
+		argv:   gitArgv(append([]string{"-c", "credential.helper="}, args...)...),
+		dir:    dir,
+		env:    env,
+		stderr: &stderr,
 	})
 	if err != nil {
 		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}
 	if status != 0 {
-		return "", gitExited("git "+subcommand(args), status, stderr.String())
+		return "", gitExited("git "+args[0], status, stderr.String())
 	}
 	return out, nil
-}
-
-// subcommand is the git subcommand args run, after the global options heldRead's callers put
-// before it: `--shallow-file <file>` (Guard.negotiated).
-func subcommand(args []string) string {
-	if len(args) > 2 && args[0] == "--shallow-file" {
-		return args[2]
-	}
-	return args[0]
-}
-
-// againstDir is url as a read made outside dir reaches what git reached from dir: a URL that is a
-// relative local path joined to dir, the directory git runs the hook in, which is the one git read
-// that path from for the push, and every other URL as it is. A URL is a local path by git's own
-// rule (connect.c's url_is_local_not_ssh): it names no scheme (`<scheme>://`), and it has no
-// colon, or a slash before its first colon, since `host:path` with the colon first is git's scp
-// form of ssh. The path is joined, not cleaned, so that a `..` in it is read from the directory
-// itself, as git's own read of it is, rather than from the parent of a symbolic link dir was
-// named through.
-func againstDir(dir, url string) string {
-	if strings.Contains(url, "://") || filepath.IsAbs(url) {
-		return url
-	}
-	if colon := strings.IndexByte(url, ':'); colon >= 0 {
-		if slash := strings.IndexByte(url, '/'); slash < 0 || slash > colon {
-			return url
-		}
-	}
-	return dir + string(filepath.Separator) + url
 }
 
 // isObjectID is whether id is an object id as git prints one: 40 or 64 lower-case hex digits, a

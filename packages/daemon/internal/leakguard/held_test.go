@@ -1,8 +1,11 @@
 package leakguard
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,141 +42,89 @@ func wantRefused(t *testing.T, err error, want []string) {
 	reports(t, refusal(t, err).Lines, want...)
 }
 
-// The read of what the destination holds is made outside the clone, so no configuration of the
-// clone's leads it to another repository (Guard.advertised). git hands the hook the URL the
-// clone's configuration has already led the push to. Under the clone's url.<base>.pushInsteadOf,
-// which git applies to the push URL alone, that URL can be one the clone's url.<base>.insteadOf
-// rewrites, and a read made in the clone would list the refs of the stand-in repository the
-// rewrite names: the review of cybermonklabs/legion#3946 reproduced that, and its case is the
-// first here. The stand-in advertises the commit the push adds, a line the rules refuse, and the
-// repository the push writes to holds nothing, so that commit is read and refused. The case holds
-// for a push made with `git --git-dir <dir>`, which is how `jj git push` makes one, and whose
-// hook git hands GIT_DIR. A URL that is a relative local path is read from the clone's
-// directory, where git read it for the push: the repository there holds the pushed commit, so
-// the push passes. A destination the clone's own url.<base>.insteadOf alone reaches is read at
-// the URL as written, which no transport but file reaches here, so the read fails, and the push
-// is read as it was before the reads: the clone has no remote, so every commit of it is read, and
-// the pushed one refused. Each push creates main.
-func TestTheReadOfWhatTheDestinationHoldsIsMadeOutsideTheClone(t *testing.T) {
-	// pushRewritten is the review's case: origin at a URL that names no repository, which the
-	// clone's pushInsteadOf rewrites, for a push alone, to destination.git, which holds nothing,
-	// and an insteadOf of the clone's that rewrites destination.git to stand-in.git, which holds
-	// head. It answers destination.git, the URL git hands the hook.
-	pushRewritten := func(t *testing.T, run func(string, ...string) string, repo, head string) string {
-		t.Helper()
-		root := filepath.Dir(repo)
-		destination, standIn := filepath.Join(root, "destination.git"), filepath.Join(root, "stand-in.git")
-		run(root, fixturegit.InitBare(destination, "main")...)
-		run(root, fixturegit.InitBare(standIn, "main")...)
-		run(repo, "git", "push", "--quiet", standIn, head+":refs/heads/main")
-		const fork = "https://example.invalid/fork"
-		run(repo, "git", "remote", "add", "origin", fork)
-		run(repo, "git", "config", "url."+destination+".pushInsteadOf", fork)
-		run(repo, "git", "config", "url."+standIn+".insteadOf", destination)
-		if pushed := run(repo, "git", "remote", "get-url", "--push", "origin"); pushed != destination {
-			t.Fatalf("origin pushes to %s, want %s: the case would prove nothing", pushed, destination)
-		}
-		if listed := run(repo, "git", "ls-remote", "--heads", destination); !strings.HasPrefix(listed, head) {
-			t.Fatalf("git ls-remote of %s in the clone lists %q, want the stand-in's main at %s: the case would prove nothing", destination, listed, head)
-		}
-		return destination
+// The reads of what the destination holds run in the repository the hook runs in, as the push's
+// own gits run (Guard.heldRead), so a URL that is a relative local path is read from there, where
+// git read it for the push. The destination beside the clone holds the commit the push adds at
+// its main: both reads answer it, the negotiation's and the advertised read's, and the push of a
+// new main to it, whose commit adds a line the rules refuse, passes, since the destination
+// already holds that commit.
+func TestTheReadsOfARelativeLocalURLAreMadeAgainstTheRepository(t *testing.T) {
+	const url = "../destination.git"
+	repo, _, head, _ := pushOf(t, notesRefused())
+	root := filepath.Dir(repo)
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	fixture.Run(root, fixturegit.InitBare(filepath.Join(root, "destination.git"), "main")...)
+	fixture.Run(repo, "git", "push", "--quiet", url, head+":refs/heads/main")
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	not, negotiated, err := guard.destinationHolds(bound(t), repo, url, []string{head})
+	if err != nil || !negotiated {
+		t.Errorf("the reads of %s answered %v, negotiated %t; want both answered", url, err, negotiated)
 	}
-	for _, tc := range []struct {
-		name string
-		// destination makes the repository the push is made to, beside repo, and the clone's
-		// configuration the case names, and answers the URL git hands the hook.
-		destination func(t *testing.T, run func(dir string, argv ...string) string, repo, head string) string
-		// gitDir is whether the hook's environment names the clone's GIT_DIR.
-		gitDir bool
-		// want is the report, and nil where the push passes.
-		want []string
-	}{
-		{
-			name:        "a push URL the clone's pushInsteadOf names and its insteadOf rewrites",
-			destination: pushRewritten,
-			want:        notesReport,
-		},
-		{
-			name:        "the same push made with git --git-dir, as jj makes one",
-			destination: pushRewritten,
-			gitDir:      true,
-			want:        notesReport,
-		},
-		{
-			name: "a URL that is a relative local path",
-			destination: func(_ *testing.T, run func(string, ...string) string, repo, head string) string {
-				root := filepath.Dir(repo)
-				run(root, fixturegit.InitBare(filepath.Join(root, "destination.git"), "main")...)
-				run(repo, "git", "push", "--quiet", "../destination.git", head+":refs/heads/main")
-				return "../destination.git"
-			},
-		},
-		{
-			name: "a destination the clone's own insteadOf alone reaches",
-			destination: func(_ *testing.T, run func(string, ...string) string, repo, head string) string {
-				bare := filepath.Join(filepath.Dir(repo), "destination.git")
-				run(repo, fixturegit.InitBare(bare, "main")...)
-				run(repo, "git", "push", "--quiet", bare, head+":refs/heads/main")
-				run(repo, "git", "config", "url.file://"+bare+".insteadOf", theURL)
-				return theURL
-			},
-			want: notesReport,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo, _, head, _ := pushOf(t, notesRefused())
-			url := tc.destination(t, fixturegit.Isolated(t, t.TempDir()).Run, repo, head)
-			var hook []string
-			if tc.gitDir {
-				hook = append(hook, "GIT_DIR="+filepath.Join(repo, ".git"))
-			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, hook...)
-			err := guard.Push(bound(t), PushRequest{
-				Dir:     repo,
-				Remote:  "origin",
-				URL:     url,
-				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
-			})
-			wantRefused(t, err, tc.want)
-		})
+	if want := "^" + head + "\n^" + head + "\n"; not != want {
+		t.Errorf("the destination is taken to hold %q, want the negotiation's and the advertised read's %q", not, want)
 	}
+	err = guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     url,
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	})
+	wantRefused(t, err, nil)
 }
 
-// The read of what the destination holds reads no git configuration but its own command line's
-// (Guard.advertised, Guard.negotiated), so no setting of the environment the guard runs under
-// leads it to another repository either: not the global file GIT_CONFIG_GLOBAL names, nor the
-// system file GIT_CONFIG_SYSTEM names where GIT_CONFIG_NOSYSTEM=0 lets git read one, nor a
-// GIT_CONFIG_COUNT block, nor GIT_CONFIG_PARAMETERS, nor the user's own files, ~/.gitconfig and
-// $XDG_CONFIG_HOME/git/config, which git reads where no GIT_CONFIG_GLOBAL names another file.
-// Each case puts in one of those places a url.<stand-in>.insteadOf that rewrites the
-// destination's path to the stand-in's, which a plain git ls-remote of the destination under that
-// environment follows. The stand-in holds the commit the push adds, a line the rules refuse, and
-// the destination, which the push is made to by its path, holds only the commit before it. A read
-// the rewrite led to the stand-in would take that commit as held and pass the push unread; the
-// read of the destination reads it, and the push is refused.
-func TestTheReadOfWhatTheDestinationHoldsReadsNoConfigurationButItsCommandLine(t *testing.T) {
+// A url.<base>.insteadOf of the push's configuration that rewrites the hook's URL keeps the
+// base's bound: the guard makes neither read of what the destination holds
+// (readsReachItsRepository), and the push is judged as it was before the reads (R10 of
+// dispatch://INFRA-3524's spec, the eleventh case of its check c10). git hands the hook the URL
+// its rewrites have already led the push to, and the reads, which run with the push's
+// configuration, would apply the rewrite again and answer for the repository it names. Each case
+// puts, in one place the push reads its configuration from, a url.<stand-in>.insteadOf whose
+// value is the destination's path, and first shows that the rewrite is real, or the case would
+// prove nothing: git ls-remote of the destination under that configuration lists the stand-in's
+// main. The stand-in holds the commit the push adds, a line the rules refuse, and the destination,
+// which the push is made to by its path, holds only the commit before it. Reads the rewrite led to
+// the stand-in would take that commit as held and pass the push unread; the guard reads it and
+// refuses the push, as the base does.
+//
+// The places are the repository's own file; the global file GIT_CONFIG_GLOBAL names; the system
+// file GIT_CONFIG_SYSTEM names where GIT_CONFIG_NOSYSTEM=0 lets git read one; a GIT_CONFIG_COUNT
+// block; GIT_CONFIG_PARAMETERS; the user's own files, ~/.gitconfig and
+// $XDG_CONFIG_HOME/git/config, which git reads where no GIT_CONFIG_GLOBAL names another file; and
+// the repository's own file reached through a GIT_DIR naming the clone, as git hands one to the
+// hook of a push made with `git --git-dir <dir>`, which is how `jj git push` makes one, from a
+// directory that is not the clone.
+func TestAnInsteadOfThatRewritesTheHooksURLKeepsTheBasesBound(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// env is what the case adds to the environment to set key to value: dir is a directory
-		// of the case's own, and config writes that one setting to the configuration file at a
-		// path and answers the path.
-		env func(dir string, config func(file string) string, key, value string) []string
+		// env is what the case adds to the environment to set key to value: repo is the clone,
+		// dir is a directory of the case's own, and config writes that one setting to the
+		// configuration file at a path and answers the path.
+		env func(repo, dir string, config func(file string) string, key, value string) []string
+		// elsewhere is whether the hook runs in a directory that is not the clone.
+		elsewhere bool
 	}{
 		{
+			name: "the repository's own file",
+			env: func(repo, _ string, config func(string) string, _, _ string) []string {
+				config(filepath.Join(repo, ".git", "config"))
+				return nil
+			},
+		},
+		{
 			name: "the global file GIT_CONFIG_GLOBAL names",
-			env: func(dir string, config func(string) string, _, _ string) []string {
+			env: func(_, dir string, config func(string) string, _, _ string) []string {
 				return []string{"GIT_CONFIG_GLOBAL=" + config(filepath.Join(dir, "gitconfig"))}
 			},
 		},
 		{
 			name: "the system file GIT_CONFIG_SYSTEM names, under GIT_CONFIG_NOSYSTEM=0",
-			env: func(dir string, config func(string) string, _, _ string) []string {
+			env: func(_, dir string, config func(string) string, _, _ string) []string {
 				return []string{"GIT_CONFIG_NOSYSTEM=0", "GIT_CONFIG_SYSTEM=" + config(filepath.Join(dir, "gitconfig"))}
 			},
 		},
 		{
 			name: "a GIT_CONFIG_COUNT block",
-			env: func(_ string, _ func(string) string, key, value string) []string {
+			env: func(_, _ string, _ func(string) string, key, value string) []string {
 				return []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=" + key, "GIT_CONFIG_VALUE_0=" + value}
 			},
 		},
@@ -181,23 +132,31 @@ func TestTheReadOfWhatTheDestinationHoldsReadsNoConfigurationButItsCommandLine(t
 			// git hands the git it starts for `git -c <key>=<value>` GIT_CONFIG_PARAMETERS in this
 			// form, each half quoted for sh: measured with git 2.47.3.
 			name: "GIT_CONFIG_PARAMETERS",
-			env: func(_ string, _ func(string) string, key, value string) []string {
+			env: func(_, _ string, _ func(string) string, key, value string) []string {
 				return []string{"GIT_CONFIG_PARAMETERS=" + shQuote(key) + "=" + shQuote(value)}
 			},
 		},
 		{
 			name: "the user's file under HOME",
-			env: func(dir string, config func(string) string, _, _ string) []string {
+			env: func(_, dir string, config func(string) string, _, _ string) []string {
 				config(filepath.Join(dir, ".gitconfig"))
 				return []string{"HOME=" + dir}
 			},
 		},
 		{
 			name: "the user's file under XDG_CONFIG_HOME",
-			env: func(dir string, config func(string) string, _, _ string) []string {
+			env: func(_, dir string, config func(string) string, _, _ string) []string {
 				config(filepath.Join(dir, "git", "config"))
 				return []string{"XDG_CONFIG_HOME=" + dir}
 			},
+		},
+		{
+			name: "the repository's own file through a GIT_DIR naming the clone, as a push of jj's hands it",
+			env: func(repo, _ string, config func(string) string, _, _ string) []string {
+				config(filepath.Join(repo, ".git", "config"))
+				return []string{"GIT_DIR=" + filepath.Join(repo, ".git")}
+			},
+			elsewhere: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -216,17 +175,121 @@ func TestTheReadOfWhatTheDestinationHoldsReadsNoConfigurationButItsCommandLine(t
 			}
 			// The environment is fixtureenv.Isolated's without its GIT_CONFIG_GLOBAL=/dev/null, as
 			// a host's is, so that git reads the user's files there, and the case's own names on
-			// top. The control ls-remote runs under it whole, since Runner.With only adds names.
+			// top. The control ls-remote runs under it whole, in the directory the hook runs in.
 			env := append(slices.DeleteFunc(fixtureenv.Isolated(t.TempDir()), func(entry string) bool {
 				return strings.HasPrefix(entry, "GIT_CONFIG_GLOBAL=")
-			}), tc.env(t.TempDir(), config, key, destination)...)
+			}), tc.env(repo, t.TempDir(), config, key, destination)...)
+			hook := repo
+			if tc.elsewhere {
+				hook = t.TempDir()
+			}
 			control := fixturegit.Runner{TB: t, Env: env}
-			if listed := control.Run("/", "git", "ls-remote", "--heads", destination); !strings.HasPrefix(listed, head) {
-				t.Fatalf("git ls-remote of %s under the case's environment lists %q, want the stand-in's main at %s: the case would prove nothing", destination, listed, head)
+			if listed := control.Out(hook, "git", "ls-remote", "--heads", destination); !strings.HasPrefix(listed, head) {
+				t.Fatalf("git ls-remote of %s under the case's configuration lists %q, want the stand-in's main at %s: the case would prove nothing", destination, listed, head)
 			}
 			guard := New(Options{Check: leakguardtest.Write(t, t.TempDir(), passes), Visibility: answers(Public, nil), Env: withRules(t, env)})
-			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
-			wantRefused(t, err, notesReport)
+			push := mainPush(repo, base, head, "origin", destination)
+			push.Dir = hook
+			wantRefused(t, guard.Push(bound(t), push), notesReport)
+		})
+	}
+}
+
+// A push whose URL is also the name of a remote of the repository keeps the base's bound: the
+// guard makes neither read of what the destination holds (readsReachItsRepository,
+// urlNamesARemote), and the push is judged as it was before the reads. git ls-remote and git
+// fetch read their repository argument as a remote's name first, so reads of the hook's URL would
+// read the remote of that name, which need not be the repository the push writes to. Each case's
+// destination, which the push is made to by its URL, holds only the commit before the one the push
+// adds, and a stand-in holds that commit, which adds a line the rules refuse. A remote named the
+// URL leads a read of it to the stand-in, and the case first shows that the read really goes
+// there, or it would prove nothing: git ls-remote of the URL in the clone lists the stand-in's
+// main. Reads that went there would take the pushed commit as held and pass the push, which would
+// land it in the destination; the guard reads it and refuses the push, as the base does.
+//
+// The remotes: one named the URL file://<destination>, with a url of the stand-in's; one of the
+// same name with no url and an uploadpack, `git-upload-pack '<stand-in>' #`, which git runs for a
+// read of it in place of the destination's; and, for the URL destination.git, a bare repository's
+// relative path in the clone's directory and so a name with no `/`, a legacy
+// remotes/destination.git file and a legacy branches/destination.git file, each naming the
+// stand-in.
+func TestAPushWhoseURLIsTheNameOfARemoteKeepsTheBasesBound(t *testing.T) {
+	// relative is the destination of the legacy files' cases: a bare repository in the clone's
+	// directory that holds base, named by its relative path, which holds no `/`.
+	relative := func(t *testing.T, fixture fixturegit.Runner, repo, base string) string {
+		t.Helper()
+		const url = "destination.git"
+		fixture.Run(repo, fixturegit.InitBare(filepath.Join(repo, url), "main")...)
+		fixture.Run(repo, "git", "push", "--quiet", url, base+":refs/heads/main")
+		return url
+	}
+	// legacy writes content to the clone's legacy file of kind, remotes or branches, for name.
+	legacy := func(t *testing.T, repo, kind, name, content string) {
+		t.Helper()
+		dir := filepath.Join(repo, ".git", kind)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		// remote makes the case's remote named the URL, which leads a read of it to standIn, and
+		// answers the URL: destination is a bare repository that holds base, which the case may
+		// use.
+		remote func(t *testing.T, fixture fixturegit.Runner, repo, base, destination, standIn string) string
+	}{
+		{
+			name: "a remote named the URL, with a url",
+			remote: func(_ *testing.T, fixture fixturegit.Runner, repo, _, destination, standIn string) string {
+				url := "file://" + destination
+				fixture.Run(repo, "git", "config", "remote."+url+".url", standIn)
+				return url
+			},
+		},
+		{
+			name: "a remote named the URL, with an uploadpack",
+			remote: func(_ *testing.T, fixture fixturegit.Runner, repo, _, destination, standIn string) string {
+				url := "file://" + destination
+				fixture.Run(repo, "git", "config", "remote."+url+".uploadpack", "git-upload-pack "+shQuote(standIn)+" #")
+				return url
+			},
+		},
+		{
+			name: "a legacy remotes file named the URL",
+			remote: func(t *testing.T, fixture fixturegit.Runner, repo, base, _, standIn string) string {
+				url := relative(t, fixture, repo, base)
+				legacy(t, repo, "remotes", url, "URL: "+standIn+"\n")
+				return url
+			},
+		},
+		{
+			name: "a legacy branches file named the URL",
+			remote: func(t *testing.T, fixture fixturegit.Runner, repo, base, _, standIn string) string {
+				url := relative(t, fixture, repo, base)
+				legacy(t, repo, "branches", url, standIn+"\n")
+				return url
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base, head, destination := pushOf(t, notesRefused())
+			fixture := fixturegit.Isolated(t, t.TempDir())
+			standIn := filepath.Join(t.TempDir(), "stand-in.git")
+			fixture.Run(repo, fixturegit.InitBare(standIn, "main")...)
+			fixture.Run(repo, "git", "push", "--quiet", standIn, head+":refs/heads/main")
+			url := tc.remote(t, fixture, repo, base, destination, standIn)
+			if listed, want := fixture.Out(repo, "git", "ls-remote", "--heads", "--", url), head+"\trefs/heads/main\n"; listed != want {
+				t.Fatalf("git ls-remote of %s in the clone lists %q, want the stand-in's main %q: the case would prove nothing", url, listed, want)
+			}
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", url))
+			if err == nil {
+				t.Fatalf("the push to %s passed, which would land the commit the rules refuse there: the guard read the remote named %s, the stand-in, and took that commit as held", url, url)
+			}
+			reports(t, refusal(t, err).Lines, notesReport...)
 		})
 	}
 }
@@ -381,54 +444,11 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 	wantNoCredential(t, err)
 }
 
-// The fetch negotiation with the destination is made outside the clone (Guard.negotiated), so no
-// configuration of the clone's leads it to another repository: the clone's url.<stand-in>.insteadOf
-// <destination>, which a negotiation run in the clone follows to a stand-in that holds the
-// commit the push adds, changes nothing, nor does a GIT_DIR in the hook's environment naming the
-// clone, as a push made with `git --git-dir <dir>` hands it, under which a git in any directory
-// reads the clone's configuration. The negotiation answers the commit the destination holds, the
-// base, and never the pushed commit the stand-in holds.
-func TestTheNegotiationWithTheDestinationIsMadeOutsideTheClone(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// gitDir is whether the hook's environment names the clone's GIT_DIR.
-		gitDir bool
-	}{
-		{name: "the clone's url.<base>.insteadOf of the destination's URL"},
-		{name: "the same with GIT_DIR naming the clone, as a push of jj's hands it", gitDir: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head, destination := pushOf(t, notesRefused())
-			fixture := fixturegit.Isolated(t, t.TempDir())
-			standIn := filepath.Join(t.TempDir(), "stand-in.git")
-			fixture.Run(repo, fixturegit.InitBare(standIn, "main")...)
-			fixture.Run(repo, "git", "push", "--quiet", standIn, head+":refs/heads/main")
-			fixture.Run(repo, "git", "config", "url."+standIn+".insteadOf", destination)
-			if common := fixture.Out(repo, "git", "fetch", "--negotiate-only", "--negotiation-tip="+head, destination); common != head+"\n" {
-				t.Fatalf("the negotiation in the clone answered %q, want the stand-in's %s: the case would prove nothing", common, head)
-			}
-			var hook []string
-			if tc.gitDir {
-				hook = append(hook, "GIT_DIR="+filepath.Join(repo, ".git"))
-			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, hook...)
-			common, err := guard.negotiated(bound(t), repo, destination, []string{head})
-			if err != nil {
-				t.Fatalf("the negotiation: %v", err)
-			}
-			if want := []string{base}; !slices.Equal(common, want) {
-				t.Errorf("the negotiation answered %q, want the destination's %q", common, want)
-			}
-		})
-	}
-}
-
-// The fetch negotiation with the destination fetches nothing and writes no ref (Guard.negotiated):
-// the destination's main moved on to a commit the clone does not hold, which a fetch would bring,
-// and once the negotiation has answered the commit beneath it that the clone holds, the clone's
-// refs, its FETCH_HEAD and its count of objects are what they were before, and it still lacks the
-// later commit. The bare repository the read is made in is removed after it: the temporary
-// directory the read makes it under holds nothing once the read has answered.
+// The fetch negotiation with the destination fetches nothing and writes no ref (Guard.negotiated),
+// although it runs in the clone: the destination's main moved on to a commit the clone does not
+// hold, which a fetch would bring, and once the negotiation has answered the commit beneath it
+// that the clone holds, the clone's refs, its FETCH_HEAD and its count of objects are what they
+// were before, and it still lacks the later commit.
 func TestTheNegotiationFetchesNothingAndWritesNoRef(t *testing.T) {
 	repo, base, head, destination := pushOf(t, map[string]string{"notes.md": "a line of the push's own\n"})
 	fixture := fixturegit.Isolated(t, t.TempDir())
@@ -446,8 +466,6 @@ func TestTheNegotiationFetchesNothingAndWritesNoRef(t *testing.T) {
 		return fixture.Raw(repo, "git", "for-each-ref") + "FETCH_HEAD: " + string(fetchHead) + "\n" + fixture.Raw(repo, "git", "count-objects", "-v")
 	}
 	before := held()
-	scratch := t.TempDir()
-	t.Setenv("TMPDIR", scratch)
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	common, err := guard.negotiated(bound(t), repo, destination, []string{head})
 	if err != nil {
@@ -462,18 +480,16 @@ func TestTheNegotiationFetchesNothingAndWritesNoRef(t *testing.T) {
 	if _, err := fixture.Try(repo, "git", "cat-file", "-e", later); err == nil {
 		t.Errorf("the clone holds %s, the destination's later commit, after the negotiation", short(later))
 	}
-	if left, err := os.ReadDir(scratch); err != nil || len(left) != 0 {
-		t.Errorf("the temporary directory holds %v (%v) after the negotiation, want nothing", left, err)
-	}
 }
 
-// In a shallow clone the fetch negotiation reads the clone's shallow file (Guard.negotiated), so
-// its walk stops at the clone's shallow commit as a walk in the clone does: it answers the commit
-// the destination holds, says nothing on its standard error, and leaves the shallow file as it
-// was. The clone holds the destination's main one commit deep. Without the shallow file, a
-// negotiation in a bare repository whose alternate is the clone's object directory says that it
-// could not read the shallow commit's parent, which the clone does not hold. The stand-in git
-// here writes what the negotiation says on its standard error to a file, and runs the real git.
+// In a shallow clone the fetch negotiation reads the clone's shallow file, as every git run in the
+// clone does (Guard.negotiated), so its walk stops at the clone's shallow commit: it answers the
+// commit the destination holds, says nothing on its standard error, and leaves the shallow file as
+// it was. The clone holds the destination's main one commit deep. A negotiation that does not read
+// the shallow file, one in a bare repository whose alternate is the clone's object directory, says
+// that it could not read the shallow commit's parent, which the clone does not hold, so the
+// negotiation's silence is the walk that stopped there. The stand-in git here writes what the
+// negotiation says on its standard error to a file, and runs the real git.
 func TestTheNegotiationInAShallowCloneReadsItsShallowFile(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	destination, seed, clone := filepath.Join(root, "destination.git"), filepath.Join(root, "seed"), filepath.Join(root, "clone")
@@ -571,9 +587,12 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 // that asks for a credential, a server of the test's own on 127.0.0.1 answering every request 401
 // with a challenge, reached under the row's GIT_ALLOW_PROTOCOL=http, fails both reads: the server
 // is asked, and no request of either read carries an Authorization header, the helper still
-// unused. The push to it is judged as it was before the reads, bounded by the clone's
-// remote-tracking ref of it, which holds a commit that adds a line the rules refuse: the push of a
-// commit of the branch's own on it passes, and no log holds a line.
+// unused, although the clone's own configuration names it too, as credential.helper and as
+// credential.<the URL>.helper (the twelfth case of R10's check c10). A git ls-remote of the URL in
+// the clone under the guard's environment first runs the helper once for each of the three, so
+// the case proves something. The push to it is judged as it was before the reads, bounded by the
+// clone's remote-tracking ref of it, which holds a commit that adds a line the rules refuse: the
+// push of a commit of the branch's own on it passes, and no log holds a line.
 func TestTheReadsOfWhatTheDestinationHoldsUseNoCredentialAndNoRESTRead(t *testing.T) {
 	bin, logs := t.TempDir(), t.TempDir()
 	logged := map[string]string{}
@@ -625,12 +644,27 @@ func TestTheReadsOfWhatTheDestinationHoldsUseNoCredentialAndNoRESTRead(t *testin
 		held := commitFiles(t, fixture, repo, notesRefused(), "a commit the destination holds")
 		fixture.Run(repo, "git", "remote", "add", "origin", url)
 		fixture.Run(repo, "git", "update-ref", "refs/remotes/origin/main", held)
+		fixture.Run(repo, "git", "config", "credential.helper", filepath.Join(bin, "credential-helper"))
+		fixture.Run(repo, "git", "config", "credential."+url+".helper", filepath.Join(bin, "credential-helper"))
 		fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work")
 		own := commitFiles(t, fixture, repo, map[string]string{"work.md": "a line of the branch's own\n"}, "the branch's own commit")
+		env := withRules(t, loopbackEnv(t.TempDir(), pathWith(bin), credential...))
+		if _, err := (fixturegit.Runner{TB: t, Env: env}).Try(repo, "git", "ls-remote", url); err == nil {
+			t.Fatalf("git ls-remote of %s answered, want the server's 401: the case would prove nothing", url)
+		}
+		if n := countLines(t, logged["credential-helper"]); n != 3 {
+			t.Fatalf("git ls-remote of %s in the clone ran the credential helper %d times, want once for each of the three settings that name it: the case would prove nothing", url, n)
+		}
+		if err := os.Remove(logged["credential-helper"]); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		requests, authorized = 0, 0
+		mu.Unlock()
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
 			Curl:  filepath.Join(bin, "curl"),
-			Env:   withRules(t, loopbackEnv(t.TempDir(), pathWith(bin), credential...)),
+			Env:   env,
 		})
 		not, negotiated, err := guard.destinationHolds(bound(t), repo, url, []string{own})
 		if err != nil || negotiated || not != "" {
@@ -653,4 +687,92 @@ func TestTheReadsOfWhatTheDestinationHoldsUseNoCredentialAndNoRESTRead(t *testin
 		}
 		unlogged(t)
 	})
+}
+
+// The reads of what the destination holds carry the transport settings of the push's own
+// configuration (Guard.heldRead): an http.extraHeader that the push's configuration names reaches
+// the destination on both reads, set once in the repository's own file and once in
+// GIT_CONFIG_PARAMETERS, as `git -c` hands it the hook. No skip of the guard's names it
+// (readsReachItsRepository). The destination is a server of the test's own on 127.0.0.1 that
+// serves git's smart HTTP from a real bare repository (gitHTTP) and records each request: both
+// reads answer, the negotiation included, every request of both carries the header, and the
+// server saw the ls-remote's request for the refs and the negotiation's fetch command.
+func TestTheReadsOfWhatTheDestinationHoldsCarryThePushsTransportSettings(t *testing.T) {
+	const header, value = "X-Legion-Test", "carried"
+	for _, tc := range []struct {
+		name string
+		// set puts http.extraHeader in the case's place for the clone at repo, and answers what
+		// the guard's environment holds beyond loopbackEnv's.
+		set func(t *testing.T, fixture fixturegit.Runner, repo string) []string
+	}{
+		{
+			name: "the repository's own file",
+			set: func(_ *testing.T, fixture fixturegit.Runner, repo string) []string {
+				fixture.Run(repo, "git", "config", "http.extraHeader", header+": "+value)
+				return nil
+			},
+		},
+		{
+			name: "GIT_CONFIG_PARAMETERS",
+			set: func(*testing.T, fixturegit.Runner, string) []string {
+				return []string{"GIT_CONFIG_PARAMETERS=" + shQuote("http.extraHeader") + "=" + shQuote(header+": "+value)}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base, head, destination := pushOf(t, notesRefused())
+			var mu sync.Mutex
+			var requests, bare int
+			commands := map[string]bool{}
+			backend := gitHTTP(t, filepath.Dir(destination))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				read := body
+				if r.Header.Get("Content-Encoding") == "gzip" {
+					if unzipped, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
+						read, _ = io.ReadAll(unzipped)
+					}
+				}
+				mu.Lock()
+				requests++
+				if r.Header.Get(header) != value {
+					bare++
+				}
+				for _, command := range []string{"ls-refs", "fetch"} {
+					if bytes.Contains(read, []byte("command="+command)) {
+						commands[command] = true
+					}
+				}
+				mu.Unlock()
+				backend.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			url := server.URL + "/" + filepath.Base(destination)
+			extra := tc.set(t, fixturegit.Isolated(t, t.TempDir()), repo)
+			guard := New(Options{
+				Check: leakguardtest.Write(t, t.TempDir(), passes),
+				Env:   withRules(t, loopbackEnv(t.TempDir(), "PATH="+os.Getenv("PATH"), extra...)),
+			})
+			not, negotiated, err := guard.destinationHolds(bound(t), repo, url, []string{head})
+			if err != nil || !negotiated {
+				t.Errorf("the reads of %s answered %v, negotiated %t; want both answered", url, err, negotiated)
+			}
+			if want := "^" + base + "\n^" + base + "\n"; not != want {
+				t.Errorf("the destination is taken to hold %q, want the negotiation's and the advertised read's base, %q", not, want)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if requests == 0 || bare != 0 {
+				t.Errorf("%d of the reads' %d requests carried no %s: %s, want every one to carry it", bare, requests, header, value)
+			}
+			if !commands["ls-refs"] || !commands["fetch"] {
+				t.Errorf("the server saw the commands %v, want the ls-remote's ls-refs and the negotiation's fetch", commands)
+			}
+		})
+	}
 }

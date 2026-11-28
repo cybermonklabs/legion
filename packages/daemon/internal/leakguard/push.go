@@ -181,11 +181,14 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // negotiation from every update's local commit (destinationHolds), and the remotes whose
 // remote-tracking refs hold what the destination has are read (heldRemotes), which bound the
 // range too only where the negotiation does not answer (Guard.commits). The URL is read only where
-// the push can write to it alone (writesOnlyToItsURL). A push that can write somewhere else — a
-// receive-pack program of its own, a remote helper, another exec path's git-receive-pack —
-// writes where that program writes, which the URL says nothing of, so for it neither read is
-// made: not is empty and the remote-tracking refs bound the range alone, with the remote's commit
-// where the repository holds it, as they bounded every push before these reads.
+// the reads reach the repository the push writes to (readsReachItsRepository). A push that can
+// write somewhere else — a receive-pack program of its own, a remote helper, another exec path's
+// git-receive-pack — writes where that program writes, which the URL says nothing of; a push
+// that reaches its server through a program or a proxy of its own can have its git-receive-pack
+// sent to another repository than the reads' git-upload-pack; and a url.<base>.insteadOf, or a
+// remote whose name is the URL, would lead the reads elsewhere than the push went. For each,
+// neither read is made: not is empty and the remote-tracking refs bound the range alone, with the
+// remote's commit where the repository holds it, as they bounded every push before these reads.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	var held []string
@@ -216,7 +219,7 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			if named {
 				from = req.Remote
 			}
-			if g.writesOnlyToItsURL(ctx, req.Dir, req.URL) {
+			if g.readsReachItsRepository(ctx, req.Dir, req.URL) {
 				if not, negotiated, err = g.destinationHolds(ctx, req.Dir, req.URL, pushTips(req.Updates)); err != nil {
 					return err
 				}
@@ -264,10 +267,10 @@ func addsCommits(update Update) bool {
 // heldRemotes are the remotes whose remote-tracking refs say what the push's destination holds,
 // which bound the commits a push reads only where the destination's own answer does not
 // (destinationHolds): where the fetch negotiation with it fails, beside the commits its
-// advertised refs name, and where the push can write somewhere other than its URL, alone
-// (writesOnlyToItsURL). They are each remote whose every URL, fetch and push, names the
-// repository the push's URL names (sameRepository), so that its tracking refs hold what the
-// destination has, and among whose refs no other remote's fetch can file one (filedByAnother).
+// advertised refs name, and where the reads are not made (readsReachItsRepository), alone. They
+// are each remote whose every URL, fetch and push, names the repository the push's URL names
+// (sameRepository), so that its tracking refs hold what the destination has, and among whose
+// refs no other remote's fetch can file one (filedByAnother).
 // Where the push names a remote of the repository, which named answers, that remote is the only
 // one it can hold. git hands a pre-push hook the URL where the remote's name goes for a push to a
 // URL (`git push <url>`), and no tracking ref is filed under a URL, so such a push can hold any
