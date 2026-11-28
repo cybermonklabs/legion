@@ -11,10 +11,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -187,18 +191,33 @@ func TestATakeoverBeforeTheFinalLockMakesTheRecordRollBack(t *testing.T) {
 // An expiry record that waits on the event owner's lock - here an open transaction that holds the
 // issue's row, as any write on the issue does - for longer than the publisher hold survives with
 // no renewal does not lose the hold: the record holds the hold's row only across its commit, so
-// the hold's renewals go on while the record waits. The hold here is a real one, renewed as
-// cmd/dispatch's is (publisherHoldOptions: a 4 s loss window, renewed every second). The test
-// checks its premise: the record has not committed while the issue's row is held. With the hold's
-// row locked for the whole record, the renewals wait behind the record and the hold is lost.
+// the hold's renewals go on while the record waits.
+//
+// Not parallel: this row observes the record and renewal backends' locks.
 func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) {
-	ctx := context.Background()
-	rig := newRoleRig(t)
+	ctx := testwait.Context(t)
+	fake := clocktest.New(time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC))
+	_, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithWindowClock(fake))
+	if err != nil {
+		t.Fatalf("connect the outbox's NATS client: %v", err)
+	}
+	t.Cleanup(func() { bustest.Close(t, client) })
+	rig := newRoleRigOn(t, url, client, testnats.Connect(t, url))
+	database, move := databaseMoment(t, rig.database, fake)
+	trace := &expiryRenewalTrace{}
+	rig.database = tracedStore(t, database, trace)
 	const role = "expiry-record-waits"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	outbox := New(rig.deps())
-	hold, err := duty.TryHold(ctx, rig.database.Pool, publisherHold, outbox.instance, publisherHoldOptions)
+	deps := rig.deps()
+	var finalLock atomic.Bool
+	deps.holdLocked = func() { finalLock.Store(true) }
+	outbox := New(deps)
+	outbox.holdClock = fake
+	options := publisherHoldOptions
+	options.Clock = fake
+	hold, err := duty.TryHold(ctx, rig.database.Pool, publisherHold, outbox.instance, options)
 	if err != nil || hold == nil {
 		t.Fatalf("take the publisher hold: %v", err)
 	}
@@ -208,6 +227,7 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 	if last := expire(t, rig.client, role, newestCopyOf(t, rig, role, event.ID)); last.Attempt != maxRoleKeeps {
 		t.Fatalf("event %d's newest copy names attempt %d before the last expiry, want %d", event.ID, last.Attempt, maxRoleKeeps)
 	}
+	finalLock.Store(false)
 
 	// Another write holds the issue's row while the record that appends the event's
 	// role.undelivered record waits on it, for longer than the hold's loss window.
@@ -215,37 +235,87 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer blocker.Rollback(context.Background())
+	var blockerPID uint32
+	if err := blocker.QueryRow(ctx, `select pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatalf("read the owner lock's backend: %v", err)
+	}
 	if _, err := blocker.Exec(ctx, `select 1 from issues where key = 'T-1' for update`); err != nil {
 		t.Fatalf("lock T-1's row: %v", err)
 	}
 	passed := make(chan struct{})
+	defer func() {
+		_ = blocker.Rollback(context.Background())
+		testwait.Receive(t, "the expiry record returning after the owner lock was released", passed)
+	}()
 	go func() {
 		defer close(passed)
 		outbox.passKeptExpiries(ctx, hold)
 	}()
-	select {
-	case <-hold.Lost():
-		_ = blocker.Rollback(ctx)
-		<-passed
-		t.Fatal("the publisher hold was lost while an expiry record waited on the issue's owner lock")
-	case <-time.After(publisherHoldOptions.TTL):
+	waitFor(t, "the expiry record's backend blocked on the T-1 owner lock", func() bool {
+		select {
+		case <-passed:
+			t.Fatal("the expiry record returned before waiting on the T-1 owner lock")
+		default:
+		}
+		var blocked bool
+		if err := database.Pool.QueryRow(ctx, `select $2 = any(pg_blocking_pids($1))`,
+			trace.record.Load(), blockerPID).Scan(&blocked); err != nil {
+			t.Fatalf("read the expiry record's owner-lock wait: %v", err)
+		}
+		return blocked
+	})
+	lossWithoutRenewal := hold.Deadline()
+	for !fake.Now().After(lossWithoutRenewal) {
+		advanceRenewal(t, fake, move, hold, func() {
+			var blockers []int32
+			if err := database.Pool.QueryRow(ctx, `select pg_blocking_pids($1)`, trace.renewal.Load()).Scan(&blockers); err != nil {
+				t.Fatalf("read whether the renewal is blocked: %v", err)
+			}
+			if len(blockers) != 0 {
+				t.Fatalf("the publisher hold renewal waits on lock(s) held by %v while the expiry record waits on the owner lock", blockers)
+			}
+			select {
+			case <-passed:
+				t.Fatal("the expiry record returned while the owner lock was still held")
+			default:
+			}
+		})
 	}
+	requireHoldLive(t, hold, "while the expiry record waited on the owner lock")
 	if records := undeliveredCount(t, rig.database, event.ID); records != 0 {
-		_ = blocker.Rollback(ctx)
-		<-passed
 		t.Fatalf("event %d has %d role.undelivered records while T-1's row was held, want the record still waiting", event.ID, records)
 	}
 	if err := blocker.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	<-passed
-	select {
-	case <-hold.Lost():
-		t.Fatal("the publisher hold was lost once the issue's owner lock was released")
-	default:
+	testwait.Receive(t, "the expiry record committing once the owner lock is free", passed)
+	requireHoldLive(t, hold, "once the issue's owner lock was released")
+	var live bool
+	if err := database.Pool.QueryRow(ctx, `select exists (
+		select from duty_holds where name = $1 and holder = $2 and expires_at > now()
+	)`, publisherHold, outbox.instance).Scan(&live); err != nil || !live || !finalLock.Load() {
+		t.Fatalf("after the record: hold row live=%t (%v), final lock=%t; want both", live, err, finalLock.Load())
 	}
 	outbox.passKeptExpiries(ctx, hold)
 	if records := undeliveredCount(t, rig.database, event.ID); records != 1 {
 		t.Fatalf("event %d has %d role.undelivered records once the owner lock was free, want one", event.ID, records)
 	}
 }
+
+// expiryRenewalTrace identifies the expiry record and the single-statement renewal.
+type expiryRenewalTrace struct {
+	record, renewal atomic.Uint32
+}
+
+func (tr *expiryRenewalTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	switch {
+	case strings.Contains(data.SQL, "from duty_holds where name = $1") && strings.HasPrefix(strings.TrimSpace(data.SQL), "select"):
+		tr.record.Store(conn.PgConn().PID())
+	case strings.Contains(data.SQL, "update duty_holds set expires_at = now() + make_interval"):
+		tr.renewal.Store(conn.PgConn().PID())
+	}
+	return ctx
+}
+
+func (*expiryRenewalTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}

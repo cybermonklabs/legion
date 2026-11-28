@@ -464,8 +464,39 @@ func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 	return seqs, ids
 }
 
-// A connection cut while a batch is in flight - sent, its acknowledgements still on their way back
-// across a remote hub's round trip - keeps the backlog's order. The window sends nothing on the
+// freezeFirstSend holds server replies only after the batch's lookups have finished.
+type freezeFirstSend struct {
+	*bus.Client
+	once   sync.Once
+	freeze func()
+}
+
+func (p *freezeFirstSend) WindowUntil(deadline func() time.Time) bus.Sender {
+	return freezeFirstSender{Sender: p.Client.WindowUntil(deadline), publisher: p}
+}
+
+type freezeFirstSender struct {
+	bus.Sender
+	publisher *freezeFirstSend
+}
+
+func (s freezeFirstSender) PublishAsync(item contracts.Envelope) <-chan error {
+	s.publisher.once.Do(s.publisher.freeze)
+	return s.Sender.PublishAsync(item)
+}
+
+func (s freezeFirstSender) Request(subject string, item contracts.Envelope, opts bus.RequestOptions) <-chan error {
+	s.publisher.once.Do(s.publisher.freeze)
+	return s.Sender.Request(subject, item, opts)
+}
+
+func (s freezeFirstSender) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
+	s.publisher.once.Do(s.publisher.freeze)
+	return s.Sender.PublishStoredAsync(subject, item, msgID)
+}
+
+// A connection cut while a batch is in flight - sent, the server's acknowledgements held by
+// the proxy - keeps the backlog's order. The window sends nothing on the
 // connection that comes back, a send that met the cut stops its chain, and every event that met the
 // cut is released, not backed off, so a later scan sends them again, each destination's in id
 // order, and the stream's MsgId drops the copies of those that had landed. A copy the window had
@@ -476,18 +507,16 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 	t.Parallel()
 	const issues, count = 4, 2 * batchSize
 	_, url := testnats.Start(t)
-	proxy := testnats.StartProxy(t, url, testnats.ProxyLatency(150*time.Millisecond))
-	client, err := bus.ConnectOwningStream([]string{proxy.URL()})
+	proxy := testnats.StartProxy(t, url)
+	client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithPromptReconnect(),
+		bus.WithPublishAcknowledgementClock(clocktest.New(time.Time{})))
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	t.Cleanup(func() { bustest.Close(t, client) })
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -500,7 +529,8 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 	// since no session holds that role here.
 	const wantOnDestinations, wantKept = count + count/2, count
 
-	stop := runOutbox(t, database, client, broker)
+	publisher := &freezeFirstSend{Client: client, freeze: proxy.FreezeServerReplies}
+	stop := runOn(t, wiredOutbox(t, database, client, publisher, broker))
 	defer stop()
 	// Cut once the first envelopes reached the stream and before any acknowledgement made it back.
 	waitFor(t, "the first batch reaching the stream", func() bool {
@@ -511,7 +541,7 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 	if left := unpublishedCount(t, database); left != count {
 		t.Fatalf("%d events were marked published before the cut; the cut came too late to test anything", count-left)
 	}
-	time.Sleep(2 * time.Second)
+	waitFor(t, "the cut outbox's client reading disconnected", func() bool { return !client.Connected() })
 	proxy.Restore()
 
 	waitFor(t, "the backlog published after the cut", func() bool {
@@ -587,16 +617,22 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 	timers := clocktest.New(time.Time{})
 	standby := wiredOutbox(t, database, client, client, broker)
 	standby.clock = timers
+	waits := standbyWaits(standby)
 	stop = runOn(t, standby)
 	defer stop()
 	lapseTimer := testwait.Until(t, "the standby's timer for the still-live dead holder", func() (time.Time, bool) {
-		armed := timers.Armed()
+		// Read the timer after checking that the LISTEN catch-up wake was consumed.
 		if standby.Publishing() {
 			t.Fatal("the next holder took the publisher hold while the dead holder's row was live")
 		}
+		if waits() == 0 {
+			return time.Time{}, false
+		}
+		armed := timers.Armed()
 		if len(armed) == 0 || !armed[0].After(timers.Now().Add(publisherHoldOptions.TTL)) {
 			return time.Time{}, false
 		}
+		// The timer for that settled wait is the one the test will move.
 		return armed[0], true
 	})
 	if left := unpublishedCount(t, database); left != count || standby.Publishing() {

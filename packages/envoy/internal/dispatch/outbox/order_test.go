@@ -851,6 +851,35 @@ func frozenDatabaseClock(t *testing.T, database *store.Store) (*store.Store, tim
 	}), frozen
 }
 
+// databaseMoment makes unqualified now() on the returned store follow the hold clock.
+// Move the database first so a renewal fired by the clock observes the new moment.
+func databaseMoment(t *testing.T, database *store.Store, fake *clocktest.Fake) (*store.Store, func(time.Time)) {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), `
+		create schema testclock;
+		create table testclock.moment (stamp timestamptz not null);
+		create function testclock.now() returns timestamptz language sql stable
+			as $$ select stamp from testclock.moment $$;
+	`); err != nil {
+		t.Fatalf("create the database's movable clock: %v", err)
+	}
+	if _, err := database.Pool.Exec(t.Context(), `insert into testclock.moment values ($1)`, fake.Now()); err != nil {
+		t.Fatalf("set the database clock's initial moment: %v", err)
+	}
+	return storetest.Reopened(t, database, func(config *pgxpool.Config) {
+			config.ConnConfig.RuntimeParams["search_path"] = "testclock, pg_catalog, public"
+		}), func(at time.Time) {
+			t.Helper()
+			if _, err := database.Pool.Exec(t.Context(), `update testclock.moment set stamp = $1`, at); err != nil {
+				t.Fatalf("move the database clock to %s: %v", at, err)
+			}
+			fake.Set(at)
+		}
+}
+
+// The bus's publish acknowledgement and initial connection pin use the same five-second bound.
+const windowAckWait = 5 * time.Second
+
 // NATS that does not acknowledge an event's envelope on a connection still current backs it off:
 // no responders (no stream captures the subject) and a stream that never answers (the relay
 // frozen, the connection still current) each count an attempt and record the error, and the
@@ -894,6 +923,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		database := storetest.Open(t)
 		event := seed(t, database)
 		shifted, frozen := frozenDatabaseClock(t, database)
+		// Freeze SQL time, not the test goroutine: even a delayed second scan is still before due.
 		counter := &sendCounter{}
 		outbox := holding(t, Deps{Store: shifted, Publisher: countingClient{Client: client, counter: counter}})
 		outbox.scan(context.Background(), unfenced{})
@@ -917,26 +947,38 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	t.Run("a stream that never answers", func(t *testing.T) {
 		t.Parallel()
 		server, url := testnats.Start(t)
-		client, err := bus.ConnectOwningStream([]string{url})
+		ack := clocktest.New(time.Time{})
+		client, err := bus.ConnectOwningStream([]string{url}, bus.WithPublishAcknowledgementClock(ack))
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
 		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
-		// The window waits five seconds for an acknowledgement the frozen server never sends, and
-		// then probes the connection. The server thaws as that probe starts, so the probe is
-		// answered and the send fails for the acknowledgement alone, whatever the machine's speed.
-		clock := &probeHook{Client: client, probing: server.Freeze(t)}
-		holding(t, Deps{Store: database, Publisher: clock}).scan(context.Background(), unfenced{})
+		checkBackOff := recordAttemptMoment(t, database)
+		// Thaw only when the post-acknowledgement probe starts so it can answer.
+		publisher := &probeHook{Client: client, probing: server.Freeze(t)}
+		outbox := holding(t, Deps{Store: database, Publisher: publisher})
+		done := make(chan scanEnd, 1)
+		go func() { done <- outbox.scan(t.Context(), unfenced{}) }()
+		deadline := ack.Now().Add(windowAckWait)
+		ack.AwaitArmedAt(t, "the stream's unanswered acknowledgement", deadline)
+		ack.Set(deadline.Add(-time.Nanosecond))
+		if publishedAt(t, database, event.ID) != nil {
+			t.Fatal("the event was marked published before its acknowledgement wait ended")
+		}
+		ack.Set(deadline)
+		testwait.Receive(t, "the scan after the stream's acknowledgement deadline", done)
 		backedOff(t, database, event, bus.ErrNotAcknowledged.Error())
+		checkBackOff(event.ID)
 	})
 
 	t.Run("a lost connection", func(t *testing.T) {
 		t.Parallel()
 		_, url := testnats.Start(t)
 		proxy := testnats.StartProxy(t, url)
-		client, err := bus.ConnectOwningStream([]string{proxy.URL()})
+		windows := clocktest.New(time.Time{})
+		client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithPromptReconnect(), bus.WithWindowClock(windows))
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
@@ -946,7 +988,15 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		proxy.Cut()
 		waitFor(t, "the client noticing the cut", func() bool { return !client.Connected() })
 		outbox := holding(t, Deps{Store: database, Publisher: client})
-		outbox.scan(context.Background(), unfenced{})
+		done := make(chan scanEnd, 1)
+		go func() { done <- outbox.scan(t.Context(), unfenced{}) }()
+		pinEnd := windows.Now().Add(windowAckWait)
+		windows.AwaitArmedAt(t, "the disconnected window's connection pin", pinEnd)
+		windows.Set(pinEnd)
+		probeEnd := pinEnd.Add(probeTimeout)
+		windows.AwaitArmedAt(t, "the disconnected window's probe pin", probeEnd)
+		windows.Set(probeEnd)
+		testwait.Receive(t, "the scan releasing the event after the cut", done)
 		var attempts int
 		var nextAttempt *time.Time
 		var failure *string

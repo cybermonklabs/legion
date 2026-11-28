@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
@@ -59,16 +60,15 @@ func (publishOnly) Connected() bool { return true }
 
 func (publishOnly) ConnectionChanged() <-chan struct{} { return nil }
 
-// deadlineWindow is a test publisher's window of a deadline, as bus.Client.WindowUntil makes one:
-// a send at or past deadline answers bus.ErrWindowDeadline and is not sent. A nil
-// deadline is none.
+// deadlineWindow is the window of a stand-in publisher that uses real-time fences.
+// Tests with a fake hold use a bus.Client with its window clock set to the hold's clock.
 type deadlineWindow struct {
 	bus.Sender
 	deadline func() time.Time
 }
 
 func (w deadlineWindow) passed() bool {
-	return w.deadline != nil && !time.Now().Before(w.deadline())
+	return w.deadline != nil && !clock.Real().Now().Before(w.deadline())
 }
 
 func (w deadlineWindow) PublishAsync(item contracts.Envelope) <-chan error {
@@ -2216,22 +2216,16 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 // test process used 15-28 CPU-s over 377-504 s of wall (0.05 of a core), so go test's default of
 // GOMAXPROCS (four on CI's runner) would leave the waits mostly serial.
 //
-// Every test calls t.Parallel but two kinds, which run before the rest, one at a time:
-//   - those that change something the whole process shares, the default logger
-//     (logtest.SetDefault, slog.SetDefault);
-//   - those whose subject is a bound on the product's own timing, each with a "Not parallel:"
-//     line naming that bound, which it waits on through waitWithin
-//     (TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce and
-//     TestAnOutboxThatLosesNATSReleasesThePublisher): measured on a machine eight other tests
-//     load, such a bound fails a correct product.
+// Tests run in parallel unless they change shared process state (for example the
+// default logger), or their "Not parallel:" comment gives another reason.
 //
-// A parallel test's wait is bounded by the test binary's deadline alone (waitFor, testwait.Until,
-// testwait.UntilPolling, testwait.Receive, testwait.Context), so the load of the tests beside it
-// only makes the same reading come later, but for these bounds, each kept on purpose because it
-// tells a correct outbox from a broken one, and each set from the product's own value it tells
-// apart, with the slack that leaves for load:
-//   - TestTheOutboxDoesNotScanWhileIdle: backOffDue, 10 s, inside which the insert's
-//     notification and the scan it wakes must arm the back-off's timer, millisecond work;
+// A test's wait for a fact is bounded by the test binary's deadline alone (waitFor,
+// testwait.Until, testwait.Receive, testwait.Context). Publisher renewal, loss,
+// takeover and retry rows read the work done at deadlines on a fake clock. In
+// TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce neither timer clock moves:
+// the standby takes the hold on the release notification, not a timer.
+//
+// The remaining wall-clock dependencies are:
 //   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):
 //     agedUnnamedAttempts in TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
 //     and TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents, and the rows
@@ -2239,12 +2233,9 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 //     model.DeliveryClaimLapse, 60 s, and the test scans or passes at once after the write:
 //     millisecond work against 60 s.
 //
-// The quiet windows are not on that list: a sleep after which a test asserts nothing happened
-// (window_test.go, order_test.go, lease_test.go, publisher_test.go, the owner lane and attempt
-// tests) is a lower bound on quiet, which load can only shorten, so it can let a defect through
-// on a loaded run but never fail a correct outbox. Each is set inside a product wait the test
-// holds open past any run - an acknowledgement on a fixed fake, a back-off, a timer it never arms - so its end
-// cannot run into the next send.
+// TestTheOutboxDoesNotScanWhileIdle keeps a named 12 s span to catch a periodic
+// scan on the wall clock that the outbox's timer state cannot expose. Its back-off
+// is due on the database's clock, and the test moves the retry timer itself.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const outboxTestParallelism = 8
@@ -2257,30 +2248,10 @@ func TestMain(m *testing.M) {
 }
 
 // waitFor waits until condition holds. Its one bound is the test binary's deadline less testwait's
-// margin (testwait.Until): no caller tests how soon a publication, a settle or a hand-over comes,
-// and a fixed patience fails on a correct product once eight of these tests share four cores. A
-// test whose subject is how soon something happens uses waitWithin and does not run in parallel.
+// margin (testwait.Until). Use the product's clock or a causal witness for timing verdicts.
 func waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	testwait.Until(t, what, func() (struct{}, bool) { return struct{}{}, condition() })
-}
-
-// pollReading is one poll's value with what a give-up prints of it: testwait.UntilPolling prints
-// the last reading with %+v, which calls String. A poll whose value is a zero until it holds - a
-// time, a scan's end - carries in text what it read so far, so a wait that gives up names it.
-type pollReading[T any] struct {
-	value T
-	text  string
-}
-
-func (r pollReading[T]) String() string { return r.text }
-
-// waitWithin waits at most bound for condition, and fails t once bound has passed. It is for a test
-// whose subject is that bound - the product's own timer or grace - and such a test does not call
-// t.Parallel, so the bound is measured on a machine no other test of this package loads.
-func waitWithin(t *testing.T, bound time.Duration, what string, condition func() bool) {
-	t.Helper()
-	testwait.WithinPolling(t, bound, testwait.Poll, what, condition)
 }
 
 func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {

@@ -113,6 +113,9 @@ type Outbox struct {
 	deps Deps
 	// clock defaults to the real clock. A test can replace it before Run starts.
 	clock timerClock
+	// holdClock is the publisher hold's clock. Nil uses the real clock.
+	// A test can replace it before taking the hold or starting Run.
+	holdClock clock.Clock
 	// instance names this process in the hold's row and in every log line about the hold and its
 	// batches; token is the hold's token, the host and process id.
 	instance uuid.UUID
@@ -189,6 +192,13 @@ func New(deps Deps) *Outbox {
 	return o
 }
 
+func (o *Outbox) holdTime() clock.Clock {
+	if o.holdClock != nil {
+		return o.holdClock
+	}
+	return clock.Real()
+}
+
 // Publishing reports whether this process publishes the outbox now: it holds the publisher hold
 // and the hold's loss deadline has not passed. A nil outbox (NATS disabled) never publishes.
 func (o *Outbox) Publishing() bool {
@@ -196,7 +206,7 @@ func (o *Outbox) Publishing() bool {
 		return false
 	}
 	hold := o.hold.Load()
-	return hold != nil && time.Now().Before(hold.Deadline())
+	return hold != nil && o.holdTime().Now().Before(hold.Deadline())
 }
 
 // Run publishes the outbox whenever this process holds the publisher hold, and stands by for it
@@ -388,6 +398,7 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	pool := o.deps.Store.Pool
 	options := publisherHoldOptions
 	options.Token = o.token
+	options.Clock = o.holdClock
 	hold, err := duty.TryHold(ctx, pool, publisherHold, o.instance, options)
 	if err == nil && hold != nil {
 		return hold, 0
@@ -482,14 +493,14 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // Rows wait on these messages' words (tookHold, releasedHold and lostHold in
 // cmd/dispatch/multiprocess_test.go), so a change to them is a change to those rows too.
 func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
-	started := time.Now()
+	started := o.holdTime().Now()
 	o.hold.Store(hold)
 	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
 		"started", started.Format(time.RFC3339Nano))
 	end := o.serve(ctx, hold)
-	returned := time.Now()
+	returned := o.holdTime().Now()
 	o.hold.Store(nil)
-	cleared := time.Now()
+	cleared := o.holdTime().Now()
 	deadline := hold.Deadline()
 	stopped, stoppedBy := deadline, deadline
 	if returned.Before(stopped) {
@@ -582,7 +593,7 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				case end.natsLost:
 					return natsLost
 				}
-				fullPass, failedPass, passLostNATS := publishFallbackCopies(ctx, o.deps, hold, o.instance)
+				fullPass, failedPass, passLostNATS := o.publishFallbackCopies(ctx, hold)
 				if ctx.Err() != nil {
 					return stopping
 				}
@@ -700,7 +711,7 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 			switch {
 			case ctx.Err() != nil:
 				stop = true
-			case !time.Now().Before(hold.Deadline()):
+			case !o.holdTime().Now().Before(hold.Deadline()):
 				end.fenced, stop = true, true
 			default:
 				inflight++
