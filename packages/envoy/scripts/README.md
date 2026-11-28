@@ -821,21 +821,22 @@ the case ends. The writer contract signs in from the environment, as `agent-secr
 arms its lost answers and refusals between the writer and the wire.
 
 It prints `passed=N skipped=M failed=K`, each skipped or failed test's name, how many cases
-of the store's live contract passed, and where the event stream is kept
+of each of the store's two live contracts passed, and where the event stream is kept
 (`STORE_LIVE_CHECK_EVENTS`, else a file of its own). It exits 0 only when N is above zero, M
-and K are both zero, and the live contract itself (`TestGCPLiveRunsTheStoreContract` for
-`gcp`) passed with its store's level and at least one case, so a run of some other live test
-alone, the contract renamed or deleted, is no pass. A skip counts as a failure because a
+and K are both zero, and each live contract (`TestGCPLiveRunsTheStoreContract` and
+`TestGCPLiveRunsTheWriterContract` for `gcp`) passed with its store's level and at least one
+case, so a run of some other live test alone, or of one contract alone, a contract renamed or
+deleted, is no pass. A skip counts as a failure because a
 live test skips when its variables are unset, which is the shape a live run fails in: the
 tests pass, nothing ran, and the run looks green. A run that wrote no event at all prints
 `UNKNOWN: go test wrote no events` and exits 1, so an empty set is never read as a pass, and
 a run whose store variables are unset is refused by name before go test runs.
 `store-live-check.test.sh` holds it to its rows behind a stub `go` on `PATH`, which
 `envoy-go-checks` runs as "Isolation test for store-live-check.sh": a run whose tests all
-passed, with its cases counted and its events kept, also with no events path set; one of
-another live test alone; one of the contract with no case; one with a skip; one with a failed
-case; one that wrote no event; one with the store's variables unset; one naming no store;
-and one naming a store with no live tests.
+passed, with each contract's cases counted and its events kept, also with no events path set;
+one of another live test alone; one of the read contract alone; one of the contract with no
+case; one with a skip; one with a failed case; one that wrote no event; one with the store's
+variables unset; one naming no store; and one naming a store with no live tests.
 
 ## store-forms-check.sh
 
