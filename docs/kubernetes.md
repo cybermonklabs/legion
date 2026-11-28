@@ -123,7 +123,7 @@ It carries:
   A served digest other than the setting is drift, so the kept pod starts safely under its own pin and its update round replaces it.
   If its launcher holds an install from before, the role is told none and that install runs unhashed, as every check did before the setting, until the pod is next replaced.
   The role's name for the digest is not the daemon's, so a configuration a role loads, `legion config check` among them, never reads one half of the daemon's setting without the other.
-  A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghReadsProvenCheck`, `cmd/legion/gh_reads.go`); under any other check it gets the whole guard, and the digest a role is told plays no part in it.
+  A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghroute.ReadsProvenCheckSHA256`, `internal/ghroute/reads.go`); under any other check it gets the whole guard, and the digest a role is told plays no part in it.
   Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag, its tag file is refused, or it has a manifest digest other than the one the role is told (`leakguard.Installed`, read by `spawnOnce`, `internal/shim/shim.go`): so a pin moved without the deployment's `manifest_sha256` starts no role.
   Under the digest, the guard of every write holds the check it finds to it as well: a check whose manifest digest is anything else, or that misses a file of it, refuses the call, a `legion gh` read included, with `LEAK CHECK SETUP ERROR: <the write>: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found (`Guard.sharedCheck`, `internal/leakguard/check.go`).
   Where the environment names no check, the shim names the install for everything it starts.
@@ -285,7 +285,9 @@ Such a file would name the versions of this image and no other, and a file proxy
 Without those files the file proxy answers a version query with a 404, and the query falls through to `proxy.golang.org`, while the `.info`, `.mod` and `.zip` of a pinned version still come from the cache.
 `go.env` is the place for it rather than the final stage's `ENV`, for the reason the cgo paragraph above gives in reverse:
 a variable the image's `ENV` sets is one `runtime.kubernetes.pod.env` may not set, while a `go.env` default leaves `GOPROXY` to an operator, a role, or one command, each of which outranks it through the process environment.
-The `go-modules` stage also deletes the cache's `sumdb` directory, the checksum-database tiles and lookups `go mod download` fetches for the `go.mod` sums `go.work.sum` lacks: they differ with the hour they are read, so with them each build's copy of the cache was new bytes and a new layer.
+The `go-modules` stage's `go mod download` needs only the checksums in `go.work.sum` and the two modules' `go.sum` files.
+The test job's `.github/scripts/check-go-work-sum.sh` checks that those files stay complete, so the download makes no checksum database request and creates no `sumdb` directory.
+On a branch the check has not run on, a missing checksum can make Go fetch tiles and lookups that vary by hour, so the stage still deletes `sumdb` to ship the same cache bytes for the same module files.
 A pod's go reads the cache only through the file proxy, which has never served the checksum database (a go asks for it at `<proxy>/sumdb/<name>/supported`); a go whose own `GOMODCACHE` is the image's fetches from `sum.golang.org` the checksums it lacks, as it does for any module the cache does not hold.
 
 The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of this repository's own gates read a workflow or `.github/ci-images.yaml` with `import yaml`:
@@ -3024,7 +3026,7 @@ The release before refuses three kinds of `merge_forward` row that this release 
 
 - a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
 
-- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+- an `ask` row sent again to a role's later launch that no row of it reached (at that launch's ready, at the end of a row of the ask that did not reach it, or, for the merger, at the move into `merging`), which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
 
 Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
 Run this with the daemon stopped, before the earlier image is pinned:
@@ -3046,7 +3048,7 @@ The release before decodes that column without them (`json.Unmarshal` in `record
 Without `withdrawn` it reads a withdrawn ask as one its role still holds.
 Without `sentLaunch` it does what it always did: it asks once for each head, so an ask whose role's claim failed, was stopped or exited is not sent to that role's next launch, and the workers held for it wait for a landing.
 For such an issue, have its architect move it back to `implementing`, which drops the ask.
-A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
+A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch, and for the merger a move into `merging` at its current launch, sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
 The statements take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
 
 #### Rolling back the release whose owner's plan picks the steps
@@ -6321,8 +6323,8 @@ When the wait ends, the kills that the watch named no process for have one `kill
   the launcher's stop, which sends SIGKILL to a role's `role-init` at the end of the stop grace, and the kernel then to every process of the role's namespace (`endGeneration`, `packages/daemon/internal/launcher/process.go`);
   the Claude bridge's stop, which sends SIGKILL to Claude Code its grace after its SIGTERM (`end`, `packages/daemon/internal/claudebridge/bridge.go`);
   and any `exec.CommandContext` of Legion's, whose default `Cancel` sends SIGKILL when its context ends (`Process.Kill`), and whose `WaitDelay` sends SIGKILL to a process that a `Cancel` of its own asked to stop with SIGTERM and that has not exited by then.
-  The default `Cancel` sends it to `legion gh`'s reads of `gh` and `git` at their timeout, in a role's tree (`readGhHelp` in `packages/daemon/cmd/legion/gh.go`, `gitLines` in `packages/daemon/cmd/legion/gh_selectors.go`);
-  to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
+  `procgroup` stops the group when the context of a `legion gh` help, configuration or remote read ends (`ReadHelp` and `gitLines` in `packages/daemon/internal/ghroute/`, and `ghRepoGitConfigRefusal` in `packages/daemon/cmd/legion/gh_gitconfig.go`).
+  The default `Cancel` sends SIGKILL to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
   and to the launcher's test-database script at its bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
   `WaitDelay` sends it to the CodeGraph warm-up's `codegraph` (`runCodegraph`, `packages/daemon/internal/workspace/codegraph.go`) once the shim has stopped the warm-up, which it does while its agent still runs: that process is a direct child of the shim, so a session process, and it is named with the `kernel-protected` cause with no departure to set it aside.
   The CodeGraph warm-up's memory cap sends it to the build's whole process group at its first read above the cap (`watchCodegraphMemory`, `packages/daemon/internal/workspace/codegraph.go`), which does not depend on the guard and so runs in a microVM pod too: the build's leader is a direct child of the shim, so its kill is named with the `kernel-protected` cause, as `WaitDelay`'s is.
@@ -11736,7 +11738,7 @@ Dispatch still refuses such a token a write to a target that resolves to no proj
 A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
 Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
 It serves a read-only token, one that holds `read`, on the reads of its read class (each route's `Read`, in its file under `packages/envoy/internal/dispatch/api`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
-It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
+It answers a read-only token that carries a cut as of that cut on each route that answers `as_of`, names the cut on `GET /api/v1/whoami`, and answers it `403 AS_OF_TOKEN_NOT_SERVED` on every other read and on `GET /ws/live`.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
 It serves a result entry's token on the routes whose declaration states `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `packages/envoy/internal/dispatch/api`), today `POST /api/v1/projects/{key}/results` alone, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`.
 The Envoy listener answers a result entry's token `401`, because its verifier does not ask for it (`ciphertoken.Options.ServesResults`).
@@ -12378,7 +12380,8 @@ In order, and keeping nothing until the daemon has answered, the command:
 3. asks `POST /legion/v1/controller/secret` with the operator token as `Authorization: Bearer` and the contract step 2 held the plugin to (`{"pluginContract": <N>}`).
    The daemon compares the token in constant time, then refuses a contract that is not its own with 409, naming both, before it mints anything, so a `legion` and a daemon from different releases never cut the running controller off.
    Otherwise it mints a fresh controller capability, which replaces the previous one and its registration and ends every controller grant: the last start wins.
-   The answer also carries the daemon's `gates.design` as the list of steps it gates (`designGateSteps`, empty for a deployment that gates none), and an answer that names no list, or one naming a step that is not `decisions`, `criteria` or `spec`, is refused with a request to upgrade the daemon;
+   The answer also carries the daemon's `gates.design` as the list of steps it gates (`designGateSteps`, empty for a deployment that gates none), and an answer that names no list, or one naming a step that is not `decisions`, `criteria` or `spec`, is refused with a request to upgrade the daemon.
+   It carries the project's `watched_workflows` too (`watchedWorkflows`, each `{owner, repo, workflow, events}`, empty for a project that watches none), which the command names in the controller's prompt; an answer that names no such list is refused with a request to upgrade the daemon;
 
 4. writes the secret 0600 under the local state directory (`state_dir`, by default `$XDG_STATE_HOME/legion/<project>-controller`), beside the `legion` launcher and the deployment instructions;
 

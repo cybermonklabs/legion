@@ -139,6 +139,7 @@ const validCalls = {
     ops: [{ op: "replace", find: "old", with: "new" }],
   },
   dispatch_doc_read: { issue: "DSP-1" },
+  dispatch_spec_form: { issue: "DSP-1" },
   dispatch_request_approval: {
     issue: "DSP-1",
     summary: "A live sync replaces the nightly export.",
@@ -273,6 +274,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_send_to_agent",
       "dispatch_doc_edit",
       "dispatch_doc_read",
+      "dispatch_spec_form",
       "dispatch_request_approval",
       "dispatch_plan_approve",
       "dispatch_review",
@@ -678,11 +680,13 @@ describe("dispatchToolSpecs", () => {
     expect(refusal({ project: "ACME" })).toEqual([
       "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.",
     ]);
-    expect(refusal({ ...project, at: project.commit, brief: true })).toEqual([
-      "With project, the read takes commit, check and json alone, and this call also carries at, brief.",
+    expect(
+      refusal({ ...project, at: project.commit, brief: true, as_of: "2026-11-10T12:00:00Z" })
+    ).toEqual([
+      "With project, the read takes commit, check and json alone, and this call also carries at, brief, as_of.",
     ]);
     expect(refusal({ issue: "DSP-1", commit: project.commit, check: "p-1", json: true })).toEqual([
-      "With issue, the read takes at and brief alone, and this call also carries commit, check, json.",
+      "With issue, the read takes at, brief and as_of alone, and this call also carries commit, check, json.",
     ]);
   });
 
@@ -1228,6 +1232,46 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // A move under another parent, a clear of an issue's own priority and a new child with no
+  // priority each make work P0 where the issue they reach then takes P0 from an issue above, and
+  // Dispatch refuses them without p0 (J2 of dispatch://INFRA-5793). So the description of each
+  // argument that makes such a write, which a host shows and `dispatch <command> --help` prints,
+  // holds a sentence that names the write and says it needs p0. A sentence is the text cut at each
+  // full stop, and its words are the ones the route index test reads in the routes' own text
+  // (`TestTheRouteIndexSaysWhenAMoveAClearOrANewChildNeedsP0`), so each row reads the words and
+  // not a copy of one sentence.
+  const moves = /\bmov(?:e|es|ing)\b/i;
+  const clears = /\bclear(?:s|ing|ed)?\b/i;
+  const namesParent = /\bparent\b/i;
+  const readsP0 = /\bP0\b|\b[Pp]riority (?:of )?0\b/;
+  const needsP0 = /\bneeds? (?:the )?p0\b/i;
+  const namesArchitect = /\barchitect\b/i;
+  const newChild = [namesParent, readsP0, needsP0, namesArchitect] as const;
+  test.each([
+    ["dispatch_issue_update", "parent", "a move under it needs p0", [moves, needsP0]],
+    ["dispatch_issue_update", "priority", "a clear needs p0", [clears, needsP0]],
+    [
+      "dispatch_issue",
+      "parent",
+      "a new child of a P0 issue needs p0, but from its architect",
+      newChild,
+    ],
+    [
+      "dispatch_issue",
+      "priority",
+      "a new child of a P0 issue needs p0, but from its architect",
+      newChild,
+    ],
+  ] as const)("%s's %s says that %s", (name, field, _says, words) => {
+    const sentences = argumentDescription(name, field).split(/[.!?](?:\s+|$)/);
+
+    expect(
+      sentences.filter((sentence) => words.every((word) => word.test(sentence))),
+      `${name} --${field}: a sentence matching each of ${words.map(String).join(", ")}, among ` +
+        JSON.stringify(sentences)
+    ).not.toEqual([]);
+  });
+
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
     const { api, fields } = recordingSchemaApi();
     for (const spec of dispatchToolSpecs) dispatchToolSchema(spec, api);
@@ -1678,6 +1722,43 @@ describe("dispatchToolSpecs", () => {
       schema.safeParse({ issue: "DSP-1", summary: "Proposes a live sync in place of the export." })
         .success
     ).toBe(true);
+  });
+
+  test("dispatch_spec_form reads one owner's documents, or walks a root named alone", () => {
+    const schema = schemaFor("dispatch_spec_form");
+    const refusals = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const rootRule =
+      "root walks every issue under that root: name no issue, project, artifact, version or ref with it.";
+
+    for (const args of [
+      { issue: "DSP-1" },
+      { issue: "DSP-1", artifact: "spec.md", version: 2 },
+      { project: "CORE", artifact: "runbook.md" },
+      { ref: "dispatch://DSP-1/spec@v2" },
+      { root: "DSP-1" },
+    ]) {
+      expect(schema.safeParse(args).success, JSON.stringify(args)).toBe(true);
+    }
+    expect(refusals({ project: "CORE" })).toEqual([
+      "Exactly one of issue and project is required; with project, artifact names the document.",
+    ]);
+    for (const extra of [
+      { issue: "DSP-2" },
+      { project: "CORE" },
+      { artifact: "spec.md" },
+      { version: 2 },
+      { ref: "dispatch://DSP-2/spec" },
+    ]) {
+      expect(refusals({ root: "DSP-1", ...extra }), JSON.stringify(extra)).toEqual([rootRule]);
+    }
+    expect(schema.safeParse({ issue: "DSP-1", version: 0 }).success).toBe(false);
+  });
+
+  test("dispatch_spec_form's description says what it reads, that it writes nothing, and what root lists", () => {
+    expect(specFor("dispatch_spec_form").description).toBe(
+      "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. With root, it lists each issue under that root and the form of each document that the root covers."
+    );
   });
 
   test("dispatch_review takes an issue, a version from 1 and a verdict, and nothing else", () => {
