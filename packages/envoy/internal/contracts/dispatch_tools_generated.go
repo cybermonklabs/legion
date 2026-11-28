@@ -378,7 +378,7 @@ var DispatchTools = []DispatchTool{
 	{
 		Name:        "dispatch_spec_form",
 		Label:       ToolLabel{Kind: "read", Verb: "read", Present: "Reading the form of The Spec in {ref|a document}", Past: "Read the form of The Spec in {ref|a document}"},
-		Description: "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. With root, it lists each issue under that root and the form of each document that the root covers.",
+		Description: "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. With root, it lists each issue under that root and the form of each document that the root covers. With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it.",
 		Arguments: []ToolField{
 			{Name: "issue", Kind: ToolFieldString, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
 			{Name: "project", Kind: ToolFieldString, Description: "Project key owning the document."},
@@ -386,9 +386,10 @@ var DispatchTools = []DispatchTool{
 			{Name: "version", Kind: ToolFieldNumber, Description: "Optional version number of the document that artifact or ref names: a version belongs to one document, so a version with an issue and no artifact is refused. Without it, the command reads the latest settled version, which an approval request would name.", Min: new(float64(1))},
 			{Name: "root", Kind: ToolFieldString, Description: "An issue key. The command lists each issue under that root, with the form of the spec and the Verification document of each issue. Name no other argument with it."},
 			{Name: "ref", Kind: ToolFieldString, Description: "Optional dispatch:// document reference."},
+			{Name: "terms", Kind: ToolFieldBoolean, Description: "List the terms of the document's root, each with its definition and the document that defines it, in place of the findings."},
 		},
 		Example:    json.RawMessage("{\"issue\":\"DSP-1\"}"),
-		Validation: "Exactly one of issue and project is required; with project, artifact names the document. A version number belongs to one document, and an issue has several: with version, name the document with artifact (--artifact). root walks every issue under that root: name no issue, project, artifact, version or ref with it.",
+		Validation: "Exactly one of issue and project is required; with project, artifact names the document. A version number belongs to one document, and an issue has several: with version, name the document with artifact (--artifact). root walks every issue under that root: name no issue, project, artifact, version, ref or terms with it.",
 	},
 	{
 		Name:        "dispatch_request_approval",
