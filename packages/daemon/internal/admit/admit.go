@@ -1754,13 +1754,14 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 // A re-admission is a todo, and it ends the issue's open retro after its close as stopped, with no
 // rating (workflow's EndOpenRetro), as a child's re-entry does; a carried orphan's run goes on in
 // the tree it roots, so the record of that run's start and its retro goes with it to the new
-// generation (record.Store.CarryRunRetro).
+// generation (record.Store.CarryRunRetro). The end comes once the re-admitted record is written,
+// since it stops what the tree the retro ran in kept for its retros as that tree's own state says:
+// a root's own todo then finds its tree back in the workflow (no linger, the root at admitted and
+// todo) and stops nothing of it, while a child's leaves the tree it moved out of to stop and close
+// as a report's end would.
 func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed, carry bool) error {
 	if stored.Generation == ^uint64(0) {
 		return fmt.Errorf("re-admit %s: generation overflows", stored.Key)
-	}
-	if err := a.engine.EndOpenRetro(ctx, tx, stored); err != nil {
-		return fmt.Errorf("end the open retro of re-admitted %s: %w", stored.Key, err)
 	}
 	orphan := carry && !claim.IsTreeRoot(stored.Key, stored.Tree)
 	oldTree, oldGeneration := stored.Tree, stored.Generation
@@ -1823,6 +1824,9 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	stored.LastDispatchSeq = o.Seq
 	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
+	}
+	if err := a.engine.EndOpenRetro(ctx, tx, stored); err != nil {
+		return fmt.Errorf("end the open retro of re-admitted %s: %w", stored.Key, err)
 	}
 	// The re-admission is a new generation of the tree: this write changes the generation, the
 	// phase, the status and, below, the facts of every issue under the root, which is news of

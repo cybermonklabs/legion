@@ -708,8 +708,11 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 // role of every member and the removal of every member's workspace. Each row names the root
 // generation whose linger it closes: a member keeps its own generation across re-admission, so only
 // that tells this linger's rows from a later one's. The linger's expiry writes them for every
-// member but one whose retro after its close is open (lingerExpired), and the close the end of the
-// tree's last open retro queued writes them for what that expiry left (closeAfterRetros).
+// member but one whose retro after its close is open (lingerExpired). The close the end of the
+// tree's last open retro queued writes them for each member whose retro after a close ended at
+// the linger's deadline or later, and for the root where a retro's wake brought its architect
+// back or where the tree's cleanup is not reserved yet, so that a tree_close of the tree reserves
+// that cleanup even once each such member has left the tree (closeAfterRetros, rootCloseOwed).
 func (e *Engine) closeTreeRows(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) error {
 	for _, member := range members {
 		for _, role := range claim.Roles {
