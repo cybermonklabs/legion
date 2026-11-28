@@ -1312,6 +1312,28 @@ write_lock() {
 }
 readonly other_run=lt-20261028t080000-beef
 
+# session_live SID: each live process (no zombie) of session SID, "pid command line" a line; true
+# when there is one. A daemon cluster.sh starts under setsid leads a session of its own, its pid
+# the session's id, and every child it starts, its role loops and their kubectl execs among them,
+# stays in it.
+session_live() {
+  local stat line state sid pid found=1
+  for stat in /proc/[0-9]*/stat; do
+    { read -r line <"$stat"; } 2>/dev/null || continue
+    read -r state _ _ sid _ <<<"${line##*) }"
+    if [ "$sid" != "$1" ] || [ "$state" = Z ]; then continue; fi
+    pid=${stat#/proc/}
+    pid=${pid%/stat}
+    printf '%s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+    found=0
+  done
+  return "$found"
+}
+
+# session_gone SID: no live process of session SID is left, for wait_for, which shows the ones
+# left at its last poll.
+session_gone() { ! session_live "$1"; }
+
 # copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
 # line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
 # pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
@@ -3238,7 +3260,9 @@ done
 orphan_alive=no
 kill -0 "$orphan_hb" 2>/dev/null && orphan_alive=yes
 orphan_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
-sleep 1
+# Once the heartbeat's session is gone, nothing in it can patch the lock again.
+wait_for "the heartbeat (pid $orphan_hb) and every process of its session to end after up has returned" \
+  session_gone "$orphan_hb"
 orphan_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 run_cluster down --namespace "$ns"
 [ "$orphan_alive" = no ] ||
@@ -3328,14 +3352,17 @@ for ((i = 0; i < 200; i++)); do
   sleep 0.1
 done
 sampler_lines=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
-sleep 6
+# Wait for the whole session so no role loop or its kubectl exec can still be running.
+wait_for "the sampler (pid $sampler_pid) and every role loop and kubectl exec of its session to end after the heartbeat stops" \
+  session_gone "$sampler_pid"
 sampler_lines_after=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
+# Check before down, which removes the pidfile even if the sampler left it behind.
+[ ! -f "$sampler_dir/sampler.pid" ] || fail "the sampler that stopped left its pidfile $sampler_dir/sampler.pid"
 run_cluster down --namespace "$ns"
 [ "$sampler_alive" = no ] ||
   fail "the sampler daemon (pid $sampler_pid) still runs 20 s after the last command of its run ended and its heartbeat stopped: its eight kubectl execs stay open and it appends an error line of each to cgroup.jsonl every 5 s for ever"
-[ ! -f "$sampler_dir/sampler.pid" ] || fail "the sampler that stopped left its pidfile $sampler_dir/sampler.pid"
 [ "$sampler_lines_after" = "$sampler_lines" ] ||
-  fail "cgroup.jsonl grew by $((sampler_lines_after - sampler_lines)) lines in the 6 s after the sampler was gone: a role loop of it still samples"
+  fail "cgroup.jsonl grew by $((sampler_lines_after - sampler_lines)) lines while the sampler's session was ending: a role loop of it still sampled"
 unset FAKE_FAST_SLEEP
 pass "the sampler stops once no heartbeat of its run is alive, with the kubectl exec of every role loop, and removes its pidfile"
 
@@ -3569,28 +3596,6 @@ all_gone() {
     if kill -0 "$pid" 2>/dev/null; then return 1; fi
   done
 }
-
-# session_live SID: each live process (no zombie) of session SID, "pid command line" a line; true
-# when there is one. A daemon cluster.sh starts under setsid leads a session of its own, its pid
-# the session's id, and every child it starts, its role loops and their kubectl execs among them,
-# stays in it.
-session_live() {
-  local stat line state sid pid found=1
-  for stat in /proc/[0-9]*/stat; do
-    { read -r line <"$stat"; } 2>/dev/null || continue
-    read -r state _ _ sid _ <<<"${line##*) }"
-    if [ "$sid" != "$1" ] || [ "$state" = Z ]; then continue; fi
-    pid=${stat#/proc/}
-    pid=${pid%/stat}
-    printf '%s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
-    found=0
-  done
-  return "$found"
-}
-
-# session_gone SID: no live process of session SID is left, for wait_for, which shows the ones
-# left at its last poll.
-session_gone() { ! session_live "$1"; }
 
 # keep_timer_readings FILE: in a shell that has sourced cluster.sh, timer_now also appends each
 # reading to FILE, "WHAT SECOND" a line: the record of the clock runner_wait and pg_disk_watch_stop
