@@ -176,7 +176,10 @@ func moveFrom(ctx context.Context, github, graphql githubrest.Client, repo ghrep
 		switch {
 		case found && now == to:
 			return true, "", nil
-		case !found || now == from:
+		case !found:
+			return false, "", fmt.Errorf("move %s on %s from %s to %s: GitHub answered with no update, and the branch is gone",
+				ref, repo, from, to)
+		case now == from:
 			return false, "", fmt.Errorf("move %s on %s from %s to %s: GitHub answered with no update, and the branch still points at %s",
 				ref, repo, from, to, from)
 		}
