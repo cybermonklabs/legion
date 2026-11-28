@@ -7,17 +7,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
-// Red test of the second fresh acceptance run at f61dfa6b66 (D1: D-H1's fix stops at the reads of
-// the document whose own approved version Dispatch cannot read). R50: "The Spec holds a list of
-// defined terms." The fix of D-H1: when Dispatch cannot read the newest approved version of a
-// document under the root, the line that names it comes first, and it says that the list can lack
-// terms. X under the root defines lease and is approved at version 1; the agent writes version 2,
-// which nobody has approved yet; then X's approved version 1 is made unreadable. The list of the root
-// now lacks lease. The read of another document (Y) names X's version 1 in unread: that is the
-// control, and it passes. The read of X's own latest version answers the same list, which lacks
-// lease, and its unread is empty, so no client can say that the list lacks terms (the command
-// `dispatch spec-form --issue X --terms` prints the list as whole).
-func TestTheReadOfADocumentNamesItsOwnUnreadableApprovedVersionFresh2(t *testing.T) {
+// The read of a document names its own unreadable approved version in unread. R50: "The Spec holds
+// a list of defined terms." X under the root defines lease and is approved at version 1; the agent
+// writes version 2, which nobody has approved yet; then X's approved version 1 is made unreadable,
+// so the list of the root lacks lease. The read of X's version 2 answers that list and names X's
+// version 1 in unread, so a client can say that the list can lack terms. The control: the read of
+// another document (Y) names it too.
+func TestTheReadOfADocumentNamesItsOwnUnreadableApprovedVersion(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	x := createFormIssue(t, tree.handler, tree.root, "X", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, x.PrimaryArtifactID)

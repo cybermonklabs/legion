@@ -496,7 +496,7 @@ func TestEachCandidateInputOfTheSecondReaderOnTheRoute(t *testing.T) {
 			definitions: 1},
 		{name: "the honest control: a footnote that gives a source", markdown: "# Spec\n\n## Terms\n\n- **zephyr**: One warm wind.[^source]\n\n[^source]: See [source](https://example.com/source).\n",
 			want: []string{"definition zephyr definition-sentences"}, detail: footnoted},
-		{name: "the acceptance tester's footnote", markdown: "# Spec\n\n## Terms\n\n- **mooring**: The rope that ties one boat to a dock.[^1]\n\n[^1]: The harbour manual of 2024 gives this meaning.\n",
+		{name: "a footnote that gives a source with a year", markdown: "# Spec\n\n## Terms\n\n- **mooring**: The rope that ties one boat to a dock.[^1]\n\n[^1]: The harbour manual of 2024 gives this meaning.\n",
 			want: []string{"definition mooring definition-sentences"}, detail: footnoted},
 	} {
 		t.Run(row.name, func(t *testing.T) {

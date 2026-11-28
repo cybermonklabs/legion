@@ -66,9 +66,9 @@ func TestDefinitionOfTwoSentencesIsRefused(t *testing.T) {
 // R50: a term "has one definition of one sentence". A footnote that a definition refers to is
 // part of it, as of every text, so its sentences count, and the finding names the footnote and the
 // way out: what the footnote says goes into the one sentence, or the footnote goes. The rows are
-// the acceptance tester's and the second reader's, each a definition of one sentence with a source
-// in a footnote, and one with two footnotes. The control: a definition of two sentences with no
-// footnote gets the detail that counts its sentences alone.
+// definitions of one sentence with a source in a footnote, and one with two footnotes. The
+// control: a definition of two sentences with no footnote gets the detail that counts its sentences
+// alone.
 func TestTheFindingOfADefinitionWithAFootnoteNamesTheFootnote(t *testing.T) {
 	const oneNote = "the definition has 2 sentences with its footnote, and a definition has one. " +
 		"A footnote is part of the definition that refers to it. " +
@@ -253,8 +253,7 @@ func nameDetail(held string) string {
 }
 
 // refusedOf reports whether Check refuses proposed as a second definition of listed, and the
-// detail of its term-name finding ("" for none). It is the helper of the tester's third run
-// (secondDefinitionOf), which also reads the name rule.
+// detail of its term-name finding ("" for none).
 func refusedOf(proposed, listed string) (second bool, name string) {
 	list := []Term{{Name: listed, Definition: "The first meaning of this name.", Where: "terms.md version 1 of ACME-1"}}
 	in := Input{Proposed: []Term{{Name: proposed, Definition: "Another meaning of this name.", Where: where}}, List: list}
@@ -269,13 +268,11 @@ func refusedOf(proposed, listed string) (second bool, name string) {
 	return second, name
 }
 
-// Names that read as one name are one term, or a name of a term is refused (the tester's
-// TestNamesThatReadAsOneAreOneTermAccept3, from the third acceptance run). Its ten rows that
-// fold to the letters a to z are one term with the listed name, as the tester wrote them. Its
-// two rows of a dot above on i ("İnbox", U+0130, folds to "i\u0307nbox") asked for a second
-// definition of inbox. The decision on that run closes the class by the alphabet: such a name is
-// refused by the rule term-name, which names the character, so those two rows ask for that. The
-// controls are the tester's: a dotless ı, a plural and a hyphen are other terms.
+// Names that read as one name are one term, or a name of a term is refused. The ten names that fold
+// to the letters a to z are one term with the listed name. A dot above on i ("İnbox", U+0130, folds
+// to "i\u0307nbox") is outside the alphabet of a term, so such a name is refused by the rule
+// term-name, which names the character. The controls: a dotless ı, a plural and a hyphen are other
+// terms.
 func TestNamesThatReadAsOneAreOneTermOrARefusedName(t *testing.T) {
 	one := []struct{ proposed, listed, why string }{
 		{"\uff48\uff45\uff41\uff52\uff54\uff42\uff45\uff41\uff54", "heartbeat", "full-width letters"},
@@ -315,12 +312,10 @@ func TestNamesThatReadAsOneAreOneTermOrARefusedName(t *testing.T) {
 	}
 }
 
-// A name that shows as a listed name is not a new term in silence (the tester's
-// TestANameThatShowsAsAListedNameIsNotANewTermInSilenceAccept3). "Heаrtbeat" with a Cyrillic а
-// (U+0430) shows as "Heartbeat", and its finding names that letter. The tester's control was a
-// name wholly in Cyrillic ("сессия") with no finding; by the decision on that run a term name
-// holds only the letters a to z, so that name is refused too, and the control here is a name in
-// those letters that is no listed name.
+// A name that shows as a listed name is refused. "Heаrtbeat" with a Cyrillic а (U+0430) shows as
+// "Heartbeat", and its finding names that letter. A term name holds only the letters a to z, so a
+// name wholly in Cyrillic ("сессия") is refused too. The control: a name in those letters that is
+// no listed name gives no finding.
 func TestANameThatShowsAsAListedNameIsRefused(t *testing.T) {
 	list := []Term{{Name: "heartbeat", Definition: "The signal that a session sends.", Where: "terms.md version 1 of ACME-1"}}
 	check := func(name string) []Finding {
@@ -408,9 +403,8 @@ func TestATermNameWithNoLetterAndNoDigitIsRefused(t *testing.T) {
 }
 
 // A covered document that names a listed term again, in the one term-line form, under a heading
-// that is not Terms, is refused (the tester's TestASecondDefinitionUnderAnotherHeadingIsRefusedAccept3,
-// as the tester wrote it): such a line is no definition, but a reader would take it for a second
-// definition of that term. R50: "Dispatch refuses an approval request … that holds a second
+// that is not Terms, is refused: such a line is no definition, but a reader would take it for a
+// second definition of that term. R50: "Dispatch refuses an approval request … that holds a second
 // definition of a term, and it names the term". The controls: under "## Terms" the line is refused
 // once, and under "## Glossary" a line that names no listed term gives no finding.
 func TestASecondDefinitionUnderAnotherHeadingIsRefused(t *testing.T) {

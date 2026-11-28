@@ -941,7 +941,7 @@ func TestARequestRefusesATermLineUnderAnotherHeadingThatNamesAListedTerm(t *test
 	plain := createFormIssue(t, tree.handler, tree.root, "Names valve under Glossary", "# Spec\n\n## Glossary\n\n- "+termLine("valve", "A part of a pump that opens and closes.")+"\n")
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, plain.PrimaryArtifactID, nil))
 	approveFormDocument(t, tree.handler, plain.PrimaryArtifactID)
-	if count := countTerm(t, tree.handler, listed.PrimaryArtifactID, "valve"); count != 0 {
+	if _, count := listedOf(t, tree.handler, listed.PrimaryArtifactID, "valve"); count != 0 {
 		t.Fatalf("the list holds valve %d times after the person approved a spec that names it under Glossary, want 0", count)
 	}
 }
@@ -982,12 +982,13 @@ func TestARequestRefusesALineOutsideTermsThatItsOtherDocumentDefines(t *testing.
 	}
 }
 
-// The stated limit of a line outside Terms (the red team's order case). A definition is a term line
-// under Terms, and a line in that form elsewhere is no definition. Dispatch refuses such a line
-// only when it names a defined term, and across two requests it cannot see the later one. So A,
-// whose spec names gale under "## Glossary" while no document defines gale, is approved, and it
-// adds no term. B, which defines gale under Terms, is approved after it. Then the read of A names
-// B's definition, and A's next approval request is refused. A change of this order is a decision.
+// The stated limit of a line outside Terms, which the order of two requests decides. A definition
+// is a term line under Terms, and a line in that form elsewhere is no definition. Dispatch refuses
+// such a line only when it names a defined term, and across two requests it cannot see the later
+// one. So A, whose spec names gale under "## Glossary" while no document defines gale, is
+// approved, and it adds no term. B, which defines gale under Terms, is approved after it. Then the
+// read of A names B's definition, and A's next approval request is refused. A change of this order
+// is a decision.
 func TestALineOutsideTermsOfANameThatNothingDefinesIsApprovedAndRefusedAtItsNextRequest(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const (
@@ -998,7 +999,7 @@ func TestALineOutsideTermsOfANameThatNothingDefinesIsApprovedAndRefusedAtItsNext
 		"# Spec\n\n:::requirement{#store-comment}\nDispatch stores each comment.\n:::\n\n## Glossary\n\n- "+termLine("gale", cold)+"\n")
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, a.PrimaryArtifactID, nil))
 	approveFormDocument(t, tree.handler, a.PrimaryArtifactID)
-	if count := countTerm(t, tree.handler, a.PrimaryArtifactID, "gale"); count != 0 {
+	if _, count := listedOf(t, tree.handler, a.PrimaryArtifactID, "gale"); count != 0 {
 		t.Fatalf("the list holds gale %d times after the approval of A, want 0: a line outside Terms adds no term", count)
 	}
 	b := createFormIssue(t, tree.handler, tree.root, "Defines gale", specWithTerms(termLine("gale", warm)))
@@ -1017,18 +1018,6 @@ func TestALineOutsideTermsOfANameThatNothingDefinesIsApprovedAndRefusedAtItsNext
 	finding := termLineFinding("spec.md", a.PrimaryArtifactID, 2, "gale", cold, where)
 	requireFormRefusal(t, "the next request of A", requestFormApproval(t, tree.handler, a.PrimaryArtifactID, nil),
 		specform.ActRequest, []string{findingLine(finding)}, finding)
-}
-
-// countTerm is how many times the list of the read of artifactID holds term.
-func countTerm(t *testing.T, handler http.Handler, artifactID, term string) int {
-	t.Helper()
-	count := 0
-	for _, listed := range specFormReadOf(t, handler, artifactID).Terms {
-		if strings.EqualFold(listed.Term, term) {
-			count++
-		}
-	}
-	return count
 }
 
 // Two requests that define one new term wait on the person at one time, and the person approves
@@ -1062,7 +1051,8 @@ func TestTwoApprovalsAtOneTimeLeaveOneDefinitionOfANewTerm(t *testing.T) {
 		wg.Wait()
 		if responses[0].Code == http.StatusCreated && responses[1].Code == http.StatusCreated {
 			both++
-			t.Errorf("pair %d: both approvals passed (201, 201), and the list of terms holds %s %d times", pair, term, countTerm(t, tree.handler, a.PrimaryArtifactID, term))
+			_, count := listedOf(t, tree.handler, a.PrimaryArtifactID, term)
+			t.Errorf("pair %d: both approvals passed (201, 201), and the list of terms holds %s %d times", pair, term, count)
 		}
 	}
 	if both > 0 {
@@ -1112,7 +1102,8 @@ func TestTwoApprovalsAtOneTimeOnTheInboxAndAVersionLeaveOneDefinition(t *testing
 		wg.Wait()
 		if inbox.Code == http.StatusOK && version.Code == http.StatusCreated {
 			both++
-			t.Errorf("pair %d: both approvals passed (200, 201), and the list of terms holds %s %d times", pair, term, countTerm(t, tree.handler, a.PrimaryArtifactID, term))
+			_, count := listedOf(t, tree.handler, a.PrimaryArtifactID, term)
+			t.Errorf("pair %d: both approvals passed (200, 201), and the list of terms holds %s %d times", pair, term, count)
 			continue
 		}
 		if inbox.Code != http.StatusOK && version.Code != http.StatusCreated {
@@ -1124,7 +1115,7 @@ func TestTwoApprovalsAtOneTimeOnTheInboxAndAVersionLeaveOneDefinition(t *testing
 				t.Fatalf("pair %d: the refused approval answered status=%d body=%s, want 409 SPEC_FORM", pair, refused.Code, refused.Body.String())
 			}
 		}
-		if count := countTerm(t, tree.handler, a.PrimaryArtifactID, term); count != 1 {
+		if _, count := listedOf(t, tree.handler, a.PrimaryArtifactID, term); count != 1 {
 			t.Fatalf("pair %d: the list holds %s %d times, want 1", pair, term, count)
 		}
 	}
@@ -1578,21 +1569,11 @@ func olderBuild(t *testing.T, tree specFormTree) http.Handler {
 	return handler
 }
 
-// moveThrough is alice's move of issue under parent through handler, which must pass.
-func moveThrough(t *testing.T, handler http.Handler, issue, parent string) {
-	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"parent": parent}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("move %s under %s: status=%d body=%s", issue, parent, response.Code, response.Body.String())
-	}
-}
-
-// A move that a build with no root of The Spec made changes no definition of the list (the
-// tester's TestAMoveThatWroteNoArrivalRowChangesNoDefinitionOfTheListAccept3, from the third
-// acceptance run). The tester made the older release's move as this build's move with its arrival
-// row deleted, the state that release leaves; this release writes no such row, so the older
-// release's move is made here through a server that names no root (olderBuild), which does what
-// that release does. v-terms: "A change to a definition waits for the approval of the person."
-// The control: the same move through the server that names the root.
+// A move that a build with no root of The Spec made changes no definition of the list. Such a
+// build writes the issue and its events and nothing more, as the release before this one does, so
+// its move is made here through a server that names no root (olderBuild). v-terms: "A change to a
+// definition waits for the approval of the person." The control: the same move through the server
+// that names the root.
 func TestAMoveByABuildThatNamesNoRootChangesNoDefinitionOfTheList(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	older := olderBuild(t, tree)
@@ -1608,7 +1589,7 @@ func TestAMoveByABuildThatNamesNoRootChangesNoDefinitionOfTheList(t *testing.T) 
 		approveFormDocument(t, tree.handler, earlier.PrimaryArtifactID)
 		listed := createFormIssue(t, tree.handler, tree.root, "Defines "+c.term+" under the root", specWithTerms(termLine(c.term, leaseDefinition)))
 		approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
-		moveThrough(t, c.mover, earlier.Key, tree.root)
+		reparentFormIssue(t, c.mover, earlier.Key, tree.root)
 		want := specFormTerm{Term: c.term, Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: listed.Key}
 		if got, count := listedOf(t, tree.handler, listed.PrimaryArtifactID, c.term); count != 1 || got != want {
 			t.Errorf("%s: after it moved %s under %s, the list holds %s %d times, as %#v; want the definition it held, %#v",
@@ -1679,7 +1660,7 @@ func TestTheListIsTheSameWhicheverBuildMadeTheMoves(t *testing.T) {
 			if build == "a server that names no root" {
 				mover = olderBuild(t, tree)
 			}
-			keeper, read := c.moves(tree, func(issue, parent string) { moveThrough(t, mover, issue, parent) })
+			keeper, read := c.moves(tree, func(issue, parent string) { reparentFormIssue(t, mover, issue, parent) })
 			if got, count := listedOf(t, tree.handler, read, "lease"); count != 1 || got.Issue != keeper {
 				t.Errorf("%s, moves by %s: the list holds lease %d times, as %#v; want once, from %s", c.name, build, count, got, keeper)
 			}
