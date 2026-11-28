@@ -916,7 +916,7 @@ func TestReenteringAnOpenChildDoesNotSuspendItsLiveClaims(t *testing.T) {
 	}{
 		{name: "an interrupted phase worker", phase: phase.Testing},
 		{name: "an implementer in an open production-check look", phase: phase.Done,
-			check: &record.ProductionCheck{Project: testProject, Tree: "LEGION-1", Repo: "acme/widgets", Number: 1,
+			check: &record.ProductionCheck{Project: testProject, Tree: "LEGION-1", Repo: "acme/widgets", Number: 1, Role: claim.RoleImplementer,
 				MergeSHA: "merged", OpenedAt: fixedNow, BoundAt: fixedNow.Add(time.Hour), Looks: 1, LookOpen: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
