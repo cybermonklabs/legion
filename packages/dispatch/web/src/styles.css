@@ -1153,6 +1153,13 @@ html:has([data-issue-page])
   --tw-prose-links: currentColor;
 }
 
+/* A link in the words the new page's Dashboard draws (`issue-page/slots/view-dashboard.tsx`'s
+   `data-dashboard`) is the words' own ink too (dispatch://INFRA-3940 R13); today's page marks no
+   Dashboard so, and its links keep the app's link blue. */
+[data-dashboard] .dispatch-markdown {
+  --tw-prose-links: currentColor;
+}
+
 [data-node-words] .dispatch-markdown a {
   font-weight: inherit;
   text-decoration-color: var(--color-page-bullet);
@@ -1166,7 +1173,7 @@ html:has([data-issue-page])
   font-size: 12px;
   font-weight: 500;
   color: var(--color-page-muted);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* A picture in a node's words is 84 px tall, cut from its top, at least 110 px wide, with its

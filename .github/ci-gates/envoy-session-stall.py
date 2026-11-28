@@ -8,8 +8,20 @@ GATE = gate("envoy_session_stall", STALL, runs=[
     script_run("packages/envoy-client/test/dispatch-stack.ts",
                'packages: ["./cmd/dispatch"],',
                f"the packages that rig hands buildGoBinaries, run by "
-               f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')}",
+               f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')} and "
+               f"{at(STALL, CI_RESULTS_STEP)}",
                ENVOY, ["./cmd/dispatch"], mode="build"),
+    script_run("packages/envoy-client/test/ci-results-stack.ts",
+               'packages: ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/dev-proxy-stands"],',
+               f"the secrets brokers, cluster token issuer and the airlock's authority and fronts that rig hands "
+               f"buildGoBinaries, run by {at(STALL, CI_RESULTS_STEP)} and "
+               f"{at(STALL, CI_RESULTS_REFUSAL_STEP)}",
+               ENVOY, ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/dev-proxy-stands"], mode="build"),
+    script_run("packages/envoy-client/test/ci-results-stack.ts",
+               'const spawned = Bun.spawn(["go", "build", "-o", binary, "./cmd/cipher"], {',
+               f"buildAgentSecrets, the results-grant producer that rig builds as agent-secrets, run by "
+               f"{at(STALL, CI_RESULTS_STEP)} and {at(STALL, CI_RESULTS_REFUSAL_STEP)}",
+               ENVOY, ["./cmd/cipher"], mode="build"),
     script_run("packages/envoy-client/src/__tests__/nats-credential.test.ts",
                'packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],',
                f"the packages that test hands buildGoBinaries, run by "

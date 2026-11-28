@@ -336,11 +336,9 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // 390 px the view row stays there. A row whose top lies 10 px under it takes the focus with no
 // scroll of the browser's own (`preventScroll`, as a chord or an address puts the focus), so
 // only the row's own placement (`useRowOnScreen`) can move it: under part G the header publishes
-// no band, and `bringOnScreen` alone leaves the row where it is. Then a view chord from the
-// page's foot puts the focus on the outline's tab-stop row, which the chord shows and the row
-// places. With the outline the Spec view draws nothing until its own slot is filled, so `t s`
-// goes on to `t c`, whose outline takes the focus; reading `t s` again is left to the Spec view's
-// own rows, which this tree does not hold yet.
+// no band, and `bringOnScreen` alone leaves the row where it is. Then `t s` puts the focus on the
+// Spec view's tab-stop row from the page's foot, which the chord shows and the row places: the
+// Spec view draws its statements as rows, so `t s` alone reaches one.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({
@@ -393,18 +391,11 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
     await expect(page, "t s did not open Spec").toHaveURL(
       new RegExp(`${presetPath(seeded.key, "spec")}$`)
     );
-    // The Spec view is empty until its own slot is filled, so Conversation brings the outline back.
-    await page.keyboard.press("t");
-    await page.keyboard.press("c");
-    await expect(page, "t c did not open Conversation").toHaveURL(
-      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
-    );
     const first = page.locator("[data-node-row]:focus");
-    await expect(first, "t s then t c focused no row").toHaveCount(1);
+    await expect(first, "t s focused no row").toHaveCount(1);
     await expect
       .poll(async () => (await belowWhatStays(first)) ?? -1, {
-        message:
-          "after t s then t c the focused row's top lies under the view row that stays at the top",
+        message: "after t s the focused row's top lies under the view row that stays at the top",
       })
       .toBeGreaterThanOrEqual(0);
   });

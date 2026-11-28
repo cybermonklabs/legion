@@ -101,6 +101,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		byClaude     = "Legion's runtime sets for a role it launches on Claude Code (worker_backends)"
 		byBroker     = "Legion's runtime sets in every pod that carries an exchange identity under dispatch_token_broker"
 		byResume     = "Legion's runtime sets on every launch that resumes a recorded Oh My Pi session, to hold it to that session"
+		byProbe      = "Legion's runtime sets in the image probe's pod, to tell legion probe-image it is the daemon's boot run"
 	)
 	fixture := operatorRouteFixture(t)
 	for _, tc := range []struct {
@@ -160,6 +161,12 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "the controller's Slack channels", pod: env("LEGION_SLACK_CHANNELS", "C00000001"), want: envSets("LEGION_SLACK_CHANNELS", byController)},
 		{name: "a provider key for the controller's Slack channels", keys: map[string]string{"LEGION_SLACK_CHANNELS": "channels"},
 			want: keyNames("LEGION_SLACK_CHANNELS", byController)},
+		// The runtime sets LEGION_IMAGE_PROBE_RUN in the image probe's pod alone (probeOwned), to
+		// tell legion probe-image it is the daemon's boot run: only the daemon sets it, so the
+		// operator's pod env may not, and no provider key may name it.
+		{name: "the image probe's run", pod: env("LEGION_IMAGE_PROBE_RUN", "build"), want: envSets("LEGION_IMAGE_PROBE_RUN", byProbe)},
+		{name: "a provider key for the image probe's run", keys: map[string]string{"LEGION_IMAGE_PROBE_RUN": "run"},
+			want: keyNames("LEGION_IMAGE_PROBE_RUN", byProbe)},
 		// DISPATCH_TOKEN_BROKER is Legion's word to a role only under dispatch_token_broker: a
 		// deployment without the setting tells no role it, so it stays the operator's to set, as it
 		// was before the setting existed.

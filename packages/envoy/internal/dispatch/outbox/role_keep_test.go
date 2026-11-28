@@ -61,19 +61,19 @@ func (r *roleRig) publisherOn(publisher Publisher) Deps {
 	return deps
 }
 
-// takenKeeps is a client whose first kept publishes are the test's own and whose every other
-// send is the client's: the nth kept publish the outbox makes is handed to the nth taker, to
-// make or to leave unmade, and that taker answers the outbox in its place, which is how one
-// wrapper drives each of the ways a keep can go. A keep past the takers is made as the client
-// makes it. keeps counts the kept publishes the outbox has made.
+// takenKeeps is a publisher whose first kept publishes are the test's own and whose every other
+// send is the publisher's it wraps: the nth kept publish the outbox makes is handed to the nth
+// taker, to make or to leave unmade, and that taker answers the outbox in its place, which is how
+// one wrapper drives each of the ways a keep can go. A keep past the takers is made as the wrapped
+// publisher makes it. keeps counts the kept publishes the outbox has made.
 type takenKeeps struct {
-	*bus.Client
+	Publisher
 	keeps  atomic.Int32
 	takers []func(publish func() <-chan error) <-chan error
 }
 
 func (p *takenKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
-	return takenKeepsWindow{Sender: p.Client.WindowUntil(deadline), publisher: p}
+	return takenKeepsWindow{Sender: p.Publisher.WindowUntil(deadline), publisher: p}
 }
 
 type takenKeepsWindow struct {
@@ -90,12 +90,12 @@ func (w takenKeepsWindow) PublishStoredAsync(subject string, item contracts.Enve
 	return w.publisher.takers[nth-1](publish)
 }
 
-// lostKeepAck is a client whose first kept publish is made and then answered as a lost
+// lostKeepAck is a publisher whose first kept publish is made and then answered as a lost
 // acknowledgement: the stream stores the copy and the outbox is told nothing came back, which is
 // what a connection lost between the publish and its acknowledgement leaves behind
 // (bus.ErrNotAcknowledged).
-func lostKeepAck(client *bus.Client) *takenKeeps {
-	return &takenKeeps{Client: client, takers: []func(func() <-chan error) <-chan error{
+func lostKeepAck(publisher Publisher) *takenKeeps {
+	return &takenKeeps{Publisher: publisher, takers: []func(func() <-chan error) <-chan error{
 		func(publish func() <-chan error) <-chan error {
 			// The publish is made and its answer dropped, as a lost connection drops it.
 			answer := publish()
@@ -105,22 +105,22 @@ func lostKeepAck(client *bus.Client) *takenKeeps {
 	}}
 }
 
-// failedKeep is a client whose first kept publish sends nothing and fails: the keep that failed
+// failedKeep is a publisher whose first kept publish sends nothing and fails: the keep that failed
 // left the stream holding nothing of the copy.
-func failedKeep(client *bus.Client) *takenKeeps {
-	return &takenKeeps{Client: client, takers: []func(func() <-chan error) <-chan error{
+func failedKeep(publisher Publisher) *takenKeeps {
+	return &takenKeeps{Publisher: publisher, takers: []func(func() <-chan error) <-chan error{
 		func(func() <-chan error) <-chan error {
 			return answered(fmt.Errorf("the kept copy was not stored: %w", bus.ErrNotAcknowledged))
 		},
 	}}
 }
 
-// claimedUnderTheKeep is a client that runs the nth of claims before its nth kept publish, so
+// claimedUnderTheKeep is a publisher that runs the nth of claims before its nth kept publish, so
 // each claim lands inside the window that keep's own race leaves open: after the batch resolved
 // the role unheld and before the copy is on its lane (handOverKept). A batch whose keeps of one
 // role sit on one chain makes them in turn, each after the handover behind the one before it, so
 // a second claim named here is one that lands between two handovers.
-func claimedUnderTheKeep(client *bus.Client, claims ...func()) *takenKeeps {
+func claimedUnderTheKeep(publisher Publisher, claims ...func()) *takenKeeps {
 	takers := make([]func(func() <-chan error) <-chan error, 0, len(claims))
 	for _, claim := range claims {
 		takers = append(takers, func(publish func() <-chan error) <-chan error {
@@ -128,7 +128,7 @@ func claimedUnderTheKeep(client *bus.Client, claims ...func()) *takenKeeps {
 			return publish()
 		})
 	}
-	return &takenKeeps{Client: client, takers: takers}
+	return &takenKeeps{Publisher: publisher, takers: takers}
 }
 
 // keptPublish is one stored publish a test publisher took, with the subject and the Nats-Msg-Id it
