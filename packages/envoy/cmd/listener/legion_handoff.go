@@ -218,11 +218,11 @@ func (h *legionHandoff) mayHandOff(target legionHandoffTarget) bool {
 // untouched when nothing was handed off, and duplicate as answerHandedOff answers it. The error is
 // a hand-off whose publish failed, or whose copy could not be read back: each caller refuses on it
 // as it refuses a publish of its own that failed, and otherwise builds its own answer. A hand-off
-// the bus refused before it sent anything, because the deployed stream does not capture its
-// subject (bus.ErrSubjectNotDeployed), as while a hub move's quiesce narrows the stream, is such
-// an error: its publish costs the sender nothing (senderCharge.published), and each route answers
-// it the not-sent 503 recorded subject_not_deployed (writeBusUnavailable, notSent), as it answers
-// its own publish refused so.
+// the bus refused before it sent anything, because the deployed stream, as the bus client last
+// read its subjects, does not capture its subject (bus.ErrSubjectNotDeployed), as while a hub
+// move's quiesce narrows the stream, is such an error: its publish costs the sender nothing
+// (senderCharge.published), and each route answers it the not-sent 503 recorded
+// subject_not_deployed (writeBusUnavailable, notSent), as it answers its own publish refused so.
 func (h *legionHandoff) handOffForRequest(ctx context.Context, target legionHandoffTarget, record *requestRecord, sender requestSender, item *contracts.Envelope) (handed *legionHandedOff, duplicate bool, err error) {
 	target.envelope = *item
 	handed, err = h.handOffToLegion(ctx, target)
@@ -434,9 +434,12 @@ const legionHandedOffDeliveryStatus = "handed_off"
 //     from being swallowed as an attempt-dedupe skip before the handler runs again. At the stream's
 //     last delivery the NAK gets no redelivery, and a core delivery is never sent again
 //     (deliveryMessage.finalize does nothing to one), so there the message ends with the ERROR
-//     line alone. A hand-off the bus refused because the deployed stream does not capture its
-//     subject (bus.ErrSubjectNotDeployed) is such a failure: a redelivery after the stream
-//     captures the subject again hands the message off.
+//     line alone. A hand-off the bus refused because the deployed stream, as the bus client last
+//     read its subjects, does not capture its subject (bus.ErrSubjectNotDeployed) is such a
+//     failure: it stored nothing, so only a redelivery below the stream's last delivery that
+//     comes once the stream captures the subject again and the client has read that can hand the
+//     message off, and a narrowing that outlasts the message's deliveries ends it with the ERROR
+//     line alone.
 //
 // It answers false when nothing was handed off - no registry entry for the session, a project
 // that does not answer, a session that is not gone, a message that opted out, a registry that

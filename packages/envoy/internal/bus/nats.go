@@ -2431,9 +2431,10 @@ func (c *Client) UndeployedRefusal(topic string) error {
 	return nil
 }
 
-// publishPathOf is the one verdict on the path a publish of topic takes, which UsesCoreTransport,
-// ReachesNoSession, every envelope publish function (PublishAckWithin) and PublishRetained read.
-// Its answers, in order:
+// publishPathOf is the one verdict on the path a publish of topic takes, which UsesCoreTransport
+// (and ReachesNoSession through it), UndeployedRefusal, PublishAckWithin (and the five publish
+// functions that go through it) and PublishRetained read; PublishStoredAck and PublishStoredAs do
+// not. Its answers, in order:
 //
 //  1. A subject outside NotificationTopicPrefix takes JetStream.
 //  2. A role lane or its exception lane (RoleLane) takes core NATS.
@@ -2987,22 +2988,23 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 // PublishRetained publishes data, bytes of the caller's own rather than an envelope, to subject on
 // the notification stream within ctx's bound as PublishCursorAt's, and returns the stream's
 // acknowledgement, as PublishStoredAck does for an envelope. subject must be one this build stores
-// (StreamCaptures): JetStream answers a publish to any other only with "no responders", or not at
-// all, so one this build does not store is refused here rather than waited out. A subject this
+// (StreamCaptures), and any other is refused here before anything is sent, whatever the deployed
+// stream captures: this check reads only the subjects this build compiles, and JetStream answers a
+// publish to a subject no stream captures only with "no responders", or not at all. A subject this
 // build stores that the deployed stream, as the client last read its subjects, does not capture is
 // refused before anything is sent with an error wrapping ErrSubjectNotDeployed, from the verdict
 // PublishAckWithin refuses an envelope's topic by (publishPathOf): a hub move's quiesce narrows the
-// stream so, and the same publish is stored once the stream captures the subject again and the
-// client has read that. A msgID that is not empty is the publish's Nats-Msg-Id, so the stream
-// keeps one copy of every publish under it within its duplicate window, and a publish under one it
-// already holds comes back Duplicate, with the sequence of that copy, and Resent where it answers
-// a resend. The listener hands a stopped Legion agent's message to its daemon this way
+// stream so, and the same publish made again is stored once the stream captures the subject again
+// and the client has read that. A msgID that is not empty is the publish's Nats-Msg-Id, so the
+// stream keeps one copy of every publish under it within its duplicate window, and a publish under
+// one it already holds comes back Duplicate, with the sequence of that copy, and Resent where it
+// answers a resend. The listener hands a stopped Legion agent's message to its daemon this way
 // (cmd/listener/legion_handoff.go), under a MsgId every listener derives alike, so the copies two
-// listeners publish for one bus message collapse. Its other refusals are sendStored's:
-// ErrPublishDenied, ErrTooLarge, ErrStreamFull, ErrDuplicateInProcess while a clustered stream is
-// still storing an earlier publish under the same id, and ctx's error when ctx ends first; a
-// failure after a send nothing answered wraps ErrUnacknowledged, since the stream may hold the
-// copy.
+// listeners publish for one bus message collapse. Its other refusals are checkSubject's
+// (ErrTooLarge, ErrInvalidSubject) and sendStored's: ErrPublishDenied, ErrTooLarge, ErrStreamFull,
+// ErrDuplicateInProcess while a clustered stream is still storing an earlier publish under the
+// same id, and ctx's error when ctx ends first; a failure after a send nothing answered wraps
+// ErrUnacknowledged, since the stream may hold the copy.
 func (c *Client) PublishRetained(ctx context.Context, subject string, data []byte, msgID string) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err

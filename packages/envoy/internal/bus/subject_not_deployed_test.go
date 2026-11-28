@@ -52,13 +52,16 @@ func awaitDeployedCapture(t *testing.T, client *Client, topic string, captures b
 }
 
 // A topic this build stores, which the deployed stream does not capture, is sent nowhere: each of
-// the five envelope publish functions and PublishRetained, which the listener hands a stopped
-// Legion agent's message to its daemon with, returns ErrSubjectNotDeployed, which names the stream
-// and the topic, and neither a core subscriber of the topic nor the stream receives anything.
-// Before the refusal the publish went out over core NATS, the subscriber was handed it, nothing
-// stored it, and the publish answered nil: the send route's 200 for a message nobody received.
-// PublishRetained judged a topic by the subjects this build compiles, so it sent its publish over
-// JetStream, where no stream answered it.
+// Publish, PublishWithin, PublishReportingDuplicate, PublishReportingDuplicateWithin and
+// PublishAckWithin, which the other four go through, and PublishRetained, which the listener hands
+// a stopped Legion agent's message to its daemon with, returns an error wrapping
+// ErrSubjectNotDeployed that names the stream and the topic, and neither a core subscriber of the
+// topic nor the stream receives anything. Before the refusal each of the first five went out over
+// core NATS, the subscriber was handed it, nothing stored it, and the publish answered nil: the
+// send route's 200 for a message nobody received. PublishRetained judged a topic by the subjects
+// this build compiles, so it sent its publish over JetStream: the subscriber was handed the
+// publish's request, no stream stored or answered it, and once its 5 s bound ran out it failed as
+// one the stream may hold (ErrUnacknowledged).
 //
 // The subscriber holds notifications.>, so it receives a core publish of any of these topics and
 // the request of a JetStream publish too: its silence in step 2 is no blindness, which step 3 shows
@@ -172,8 +175,8 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 		}
 	}
 
-	// Step 4: once the stream captures the topic again and the client has read that, the same
-	// publish is stored, once, and so is a hand-off's.
+	// Step 4: once the stream captures the topics again and the client has read that, a publish of
+	// the agent topic is stored, once, and so is a hand-off's (PublishRetained).
 	original.Metadata = deployedStream(t, js).Config.Metadata
 	if _, err := js.UpdateStream(&original); err != nil {
 		t.Fatalf("restore the stream's subjects: %v", err)

@@ -226,8 +226,9 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 // (notifications.legion.<project>.agents.<session>, under notifications.legion.>), is refused as
 // a send whose own subject the stream does not capture is: the 503 with Retry-After: 1 that says
 // the message was not sent and may be sent again later, recorded subject_not_deployed. The
-// hand-off's publish asks the deployed stream, as each publish of the route does
-// (bus.Client.PublishRetained), so nothing goes out: no core subscriber is handed the hand-off,
+// hand-off's publish (bus.Client.PublishRetained) is judged by the deployed stream's subjects as
+// the listener's client last read them, as the route's own publish of the message is
+// (bus.Client.PublishAckWithin), so nothing goes out: no core subscriber is handed the hand-off,
 // and the stream stores nothing, on the hand-off subject or anywhere else. The refused send costs
 // its sender nothing, so its line names no sender. The narrowing keeps every subject that does not
 // capture the hand-off subject, the agent's own subject among them, so the refusal is the
@@ -238,7 +239,10 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 // gone, and the stream holds one hand-off for the agent. That send costs the sender one, and the
 // limit of one message a minute with a burst of one would have refused it with a 429 had the
 // refused send cost one too. Before, the hand-off's publish judged its subject by the subjects
-// this build compiles and sent it over JetStream, where no stream answered it.
+// this build compiles and sent it over JetStream, where no stream stored or answered it: once the
+// publish's wait for an acknowledgement ran out, the send was answered the 503 that says the bus
+// did not answer and the stream may hold the message (maybe_stored), recorded bus_unavailable,
+// which cost its sender one.
 func TestASendToAStoppedLegionAgentWhileTheDeployedStreamLacksTheHandoffSubjectAnswers503AndStoresNothing(t *testing.T) {
 	// Not parallel: it holds a 500 ms quiet window in which the refused hand-off must reach no core
 	// subscriber (requireNothingSent).
@@ -266,8 +270,9 @@ func TestASendToAStoppedLegionAgentWhileTheDeployedStreamLacksTheHandoffSubjectA
 		t.Fatalf("%s: the stream holds %d hand-offs for %s, want none; the last: %s", what, count, agent, data)
 	}
 
-	// Step 2, the control: the same send, once the stream captures the hand-off subject again, is
-	// handed off once, and costs the sender the one message the refused send left it.
+	// Step 2, the control: the same send, once the stream captures the hand-off subject again and
+	// the listener has read that, is handed off once, and costs the sender the one message the
+	// refused send left it.
 	rig.restore(t, original, handoff)
 	const again = "the same send after the restore"
 	handed := rig.sendFrom(t, sender, agent, nil)
