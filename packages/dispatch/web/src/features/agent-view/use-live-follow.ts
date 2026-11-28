@@ -42,7 +42,7 @@ export interface LiveFollowControl {
 }
 
 /** A transcript shorter than the viewport is always at its live end. */
-function atLiveEnd(element: HTMLElement): boolean {
+export function atLiveEnd(element: HTMLElement): boolean {
   return (
     element.scrollHeight - element.scrollTop - element.clientHeight <= END_TOLERANCE_PX ||
     element.scrollHeight <= element.clientHeight

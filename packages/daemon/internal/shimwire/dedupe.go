@@ -95,20 +95,19 @@ func (d *Dedupe) DaemonFrame(frame Frame) (forward bool, replies []Frame) {
 	return false, replies
 }
 
-// AgentFrame takes a frame the wrapped process emitted, on its way to the daemon, and returns
-// the frames to write after it — the answers owed to requests that shared its delivery. The
-// frame itself is forwarded by the caller, unchanged (worker-shim.ts:249-292).
+// AgentFrame takes a whole frame the wrapped process emitted, on its way to the daemon. It
+// returns the frames to write after it: the answers owed to requests that shared its delivery.
+// The frame itself is forwarded by the caller, unchanged (worker-shim.ts:249-292).
+//
+// The caller joins an rpc_chunk sequence before it shows the dedupe the frame. A chunk is part of
+// some frame, so it ends no turn here. Oh My Pi chunks a large get_state answer as readily as a
+// large agent_end. A chunk of that answer must not end a turn that still runs.
 func (d *Dedupe) AgentFrame(frame Frame) []Frame {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	switch f := frame.(type) {
 	case Response:
 		return d.observeResponse(f)
-	case RPCChunk:
-		// A logical agent_end is the only worker frame that grows with the whole transcript and
-		// therefore the one the encoder chunks; the replay must preserve its idle outcome
-		// (worker-shim.ts:271-274).
-		d.turnInProgress = false
 	case AgentStart:
 		if !d.turnInProgress && d.delivery != nil && d.delivery.turnWasIdle &&
 			(d.delivery.phase == phaseSent || d.delivery.phase == phaseAcked) {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -87,6 +88,66 @@ func TestACompletedRequestIsNotMarkedAborted(t *testing.T) {
 		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/r", nil))
 	if got := line(t, logged); strings.Contains(got, "aborted") {
 		t.Fatalf("access-log line %q is marked aborted", got)
+	}
+}
+
+// unwrapping is a writer layer that hands its writer on through Unwrap, as api's layers do.
+type unwrapping struct{ http.ResponseWriter }
+
+func (u unwrapping) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+// hiding is a writer layer that hides what it wraps, as api.keyedAnswer does.
+type hiding struct{ http.ResponseWriter }
+
+// A request whose own context its client ended is marked closed through every layer that unwraps
+// to the recorder, and its line reads 499 in place of the 500 its handler answered, which the
+// client is still sent. A request whose context is live, or ended at a deadline rather than by
+// its client, and a writer that hides the recorder, are not marked, and their lines keep the 500.
+func TestARequestItsClientClosedIsLoggedAs499(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		end    func(ctx context.Context) context.Context
+		wrap   func(http.ResponseWriter) http.ResponseWriter
+		marked bool
+	}{
+		{name: "its client closed it, through a layer that unwraps", end: func(ctx context.Context) context.Context {
+			closed, closeClient := context.WithCancel(ctx)
+			closeClient()
+			return closed
+		}, wrap: func(w http.ResponseWriter) http.ResponseWriter { return unwrapping{w} }, marked: true},
+		{name: "its context is live", end: func(ctx context.Context) context.Context { return ctx },
+			wrap: func(w http.ResponseWriter) http.ResponseWriter { return unwrapping{w} }},
+		{name: "its context reached a deadline", end: func(ctx context.Context) context.Context {
+			ended, cancel := context.WithDeadline(ctx, time.Unix(0, 0))
+			t.Cleanup(cancel)
+			return ended
+		}, wrap: func(w http.ResponseWriter) http.ResponseWriter { return unwrapping{w} }},
+		{name: "its client closed it, behind a layer that hides the recorder", end: func(ctx context.Context) context.Context {
+			closed, closeClient := context.WithCancel(ctx)
+			closeClient()
+			return closed
+		}, wrap: func(w http.ResponseWriter) http.ResponseWriter { return hiding{w} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logged := capture(t)
+			marked := false
+			response := httptest.NewRecorder()
+			Handler("/r", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				marked = MarkClosedByClient(test.wrap(w))
+				w.WriteHeader(http.StatusInternalServerError)
+			})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/r", nil).WithContext(test.end(context.Background())))
+			if marked != test.marked {
+				t.Errorf("MarkClosedByClient = %v, want %v", marked, test.marked)
+			}
+			want := "status=500 "
+			if test.marked {
+				want = "status=499 "
+			}
+			carries(t, line(t, logged), " "+want)
+			if response.Code != http.StatusInternalServerError {
+				t.Errorf("the client was sent %d, want the 500 the handler wrote", response.Code)
+			}
+		})
 	}
 }
 
@@ -172,6 +233,83 @@ func TestTheLineNamesTheAddressAndUserAgentAndKeepsThePathEscaped(t *testing.T) 
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("access-log line %q carries %q", got, forbidden)
 		}
+	}
+}
+
+// The line names the Host the request was sent to as the client wrote it, its case and its port
+// kept, so an operator reads which of the server's addresses each caller uses, and a Host is the
+// caller's own text, so the line keeps at most fieldBytes of it.
+func TestTheLineNamesTheHostAsWritten(t *testing.T) {
+	long := strings.Repeat("h", 4*fieldBytes) + ".example.test"
+	for _, row := range []struct{ name, host, want string }{
+		{"a mixed-case host", "B.Example.Test", "B.Example.Test"},
+		{"a host with a port", "b.example.test:8443", "b.example.test:8443"},
+		{"a very long host", long, long[:fieldBytes]},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			logged := capture(t)
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+			request.Host = row.host
+			Handler("/api/v1/whoami", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+				ServeHTTP(httptest.NewRecorder(), request)
+			got := line(t, logged)
+			carries(t, got, ` host=`+row.want+` `)
+		})
+	}
+}
+
+// A request refused before any route read it writes the line every request writes, under the
+// route RefusedRoute, with what its refusal answered, and with the connection's own address: the
+// X-Forwarded-For that would name another is the header the refusal is about.
+func TestARefusedRequestWritesTheLineWithTheConnectionsAddress(t *testing.T) {
+	logged := capture(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", nil)
+	request.Host = "B.Example.Test:8443"
+	request.RemoteAddr = "127.0.0.1:40000"
+	request.Header.Set("X-Forwarded-For", "198.51.100.8")
+	request.Header.Set("User-Agent", "dispatch-cli/1.0")
+	response := httptest.NewRecorder()
+	Refused(response, request, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, "refused")
+	})
+	if response.Code != http.StatusBadRequest || response.Body.String() != "refused" {
+		t.Fatalf("the refusal answered %d %q, want the 400 it wrote", response.Code, response.Body.String())
+	}
+	got := line(t, logged)
+	carries(t, got, `method=POST`, `route=`+RefusedRoute+` `, `path=/api/v1/issues `, `caller_kind=anonymous`, `host=B.Example.Test:8443 `,
+		`address=127.0.0.1 `, `peer=127.0.0.1 `, `user_agent=dispatch-cli/1.0`, `status=400`, `bytes=7`)
+	if strings.Contains(got, "198.51.100.8") {
+		t.Fatalf("a refused request's line %q names the address its X-Forwarded-For wrote", got)
+	}
+}
+
+// A search's line names the keyed hash and the shape it noted, the last noting winning, as a
+// broadened second run replaces the first run's shape; a search noted on a detached context names
+// nothing on the line.
+func TestASearchsLineNamesTheKeyAndShapeItNoted(t *testing.T) {
+	logged := capture(t)
+	Handler("/api/v1/search", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		NoteSearch(r.Context(), "0123456789abcdef", "meaning-every")
+		NoteSearch(r.Context(), "0123456789abcdef", "meaning-every+broadened")
+		NoteSearch(Detached(r.Context()), "fedcba9876543210", "keyword")
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/search?q=hidden-query", nil))
+	got := line(t, logged)
+	carries(t, got, ` search_key=0123456789abcdef `, ` search_shape=meaning-every+broadened`)
+	for _, forbidden := range []string{"fedcba9876543210", "search_shape=keyword", "hidden-query"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("access-log line %q carries %q", got, forbidden)
+		}
+	}
+}
+
+// A request that notes no search carries neither search field.
+func TestARequestThatNotesNoSearchCarriesNoSearchField(t *testing.T) {
+	logged := capture(t)
+	Handler("/r", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/r", nil))
+	if got := line(t, logged); strings.Contains(got, "search_") {
+		t.Fatalf("access-log line %q carries a search field", got)
 	}
 }
 

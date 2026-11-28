@@ -20,7 +20,7 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * `task` subagent, so a per-instance callback stored here would be the last instance's, not the
  * pane's (docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md).
  */
-export const ENVOY_PLUGIN_INTERFACE_VERSION = 6;
+export const ENVOY_PLUGIN_INTERFACE_VERSION = 7;
 export const ENVOY_PLUGIN_INTERFACE_KEY = Symbol.for("legion.pi-shared.envoy-plugin-interface");
 /** Set by the Legion entry's factory to `{ from: import.meta.url, envoyInterface: <version> }`;
  * the daemon's boot gate reads it from `globalThis` to prove the Legion plugin loaded. */
@@ -57,8 +57,9 @@ export interface EnvoyPluginInterface {
    * over to a new session, and a sent one when the host fails the start message's send (the
    * operator-launched controller's). The Envoy entry reads it
    * (`packages/pi-envoy/src/card-wake.ts`): while it names the Envoy entry's own live session,
-   * sent less than 30 s ago, or unsent and first read by that entry less than 30 s ago, a card that
-   * arrived while that session started takes no turn, and its wake waits for the start turn.
+   * sent less than 30 s ago or unsent however long ago, a card that arrived while that session
+   * started takes no turn, and its wake waits for the start turn. Only the mark going ends an
+   * unsent mark's hold.
    */
   startupTurn: { readonly session: string; readonly sentAt: number | undefined } | undefined;
 }
@@ -101,6 +102,7 @@ export function envoyPluginInterface(): EnvoyPluginInterface {
       managedSessions: new Set(),
       regained: undefined,
       slackRoleOwned: false,
+      watchedWorkflowsRoleOwned: false,
     },
     injectedUserTurns: new Map(),
     bootstrappedSession: { file: undefined },

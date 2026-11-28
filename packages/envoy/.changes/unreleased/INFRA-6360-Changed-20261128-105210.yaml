@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `scripts/dev-stack.sh` reads each process's readiness again after 0.05, 0.1 and 0.2 s before it
+  settles to every 0.25 s, so a stack is ready sooner. Its 60 s bound stays, and so does its look
+  at each process it waits on: a read that comes back empty while that process is gone still
+  fails the start. Its stop looks again at each process it signalled after 0.02, 0.03 and 0.05 s
+  before it settles to every 0.1 s, so a stop ends sooner; the grace before a SIGKILL stays.
+time: 2026-11-28T10:52:10Z
+custom:
+    Issue: INFRA-6360

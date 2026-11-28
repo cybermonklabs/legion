@@ -5,6 +5,9 @@ GATE = gate("dispatch_memory", "dispatch-memory", runs=[ceiling_run("dispatch-me
     ]),
 ], reads=reads(
     (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
+    (".github/scripts/postgres-service-address.sh",
+     at("dispatch-memory", "Read the service's own address") + " runs it, and "
+     + at("dispatch-memory", MEMORY_STEP) + " reaches Postgres at the address it prints"),
 ) + ceiling_reads("dispatch-memory") + service_settings_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/**', "filter dispatch_memory held packages/envoy/internal/dispatch/** by hand before the filters were computed: it selected 892 file(s) no other read of this gate declares", but=('**/*_test.go',)),

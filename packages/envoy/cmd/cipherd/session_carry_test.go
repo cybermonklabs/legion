@@ -331,7 +331,7 @@ func TestAPairedAccountsPodEnrolsUnderItsPairsNameAndReadsItsGrant(t *testing.T)
 		oldPod, movedPod = "pod-uid-old", "pod-uid-moved"
 	)
 	// The one secret the role's pod asks for: fleetPerson's own, so it waits for her approval.
-	stored := writeTempFile(t, "fake-secrets.json",
+	stored := writeTempFile(t, "memory-secrets.json",
 		[]byte(`{"secrets": [`+fakeSecret("example/agent-secrets/person-secret", fleetPerson, personSecretValue)+`]}`))
 	binary := buildBroker(t)
 	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(podAccount), exchange.AccountPrincipal(pairedPodAccount)
@@ -356,7 +356,8 @@ func TestAPairedAccountsPodEnrolsUnderItsPairsNameAndReadsItsGrant(t *testing.T)
 			"BROKER_DATABASE_URL=" + databaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + stored,
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + stored,
 			"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 			"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
 			"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,

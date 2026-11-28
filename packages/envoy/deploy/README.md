@@ -40,16 +40,55 @@ DISPATCH_SERVER_URL=http://example-host-devbox:8766 # the exact browser URL and 
 DISPATCH_INSECURE_COOKIE=1            # cookies over the http:// tailnet URL
 ```
 
-The origin humans open in the browser is the sign-in callback origin: the server builds
-`<DISPATCH_SERVER_URL>/auth/callback` from `DISPATCH_SERVER_URL` in `compose/.env`, and
-Dispatch's client at the sign-in issuer — the sign-in pool's app client, or the Google web
-client — must list exactly that URL. On Sami's devbox that is `http://example-host-devbox:8766`
-(recorded as `DISPATCH_PUBLIC_ORIGIN` in `compose/.env`); a deploy whose `/auth/start` redirect
-stops matching it breaks sign-in for everyone, so the auto-deployer checks the redirect after
-every deploy and rolls back on a mismatch.
+The canonical address, `DISPATCH_SERVER_URL`, is a sign-in callback origin:
+the server builds `<DISPATCH_SERVER_URL>/auth/callback` from `DISPATCH_SERVER_URL` in `compose/.env`, and Dispatch's client at the sign-in issuer — the sign-in pool's app client, or the Google web client — must list exactly that URL, and the callback of each served address ([A second address](#a-second-address)).
+On Sami's devbox the canonical address is `http://example-host-devbox:8766` (recorded as `DISPATCH_PUBLIC_ORIGIN` in `compose/.env`).
+A deploy whose `/auth/start` redirect stops matching it breaks sign-in for everyone, so the auto-deployer checks the redirect after every deploy and rolls back on a mismatch.
 
 Never bind `0.0.0.0`: that exposes the sign-in endpoints and session cookies on
 every interface.
+
+## A second address
+
+Dispatch serves a list of addresses.
+`DISPATCH_SERVER_URL` is the canonical address, and `DISPATCH_SERVED_ORIGINS` lists the others.
+A request whose `Host` names a served address is answered as that address, and a request whose `Host` names none of them is answered as the canonical address.
+A deployment that moves from its tailnet address to a load balancer's address serves both addresses for a while, and then the load balancer's address alone.
+`compose/dispatch.compose.yml` passes the container only the variables it names, and it names neither list and no `DISPATCH_TRUSTED_PROXY_RANGES`.
+Add `DISPATCH_SERVED_ORIGINS`, `DISPATCH_FORMER_ORIGINS` and `DISPATCH_TRUSTED_PROXY_RANGES` to the `dispatch` service's `environment` before you set them in `compose/.env`.
+
+1. Serve both addresses.
+   Set `DISPATCH_SERVER_URL` to the load balancer's address, and `DISPATCH_SERVED_ORIGINS` to the tailnet address, so the tailnet address stays served:
+
+   ```
+   DISPATCH_SERVER_URL=https://a.example.test
+   DISPATCH_SERVED_ORIGINS=http://example-host-devbox:8766
+   ```
+
+   List the callback of each address, `https://a.example.test/auth/callback` and `http://example-host-devbox:8766/auth/callback`, in Dispatch's client at the sign-in issuer before you deploy.
+   Write each entry as a browser writes an origin, with no path, and give each address a host name of its own: Dispatch refuses to start otherwise.
+   `DISPATCH_INSECURE_COOKIE` is one setting for every address, so with it set the cookie at an `https` address is not `Secure` either.
+   Behind an internal Application Load Balancer, set `DISPATCH_TRUSTED_PROXY_RANGES` to its proxy-only subnet, so that Dispatch reads the client address the balancer appends.
+   Dispatch keeps an idle client connection open for 650 seconds, above the 600 seconds an internal Application Load Balancer keeps an idle connection to a backend.
+
+   `envoy-dispatch` closes its listener when its SIGTERM arrives, and then has 30 seconds to answer the requests in flight and stop (`stopGrace` in `cmd/dispatch/shutdown.go`).
+   The `stop_grace_period` of `compose/dispatch.compose.yml` gives it those 30 seconds.
+   That file sets no wait before the signal, so a connection that the load balancer opens after the signal is refused.
+   Under `envoy-infra`'s `gcp:Dispatch`, two inputs set the drain of the app pod: `preStopSeconds`, a wait before the signal, 5 seconds by default, and `terminationGracePeriodSeconds`, the pod's grace period, 35 seconds by default (`infra/README.md`, "gcp:Dispatch").
+
+2. Read the access log.
+   Each `dispatch: request` line names the `Host` the request was sent to in its `host` field, so the lines show which callers still use the tailnet address (`cmd/dispatch/README.md`, "Access log").
+
+3. Serve the load balancer's address alone.
+   When no caller that matters uses the tailnet address, move it from `DISPATCH_SERVED_ORIGINS` to `DISPATCH_FORMER_ORIGINS`:
+
+   ```
+   DISPATCH_SERVER_URL=https://a.example.test
+   DISPATCH_FORMER_ORIGINS=http://example-host-devbox:8766
+   ```
+
+   A link written at a former address is still a reference, so it keeps its target.
+   A request at a former address is not served: `/auth/start` and `/auth/callback` answer `404`, a write that carries a session cookie answers `403`, and a proof that names the address is refused.
 
 ## Layout
 
@@ -96,7 +135,17 @@ against another checkout, Compose project, or dump directory.
 It needs, on the host it runs on, a running Docker daemon, Docker with the Compose plugin (`docker
 compose version` must succeed), and `python3`, as does `scripts/up-dispatch.sh`. The tests need the
 same daemon and an anonymous pull from `ghcr.io/cybermonklabs/legion/ci`, where they take Compose
-2.12.2 from the repository's digest-pinned copy. Both scripts read `compose/.env` only through
+2.12.2 from the repository's digest-pinned copy. `deploy/scripts/autodeploy_test.sh` runs one group
+of its cases per run, `autodeploy_test.sh <group>`, and `--groups` lists the groups; each group runs
+from a fresh fixture, as CI runs each as a pool entry of its own. Every group runs, from
+`packages/envoy`, with `bash -c 'gs=$(bash deploy/scripts/autodeploy_test.sh --groups) || exit 1; for g in $gs; do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done'`,
+which runs the loop under bash whatever shell reads it, and exits 1 at the first group that fails
+or when `--groups` fails.
+`autodeploy_test.sh` runs its Compose reads on the Compose plugin straight, with `DOCKER_HOST` on a
+socket nothing listens on, while the scripts themselves call `docker compose`. It takes the first
+`docker-compose` in the docker CLI's default plugin directories (its config directory's
+`cli-plugins`, then the four system directories), which must answer the version `docker compose`
+answers, or the fixture fails by name. Both scripts read `compose/.env` only through
 Compose's own resolution, and only through `docker compose config --format json`, so a setting
 counts as Compose gives it to the container, quotes, `${...}` and an `export` prefix included; they
 run on Compose 2.12.2, the oldest release their tests run (`autodeploy_test.sh` and
@@ -235,7 +284,7 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 | `ENVOY_OIDC_ACCOUNTS` | no | `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces: the only accounts whose projected tokens the OIDC pair admits. Unset or empty admits every account the issuer signs for, which is any pod of the cluster. A value that names no account (only blanks or commas) refuses startup naming the setting, and so does a comma that leaves an entry empty (a leading or trailing comma, or two in a row), naming which entry. Set without `ENVOY_OIDC_ISSUER` it refuses startup naming the pair it needs, and with an entry of another shape it refuses startup naming the entry; an unlisted account is answered 401 and logged `listener: service-account token rejected` with `reason` `not_listed` and the subject. |
 | `ENVOY_OIDC_GOOGLE_AUDIENCE` | conditional | Audience a caller's Google identity token must carry, for a caller on Google Cloud that holds no Kubernetes token (a Cloud Run service). The issuer is Google's, read as `ENVOY_OIDC_ISSUER`'s is: an issuer that does not answer discovery refuses no boot, a roll completes, and a Google identity token is answered `503` until it is read; `/healthz`'s `google` field and `envoy_listener_oidc_issuer_discovered{issuer="google"}` report it as `oidc` and `issuer="cluster"` report the cluster's. Set with `ENVOY_OIDC_GOOGLE_ACCOUNTS` or not at all; half the pair refuses to boot naming the missing one. |
 | `ENVOY_OIDC_GOOGLE_ACCOUNTS` | conditional | Service account addresses the Google pair admits, separated by commas or spaces and compared in lower case; the token must name one in its `email` claim with `email_verified` true, so the caller fetches it with `format=full`. An entry that is not an address refuses startup naming it, and so does a comma that leaves an entry empty. A refused token is logged `listener: Google identity token rejected` with its `reason` and, for a token that verifies, the account it names. |
-| `ENVOY_DISPATCH_PRINCIPAL` | no | Dispatch's own verified principal: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. A `/v1/messages/send` request may carry `role`, the role a Dispatch message for a `role:` route is sent for, only when its identity token proves this principal; every other caller carrying it (a session's broker token, the shared token, another service's token, no credential) is refused `403` naming `role`, and with this unset every such send is. A marked send whose role's claim names another session than its target, or none, is kept on the role's kept lane, raises the role's wake report, and is answered `202` with `kept` and `kept_until`. A value of neither shape, or one no configured pair could prove (a subject with no OIDC pair or one `ENVOY_OIDC_ACCOUNTS` leaves out, an address with no Google pair or one it does not list), refuses startup naming the setting. The boot log names it on its `listener role marks:` line. |
+| `ENVOY_DISPATCH_PRINCIPAL` | no | Dispatch's own verified principal: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. A `/v1/messages/send` request may carry `role`, the role a Dispatch message for a `role:` route is sent for, only when its identity token proves this principal; every other caller carrying it (a session's broker token, the shared token, another service's token, no credential) is refused `403` naming `role`, and with this unset every such send is. A marked send whose role's claim names another session than its target, or none, is kept on the role's kept lane, raises the role's wake report, and is answered `202` with `kept` and `kept_until`. A `/v1/messages/publish` request may carry `dispatch_post`, the Dispatch comment or message a role publish delivers, only when its identity token proves this principal. Every other caller that carries it is refused `403` naming `dispatch_post`, and with this unset every such publish is. A value of neither shape, or one no configured pair could prove (a subject with no OIDC pair or one `ENVOY_OIDC_ACCOUNTS` leaves out, an address with no Google pair or one it does not list), refuses startup naming the setting. The boot log names it on its `listener role marks:` line. |
 | `ENVOY_ALLOWED_HOSTS` | conditional | Comma-separated host names or addresses (no port) an unauthenticated listener serves `/v1` to beside loopback; required for each name clients reach it by when neither `ENVOY_API_TOKEN` nor an OIDC or Google pair is set and they do not dial loopback. Any other `Host` gets a JSON 421. Unused when a bearer is required. Each request such a listener admits with no broker token is counted as `credential="none"` in `envoy_listener_requests_total` and logs `listener: request admitted with no credential` at most once a minute. Such a listener with no broker settings serves a request that presents a broker token unverified, counted as `credential="none_broker_token"`, and logs `listener: request admitted with a broker token this listener does not verify` at most once a minute. |
 | `ENVOY_API_ALLOW_UNAUTHENTICATED` | conditional | Set to `1` to start a listener whose address is not loopback with no `ENVOY_API_TOKEN`, OIDC pair or Google pair. Without it such a listener refuses to start. Set it only where something else fences the listener's port, because the flag itself admits every caller that reaches the port. The clustered hub's tailnet-only session listener (`envoy-infra:gcp:ClusteredNatsHub`'s `tailnet.listener` with no `clientNamespaces`) is the deployment that runs this way: it binds `0.0.0.0` in a pod of its own, and its NetworkPolicy admits TCP 9020 from the tailnet entry's pods alone. There that NetworkPolicy is what decides who may call `/v1`: the `Host` check admits a loopback name or address beside the names `ENVOY_ALLOWED_HOSTS` holds, so it stops a page that rebinds its own name and not a caller the policy already admits. This flag decides nothing. A hub listener that pods of the cluster reach sets the OIDC pair with `ENVOY_OIDC_ACCOUNTS` instead. |
 | `ENVOY_EDGE_PROJECTS` | no | Project keys, separated by commas or white space, that make this listener the edge listener of those projects: it runs under the edge listener's NATS grant for them (`natsgrant.Edge`; the infra README's "Permission sets"), names every inbox under its machine's prefix, opens no role lane, keeps no role message for a role's next holder and publishes no Legion wake report, and its `/v1` admits only a broker token of those projects. That grant denies Dispatch's lane and GitHub's lane, as every listener's grant does but Dispatch's and the webhook listener's. A key that is not a project key, a key named twice or more than 16 keys refuses startup naming the variable. In edge mode `ENVOY_MACHINE_ID` may hold no wildcard, white space or control character: any other refuses startup with `edge listener grant refused`, naming both variables. A dotted id, such as a fully qualified host name, is taken: the edge's inbox prefix and relay receipts spell each dot as `%2E`, as its durable does. Each bucket must exist at the deployment's copy count before the edge starts, since its grant creates and raises none. No edge pod serves a session until the relay's check of each frame's topic is in its build; the same check holds each frame its relay sockets forward ([The relay socket](../README.md#the-relay-socket), "Rollout"). Unset or empty, the listener is no edge listener; a set value that names no project, such as a lone comma, refuses the start, naming the variable. [The edge listener](../README.md#the-edge-listener) says what it admits and refuses, and the settings it refuses to start beside. |
@@ -315,14 +364,17 @@ scripts/up-dispatch.sh
 curl "http://$(tailscale ip -4):8766/healthz"
 ```
 
-The Dispatch service reads its public browser origin and NATS URLs from
+The Dispatch service reads its addresses (`DISPATCH_SERVER_URL` and the lists beside it) and NATS URLs from
 `compose/.env`; it does not mount an agent's `envoy.json`. Set
 `DISPATCH_NATS_DISABLED=1` when no NATS connection is available.
 
 | Var | Required | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | The external Dispatch Postgres URL (production: the Aurora `dispatch` database), as `postgres://<user>:<password>@<host>:<port>/<database>?sslmode=require`, with the password percent-encoded. The auto-deployer accepts only that form, with `connect_timeout` and `application_name` the other query keys it allows, and refuses any other (Auto-deployer, above). The compose runs no Postgres of its own. |
-| `DISPATCH_SERVER_URL` | yes | Public browser origin and sign-in callback origin. It must be the URL humans type into their browser; Dispatch's client at the sign-in issuer (the sign-in pool's app client, or the Google web client) must list `<DISPATCH_SERVER_URL>/auth/callback`. |
+| `DISPATCH_SERVER_URL` | yes | Dispatch's canonical address: its public browser origin and a sign-in callback origin. It must be a URL people type into their browser. Dispatch's client at the sign-in issuer (the sign-in pool's app client, or the Google web client) must list `<DISPATCH_SERVER_URL>/auth/callback`, and the callback of each address in `DISPATCH_SERVED_ORIGINS`. Dispatch answers a request whose `Host` names none of its other addresses as this one. |
+| `DISPATCH_SERVED_ORIGINS` | no | Comma-separated origins of the other addresses Dispatch serves beside `DISPATCH_SERVER_URL`, each an `http` or `https` URL with no path, written as a browser writes an origin (a lowercase scheme and host, no default port). A request whose `Host` names one is answered as that address: a browser write passes the origin check with that address's `Origin`, the Google sign-in comes back to `<address>/auth/callback`, and a broker token's proof may name it. A link at one is a reference. An entry spelt otherwise, two addresses on one host name, or the setting beside `DISPATCH_DEV_SIGNIN=1` refuses startup. `compose/dispatch.compose.yml` passes no such variable: add it to the `dispatch` service's `environment` first ([A second address](#a-second-address)). |
+| `DISPATCH_FORMER_ORIGINS` | no | Comma-separated origins of the addresses Dispatch served before, written as `DISPATCH_SERVED_ORIGINS` is. A link at one is still a reference. A request at one, at any port, is not served: `/auth/start` and `/auth/callback` answer `404`, a write that carries a session cookie or an Identity-Aware Proxy assertion answers `403`, and a proof that names one is refused. An entry on the host name of another address of Dispatch's or of a `DISPATCH_PROOF_ORIGINS` entry refuses startup. `compose/dispatch.compose.yml` passes no such variable: add it to the `dispatch` service's `environment` first. |
+| `DISPATCH_TRUSTED_PROXY_RANGES` | no | Comma-separated CIDRs of the proxies whose `X-Forwarded-For` Dispatch trusts, each written as its network, none `/0` and none an IPv4-mapped IPv6 prefix, which no peer is ever inside. Unset, it trusts none. From a peer in a listed range, Dispatch reads the caller address as the second entry from the right of the one `X-Forwarded-For` line, the client that a proxy such as Google's internal Application Load Balancer appends before its forwarding rule's address, an IPv6 client by the /64 that holds it, and answers `400 FORWARDED_FOR_INVALID` to a header that proxy could not have written. Every other peer keeps the rightmost entry. The access log and the broker token check's per-address limit use that address. `compose/dispatch.compose.yml` passes no such variable: add it to the `dispatch` service's `environment` first. |
 | `NATS_URLS` | yes | Comma-separated NATS URLs for Dispatch. A URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`; otherwise the start refuses the list, naming the URL by its position. |
 | `ENVOY_ALLOW_REMOTE_NATS` | yes, for a shared NATS | Set to `1` to reach a NATS that is not this host's own. The server owns the `ENVOY_NOTIFICATIONS` stream, so it reconciles it on its first connection; without this the start refuses a non-loopback NATS, naming the URL by its position (`NATS server URL 1 of 2 names another machine`). `compose/dispatch.compose.yml` sets it. |
 | `NATS_NKEY_SEED_FILE` | no | A file holding the NATS nkey user seed this process connects as (trimmed); wins over `NATS_NKEY_SEED`. A set but empty, missing, unreadable, blank or non-user-seed value refuses startup naming the variable; a file that could not be read is named by the variable and the system's reason, never its path, and one that was read by its path too. Neither set connects without a credential. |
@@ -334,7 +386,7 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | `DISPATCH_SIGNIN_ISSUER` / `DISPATCH_SIGNIN_CLIENT_ID` / `DISPATCH_SIGNIN_CLIENT_SECRET`, with `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | cookie identity, to sign anyone in | The issuer people sign in through, Dispatch's client there and its secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with the issuer `https://accounts.google.com` and a Google web client. Cookie identity takes them together or not at all: with the issuer, client ID, secret and one of the two it signs people in, and with none of them it boots, serves its agent-token API and signs nobody in, answering every request that needs a person `401 NO_IDENTITY` — a request carrying a `dsession` cookie issued while sign-in was on included, since `DISPATCH_SIGNING_KEY` goes on verifying that cookie for its thirty days and no membership check is left. Some without the others, both the group and the domain, a domain under another issuer, or a group under Google's refuse to boot. Header identity is for tests and local harnesses only, and refuses every one of these settings. `DISPATCH_ALLOWED_LOGINS` is removed and refused at startup. |
 | `DISPATCH_LISTEN_HOST` | no | Defaults to `127.0.0.1`; for direct tailnet access, set it to `$(tailscale ip -4)`, never `0.0.0.0`. |
 | `DISPATCH_PORT` | no | Defaults to `8766`; the healthcheck follows it. |
-| `DISPATCH_IDENTITY` | no | `cookie` (default) is Dispatch's production identity. `header:<name>` is only for tests and local harnesses. |
+| `DISPATCH_IDENTITY` | no | `cookie` (default) is Dispatch's production identity. `header:X-Dispatch-User` is only for tests and local harnesses; no other header name is accepted. |
 | `DISPATCH_IDENTITY_HEADER_TRUSTED` | test/local header identity | Set to `1` for every header-identity test or local harness. A missing flag refuses boot. |
 | `DISPATCH_NATS_DISABLED` | no | Set to `1` to run database and live-socket paths without NATS. |
 | `ENVOY_URL` | no | Envoy listener base URL for live agent titles; defaults to `http://127.0.0.1:9020` (set it when `ENVOY_LISTENER_PORT` changes). |

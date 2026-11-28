@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // helperEnrollment is the enrollment the fake helper's proofs name, so a broker records which
@@ -301,7 +301,7 @@ func TestASecretFormsRereadPassesOverASignInThisMachineCannotRenew(t *testing.T)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal()
+			local := awstest.NewLocal()
 			broker := startSecretBroker(t, servedBy(local))
 			withNoBrokerIdentity(t)
 			broker.endEnrollment("signin-enrollment")

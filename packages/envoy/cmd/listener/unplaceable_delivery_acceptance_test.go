@@ -29,15 +29,17 @@ const (
 )
 
 // deliveryRecord is one line of the listener's delivery log, which logging.DeliveryLog writes as
-// JSON: its level and message, the session, topic and event every delivery line carries, and the
-// error a line of a failure adds. A field the line does not carry decodes as its zero value.
+// JSON: its level and message, the session, topic, event and delivery status every delivery line
+// carries, and the error a line of a failure adds. A field the line does not carry decodes as its
+// zero value.
 type deliveryRecord struct {
-	Level     string `json:"level"`
-	Msg       string `json:"msg"`
-	SessionID string `json:"session_id"`
-	Topic     string `json:"topic"`
-	EventID   string `json:"event_id"`
-	Error     string `json:"error"`
+	Level          string `json:"level"`
+	Msg            string `json:"msg"`
+	SessionID      string `json:"session_id"`
+	Topic          string `json:"topic"`
+	EventID        string `json:"event_id"`
+	DeliveryStatus string `json:"delivery_status"`
+	Error          string `json:"error"`
 }
 
 // deliveryRecords decodes every line the harness logged whose msg is message. Counting them is how

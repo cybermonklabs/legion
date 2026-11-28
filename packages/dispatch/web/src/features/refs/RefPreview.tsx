@@ -17,6 +17,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { issuePriority } from "../issue/issue-priority";
 import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
@@ -434,6 +435,7 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
     specText !== undefined && "markdown" in specText ? specText.markdown : undefined;
   const specTree =
     specText !== undefined && "markdown_tree" in specText ? specText.markdown_tree : undefined;
+  const priority = issuePriority(issue);
   return (
     <>
       <Heading>
@@ -442,13 +444,21 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
       </Heading>
       <span className="mt-2 flex flex-wrap items-center gap-2">
         <StatusPill>{statusLabel(issue.status as IssueStatus)}</StatusPill>
-        {issue.priority === null ? null : (
+        {priority.level === null ? null : (
           // Read-only on purpose: the card is a tooltip whose body is one link, so the editable
-          // `PriorityControl` every other surface uses cannot live inside it.
-          <span
-            className={`inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold ${priorityBadge[issue.priority].bg} ${priorityBadge[issue.priority].text}`}
-          >
-            P{issue.priority}
+          // `PriorityControl` every other surface uses cannot live inside it, and the issue an
+          // inherited priority comes from is its key's text, not the link other surfaces draw.
+          <span className="inline-flex flex-wrap items-baseline">
+            <span
+              className={`inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold ${priorityBadge[priority.level].bg} ${priorityBadge[priority.level].text}`}
+            >
+              P{priority.level}
+            </span>
+            {priority.from === null ? null : (
+              <span className={`ml-1 text-xs ${textMutedOnSurface}`}>
+                {` · from ${priority.from}`}
+              </span>
+            )}
           </span>
         )}
         {(issue.labels ?? []).map((label) => (

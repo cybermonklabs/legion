@@ -43,6 +43,7 @@ import {
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  KEPT_FORWARD_UNCONFIRMED_CAUSE,
   KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
@@ -57,6 +58,7 @@ import {
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   MAX_THREAD_PAGE_LIMIT,
+  NO_LIVE_SESSION,
   POST_HISTORY_PAGE_LIMIT,
   PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
@@ -90,6 +92,7 @@ import {
   SEARCH_QUERY_MAX,
   STEP_AGENT_TEXT_PATTERN,
   STEP_AGENT_TEXT_RULE_WORDS,
+  STEP_ANSWERS_MAX,
   STEP_INPUT_CODE,
   STEP_KINDS,
   STEP_OTHER_ISSUE_CODE,
@@ -187,6 +190,9 @@ type Schema = {
 
 const envelopeFile = resolve(import.meta.dir, "../schemas/envelope.schema.json");
 const blockSchemaFile = resolve(import.meta.dir, "../schemas/block-schema.schema.json");
+// The dashboard's pages file: packages/dispatch's web/src/features/refs/dashboard-pages-file.ts
+// writes it from the dashboard's route table, and src/dispatch-href.ts imports it.
+const dashboardPagesFile = resolve(import.meta.dir, "../src/dashboard-pages.json");
 
 const map = {
   string: "string",
@@ -411,6 +417,12 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 
+// NoLiveSession opens the listener's refusal of a session it will not answer for ("no live
+// session <id>", noLiveSession in cmd/listener) and is the failure Dispatch records for such a
+// session itself. Generated from NO_LIVE_SESSION in packages/contracts so the listener, Dispatch
+// and every reader that keys on the words spell them once.
+const NoLiveSession = ${JSON.stringify(NO_LIVE_SESSION)}
+
 // DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
 // Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
 // and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
@@ -421,6 +433,13 @@ const DeletedPostDeliveryError = ${JSON.stringify(DELETED_POST_DELIVERY_ERROR)}
 // from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
 // the dashboard keys its retry wording on cannot drift apart.
 const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
+
+// KeptForwardUnconfirmedCause is what a delivery attempt of a post to a role records when the copy
+// the listener kept for the role ended after a forward of it to the role's holder began and was
+// never confirmed (bus.KeptCopyExpiry.ForwardUnconfirmed). Generated from
+// KEPT_FORWARD_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the
+// string the dashboard keys its retry wording on cannot drift apart.
+const KeptForwardUnconfirmedCause = ${JSON.stringify(KEPT_FORWARD_UNCONFIRMED_CAUSE)}
 
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
@@ -741,6 +760,11 @@ const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
 
+// StepAnswersMax is the most models a step record's answers names, each with its count of calls.
+// Generated from STEP_ANSWERS_MAX in packages/contracts: Dispatch's step write refuses more, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, writes no more.
+const StepAnswersMax = ${STEP_ANSWERS_MAX}
+
 // StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
 // plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
 // a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
@@ -1050,6 +1074,14 @@ func GithubPushSubject(owner, repo, refType, refName string) string {
 
 func GithubWorkflowSubject(owner, repo, workflowFilename, action string) string {
 	return GithubRepositoryPrefix(owner, repo) + ".workflow." + SanitizeSubjectSegment(workflowFilename) + "." + action
+}
+
+// GithubDefaultBranchWorkflowSubject is the second subject of a run of a workflow on its
+// repository's default branch, of the repository's own head: its workflow file, its action and its
+// trigger event, each one segment, sanitized. Mirrored on the TS side as
+// \`githubDefaultBranchWorkflowSubject\`.
+func GithubDefaultBranchWorkflowSubject(owner, repo, workflowFilename, action, event string) string {
+	return GithubRepositoryPrefix(owner, repo) + ".default_branch.workflow." + SanitizeSubjectSegment(workflowFilename) + "." + SanitizeSubjectSegment(action) + "." + SanitizeSubjectSegment(event)
 }
 
 // GithubJobSubject names a finished GitHub Actions job on the default branch, of a run with no pull
@@ -1573,6 +1605,14 @@ const outputs = [
     path: resolve(import.meta.dir, "../src/block-schema.generated.ts"),
     rendered: renderBlockSchemaTypes(blockSchema),
     language: "ts",
+  },
+  // The server's reader of a dashboard address embeds the pages file
+  // (internal/dispatch/text/dashboard_pages.go), and go:embed names no file outside its package's
+  // directory, so the copy there is this file's, byte for byte.
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/dispatch/text/dashboard-pages.json"),
+    rendered: await Bun.file(dashboardPagesFile).text(),
+    language: "json",
   },
   {
     path: resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),

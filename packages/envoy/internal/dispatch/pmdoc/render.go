@@ -259,7 +259,7 @@ func holdsAContainerTheBrowserDrops(doc *Node) bool {
 }
 
 // footnoteLabelSet is every label a document's footnote definitions carry, wherever they stand,
-// kept two ways: as the browser editor's parser compares labels (footnoteLabelKey), since it
+// kept two ways: as the browser editor's parser compares labels (FootnoteLabelKey), since it
 // matches a reference to its definition whatever the case, and lowercased, as this renderer
 // compared them before it did, since text escaped then must be escaped still.
 type footnoteLabelSet struct {
@@ -272,7 +272,7 @@ type footnoteLabelSet struct {
 // reference to a defined label, or this renderer escaped it when it lowercased labels. An escape
 // the parser does not need reads back as the same text.
 func (labels footnoteLabelSet) refersTo(label string) bool {
-	return labels.keys[footnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
+	return labels.keys[FootnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
 }
 
 func definedFootnoteLabels(doc *Node) footnoteLabelSet {
@@ -281,7 +281,7 @@ func definedFootnoteLabels(doc *Node) footnoteLabelSet {
 	walk = func(node *Node) {
 		if node.Type == "footnote_definition" {
 			if label, ok := node.Attrs["label"].(string); ok {
-				labels.keys[footnoteLabelKey(label)] = true
+				labels.keys[FootnoteLabelKey(label)] = true
 				labels.lowered[strings.ToLower(label)] = true
 				runeCount := 0
 				for range label {
@@ -555,7 +555,7 @@ func typedFence(n *Node, column int) int {
 // writes it. Only levels one and two have that form; past them the break is written as a space, as
 // the browser editor also writes it.
 func (r *renderer) heading(n *Node, prefix string) {
-	level := int(num(n.Attrs["level"], 1))
+	level := HeadingLevel(n)
 	if !holdsHardBreak(n.Children) {
 		r.writeSyntax(strings.Repeat("#", level) + " ")
 		r.headingInline(n.Children, prefix)
@@ -1187,7 +1187,7 @@ func holdsLineBreakToWrite(nodes []*Node) bool {
 			}
 		case "text":
 			if node.Text == "" || len(node.Attrs) > 0 || len(node.Children) > 0 ||
-				strings.IndexByte(node.Text, '\n') >= 0 && !nodeHasMark(node, "inlineCode") {
+				strings.IndexByte(node.Text, '\n') >= 0 && !HasMark(node, "inlineCode") {
 				return true
 			}
 		}
@@ -1318,7 +1318,7 @@ func writtenLineBreaks(nodes []*Node) []*Node {
 		switch {
 		case node.Type == "hardbreak" && node.Attrs["isInline"] == true:
 			appendText(" ", nil)
-		case node.Type == "text" && !nodeHasMark(node, "inlineCode") && strings.Contains(node.Text, "\n"):
+		case node.Type == "text" && !HasMark(node, "inlineCode") && strings.Contains(node.Text, "\n"):
 			value := node.Text
 			lastNonWhitespace := len(strings.TrimRightFunc(value, unicode.IsSpace))
 			lineStart := 0

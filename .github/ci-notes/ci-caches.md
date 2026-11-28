@@ -72,26 +72,33 @@ nothing.
 
 ## The Go families, their readers and their runners
 
-Eight Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
+Nine Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 of its module files too, for the reason its job gives): go-notices (lint's notices step),
-go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build,
-envoy-go-checks, listener-server-change, envoy-e2e-local, envoy-session-stall and envoy-refill,
-and the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go,
-envoy-go-claim-model, which builds the API's test binary of that set, the binaries, multiprocess
-and visual jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
-dispatch-browser-pr
-jobs call: those three build the Dispatch server and the real broker's commands, whose packages
+go-daemon (typecheck, daemon-go, plugin-pack, step-models-chain and pi-legion), go-envoy
+(envoy-go-build, envoy-go-checks, listener-server-change, envoy-e2e-local, envoy-session-stall
+and envoy-refill, and the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test
+(envoy-go,
+envoy-go-claim-model, which builds the API's test binary of that set, the multiprocess and
+visual jobs of .github/workflows/dispatch-browser.yaml, which run on its full lane alone, the
+lane ci.yaml's dispatch-browser job and dispatch-browser-nightly.yaml call it with: those two
+build the Dispatch server with cgo on, whose packages
 the go-envoy entry's build of the listener and natsd alone does not hold, the two jobs of
 .github/workflows/ci-job-dispatch-two-builds.yaml, whose ceiling step and twobuild test step build
 out of that same set, and dispatch-memory and dispatch-multiprocess, whose ceiling step and tests
-read its modules and objects), go-envoy-smoke (envoy-smoke, whose three go commands build in two
+read its modules and objects), go-browser-binaries (the binaries job of
+.github/workflows/dispatch-browser.yaml, which runs for every caller of the file and on every
+lane, and whose `CGO_ENABLED=0` builds share most of their cache keys with a cgo build: net and
+os/user build other files without cgo, so they and every package above them have other keys, and
+on a go-envoy-test entry 427 of the 1,034 packages of the job's closure were stale;
+.github/ci-notes/ci-caches.md#the-go-browser-binaries-family), go-envoy-smoke
+(envoy-smoke, whose three go commands build in two
 workspaces: the smoke test in the root one, envoy-infra's host live tests and plugin in the infra
 module's; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
-envoy-go-race, envoy-go-race-api and
-envoy-go-race-docs, the envoy race lane), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose
-build cache is a directory of its own, the GOCACHE of that step's env) and go-envoy-infra
-(envoy-infra-build and envoy-infra-go, and the build job of release-envoy-infra.yaml).
+envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane),
+go-envoy-darwin-vet (envoy-go-build's darwin vet, whose build cache is a directory of its own,
+the GOCACHE of that step's env) and go-envoy-infra (envoy-infra-build and envoy-infra-go, and the
+build job of release-envoy-infra.yaml).
 
 The key carries `runner.arch` because Go's build cache holds the objects of the architecture that
 compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of its
@@ -99,22 +106,22 @@ objects. So each family is filled on every architecture one of its readers runs 
 leg per runner: go-notices and go-envoy-race on ubuntu-24.04-arm alone, where lint and the race
 lane run; go-daemon, go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on
 ubuntu-24.04 both, since each has a reader on each (typecheck and the envoy lanes but one on the
-first; daemon-go, plugin-pack, pi-legion, envoy-go-build, envoy-go-checks, envoy-go-claim-model,
-the browser lane, the two-build jobs and the release builds on the second); and go-envoy-smoke
-and go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-smoke and envoy-go-build run. A leg
-builds what that
+first; daemon-go, plugin-pack, step-models-chain, pi-legion, envoy-go-build, envoy-go-checks,
+envoy-go-claim-model, the browser lane, the two-build jobs and the release builds on the second);
+and go-envoy-smoke, go-envoy-darwin-vet and go-browser-binaries on ubuntu-24.04 alone, where
+envoy-smoke, envoy-go-build and the binaries job run. A leg builds what that
 runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its arm64 leg
 runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
 
 go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
-other seven after it: the go-notices entry holds go-licenses, a program lint's notices step runs,
+other eight after it: the go-notices entry holds go-licenses, a program lint's notices step runs,
 and a run of a workflow file older than the architecture in the key restores by go-notices-<os>-,
 which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what that did). One Go
 setup per leg, since the key carries the version that module's go.mod names: the daemon's go.mod
 for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
-go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and go-envoy-darwin-vet (go-envoy-smoke
-builds in the infra module's workspace too, on that same Go, as envoy-smoke does); the infra
-module's for go-envoy-infra.
+go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race, go-envoy-darwin-vet and
+go-browser-binaries (go-envoy-smoke builds in the infra module's workspace too, on that same Go,
+as envoy-smoke does); the infra module's for go-envoy-infra.
 
 A fill's restore asks for the readers' key, with that key and a `-` as its restore-keys. GitHub
 matches the key itself as a prefix too, so an entry of another Go version is restored only when
@@ -157,11 +164,12 @@ says) and builds from nothing.
 
 ## What the go-daemon fill builds on each leg
 
-go-daemon keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack and
-pi-legion set Go up from it. One leg per runner, because typecheck runs on ubuntu-24.04-arm and the
-other three on ubuntu-24.04, and the key carries the runner's architecture. Each leg builds what its
-runner's readers build: typecheck's vet on both, and the test and race builds on the x86_64 leg
-alone, since no job that reads the arm64 entry runs them. Each push fills it again from its newest
+go-daemon keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack,
+step-models-chain and pi-legion set Go up from it. One leg per runner, because typecheck runs on
+ubuntu-24.04-arm and the other four on ubuntu-24.04, and the key carries the runner's
+architecture. Each leg builds what its runner's readers build: typecheck's vet on both, and the
+test and race builds on the x86_64 leg alone, since no job that reads the arm64 entry runs them.
+Each push fills it again from its newest
 entry (.github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family).
 
 What typecheck builds is the vet behind the e2e tag. It is the one build of this family an arm64 job
@@ -177,8 +185,11 @@ daemon-go's race legs (.github/go-legs.yaml) to, so a package that joins or leav
 there is the side the fill's command follows. The test binaries are compiled and never run (`go test
 -c -o /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi, uv,
 container images and a Postgres service, and the build cache this entry holds is what a compile
-leaves. The x86_64 leg alone: daemon-go, plugin-pack and pi-legion, which read these objects, run on
-ubuntu-24.04.
+leaves. The x86_64 leg alone: daemon-go, plugin-pack, step-models-chain and pi-legion, which read
+these objects, run on ubuntu-24.04. The fill links no test binary under the `e2e` tag.
+step-models-chain's build of internal/daemon's still takes the module cache from the entry, and
+the objects of every package that binary imports: the module's `e2e` tag is on test files alone,
+so the fill's untagged build compiles those packages from the same files.
 
 ## What the go-notices fill builds
 
@@ -421,7 +432,8 @@ fetched that zip on every run. The script now reads the tree's directory from `g
 which fetches nothing, and keeps `go mod download` for a version no cache holds (its -server
 2.10.29 run). So every fill that saves a module cache deletes its zips before the save: the end
 command of .github/scripts/go-cache-working-set.sh does it for go-daemon, go-notices, go-envoy,
-go-envoy-test, go-envoy-smoke and go-envoy-race, and its zips command alone for go-envoy-infra, which builds from nothing and runs
+go-envoy-test, go-envoy-smoke, go-envoy-race and go-browser-binaries, and its zips command alone
+for go-envoy-infra, which builds from nothing and runs
 no begin. The go-envoy-darwin-vet fill runs end too, on the go-envoy entry it restores for its
 module cache; its save holds only its own darwin build cache directory, so the zips it deletes
 are in no entry and the delete changes nothing it saves. A job that does need a zip downloads it
@@ -535,11 +547,45 @@ packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). 
 restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with
 them.
 
+## The go-browser-binaries family
+
+What dispatch-browser.yaml's binaries job compiles, and nothing else: the two `CGO_ENABLED=0`
+builds (four binaries) of its "Build the binaries the browser suite runs" step and the `go run` of
+its connections step. The job runs for every caller of that file - ci.yaml's dispatch-browser,
+dispatch-browser-pr and dispatch-references jobs and dispatch-browser-nightly.yaml - and on
+every lane. Each of the fill's two steps runs the text of the job's step whose name it starts
+with, in its directory, so the entry holds each object under the key that job asks for:
+ci_job_reads.py's BINARIES_FILLS gives the two texts, the binaries job's own Exact entries pin
+them, and rule 25 of check-ci-filters.sh fails the check when a step of either side runs another
+text, in another directory or under an env or an earlier step that can move what go compiles,
+when the two jobs set Go up from another go-version-file, go-version, go-download-base-url or
+architecture, which the readers' restore-keys do not carry (they carry `runner.arch`, not the
+architecture of the Go setup-go installs, whose default GOARCH changes the key of every object),
+and when the job runs a go command in a step no pair names. So a change to the job's step changes
+the table and the fill with it.
+
+The job restored go-envoy-test before, whose objects are compiled with cgo on. With
+`CGO_ENABLED=0`, net and os/user build other files, so every package above them has other cache
+keys: on a go-envoy-test entry, 427 of the 1,034 packages of the job's closure were stale (`go
+list -deps -f {{.Stale}}`), against 4 with cgo on. In one 4-CPU build-cluster pod (main
+1cd586b462b, three runs each), the job's builds took 94-103 s on no build cache, 77-80 s on
+go-envoy-test (423 compiles) and 7.5 s on this family's entry (0 compiles). On CI the build step
+took 64-108 s on go-envoy-test over 22 binaries jobs of 2026-11-27, and the job's restore 12-27 s
+of a 721 MB entry (it was 3.18 GB, and 6 min 37 s of untar, in job 138563907113, before the fills
+stopped saving module zips).
+
+The family starts with no module cache, so its builds download only the 106 modules this closure
+reads, and the fill deletes their zips as every fill does
+(.github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips). A fill from nothing with the
+zips kept, run 45468247148, saved 523,275,050 B, so an entry is less than that by its zips. It
+runs on ubuntu-24.04 alone, the runner the binaries job runs on; from nothing the job took 138 s
+in that run, its builds 98 s of it.
+
 ## What the refill-superseded job deletes, and why it is a job of its own
 
-The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and
-go-envoy-darwin-vet that the fills replaced, deleted once each fill has saved its new one. Each
-fill saves a new entry, over a
+The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race,
+go-envoy-darwin-vet and go-browser-binaries that the fills replaced, deleted once each fill has
+saved its new one. Each fill saves a new entry, over a
 gigabyte for most families, so without this the entries would pile up: GitHub drops an entry only
 after seven days unread, and over the repository's cache limit it evicts the least recently used
 entries, which can be another family's live one. For each family and architecture this keeps one

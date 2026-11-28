@@ -3,6 +3,9 @@
 // requests, each role's agent over the worker stream and the daemon's HTTP routes (stepClaimant),
 // the read of an issue's steps and what a read must hold (stepsHold), and GitHub's REST API as the
 // walk's daemon reads it (stepRecordsGitHub).
+//
+// Each claimant counts its agent's calls as the shim does, and the rig reads the daemon's log of
+// its reads of them (usedReads, emptyReads).
 package daemon
 
 import (
@@ -11,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -23,18 +27,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // stepRecordsRig is one walk: the booted daemon over the real Dispatch, the stand-ins it reads,
@@ -62,6 +69,56 @@ type stepRecordsRig struct {
 	// (overrides.streamWaitBegan) before it answered: what a test reads to tell a request that
 	// waited for its agent's stream from one that applied at once.
 	waited bool
+	// logs is the daemon's JSON log across every boot of the rig, which usedReads and emptyReads
+	// read.
+	logs *syncBuffer
+	// readClock bounds each read of an agent's calls at every boot (overrides.totalsClock). It
+	// starts on the wall clock, and use swaps it.
+	readClock *switchClock
+	// readHook is the hook onRead set, which each boot's overrides.totalsRead calls. It is nil
+	// while none is set.
+	readHook atomic.Pointer[func(agents []claim.Token, reads workflow.FactReads)]
+	// spawnHold is the hold holdSpawns arms, which each boot's fake runtime runs at the start of
+	// every Spawn (fake.Runtime.OnSpawn). It is nil while none is armed.
+	spawnHold atomic.Pointer[func(ctx context.Context) error]
+	// confirmations is each fact that a role's agent took its work, once a boot of the daemon has
+	// applied it (overrides.taskConfirmedApplied), which startTurn waits on.
+	confirmations taskConfirmations
+}
+
+// taskConfirmations counts, by claim and delivery, each fact that a role's agent took its work
+// that the daemon has applied, and keeps the error the last such fact of each met.
+type taskConfirmations struct {
+	mu      sync.Mutex
+	applied map[confirmedDelivery]int
+	failed  map[confirmedDelivery]error
+}
+
+// confirmedDelivery is one delivery of one claim, as the daemon's confirmation names it.
+type confirmedDelivery struct {
+	token    claim.Token
+	delivery string
+}
+
+// add records one confirmation of token's delivery that the daemon applied, and the error it met.
+func (c *taskConfirmations) add(token claim.Token, delivery string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.applied == nil {
+		c.applied, c.failed = map[confirmedDelivery]int{}, map[confirmedDelivery]error{}
+	}
+	key := confirmedDelivery{token: token, delivery: delivery}
+	c.applied[key]++
+	c.failed[key] = err
+}
+
+// read is how many confirmations of token's delivery the daemon has applied, and the error the
+// last one met.
+func (c *taskConfirmations) read(token claim.Token, delivery string) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := confirmedDelivery{token: token, delivery: delivery}
+	return c.applied[key], c.failed[key]
 }
 
 // heldAnswer is the answer heldRequest holds: the feed of token's claim stops before its machine
@@ -209,13 +266,25 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 	writePrompt(t, r.cfg, architect)
 }
 
-// boot starts the whole daemon on the store as it stands, over a fake runtime of its own.
+// boot starts the whole daemon on the store as it stands, over a fake runtime of its own. Every
+// boot writes to one log and bounds its reads of an agent's calls by one clock. The first boot
+// makes both, so the rigs built by a literal of their own (newOwnerStepsRig, inFlightRig) get
+// them too.
 func (r *stepRecordsRig) boot() {
 	r.t.Helper()
+	if r.logs == nil {
+		r.logs, r.readClock = &syncBuffer{}, newSwitchClock(supervise.RealClock{})
+	}
 	r.rt, r.built = fake.NewRuntime(), &built{}
 	// The runtime provisions each claim's workspace itself, so a launch reaches the fake without
 	// the daemon cloning acme/widgets from github.com.
 	r.rt.InPod = true
+	r.rt.OnSpawn = func(ctx context.Context) error {
+		if hold := r.spawnHold.Load(); hold != nil {
+			return (*hold)(ctx)
+		}
+		return nil
+	}
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
@@ -232,8 +301,83 @@ func (r *stepRecordsRig) boot() {
 			<-held.release
 		}
 	}
-	r.d = startDaemonLogging(r.t, r.cfg, o, r.log())
+	o.totalsRead = func(agents []claim.Token, reads workflow.FactReads) {
+		if hook := r.readHook.Load(); hook != nil {
+			(*hook)(agents, reads)
+		}
+	}
+	o.taskConfirmedApplied = r.confirmations.add
+	o.totalsClock = r.readClock
+	logger := slog.New(slog.NewMultiHandler(r.log().Handler(), slog.NewJSONHandler(r.logs, nil)))
+	r.d = startDaemonLogging(r.t, r.cfg, o, logger)
 }
+
+// onRead sets f as the hook of each read of an agent's calls (overrides.totalsRead). A nil f
+// clears it. The daemon calls it on the fact's goroutine, after the reads and before the fact's
+// transaction.
+func (r *stepRecordsRig) onRead(f func(agents []claim.Token, reads workflow.FactReads)) {
+	if f == nil {
+		r.readHook.Store(nil)
+		return
+	}
+	r.readHook.Store(&f)
+}
+
+// holdSpawns holds each Spawn of the fake runtime from now on, once the runtime has recorded the
+// call. The claim then stays launching, with no process recorded. It answers the function that
+// lets every held Spawn go on, which the test's end calls too. A Spawn whose context ends first
+// answers that context's error.
+func (r *stepRecordsRig) holdSpawns() (release func()) {
+	let := make(chan struct{})
+	release = sync.OnceFunc(func() {
+		r.spawnHold.Store(nil)
+		close(let)
+	})
+	hold := func(ctx context.Context) error {
+		select {
+		case <-let:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	r.spawnHold.Store(&hold)
+	r.t.Cleanup(release)
+	return release
+}
+
+// switchClock is a supervise.Clock that answers as the clock it holds now, which use swaps. A
+// timer armed before a swap stays on the clock it was armed on.
+type switchClock struct {
+	held atomic.Pointer[supervise.Clock]
+}
+
+// newSwitchClock is a switchClock holding clock.
+func newSwitchClock(clock supervise.Clock) *switchClock {
+	c := &switchClock{}
+	c.use(clock)
+	return c
+}
+
+// use makes clock the one c answers as, from the next call on.
+func (c *switchClock) use(clock supervise.Clock) { c.held.Store(&clock) }
+
+// now is the clock c holds now.
+func (c *switchClock) now() supervise.Clock { return *c.held.Load() }
+
+// Now is the time of the clock held now.
+func (c *switchClock) Now() time.Time { return c.now().Now() }
+
+// AfterFunc arms f on the clock held now.
+func (c *switchClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
+	return c.now().AfterFunc(d, f)
+}
+
+// At arms f for at on the clock held now.
+func (c *switchClock) At(at time.Time, f func()) supervise.Cancel { return c.now().At(at, f) }
+
+// Sleep sleeps on the clock held now.
+func (c *switchClock) Sleep(ctx context.Context, d time.Duration) error { return c.now().Sleep(ctx, d) }
 
 // restart stops the daemon and boots it again (reboot).
 func (r *stepRecordsRig) restart() {
@@ -343,26 +487,48 @@ func (r *stepRecordsRig) complete(c *stepClaimant, req api.HandoffCompleteReques
 	return status, string(body)
 }
 
-// review is the reviewer taking its task and answering, and then a person submitting state on the
-// walk's pull request (publishReview); the issue then reaches next.
+// review is the reviewer taking its task and answering, and then the round's decision of state on
+// the walk's pull request: a request for changes by a person (publishReview), an approval by the
+// reviewer itself (approve), since a person's approval ends the round only once the reviewer has
+// completed it (workflow's reviewRound). The issue then reaches next.
 func (r *stepRecordsRig) review(state string, next phase.Phase) {
 	r.t.Helper()
 	c := r.worker(claim.RoleReviewer)
 	c.take()
 	c.endTurn()
-	r.publishReview(r.number, state)
+	if state == "APPROVED" {
+		r.approve(c, r.number)
+	} else {
+		r.publishReview(r.number, state)
+	}
 	r.waitPhase(next)
+}
+
+// approve is reviewer, the walk's reviewer, approving pull request number at stepRecordsHead with a
+// review of its own: the review App's, whose Legion footer names the session the reviewer's claim
+// registered and that head (workflow's byReviewer). It ends the round with no completion, where a
+// person's approval waits for one.
+func (r *stepRecordsRig) approve(reviewer *stepClaimant, number int) {
+	r.t.Helper()
+	r.publishReviewBy(number, "APPROVED", reviewAppLogin, legionFooter(reviewer.session, stepRecordsHead))
 }
 
 // publishReview is a person with write access submitting state on pull request number at
 // stepRecordsHead, as Envoy relays GitHub's review.
 func (r *stepRecordsRig) publishReview(number int, state string) {
+	r.t.Helper()
+	r.publishReviewBy(number, state, stepRecordsPerson, "")
+}
+
+// publishReviewBy is author submitting state on pull request number at stepRecordsHead, the body
+// naming the review's number and ending with footer, as Envoy relays GitHub's review.
+func (r *stepRecordsRig) publishReviewBy(number int, state, author, footer string) {
 	t := r.t
 	t.Helper()
 	r.reviews++
 	payload, err := json.Marshal(map[string]string{
 		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": state,
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
+		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": author, "body": "round " + strconv.Itoa(r.reviews) + footer,
 		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -474,6 +640,28 @@ func (r *stepRecordsRig) person(method, path string, body any, want int, into an
 			t.Fatalf("decode %s %s: %v", method, path, err)
 		}
 	}
+}
+
+// personMoves is a person setting the walk's issue to status in Dispatch. Dispatch then relays the
+// event of that write, of type kind, which carries the issue's title. The daemon's consumer reads
+// it as it reads any issue event.
+func (r *stepRecordsRig) personMoves(status, kind string) {
+	t := r.t
+	t.Helper()
+	var moved createdIssue
+	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": status}, http.StatusOK, &moved)
+	payload, err := json.Marshal(map[string]any{
+		"id": moved.LastSeq, "issue_key": r.key, "project": r.cfg.Project, "seq": moved.LastSeq, "type": kind,
+		"actor": map[string]string{"kind": "user", "id": "a-person"}, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"payload": map[string]any{
+			"key": r.key, "status": status, "title": r.title, "parent": nil, "rank": moved.Rank,
+			"labels": liveDispatchLabels(true), "last_seq": moved.LastSeq, "project": r.cfg.Project, "resolved_repo": liveRepo,
+		},
+	})
+	if err != nil {
+		t.Fatalf("encode the Dispatch event of %s: %v", r.key, err)
+	}
+	r.publish("notifications.dispatch.issue."+r.key+"."+kind, "dispatch", fmt.Sprintf("%s-%s-%d", r.key, status, moved.LastSeq), string(payload))
 }
 
 // writeHandoff writes the issue's handoff record of word under session, as `dispatch
@@ -615,6 +803,80 @@ func (r *stepRecordsRig) unfinishedRows(kind record.OutboxKind) int {
 	return count
 }
 
+// The messages of the daemon's two lines about its reads of an agent's calls. The test spells the
+// words itself, so a change to the daemon's words fails it.
+const (
+	// usedReadMessage is the line of each read a step's start or end used, logged at the fact's
+	// commit.
+	usedReadMessage = "workflow: a step used a read of its agent's calls"
+	// emptyReadMessage is the line of each read that gave no totals, logged at once.
+	emptyReadMessage = "workflow: a read of an agent's calls gave no totals"
+)
+
+// usedRead is one line the daemon logs at the commit of a fact, for each read a step's start or
+// end used. EndedBy is set on an end's line alone.
+type usedRead struct {
+	Step        string                `json:"step"`
+	Issue       string                `json:"issue"`
+	Task        string                `json:"task"`
+	Kind        string                `json:"kind"`
+	Place       int                   `json:"place"`
+	StartedAt   string                `json:"startedAt"`
+	Side        string                `json:"side"`
+	Claim       string                `json:"claim"`
+	Generation  uint64                `json:"generation"`
+	Read        uint64                `json:"read"`
+	Final       bool                  `json:"final"`
+	SetModel    string                `json:"setModel"`
+	Counts      []shimwire.ModelCount `json:"counts"`
+	OutsideForm uint64                `json:"outsideForm"`
+	Overflowed  bool                  `json:"overflowed"`
+	ReadAt      time.Time             `json:"readAt"`
+	EndedBy     string                `json:"endedBy"`
+}
+
+// emptyRead is one line the daemon logs when a read of an agent's calls gave no totals. It names
+// the launch read, why, and how long the read waited.
+type emptyRead struct {
+	Claim      string        `json:"claim"`
+	Generation uint64        `json:"generation"`
+	Reason     string        `json:"reason"`
+	Waited     time.Duration `json:"waited"`
+}
+
+// usedReads is each line of the daemon's log for a read a step's start or end used, in log order.
+func (r *stepRecordsRig) usedReads() []usedRead {
+	r.t.Helper()
+	return logLines[usedRead](r, usedReadMessage)
+}
+
+// emptyReads is each line of the daemon's log for a read that gave no totals, in log order.
+func (r *stepRecordsRig) emptyReads() []emptyRead {
+	r.t.Helper()
+	return logLines[emptyRead](r, emptyReadMessage)
+}
+
+// logLines is each line of the rig's log whose message is msg, decoded into a T, in log order. A
+// line of msg that does not decode fails the test.
+func logLines[T any](r *stepRecordsRig, msg string) []T {
+	r.t.Helper()
+	var lines []T
+	for line := range strings.Lines(r.logs.String()) {
+		var entry struct {
+			Msg string `json:"msg"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry.Msg != msg {
+			continue
+		}
+		var decoded T
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			r.t.Fatalf("decode the log line %q: %v", line, err)
+		}
+		lines = append(lines, decoded)
+	}
+	return lines
+}
+
 // stepRecordsRead is the read of an issue's steps, as Dispatch answers it.
 type stepRecordsRead struct {
 	Issue string `json:"issue"`
@@ -641,6 +903,17 @@ type stepRecordRead struct {
 	EndedAt    *time.Time `json:"ended_at"`
 	Result     string     `json:"result"`
 	ReturnedTo *int       `json:"returned_to"`
+	// SetModel is the model the record's session was set to, "" for none.
+	SetModel string `json:"set_model"`
+	// Answers is each model that answered the record, with its calls. It is nil where the record
+	// does not know them, and empty for a step with no call.
+	Answers *[]stepAnswerRead `json:"answers"`
+}
+
+// stepAnswerRead is one model of a record's answers and the calls it answered.
+type stepAnswerRead struct {
+	Model string `json:"model"`
+	Calls int64  `json:"calls"`
 }
 
 // records is every record of the read, task by task.
@@ -751,6 +1024,31 @@ type stepClaimant struct {
 	// inTurn is whether the session is in a turn the walk began on it (send's agent_start, until
 	// its agent_end): a task the daemon sends meanwhile joins that turn (workAlone).
 	inTurn bool
+	// alone is the delivery of each task the pane worked in a turn of its own (workAlone), oldest
+	// first.
+	alone []string
+	// setModel is the launch's set model, which each read of its totals reports. It is
+	// stepRecordsModel at creation, and serve reads it under mu.
+	setModel string
+	// counts, outsideForm and overflowed are the launch's calls, counted by the shim's rule
+	// (count). read numbers the reads answered and the final totals. mu guards all four, and
+	// relaunched sets each back to zero.
+	counts      map[string]uint64
+	outsideForm uint64
+	overflowed  bool
+	read        uint64
+	// holdReads, while true, has serve answer no read of the totals. serve still reads every
+	// frame.
+	holdReads atomic.Bool
+	// hold is armed by holdTheSocket and spent by the next get_state, whose answer starts the
+	// socket hold (holdSocket).
+	hold atomic.Bool
+	// held closes once the socket hold has read its 4096 bytes. holdTheSocket makes it anew under
+	// mu.
+	held chan struct{}
+	// cut is the last connection the test closed itself (closeConn). A write that fails on it
+	// fails no test.
+	cut atomic.Pointer[shim]
 }
 
 // worker is role's claimant on the walk's issue (workerOf).
@@ -761,6 +1059,7 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 
 // workerOf is role's claimant on issue, an issue of the tree of the walk's issue: the one already
 // registered, or the launch the daemon makes now, registered and ready under a session of its own.
+// Its shim counts the agent's calls (dialCountingShim).
 func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	t := r.t
 	t.Helper()
@@ -774,38 +1073,24 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	address := r.built.address
 	r.built.mu.Unlock()
 	c := &stepClaimant{r: r, token: token, issue: issue, tree: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
-		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
-	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register %s = %d %s, want 200", token, status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the registration of %s: %v", token, err)
-	}
-	c.secret = registered.Secret
+		setModel: stepRecordsModel, bootToken: launch.BootToken, sh: dialCountingShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
+	c.secret = c.register(launch.BootToken)
 	sh, d := c.sh, r.d
 	sh.serve(func() { c.serve(sh, d) })
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: c.session, Secret: c.secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready %s = %d %s, want 204", token, status, body)
-	}
+	c.ready(launch.Generation)
 	r.claims[token] = c
 	return c
 }
 
-// reconnect is the pane's shim connecting to the daemon that runs now with the boot token it has
-// held since its launch, as it does after the daemon restarts. A daemon that acknowledges no hello
-// of it fails the walk with what that daemon made of the claim (refusedHello).
+// reconnect is the pane's shim connecting to the daemon that runs now, as it does after the daemon
+// restarts. It uses the boot token it has held since its launch, and says again that it counts the
+// agent's calls. A daemon that acknowledges no hello of it fails the walk with what that daemon made
+// of the claim (refusedHello).
 func (c *stepClaimant) reconnect() {
 	c.r.built.mu.Lock()
 	address := c.r.built.address
 	c.r.built.mu.Unlock()
-	sh, err := ackedShim(c.r.t, address, c.bootToken)
+	sh, err := ackedHello(c.r.t, address, countingHello(c.bootToken))
 	if err != nil {
 		c.r.t.Fatal(c.refusedHello(err))
 	}
@@ -846,9 +1131,13 @@ func (c *stepClaimant) refusedHello(last error) string {
 // fails the test, unless the test had begun stopping d by then: the pane's connection outlives
 // the daemon, as a tmux pane does, so a restart's stop closes it under whatever answer is on
 // its way, which is no fault of the daemon's.
+//
+// It also answers each read of the totals, unless holdReads, and starts the socket hold
+// holdTheSocket armed. A write that fails on a connection the test closed itself fails nothing
+// (cut).
 func (c *stepClaimant) serve(sh *shim, d *daemon) {
 	reply := func(frame shimwire.Frame) {
-		if err := sh.writer.WriteFrame(frame); err != nil && !d.stopped.Load() {
+		if err := sh.writer.WriteFrame(frame); err != nil && !d.stopped.Load() && c.cut.Load() != sh {
 			c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 		}
 	}
@@ -871,6 +1160,14 @@ func (c *stepClaimant) serve(sh *shim, d *daemon) {
 			c.mu.Unlock()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
+			if c.hold.CompareAndSwap(true, false) {
+				c.holdSocket(sh)
+				return
+			}
+		case shimwire.ModelTotals:
+			if !c.holdReads.Load() {
+				reply(c.readTotals(f.ID))
+			}
 		case shimwire.Prompt:
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
 			if c.workAlone(reply, f) {
@@ -916,7 +1213,47 @@ func (c *stepClaimant) workAlone(reply func(shimwire.Frame), prompt shimwire.Pro
 	reply(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	reply(shimwire.AgentEnd{})
 	reply(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true})
+	c.alone = append(c.alone, prompt.DeliveryID)
 	return true
+}
+
+// workedAlone is how many tasks the pane has worked in turns of their own (workAlone).
+func (c *stepClaimant) workedAlone() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.alone)
+}
+
+// awaitAlone waits for the pane to have worked n tasks in turns of their own (workAlone). It also
+// waits for the daemon to have applied, for each of them, the fact that the agent took it. That
+// fact reads the calls of its issue's agents on a goroutine of its own
+// (workflowRuntime.taskConfirmed). So a read a test holds after awaitAlone is the read of a later
+// fact, never of one of these.
+func (c *stepClaimant) awaitAlone(n int) {
+	c.r.t.Helper()
+	var worked []string
+	var unapplied string
+	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
+		c.mu.Lock()
+		worked = slices.Clone(c.alone)
+		c.mu.Unlock()
+		unapplied = ""
+		for _, delivery := range worked {
+			if applied, _ := c.r.confirmations.read(c.token, delivery); applied == 0 {
+				unapplied = delivery
+				return false
+			}
+		}
+		return len(worked) >= n
+	}) {
+		c.r.t.Fatalf("%s worked %d tasks alone within %s, want %d, and the daemon applied the fact of each but %q",
+			c.token, len(worked), stepRecordsWait, n, unapplied)
+	}
+	for _, delivery := range worked {
+		if _, err := c.r.confirmations.read(c.token, delivery); err != nil {
+			c.r.t.Fatalf("the fact that %s took delivery %s failed: %v", c.token, delivery, err)
+		}
+	}
 }
 
 // send writes one frame to the daemon that runs now. An agent_start begins the walk's turn on the
@@ -947,9 +1284,39 @@ func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
 	c.answer()
+	c.startTurn(prompt)
+	return prompt
+}
+
+// takeQuietly is take with no answer of the model, so the turn starts and nothing is counted.
+func (c *stepClaimant) takeQuietly() shimwire.Prompt {
+	c.r.t.Helper()
+	prompt := c.receive()
+	c.startTurn(prompt)
+	return prompt
+}
+
+// startTurn starts the turn that works prompt's delivery. It returns once the daemon holds the
+// claim working and has applied the fact that the agent took that delivery. The claim shows
+// working before that fact applies, on a goroutine of its own (workflowRuntime.taskConfirmed).
+// The fact first reads the calls of its issue's agents. So a read a test holds after take is the
+// read of a later fact, never of this one.
+func (c *stepClaimant) startTurn(prompt shimwire.Prompt) {
+	c.r.t.Helper()
+	before, _ := c.r.confirmations.read(c.token, prompt.DeliveryID)
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
-	return prompt
+	var applied int
+	var err error
+	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
+		applied, err = c.r.confirmations.read(c.token, prompt.DeliveryID)
+		return applied > before
+	}) {
+		c.r.t.Fatalf("the daemon applied no fact that %s took delivery %s within %s of the turn's start", c.token, prompt.DeliveryID, stepRecordsWait)
+	}
+	if err != nil {
+		c.r.t.Fatalf("the fact that %s took delivery %s failed: %v", c.token, prompt.DeliveryID, err)
+	}
 }
 
 // receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
@@ -1005,7 +1372,8 @@ func (c *stepClaimant) waitState(state supervise.ClaimState) {
 }
 
 // answer is the agent's model (c.model, `<provider>/<model>`) answering, which Oh My Pi's
-// message_end names as message.provider and message.model.
+// message_end names as message.provider and message.model. It counts the call first, as the shim
+// counts each frame before the daemon reads it.
 func (c *stepClaimant) answer() {
 	t := c.r.t
 	t.Helper()
@@ -1014,6 +1382,7 @@ func (c *stepClaimant) answer() {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.count(provider, model)
 	c.send(shimwire.Raw{Type: "message_end", JSON: frame})
 }
 
@@ -1047,6 +1416,193 @@ func (c *stepClaimant) grant() string {
 		t.Fatalf("decode the grant of %s: %v", c.token, err)
 	}
 	return granted.GrantID
+}
+
+// register registers the claimant's session with the launch of bootToken, as its plugin does, and
+// answers the secret the daemon gave it.
+func (c *stepClaimant) register(bootToken string) string {
+	t := c.r.t
+	t.Helper()
+	status, body := c.r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
+		BootToken: bootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
+		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
+	}, false)
+	if status != http.StatusOK {
+		t.Fatalf("register %s = %d %s, want 200", c.token, status, body)
+	}
+	var registered claim.RegisterResponse
+	if err := json.Unmarshal(body, &registered); err != nil {
+		t.Fatalf("decode the registration of %s: %v", c.token, err)
+	}
+	return registered.Secret
+}
+
+// ready is the claimant's agent saying it is ready at generation, its launch's.
+func (c *stepClaimant) ready(generation uint64) {
+	t := c.r.t
+	t.Helper()
+	if status, body := c.r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: c.token, SessionID: c.session, Secret: c.secret, Generation: generation,
+	}, false); status != http.StatusNoContent {
+		t.Fatalf("ready %s = %d %s, want 204", c.token, status, body)
+	}
+}
+
+// count counts one call that provider and model answered, by the shim's rule (internal/shim's
+// totals.call). A model outside the form raises outsideForm, and a new model past
+// shimwire.MaxTotalsModels sets overflowed.
+func (c *stepClaimant) count(provider, model string) {
+	if model == "" || model == shimwire.SyntheticModel {
+		return
+	}
+	name := shimwire.ModelName(provider, model)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !steprecord.AgentTextHolds(name) {
+		c.outsideForm++
+		return
+	}
+	if _, counted := c.counts[name]; !counted && len(c.counts) >= shimwire.MaxTotalsModels {
+		c.overflowed = true
+		return
+	}
+	if c.counts == nil {
+		c.counts = map[string]uint64{}
+	}
+	c.counts[name]++
+}
+
+// readTotals is the answer to the daemon's read id: the claimant's totals, the read number raised
+// by 1.
+func (c *stepClaimant) readTotals(id string) shimwire.ModelTotalsResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.read++
+	totals := c.totalsLocked()
+	return shimwire.ModelTotalsResult{ID: id, OK: true, Totals: &totals}
+}
+
+// totalsLocked is the claimant's totals as the wire carries them. The counts are sorted by model,
+// and an empty list where no call came. The caller holds mu.
+func (c *stepClaimant) totalsLocked() shimwire.Totals {
+	counts := make([]shimwire.ModelCount, 0, len(c.counts))
+	for model, calls := range c.counts {
+		counts = append(counts, shimwire.ModelCount{Model: model, Calls: calls})
+	}
+	slices.SortFunc(counts, func(a, b shimwire.ModelCount) int { return strings.Compare(a.Model, b.Model) })
+	return shimwire.Totals{Read: c.read, SetModel: c.setModel, Counts: counts, OutsideForm: c.outsideForm, Overflowed: c.overflowed}
+}
+
+// exit ends the launch as its harness exiting does. With final, the shim first sends its final
+// totals unasked, the read number raised by 1. The fake then answers the next probe of this claim
+// gone (fake.Runtime.ScriptProbeOf), and the connection closes, so the claim's machine probes and
+// relaunches the claim. It returns once the daemon has launched the claim at a higher generation,
+// which relaunched connects.
+func (c *stepClaimant) exit(final bool) {
+	t := c.r.t
+	t.Helper()
+	before := c.r.d.claim(c.token).Generation
+	if final {
+		c.mu.Lock()
+		c.read++
+		totals := c.totalsLocked()
+		c.mu.Unlock()
+		c.send(shimwire.ModelTotalsFinal{Totals: totals})
+	}
+	rt := c.r.rt
+	rt.ScriptProbeOf(c.token, fake.ProbeResult{Kind: runtime.Gone})
+	c.closeConn()
+	testwait.WithinPolling(t, stepRecordsWait, 50*time.Millisecond, fmt.Sprintf("the launch of %s past generation %d", c.token, before), func() bool {
+		return slices.ContainsFunc(rt.Calls(), func(call fake.Call) bool {
+			return (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == c.token && call.Spec.Generation > before
+		})
+	})
+}
+
+// relaunched is the pane of the launch exit waited for. A counting shim connects with the new
+// launch's boot token. The agent registers in the same session and says ready at the new
+// generation. The new launch counts from zero, its read number too. The daemon then sends the task
+// the claim held again, which take takes.
+func (c *stepClaimant) relaunched() {
+	t := c.r.t
+	t.Helper()
+	launch := lastLaunch(t, c.r.rt, c.token)
+	c.r.built.mu.Lock()
+	address := c.r.built.address
+	c.r.built.mu.Unlock()
+	sh := dialCountingShim(t, address, launch.BootToken)
+	c.bootToken, c.secret = launch.BootToken, c.register(launch.BootToken)
+	c.mu.Lock()
+	c.sh, c.open, c.inTurn = sh, nil, false
+	c.counts, c.outsideForm, c.overflowed, c.read = nil, 0, false, 0
+	c.mu.Unlock()
+	d := c.r.d
+	sh.serve(func() { c.serve(sh, d) })
+	c.ready(launch.Generation)
+}
+
+// disconnect closes the shim's connection while its process lives on. No probe is scripted, so
+// the fake answers alive. It returns once the daemon's connection directory holds no connection of
+// the claim.
+func (c *stepClaimant) disconnect() {
+	t := c.r.t
+	t.Helper()
+	c.closeConn()
+	testwait.WithinPolling(t, stepRecordsWait, 20*time.Millisecond, "the daemon's drop of the connection of "+string(c.token), func() bool {
+		c.r.built.mu.Lock()
+		conns := c.r.built.conns
+		c.r.built.mu.Unlock()
+		_, connected := conns.Conn(c.token)
+		return !connected
+	})
+}
+
+// closeConn closes the shim's connection now running, as a pane's exit or a broken socket does.
+// Its serve then returns.
+func (c *stepClaimant) closeConn() {
+	c.mu.Lock()
+	sh := c.sh
+	c.mu.Unlock()
+	c.cut.Store(sh)
+	_ = sh.conn.Close()
+}
+
+// holdTheSocket arms the socket hold. serve answers the next get_state, reads 4096 more bytes and
+// closes held (holdSocket). It then reads nothing more until the test ends, so the daemon's writes
+// back up once the socket's buffers fill. held is made anew here, so a test reads it after the
+// call.
+func (c *stepClaimant) holdTheSocket() {
+	c.mu.Lock()
+	c.held = make(chan struct{})
+	c.mu.Unlock()
+	c.hold.Store(true)
+}
+
+// holdSocket is the socket hold on sh. It reads 4096 more bytes from sh's buffered reader, so
+// bytes already buffered count. It then closes held and waits for the test's end of sh. A read
+// that fails ends it with held open.
+func (c *stepClaimant) holdSocket(sh *shim) {
+	c.mu.Lock()
+	held := c.held
+	c.mu.Unlock()
+	if _, err := io.ReadFull(sh.lines, make([]byte, 4096)); err != nil {
+		return
+	}
+	close(held)
+	<-sh.stopping
+}
+
+// dialCountingShim dials the worker stream at address as a shim that counts its launch's calls
+// (Hello2.ModelTotals). It dials again after a refused hello until one is acked
+// (dialHelloUntilAcked).
+func dialCountingShim(t *testing.T, address, bootToken string) *shim {
+	t.Helper()
+	return dialHelloUntilAcked(t, address, countingHello(bootToken))
+}
+
+// countingHello is the hello of a pane's shim that counts its agent's calls, with bootToken.
+func countingHello(bootToken string) shimwire.Hello2 {
+	return shimwire.Hello2{BootToken: bootToken, ModelTotals: true}
 }
 
 // stepRecordsGitHub is GitHub's REST API as the walk's daemon reads it: every repository with

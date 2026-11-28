@@ -1,4 +1,4 @@
-import { type ReactNode, useId } from "react";
+import { type MouseEventHandler, type ReactNode, useId } from "react";
 
 import {
   pageInkFill,
@@ -47,6 +47,7 @@ export function RefusableButton({
   className = "",
   describedBy,
   look = "primary",
+  onMouseDown,
   onPress,
   onRefusedPress,
   refusal,
@@ -61,6 +62,9 @@ export function RefusableButton({
   /** The id of a line on screen that bears on the press, read after the reason. */
   readonly describedBy?: string;
   readonly look?: keyof typeof LOOKS;
+  /** Told of the press as it starts, before the browser moves the focus; a host that keeps the
+   *  focus where it is prevents the event's default. */
+  readonly onMouseDown?: MouseEventHandler<HTMLButtonElement>;
   readonly onPress?: () => void;
   /** Told of a press the refusal swallowed, for a host whose line reads nothing until then. */
   readonly onRefusedPress?: () => void;
@@ -89,6 +93,7 @@ export function RefusableButton({
           }
           onPress?.();
         }}
+        onMouseDown={onMouseDown}
         title={tooltips ? (refusal ?? undefined) : undefined}
         type={type}
       >
