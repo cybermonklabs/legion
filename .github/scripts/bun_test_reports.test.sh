@@ -337,6 +337,24 @@ check "the step still receives all 100,000 bytes of the child's stderr" \
        echo false
      fi)"
 
+echo "case: a child a test leaves writes past the summary buffer's limit across bun's exit, before the wrapper reaps bun"
+# The real bun, and a child that writes to bun's standard error from inside the test until 2 s
+# later, so its output keeps arriving between bun's summary and the reap. The step's output goes to
+# /dev/null, not into a variable: the child writes far more than a variable should hold.
+package flood flood.test.ts "$imports
+test(\"leaves a child writing\", async () => {
+  const child = Bun.spawn([\"sh\", \"-c\", \"exec timeout 2 yes 'a line a leaked child writes' >&2\"], { stdin: \"ignore\", stdout: \"ignore\", stderr: \"inherit\" });
+  child.unref();
+  await Bun.sleep(200);
+});"
+set +e
+(cd "$ws/packages/flood" && RUNNER_TEMP="$work/t-flood" "$python" "$wrapper" test bun test >/dev/null 2>&1)
+flood_status=$?
+set -e
+check "the wrapper exits 0, bun's status, despite the child's output" "$(is "$flood_status" 0)"
+check "and kept bun's summary, not the child's output, in the exit status" \
+  "$(is "$(exit_of "$work/t-flood/bun-test-reports/packages/flood/test.xml")" '{"status": 0, "errors": 0}')"
+
 echo "case: clause 2 (a report bun 1.4.4 writes): bun exits 0 and leaves a report that does not parse"
 standin "$work/t-cut" test "$work/cut.xml" "$summary_ok" 0
 check "the wrapper fails the step" "$(is "$wrapped" 1)"
