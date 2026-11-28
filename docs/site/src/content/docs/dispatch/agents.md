@@ -285,6 +285,11 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   on, its directory, the model and thinking level, a ring showing how full the session's context
   window is, and a **?**. On a phone that row scrolls sideways, with the ring and the **?** keeping
   the right edge of the box.
+- On a phone, while the keyboard is up, the page shows only the header, the conversation and the
+  message box, which sits just above the keyboard. The row under the message box comes back when
+  the keyboard goes down. The button beside **Send** puts the keyboard away and keeps what you
+  wrote, and so does a tap on the conversation. A tap on the message box brings the keyboard back,
+  and so does the same button, which also puts the cursor back where it was.
 - The **?** says what the message box does: `!` at the start of a message runs the rest as a shell
   command in the session; `/` at the start runs one of the session's own commands, at the session
   itself; and the session's turns are relayed while the page is open and are not stored, while the

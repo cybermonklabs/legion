@@ -28,6 +28,9 @@ import {
   inputClasses,
   primaryButtonBg,
   primaryButtonHoverBg,
+  secondaryButtonBorder,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
@@ -45,6 +48,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
+import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
 import { type ReferenceKeys, ReferenceTriggers } from "./ReferenceTriggers";
@@ -535,6 +539,14 @@ export function AgentThread({
   useFootInset(composerRef, front, "page");
   const jumpRef = useRef<HTMLButtonElement>(null);
   useFootInset(jumpRef, front && !follow.atEnd, "page");
+  // A phone's on-screen keyboard takes half the screen. The control beside Send and a tap on the
+  // transcript put it away: they blur the box, which keeps what it holds. A tap on the box brings
+  // it back, and so does the control, which also puts the caret back where it was. Only below
+  // `md`, where the box is a phone's: elsewhere a click on the transcript does what it always did.
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [typing, setTyping] = useState(false);
+  const caret = useRef<readonly [number, number] | null>(null);
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -575,6 +587,9 @@ export function AgentThread({
             autoScroll={false}
             className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
             data-testid="agent-thread"
+            onClick={() => {
+              if (phone && document.activeElement === inputRef.current) inputRef.current?.blur();
+            }}
             ref={setViewport}
             scrollToBottomOnInitialize={false}
             scrollToBottomOnRunStart={false}
@@ -629,17 +644,54 @@ export function AgentThread({
             {/* Never taller than 40% of the screen, scrolling inside past that: after a resize
                 the textarea's autosize can leave it far taller than its text (a load at a
                 phone's width, then a desktop's, left it 636px tall), and the composer then lay
-                over the row under it, so a press at Send reached that row. */}
+                over the row under it, so a press at Send reached that row. With a phone's
+                keyboard up, the screen is the part above the keyboard, and four lines leave the
+                thread its height. 16 px text on a phone: iOS Safari zooms the page into a box
+                whose text is smaller when it takes focus, and leaves it zoomed after. */}
             <ComposerPrimitive.Input
-              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-base md:text-sm group-data-[keyboard=up]/live:max-h-24 ${inputClasses(false)}`}
               // The one handle a browser row reaches this box by, since its accessible name is
               // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
               data-agent-message=""
+              onBlur={(event) => {
+                caret.current = [
+                  event.currentTarget.selectionStart,
+                  event.currentTarget.selectionEnd,
+                ];
+                setTyping(false);
+              }}
+              onFocus={() => setTyping(true)}
               onKeyDown={(event) => referenceKeys.current?.(event)}
               placeholder={placeholder}
+              ref={inputRef}
               rows={1}
               submitMode="enter"
             />
+            {/* The phone's keyboard, put away while the box has focus and brought back while it
+                holds a draft. A press keeps the focus where it is until the click decides. */}
+            {phone && (typing || !boxEmpty) ? (
+              <button
+                aria-label={typing ? "Hide keyboard" : "Show keyboard"}
+                className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+                onClick={() => {
+                  const input = inputRef.current;
+                  if (input === null) return;
+                  if (typing) {
+                    input.blur();
+                    return;
+                  }
+                  input.focus();
+                  if (caret.current !== null) {
+                    input.setSelectionRange(caret.current[0], caret.current[1]);
+                  }
+                }}
+                onMouseDown={(event) => event.preventDefault()}
+                title={typing ? "Hide keyboard" : "Show keyboard"}
+                type="button"
+              >
+                <ChevronIcon expanded={!typing} />
+              </button>
+            ) : null}
             {/* A submit button, so a click and Enter both reach the form's submit, which the
                 composer root turns into assistant-ui's own send: one way out for a message. */}
             <RefusableButton
@@ -668,7 +720,10 @@ export function AgentThread({
           </p>
           {/* What a pick does here, in the writing list's own words, so the line under the box
               and the list that drives the browser rows cannot drift apart. */}
-          <p className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-message-hint">
+          <p
+            className={`text-xs ${textMutedOnCanvas} group-data-[keyboard=up]/live:hidden`}
+            data-testid="agent-message-hint"
+          >
             {WRITING.hint}
           </p>
         </ComposerPrimitive.Root>
