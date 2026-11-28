@@ -119,6 +119,9 @@ func TestARecordedRootsRepositoryFollowsDispatchAcrossAnEditAListingAndAReadmiss
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
 		{Key: "LEGION-LINGER", Title: "LEGION-LINGER", Status: "done", Rank: "A", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"},
 	}, 10, 10, true)
+	// The root closed with no merge in its record: a person confirmed that its work never merged
+	// (D17), so the todo below re-admits it as today.
+	confirmNeverMerged(t, pool, "LEGION-LINGER")
 	apply(t, pool, admission, "readmitted", rootTodo("LEGION-LINGER", 3, "acme/widgets"), engine)
 
 	got := issue(t, pool, "LEGION-LINGER")

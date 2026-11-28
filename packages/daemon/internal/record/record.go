@@ -388,6 +388,11 @@ type Issue struct {
 	// StandingToldAt is when the owning architect was last told of the terms that still hold the
 	// close (the daily notice), nil for never.
 	StandingToldAt *time.Time
+	// MergeReadWaits says that a request for new work on the issue waits for its merge read: a
+	// merge_read outbox row of the issue stands (Store.PendingMergeRead). It is read beside the
+	// record and never written by PutIssue. Such a root is no queued root (QueuedRoot), since its
+	// record stands at done and nothing of its tree may open before the read places it.
+	MergeReadWaits bool
 }
 
 // Merge is one merge of an issue's work as the record keeps it: the pull request's number, the
@@ -2977,6 +2982,26 @@ type Store interface {
 	// whether one stood, so a confirmation allows one rerun alone. PutMergeSnapshot and every
 	// clear of a generation take it as well, and PutIssue keeps it.
 	ConsumeNeverMergedConfirmation(ctx context.Context, tx pgx.Tx, key string) (bool, error)
+	// PendingMergeRead is issue's standing merge_read row, locked until the transaction ends, nil
+	// for none: the request that waits for its merge read.
+	PendingMergeRead(ctx context.Context, tx pgx.Tx, issue string) (*PendingMergeRead, error)
+	// QueueMergeRead queues read as its issue's one merge_read row where none stands, and answers
+	// whether it queued one.
+	QueueMergeRead(ctx context.Context, tx pgx.Tx, read MergeRead, now time.Time) (bool, error)
+	// RequestMergeRead writes a later request's asker and text over issue's standing merge_read row,
+	// and answers whether one stood. The caller judges that the request is a person's.
+	RequestMergeRead(ctx context.Context, tx pgx.Tx, issue string, requester claim.Role, request string) (bool, error)
+	// RefreshMergeRead asks issue's standing merge_read row for one read of the issue's links, due at
+	// now, and answers whether one stood.
+	RefreshMergeRead(ctx context.Context, tx pgx.Tx, issue string, now time.Time) (bool, error)
+	// CancelMergeRead deletes issue's standing merge_read row, and answers whether one stood.
+	CancelMergeRead(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// UnreadMergeReads is each standing merge_read row of project whose read ended unread or
+	// stopped, by issue.
+	UnreadMergeReads(ctx context.Context, tx pgx.Tx, project string) ([]PendingMergeRead, error)
+	// MarkMergeUnreadTold records at as the moment the controller was last told of merge_read row
+	// id's empty read (MergeRead.ToldAt).
+	MarkMergeUnreadTold(ctx context.Context, tx pgx.Tx, id int64, at time.Time) error
 	// PutDefect records a reason of a next change of the issue (Defect) and answers its id.
 	PutDefect(ctx context.Context, tx pgx.Tx, defect Defect) (int64, error)
 	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,
@@ -2996,9 +3021,15 @@ type Store interface {
 	// the workflow writes the wait under (treelifecycle.Serialize), so no write of it falls between
 	// this read and this write.
 	ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error
-	// WithdrawDefect ends the open reported defect id of issue with reason, at at. It answers false
-	// where issue holds no such defect: none of that id, one of another kind than a reported
-	// defect, one already withdrawn, or one a merged change carried. The reason is required.
+	// ClearWaitEnded takes the end of a change out of issue's stored wait (StoredWait.Ended) where
+	// it is still shown, the end an uploaded version of close-wait.md said: the wait holds it until
+	// then, so a write of the wait between the end and that upload loses it from no version. The
+	// caller holds the lock the workflow writes the wait under, as for ClearWaitWithdrawals.
+	ClearWaitEnded(ctx context.Context, tx pgx.Tx, issue string, shown *WaitChangeEnd) error
+	// WithdrawDefect ends the open reported defect or request id of issue with reason, at at. It
+	// answers false where issue holds no such row: none of that id, a check's or a production
+	// check's reason, one already withdrawn, or one a merged change carried. The reason is
+	// required. Who may end a request is the workflow's to judge (a person's request is refused).
 	WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error)
 	// CarryDefects marks each open defect of ids on issue as carried by generation: the change
 	// of that generation takes it, so its merge starts no second change for it.
@@ -3014,6 +3045,16 @@ type Store interface {
 	PutCheckRead(ctx context.Context, tx pgx.Tx, read CheckRead) (bool, error)
 	// NewestCheckRead is the issue's newest stored read, nil where none is stored.
 	NewestCheckRead(ctx context.Context, tx pgx.Tx, issue string) (*CheckRead, error)
+	// RefuseBranch records refusal, the refusal for good of an issue_branch row, as its issue's
+	// refusal of its generation, where none of that generation stands. It answers whether it was
+	// recorded: a second refused row of the generation finds the first, so its architect is told
+	// once (internal/daemon's finishRefused).
+	RefuseBranch(ctx context.Context, tx pgx.Tx, refusal BranchRefusal) (bool, error)
+	// ClearBranchRefusals deletes every refusal issue records: a later row wrote its branch.
+	ClearBranchRefusals(ctx context.Context, tx pgx.Tx, issue string) error
+	// BranchRefusals is the refusal of each issue of project at the generation it stands in now,
+	// by issue key: what the state names (api.Issue.BranchRefused).
+	BranchRefusals(ctx context.Context, tx pgx.Tx, project string) ([]BranchRefusal, error)
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
 	// the start of a step's record raises it in its own transaction (workflow's startStep), and
@@ -3140,10 +3181,10 @@ type Store interface {
 	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
 	// has not begun to run at now (Postgres.DesignNewsPending).
 	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
-	// DesignNewsWaiting is the reconcile of tree's news that has not begun to run at now, and
-	// whether there is one, held until tx ends so no lane claims it before tx commits
+	// DesignNewsWaiting says whether a reconcile of tree's news has not begun to run at now, and
+	// holds each such row until tx ends, so no lane claims it before tx commits
 	// (Postgres.DesignNewsWaiting).
-	DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (OutboxRow, bool, error)
+	DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
 	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
 	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
 	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps

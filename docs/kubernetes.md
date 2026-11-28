@@ -1866,6 +1866,30 @@ A deployment of an earlier layout clears all of it before it upgrades ([Upgradin
 The daemon runs on a host its pods can reach and serves the worker stream they dial.
 The controller is `legion controller start` on the operator's machine, or, under `controller: daemon`, a pod of its own with one launcher that the daemon launches ([The controller](#the-controller)).
 
+### Reviewing the controller's requests for new work
+
+`legion reopened-report` reads, for each issue the controller reopened, what happened between the request and the end of the change it started.
+It reads Dispatch alone, with the Dispatch credential of the operator-side `controller.yaml`, as `legion controller start` reads it, and it writes nothing.
+
+```sh
+legion reopened-report --config <controller.yaml> --issue <KEY> --issue <KEY>
+```
+
+A row starts at the accepted `todo` of the request, and ends where `close-wait.md` says the change merged or ended with no pull request.
+Each row is in one category:
+
+- `checks_written`: an actor other than the daemon changed a check block of the Verification document within the row.
+- `request_withdrawn`: the owner withdrew the request before the change ended.
+- `instruction_not_followed`: the change ended with neither of those. A version that changed no check block is no coverage.
+- `pending`: the change is still open.
+- `not_assessable`: an event, a version or the evidence could not be read.
+
+Each line is a name, the issue and its values: `row`, `start`, `change`, `end`, `version`, `withdrawal` and `unread`.
+Then a `total` line gives each category's count and issues, and `assessed` counts the ended rows that could be read.
+A value that the command could not read is `UNKNOWN`, never 0.
+The command exits 1 where a row could not be read or the file names no credential it can use, and 2 on a usage error.
+The controller's review of the rows judges whether the checks cover the request: the command decides nothing more.
+
 ### Reaching the daemon's database by hand
 
 A step below that reads or writes the daemon's database by hand gives `psql` or `pg_dump` the database's URL with no password in it, `<postgres_url>`, and the password in a file, never as an argument, because every process on the machine can read another's arguments.
@@ -3131,6 +3155,31 @@ Rolling forward does not undo that: such an issue's row still reads `default`, s
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
+#### Rolling back the release that ends a branch row GitHub refuses for good
+
+This release's migration `20261127215416_branch_refusals.up.sql` adds the table `branch_refusals` and the notice kind `branch-refused`.
+The table records each issue's branch row that GitHub refused in a way a retry meets again.
+An earlier release names the table in no statement.
+It decodes an outbox row strictly, so it fails an unsent `branch-refused` notice at every attempt.
+
+Run the way back below at the rollback, with every project's daemon on that database stopped.
+Run it before the way back of [the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue).
+Run it with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
+It is one transaction, and each of its statements runs again with no error.
+
+```sql
+begin;
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'branch-refused';
+drop table if exists branch_refusals;
+delete from schema_version where version = 20261127215416;
+commit;
+```
+
+The header of `20261127215416_branch_refusals.up.sql` carries this same block.
+
+The way back costs each unsent `branch-refused` notice, a refusal its architect is never told of, and the state's `branchRefused` of each refused branch.
+Under the earlier release a branch row GitHub refuses retries on its backoff again, and the starts of its issue wait behind it.
+
 #### Rolling back the release that starts a next change for a request on a merged issue
 
 This release's migration `20261127135256_merged_new_work.up.sql` adds the kind `request` to the table `defects`, the outbox kind `merge_read`, and the column `issues.never_merged_confirmed`.
@@ -3146,7 +3195,9 @@ psql writes a notice to its standard error, so keep that stream, as block A of t
 
 Each issue of the second list is closed, and Dispatch shows it `todo`.
 The earlier release reruns such an issue's whole tree, so set each one to `backlog` before the earlier release starts.
-After the roll forward, a person reads the kept lists and sets each issue to `todo` again where its request still stands.
+After the roll forward, a person reads the kept lists.
+Where an issue's request still stands, the person sets it to `done`, then `todo`.
+The `done` makes the record hold the issue closed again, so the `todo` waits for its merge read and does not run its tree again.
 
 The block then deletes the `merge_read` rows, the notices and controller notices of the kind `merge-unread`, and the requests, which the earlier release cannot read.
 It puts back the two kind checks as `20261126223725_done_by_checks` wrote them, drops the column, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again.
@@ -4498,6 +4549,8 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261126223725_done_by_checks adds the phase `verifying`, the merge snapshot and the close wait's columns of `issues`, two columns of `production_checks`, one of `pending_task_deliveries`, the tables `defects` and `close_reads` and two outbox kinds, and writes `step_run_witness` again, which reads `phases.entry`, and it writes none of the six, so the block holds over it; a rollback past it runs the two blocks of its own section first, [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass), which put the function back as 20261117004117_step_starts wrote it, drop what the migration adds and delete its version row, while `phases.entry` stands.
 20261127135256_merged_new_work adds the kind `request` to `defects`, the outbox kind `merge_read` and the column `issues.never_merged_confirmed`, and it writes none of the six, so the block holds over it; a rollback past it runs the block of its own section first, [Rolling back the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue), before the blocks of the release that closes an issue when its checks pass.
+20261127215416_branch_refusals adds the table `branch_refusals` and the notice kind `branch-refused`, and it writes none of the six, so the block holds over it.
+A rollback past it first runs the block of [its own section](#rolling-back-the-release-that-ends-a-branch-row-github-refuses-for-good).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

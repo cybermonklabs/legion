@@ -149,7 +149,7 @@ func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.De
 		return intake.Result{Defect: &intake.DefectAnswer{Defect: defect.ID, State: intake.DefectWithdrawn}}, nil
 	case defect.Kind == record.DefectKindRequest && defect.Role == record.RequesterPerson:
 		return refused("DEFECT_REQUEST_OF_A_PERSON", fmt.Sprintf(
-			"defect %d of %s is a person's request for new work. Only that person ends it with no pull request, so ask them to set %s to done. This withdrawal changed nothing.",
+			"Request %d of %s is a person's request for new work. Only that person ends it with no pull request, so ask them to set %s to done. This withdrawal changed nothing.",
 			defect.ID, issue.Key, issue.Key)), nil
 	}
 	now := e.now()
@@ -161,7 +161,7 @@ func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.De
 	if !ended {
 		return intake.Result{}, fmt.Errorf("withdraw defect %d of %s: the record read it open and ended none", defect.ID, issue.Key)
 	}
-	if err := e.waitNamesDefects(ctx, tx, issue, []record.WaitWithdrawal{{ID: defect.ID, Text: defect.Text, Reason: reason, At: now}}); err != nil {
+	if err := e.waitNamesDefects(ctx, tx, issue, []record.WaitWithdrawal{{ID: defect.ID, Kind: defect.Kind, Text: defect.Text, Reason: reason, At: now}}); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: a reported defect was withdrawn", "issue", issue.Key, "defect", defect.ID, "phase", issue.Phase)

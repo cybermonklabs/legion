@@ -354,6 +354,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.mergeQueueReadDone(ctx, tx, fact)
 	case intake.CloseChecksRead:
 		return e.closeChecksRead(ctx, tx, fact)
+	case intake.MergeRead:
+		return e.mergeRead(ctx, tx, fact)
+	case intake.MergeUnread:
+		return e.mergeUnread(ctx, tx, fact)
 	case intake.DispatchResultChanged:
 		return e.resultChanged(ctx, tx, fact)
 	case intake.MergeHoldsChanged:
@@ -549,6 +553,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 			return intake.Result{}, err
 		}
 	}
+	// A request that waits for its merge read hears each newer event of its issue, an edit among
+	// them (D17): any of them asks one read of the links, and a person's later request takes the
+	// pending one over (pendingRequestEvent).
+	if err := e.pendingRequestEvent(ctx, tx, *issue, fact); err != nil {
+		return intake.Result{}, err
+	}
 	// The engine reacts to a newer status alone: an event carrying the status the record holds is
 	// an edit, which it leaves to the observation admission records (admit's recordObservation).
 	if fact.Status == issue.Status {
@@ -567,18 +577,36 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		return intake.Result{}, err
 	}
 	if record.OutOfWorkflow(fact.Status) {
+		// A closed issue's move out of todo ends the request that waits for its merge read, and
+		// only a person's backlog moves one with no proof of its merge as today (closedHistoryMove).
+		if issue.Phase == phase.Done {
+			if kept, err := e.closedHistoryMove(ctx, tx, *issue, fact); err != nil || kept {
+				return intake.Result{}, err
+			}
+		}
 		// The move is the issue's status now, so no status write the daemon queued before it lands
 		// over it: a set-back queued over an outside backlog would otherwise find a person's later
 		// backlog on Dispatch and write over that.
 		if err := e.store.DropStatusWrites(ctx, tx, issue.Key); err != nil {
 			return intake.Result{}, err
 		}
-		if issue.Phase == phase.Verifying && fact.Status == record.DoneStatus {
+		// A person's done on an issue that waits for its checks, or whose next change is open, is
+		// the close of D16's door 6: what waited is named, and each open reason ends by the person.
+		if (issue.Phase == phase.Verifying || record.OnNextChange(*issue)) && fact.Status == record.DoneStatus {
 			if err := e.personClosedPast(ctx, tx, issue); err != nil {
 				return intake.Result{}, err
 			}
 		}
 		return intake.Result{}, e.leave(ctx, tx, *issue, fact.Status)
+	}
+	// A todo on an issue in verifying, and on a child at done of a live tree, is a request for new
+	// work (D17): the engine's door decides and places it (requestDoor), and today's path below
+	// takes what it leaves. A root at done, a lingering root and a child of a tree that is not live
+	// are admission's, which runs after this handler.
+	if fact.Status == "todo" && (issue.Phase == phase.Verifying || issue.Phase == phase.Done) {
+		if placed, err := e.requestDoor(ctx, tx, *issue, fact); err != nil || placed {
+			return intake.Result{}, err
+		}
 	}
 	// A todo written on a held root whose tree does not linger releases the hold
 	// (releaseHeldRoot). Its test is the complement of admission's own, by construction and not
@@ -3377,7 +3405,11 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		return err
 	}
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
+		start, err := e.childArchitectStartOf(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if err := e.enqueue(ctx, tx, issue.Key, start); err != nil {
 			return err
 		}
 	}

@@ -215,40 +215,37 @@ func (s *Postgres) DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string
 	return pending, nil
 }
 
-// DesignNewsWaiting is the reconcile of tree's news that has not begun to run at now, by
-// DesignNewsPending's rule, the earliest where more than one stands, and whether there is one. It
-// holds the row it answers until tx ends (for update), so a lane's claim of it (ClaimRow) waits for
-// tx to commit: the writer that finds it waiting queues none and relies on it reading the record
-// after the writer's change.
-func (s *Postgres) DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (OutboxRow, bool, error) {
-	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox where `+designNewsNotBegun+`
-		order by next_at, id limit 1 for update`, string(OutboxKindDesignChanges), tree, now))
+// DesignNewsWaiting says whether a reconcile of tree's news has not begun to run at now, by
+// DesignNewsPending's rule. It holds each such row until tx ends (for update), so a lane's claim
+// of it (ClaimRow) waits for tx to commit: the writer that finds one waiting queues none and
+// relies on it reading the record after the writer's change.
+func (s *Postgres) DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `select id from outbox where `+designNewsNotBegun+`
+		order by next_at, id limit 1 for update`, string(OutboxKindDesignChanges), tree, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return OutboxRow{}, false, nil
+		return false, nil
 	}
 	if err != nil {
-		return OutboxRow{}, false, fmt.Errorf("read the reconcile of the news of tree %s that waits to run: %w", tree, err)
+		return false, fmt.Errorf("read the reconcile of the news of tree %s that waits to run: %w", tree, err)
 	}
-	return row, true, nil
+	return true, nil
 }
 
-// QueueDesignNews makes the reconcile of tree's news of its approved design due at now: one that
-// has not begun to run (Store.DesignNewsWaiting) is made due at now where it was due later
-// (Store.ExpediteOutbox), and one is queued where none waits. The reconcile reads the record when
-// it runs, so the row already queued does all a second would, once it is due: one on the backoff
-// of a failed run would carry this write's news only when the backoff ran out. The read holds that
-// row until tx ends, so no lane claims it before this write commits. Its writers — the write of a
-// gate row that raises an approved version or opens the standing gate (workflow's putGateTold), a
-// phase move that leaves its member owed news (workflow's transition), a send that drops an item it
-// carried (the daemon's designNews) and the sweep — each take the lock every fact applies under, so
-// no two of them can each find none and both queue one.
+// QueueDesignNews queues the reconcile of tree's news of its approved design, due at now, unless
+// one that has not begun to run is queued already (Store.DesignNewsWaiting): the reconcile reads
+// the record when it runs, so the row already queued does all a second would. That read holds the
+// row until tx ends, so no lane claims it before this write commits. A row on the backoff of a
+// failed run keeps its backoff: that backoff rides out a moment's fault of Dispatch over the row's
+// bounded attempts (the daemon's designChangesAttempts), and the row carries this write's news at
+// its next attempt, at most RetryBackoffMost later. Its writers — the write of a gate row that
+// raises an approved version or opens the standing gate (workflow's putGateTold), a phase move that
+// leaves its member owed news (workflow's transition), a send that drops an item it carried (the
+// daemon's designNews) and the sweep — each take the lock every fact applies under, so no two of
+// them can each find none and both queue one.
 func QueueDesignNews(ctx context.Context, store Store, tx pgx.Tx, tree string, now time.Time) error {
-	waiting, found, err := store.DesignNewsWaiting(ctx, tx, tree, now)
-	if err != nil {
-		return err
-	}
-	if found {
-		_, err := store.ExpediteOutbox(ctx, tx, waiting, now)
+	waiting, err := store.DesignNewsWaiting(ctx, tx, tree, now)
+	if err != nil || waiting {
 		return err
 	}
 	row, err := NewOutboxRow(tree, DesignNewsReconcile{}, now)

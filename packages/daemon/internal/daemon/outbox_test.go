@@ -373,6 +373,9 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 	}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
+	// The root closed with no merge in its record: its todo runs as today only on a person's
+	// confirmation that its work never merged (D17), which re-admits it and cancels the hand-over.
+	confirmOutboxNeverMerged(t, pool, root)
 	reopen := func() error {
 		_, err := intake.ApplyFact(context.Background(), pool, "dispatch", "root-reopened", intake.DispatchIssue{
 			Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: true,
@@ -2767,6 +2770,25 @@ func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 	}
 }
 
+// confirmOutboxNeverMerged records a person's confirmation that the work of each of keys never
+// merged (record.Store.ConfirmNeverMerged), as a person's backlog of a closed issue does (D17 of
+// the done-by-checks plan). A todo on a closed issue whose record holds no merge waits for its
+// merge read, and only that confirmation runs it as today. So a test of today's rerun of such an
+// issue, a re-admission's whole clear or a re-entry, gives its fixture this before the todo.
+func confirmOutboxNeverMerged(t *testing.T, pool *store.Pool, keys ...string) {
+	t.Helper()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		for _, key := range keys {
+			if err := record.NewStore().ConfirmNeverMerged(ctx, tx, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("confirm that the work of %v never merged: %v", keys, err)
+	}
+}
+
 // readmitOutboxRoot records root at the generation a re-admission gave it and raises its tree's run
 // with it, as the re-admission's clear of the whole tree does (record.Postgres.ClearTreeGeneration):
 // PutIssue alone writes a root's next change, which leaves the tree's run.
@@ -3143,6 +3165,9 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 		t.Fatalf("after linger expiry the architect is %s with %d workspace removals, want retired and one", got, removed)
 	}
 
+	// The root closed with no merge in its record: a person's confirmation that its work never
+	// merged (D17) is what lets the todo take today's re-admission.
+	confirmOutboxNeverMerged(t, pool, root.Key)
 	// The human sets the closed root back to todo.
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
 		t.Fatalf("apply the todo: %v", err)
@@ -3208,6 +3233,9 @@ func TestAnEarlierGenerationsWorkspaceRemovalLeavesTheReadmittedTreesWorkspace(t
 		t.Fatalf("after a failed removal: %d attempts, %d rows, want one attempt and its row waiting", removals, workspaceRemovals(t, pool))
 	}
 
+	// The root closed with no merge in its record: a person's confirmation that its work never
+	// merged (D17) is what lets the todo take today's re-admission.
+	confirmOutboxNeverMerged(t, pool, root.Key)
 	busy = false
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
 		t.Fatalf("apply the todo: %v", err)

@@ -603,12 +603,19 @@ func TestTheTreesCloseWaitsForAnOpenCheckAndRunsOnceItCloses(t *testing.T) {
 }
 
 // A done child set back to todo closes its open check as not run before its new run starts. The
-// tester's live claim stays live: the closed check rejects its old look's report.
+// tester's live claim stays live: the closed check rejects its old look's report. The child's work
+// merged (#43), so a todo on it now starts its next change (D17), which closes the check too
+// (D6): this test drives ReenterChild itself, the re-entry that a person's confirmed rerun of
+// never-merged work and a stranded child at its root's promotion take.
 func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
 	t.Parallel()
 	rig := childCheckRig(t)
 	seedSlot(t, rig.pool, record.Slot{Issue: "LEGION-208", Index: 0})
-	rig.apply("todo", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V"})
+	child := issueRecord(t, rig.pool, "LEGION-209")
+	applyInTx(t, rig.pool, rig.engine, func(ctx context.Context, tx pgx.Tx) error {
+		return rig.engine.ReenterChild(ctx, tx, *child, intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "todo",
+			Title: "child", Parent: "LEGION-208", Rank: "V"})
+	})
 	check := productionCheck(t, rig.pool, "LEGION-209")
 	if check.Open() || check.Outcome != record.CheckNotRun || check.LookOpen {
 		t.Fatalf("the re-entered child's check = %+v, want it closed as not run", check)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,8 +30,12 @@ type ChangePlace struct {
 	Parent *string
 	// WaitsSince is when the issue's close waits from (Issue.CloseWaitSince): nil carries the
 	// moment the merge set, which every reason after a merge does, and a time is the moment a
-	// request applied (D1).
+	// request applied (D1). A request with no WaitsSince waits from the moment it starts the change.
 	WaitsSince *time.Time
+	// Request is the request for new work that starts the change (D17), nil for a change a reason
+	// after a merge starts. StartNextChange writes its row (record.DefectKindRequest), the one
+	// writer of that kind, and the change carries it as its reason.
+	Request *Request
 }
 
 // ChangeInPlace is the placement of a change that starts where the issue already stands: its own
@@ -74,6 +79,19 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	if check != nil && check.Open() {
 		if err := e.markCheckClosed(ctx, tx, check, record.CheckNotRun); err != nil {
 			return err
+		}
+	}
+	// A request is a reason of its own kind, written here alone and carried by the change it
+	// starts, so the checks that passed before cannot end the change before its owner takes a turn.
+	if place.Request != nil {
+		request := record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindRequest, Text: place.Request.Text,
+			Role: place.Request.Requester, ReportedAt: now}
+		if request.ID, err = e.store.PutDefect(ctx, tx, request); err != nil {
+			return err
+		}
+		reasons = append(slices.Clone(reasons), request)
+		if place.WaitsSince == nil {
+			place.WaitsSince = &now
 		}
 	}
 	ids := make([]int64, 0, len(reasons))
@@ -139,13 +157,24 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 // nextChangeReason is the next-change notice: the change's generation, each reason it carries and
-// where the work stands now. Each sentence holds at most 25 words and no semicolon.
+// where the work stands now, and, where a request is among the reasons, the instruction of D17 to
+// the owner (requestInstruction). Each sentence holds at most 25 words and no semicolon.
 func nextChangeReason(issue record.Issue, reasons []record.Defect) string {
 	text := fmt.Sprintf("The next change of %s started as generation %d, on its own branch with its approved design kept.", issue.Key, issue.Generation)
 	if named := reasonLines(reasons); len(named) > 0 {
-		return text + " It carries these reasons:" + bulleted(named) + "\nIt waits in the admission line for a slot."
+		text += " It carries these reasons:" + bulleted(named) + "\nIt waits in the admission line for a slot."
+	} else {
+		text += " It waits in the admission line for a slot."
 	}
-	return text + " It waits in the admission line for a slot."
+	if carriesRequest(reasons) {
+		text += "\n" + requestInstruction
+	}
+	return text
+}
+
+// carriesRequest says whether reasons hold a request for new work (record.DefectKindRequest).
+func carriesRequest(reasons []record.Defect) bool {
+	return slices.ContainsFunc(reasons, func(reason record.Defect) bool { return reason.Kind == record.DefectKindRequest })
 }
 
 // reasonLines is one line for each reason of a change: its id, its kind and what it says.
@@ -163,8 +192,9 @@ func reasonLines(reasons []record.Defect) []string {
 
 // tellChangeCount tells the owning architect and the project's controller once at each multiple
 // of the deployment's review round cap (Config.ReviewRoundCap) next changes of one issue, naming
-// the count, each reason and the issue's pull requests (D7). No count stops a change: the issue
-// goes on, and the controller can move it to backlog or icebox as it can any root.
+// the count, each reason and each change's pull request (D7, changePullRequests). No count stops a
+// change: the issue goes on, and the controller can move it to backlog or icebox as it can any
+// root.
 func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect) error {
 	every := e.cfg.ReviewRoundCap
 	if every <= 0 || issue.NextChanges%every != 0 {
@@ -176,8 +206,12 @@ func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Is
 	} else {
 		text += " "
 	}
-	if issue.Merge.Number != 0 {
-		text += fmt.Sprintf("Its newest merged pull request is #%d. ", issue.Merge.Number)
+	pulls, err := e.changePullRequests(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	if len(pulls) > 0 {
+		text += "Its pull requests:" + bulleted(pulls) + "\n"
 	}
 	text += "Move the issue to backlog or icebox where the work should stop."
 	notice := record.Notice{Kind: "next-change-count", Role: claim.RoleArchitect, Reason: text}
@@ -185,6 +219,35 @@ func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{Kind: "next-change-count", Reason: text}))
+}
+
+// changePullRequests is each pull request of key's generations, as #<number> in number order,
+// each once: every one a new generation's clear kept a clock of (cleared_pull_requests), the one
+// its pull_requests row holds, and the merge snapshot's, which the evidence projection reads
+// together (record.Store.MergeHistoryOf). A change that ended with no pull request names none.
+func (e *Engine) changePullRequests(ctx context.Context, tx pgx.Tx, key string) ([]string, error) {
+	history, err := e.store.MergeHistoryOf(ctx, tx, key)
+	if err != nil {
+		return nil, err
+	}
+	evidence := history.Evidence
+	numbers := make([]int, 0, len(evidence.Clocks)+2)
+	for _, clock := range evidence.Clocks {
+		numbers = append(numbers, clock.Number)
+	}
+	if evidence.PullRequest != nil {
+		numbers = append(numbers, evidence.PullRequest.Number)
+	}
+	numbers = append(numbers, evidence.Merge.Number)
+	slices.Sort(numbers)
+	numbers = slices.Compact(numbers)
+	pulls := make([]string, 0, len(numbers))
+	for _, number := range numbers {
+		if number > 0 {
+			pulls = append(pulls, fmt.Sprintf("#%d", number))
+		}
+	}
+	return pulls, nil
 }
 
 // changeReasons is the reasons a next change of issue would carry now: its open defects that no
@@ -278,9 +341,11 @@ func checkFailedText(failed record.CheckWait) string {
 // changeDue says whether the next change of issue may start now (D7): never before the merge of
 // the reviewed work, so the change starts at the later of the first read of the checks that
 // counts after the entry into verifying and the merger's completion of the generation that
-// merged, whose fallback is MergerCompletionBound after the merge. It answers the moment the
-// fallback comes due where the completion is what holds the change, so the judge reads the checks
-// again then.
+// merged, whose fallback is MergerCompletionBound after the merge. The merge's moment is GitHub's
+// merged_at, or the entry into verifying where the snapshot holds none (an older listener's
+// merge fact), which is the moment the daemon took the merge (mergedEntry): counted from the
+// zero time, the bound would have passed already. It answers the moment the fallback comes due
+// where the completion is what holds the change, so the judge reads the checks again then.
 func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool) {
 	if view.wait.Unread {
 		return time.Time{}, false
@@ -288,7 +353,11 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
 	if !issue.MergerCompletionOwed {
 		return time.Time{}, true
 	}
-	fallback := issue.Merge.MergedAt.UTC().Add(MergerCompletionBound)
+	merged := issue.Merge.MergedAt
+	if merged.IsZero() {
+		merged = view.facts.Entered
+	}
+	fallback := merged.UTC().Add(MergerCompletionBound)
 	if !e.now().Before(fallback) {
 		return time.Time{}, true
 	}

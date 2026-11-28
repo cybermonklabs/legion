@@ -98,6 +98,13 @@ func TestARerunUnderAReopenedRootIsNotTakenForAStaleHandOver(t *testing.T) {
 			statusChild, got)
 	}
 
+	// The root closed with no merge in its record: a person's confirmation that its work never
+	// merged (D17 of the done-by-checks plan) is what lets the todo below take today's re-admission.
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().ConfirmNeverMerged(ctx, tx, statusRoot)
+	}); err != nil {
+		t.Fatalf("confirm that the work of %s never merged: %v", statusRoot, err)
+	}
 	// A person reopens the root inside its linger: the tree is Legion's again, at a new generation.
 	apply("root-reopened", intake.DispatchIssue{Key: statusRoot, ResolvedRepo: "acme/widgets", Seq: 5, Type: "issue.updated",
 		Status: "todo", Title: statusRoot, Rank: "A", HandedOver: true})

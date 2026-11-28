@@ -457,6 +457,9 @@ func aReadmissionAdoptsForThePhaseOwnerAlone(r *adoptionRig) {
 	}
 	r.restoreClaims()
 
+	// The root closed with no merge in its record: a person's confirmation that its work never
+	// merged (D17) is what lets the todo take today's re-admission.
+	confirmOutboxNeverMerged(r.t, r.pool, root.Key)
 	r.apply("todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated",
 		Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true})
 	// The owner's start waits for the child's own admission slot (workflow.StartOrOwe), which the

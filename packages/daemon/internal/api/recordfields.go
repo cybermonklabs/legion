@@ -265,6 +265,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the daemon's own record that the merger's completion of the merged generation has not landed, which holds a next change back until it lands or the hour after the merge passes: a reader acts on the change's start, which the `next-change` notice tells, and never on the mark"},
 	{Field: "StandingToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds the daily notice of the terms that still hold the close to once a day: it is the daemon's own record of what it has already told the owning architect, and a reader is told the terms themselves"},
+	{Field: "MergeReadWaits", Column: ColumnWithheld,
+		Reason: "read beside the record from the issue's standing merge_read row, it keeps a closed root out of the waiting line while its request for new work waits for its merge read: a reader sees that request as the issue at done with the status todo, and the controller is told merge-unread where the read finds nothing"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

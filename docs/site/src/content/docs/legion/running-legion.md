@@ -1571,6 +1571,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   agents in a tool call: 1 — WIDGETS-12 tester "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
   held lifecycle rows: none
+  refused issue branches: none
   claims nothing will wake: none
   webhook App missing: none
   consumer legion-go-WIDGETS-dispatch: 0 waiting
@@ -1579,6 +1580,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   intake give-ups legion-go-WIDGETS-dispatch: 1 open, newest seq 48213
   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
+
+  The `refused issue branches` block names each issue whose branch row GitHub refused for good.
+  Each line gives the row, what it wrote, the refusal's kind, when, and the row's error.
+  Legion makes no second try, starts the issue's roles without the write, and tells the owning
+  architect once.
 
   The `admission` line counts every issue that holds a slot, a root or a child, beside the cap.
   An issue takes a slot when the daemon starts it and gives it back as the admission rule says

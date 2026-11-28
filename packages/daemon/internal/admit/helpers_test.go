@@ -381,6 +381,22 @@ func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	})
 }
 
+// confirmNeverMerged records a person's confirmation that the work of each of keys never merged
+// (record.Store.ConfirmNeverMerged), as a person's backlog of a closed issue does (D17 of the
+// done-by-checks plan). A todo on a closed issue whose record holds no merge waits for its merge
+// read, and only that confirmation lets it run as today. So a test of today's rerun of such an
+// issue, a re-admission's whole clear or a re-entry, gives its fixture this before the todo.
+func confirmNeverMerged(t *testing.T, pool *pgxpool.Pool, keys ...string) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		for _, key := range keys {
+			if err := record.NewStore().ConfirmNeverMerged(context.Background(), tx, key); err != nil {
+				t.Fatalf("confirm that the work of %s never merged: %v", key, err)
+			}
+		}
+	})
+}
+
 // seedSlotted records key as a running root of its own tree: its record, its admission slot and
 // its tree lifecycle, open under the workflow, which is what says the tree runs
 // (record.TreeLive) now that a slot counts one issue at work rather than one tree.

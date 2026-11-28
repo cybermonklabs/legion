@@ -400,6 +400,9 @@ func readmissionRig(t *testing.T, suspend func(*supervisor, claim.Token)) (rt *f
 	}
 	readmit = func() {
 		t.Helper()
+		// The root closed with no merge in its record: a person's confirmation that its work never
+		// merged (D17) is what lets the todo take today's re-admission.
+		confirmOutboxNeverMerged(t, pool, root.Key)
 		if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo",
 			Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
 			t.Fatalf("apply the todo: %v", err)

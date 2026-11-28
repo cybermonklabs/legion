@@ -149,7 +149,8 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // stands.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), coalesce(awaiting_answered_document_at = awaiting_answered_at, false), coalesce(awaiting_answered_version, 0), coalesce(awaiting_answered_artifact, ''), coalesce(awaiting_answered_step, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from, ` +
 	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, ` +
-	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation`
+	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation, ` +
+	`exists(select 1 from outbox where outbox.issue = issues.key and outbox.kind = 'merge_read')`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -799,7 +800,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From,
 		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt,
 		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt,
-		&treeGeneration); err != nil {
+		&treeGeneration, &issue.MergeReadWaits); err != nil {
 		return nil, err
 	}
 	issue.Merge.MergedAt = utcOrZero(mergedAt)
@@ -4049,8 +4050,9 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // issue, so a done run while the publish backs off for its retry would leave the document saying
 // the closed issue still waits. A start of an issue's role waits while an older
 // issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
-// on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
-// the row retries. A start of an issue's role also waits while an older issue_release row of the
+// on GitHub (IssueBranch), and a create GitHub keeps failing holds the issue's roles back while the
+// row retries, until it passes or a refusal for good ends it (internal/daemon's permanentRefusal).
+// A start of an issue's role also waits while an older issue_release row of the
 // issue is in the outbox, and, once that release is committed, while its teardown row is, whatever
 // the start's age, so no role starts in the pod the release's teardown is about to take
 // (IssueRelease). And a start marked as waiting for the issue's admission slot
