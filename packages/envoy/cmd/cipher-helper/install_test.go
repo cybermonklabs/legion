@@ -853,20 +853,46 @@ func (r *installRig) starts() []systemctlStart {
 }
 
 // restartSpan is the most install's restart can have run: from the first line of the unit read
-// install runs just before it (the first read of the main process) to the kernel's start of the
-// next call after that read but the restart, which install runs only once the restart has ended.
-// ok is false where the rig recorded no such pair.
+// install runs just before it (the read of the main process before the restart) to the kernel's
+// start of the next call but the restart after that read, which install runs only once the
+// restart has ended. A call its own timeout killed before its first line, as the machine can hold
+// one, left no record, so the pair is found by its place around the restart: where the restart
+// recorded its start, the read is the last read of the main process before it, and the next call
+// the first after it but a restart; where the restart left no record, the read is the first of the
+// two reads of the main process install makes, and only where both recorded theirs. ok is false
+// where the rig recorded no such pair: a read of the main process after the restart, paired with
+// the call after it, is no span of the restart.
 func restartSpan(starts []systemctlStart) (span time.Duration, ok bool) {
-	for i, read := range starts {
-		if !strings.Contains(read.args, "--property=MainPID") {
-			continue
+	readsMainPID := func(call systemctlStart) bool { return strings.Contains(call.args, "--property=MainPID") }
+	read, restart := -1, -1
+	for i, call := range starts {
+		if call.restart() {
+			restart = i
+			break
 		}
-		for _, next := range starts[i+1:] {
-			if !next.restart() {
-				return next.mark.Started - read.mark.Reached, true
+		if readsMainPID(call) {
+			read = i
+		}
+	}
+	if restart < 0 {
+		var reads []int
+		for i, call := range starts {
+			if readsMainPID(call) {
+				reads = append(reads, i)
 			}
 		}
+		if len(reads) != 2 {
+			return 0, false
+		}
+		read, restart = reads[0], reads[0]
+	}
+	if read < 0 {
 		return 0, false
+	}
+	for _, next := range starts[restart+1:] {
+		if !next.restart() {
+			return next.mark.Started - starts[read].mark.Reached, true
+		}
 	}
 	return 0, false
 }
