@@ -2,10 +2,13 @@ package cireconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,17 +84,19 @@ func (h *harness) requests() []contracts.CIVerifyRequest {
 	return requests
 }
 
-// waitForRequest polls the bucket until it holds a verify request of the harness's head past
-// after, the revision of an earlier one (zero for any), and answers it.
+// waitForRequest waits until the bucket holds a verify request of the harness's head past after,
+// the revision of an earlier one (zero for any), and answers it.
 func (h *harness) waitForRequest(after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
 	return h.waitForRequestOf(headSHA, after)
 }
 
-// waitForRequestOf is waitForRequest for the head at sha.
+// waitForRequestOf is waitForRequest for the head at sha. The listener writes a request from its
+// summary loop, which runs on ciClock, so each try that finds none moves that clock on to the next
+// moment the loop arms within a debounce and a tick (drivenUntil), as settlement does.
 func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
-	return testwait.Until(h.t, "a verify request past the head's previous revision", func() (contracts.CIVerifyRequest, bool) {
+	return drivenUntil(h, "a verify request past the head's previous revision", func() (contracts.CIVerifyRequest, bool) {
 		for _, request := range h.requests() {
 			if request.Head.SHA == sha && request.Revision > after {
 				return request, true
@@ -101,10 +106,12 @@ func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyR
 	})
 }
 
-// waitForState polls the head's record until done holds of it.
+// waitForState waits until the head's record is one done holds of, and answers it. The record is
+// the summary loop's to write as well as the passes', and the loop writes only as ciClock moves, so
+// each read done does not hold of moves that clock on as settlement does (drivenUntil).
 func (h *harness) waitForState(why string, done func(cistore.State) bool) cistore.State {
 	h.t.Helper()
-	return testwait.Until(h.t, why, func() (cistore.State, bool) {
+	return drivenUntil(h, why, func() (cistore.State, bool) {
 		state, _, ok := h.record()
 		return state, ok && done(state)
 	})
@@ -247,7 +254,7 @@ func TestWithVerifyOffAHeadSettlesFromItsWebhooksAndNoRequestIsWritten(t *testin
 
 // A ready head is published by the first verify pass that follows its request: the passes are
 // driven here, one per head, so the verdict is the order of events and not the time the runner
-// took. The time from the pass's start to the publication is logged for each head.
+// took.
 func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) {
 	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
@@ -263,12 +270,177 @@ func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) 
 		if i == 0 {
 			h.noSettlementAt(settlements, "before any verify pass", gitHubOwner, gitHubName, fmt.Sprint(pull.number))
 		}
-		began := time.Now()
 		h.verifyPass()
 		if settled := h.settlement(settlements, fmt.Sprintf("after the verify pass for pull request %d", pull.number)); settled.Passed.Count != 1 {
 			t.Fatalf("settlement of pull request %d = %+v, want ci-ok passed", pull.number, settled)
 		}
-		t.Logf("pull request %d: published %s after the verify pass began", pull.number, time.Since(began).Round(time.Millisecond))
+	}
+}
+
+// VerifyRequests lists every request the bucket holds while the listener writes one of them
+// again, as it does when a request goes unanswered: the jetstream watcher can leave such a request
+// out of a pass (INFRA-6356), whose head then waits for the next one. Here the test writes the
+// request again, with the bytes the bucket holds for it.
+func TestVerifyRequestsListsARequestWrittenAgainDuringTheRead(t *testing.T) {
+	t.Parallel()
+	h := newVerifyHarness(t, reviewerAppID)
+	pulls := []fakePull{head(21), head(22)}
+	for i, pull := range pulls {
+		run := runAt(pull, int64(100+i), "ci-ok", "completed", "success", "2026-11-22T00:05:00Z")
+		h.post("check_run", webhookFor("check_run", run, pull.number), fmt.Sprintf("d%d", i))
+	}
+	var asked contracts.CIVerifyRequest
+	for _, pull := range pulls {
+		asked = h.waitForRequestOf(pull.sha, 0)
+	}
+	requestKey := "verify." + cistore.Key(asked.Head.Owner, asked.Head.Repo, asked.Head.Number, asked.Head.SHA)
+	writer, err := h.reconciler.Open()
+	if err != nil {
+		t.Fatalf("open a writer: %v", err)
+	}
+
+	h.whileWrittenAgain(requestKey, func() {
+		for call := range 100 {
+			requests, err := writer.VerifyRequests(h.ctx)
+			if err != nil {
+				t.Fatalf("call %d of VerifyRequests: %v", call, err)
+			}
+			for _, pull := range pulls {
+				if !slices.ContainsFunc(requests, func(listed contracts.CIVerifyRequest) bool { return listed.Head.SHA == pull.sha }) {
+					t.Fatalf("call %d of VerifyRequests left out the request of head %s of pull request %d, which the bucket holds: it listed %+v", call, pull.sha, pull.number, requests)
+				}
+			}
+		}
+	})
+}
+
+// VerifyRequests reads no answered request from the stream's leader. An answered request leaves a
+// delete marker in the bucket until the bucket's TTL (dropRequest deletes it), the list of keys
+// VerifyRequests reads names each such key, and the watch it takes the values from delivers each
+// as a marker, so a pass costs no leader read per request answered in the bucket's last seven days
+// (INFRA-6356). A leader read is a stream message get of the CI bucket's stream, which the
+// connection the reconciler's writer reads through (openWriter) receives too, since NATS hands a
+// connection the messages it publishes; the requests are counted once a sentinel published on that
+// connection after VerifyRequests answered has come back, as one connection's messages reach it in
+// the order the server took them, so none is still on its way. A VerifyRequests that reads each
+// listed key from the leader, as 8fdced00's did, reads all 200.
+func TestVerifyRequestsReadsNoAnsweredRequestFromTheLeader(t *testing.T) {
+	t.Parallel()
+	h := newVerifyHarness(t, reviewerAppID)
+	const answered, live = 200, 3
+	// request is the key, the value and the head of the verify request of the i-th head of a
+	// repository no other request names, the value as the listener writes it (cistore's
+	// verifyRequest).
+	request := func(i int) (string, []byte, contracts.CIHead) {
+		head := contracts.CIHead{Owner: "acme", Repo: "widgets", Number: strconv.Itoa(i + 1), SHA: fmt.Sprintf("%040x", i+1)}
+		value, err := json.Marshal(map[string]any{"kind": "verify", "owner": head.Owner, "repo": head.Repo, "number": head.Number, "sha": head.SHA, "generation": 1})
+		if err != nil {
+			t.Fatalf("encode the verify request of %+v: %v", head, err)
+		}
+		return "verify." + cistore.Key(head.Owner, head.Repo, head.Number, head.SHA), value, head
+	}
+	// The answered requests are written with no round trip each, through the harness's JetStream
+	// context: each request's value published on its key's subject, then a message with no body
+	// carrying KV-Operation: DEL on the same subject. These store exactly the messages h.ci.Put and
+	// h.ci.Delete store (nats.go v1.55.0 kv.go:700-721, 814-855), so each marker is the delete
+	// marker dropRequest's Delete leaves, whose LastRevision adds only the
+	// Nats-Expected-Last-Subject-Sequence fence to its publish. The server takes one connection's
+	// publishes in the order they were sent, so each key's marker is stored after its put.
+	js := h.bus.JS()
+	subject := func(key string) string { return "$KV." + bus.CIStateBucket + "." + key }
+	answeredKeys := make(map[string]bool, answered)
+	futures := make([]nats.PubAckFuture, 0, 2*answered)
+	for i := range answered {
+		key, value, _ := request(i)
+		put, err := js.PublishAsync(subject(key), value)
+		if err != nil {
+			t.Fatalf("publish the verify request %s: %v", key, err)
+		}
+		marker := nats.NewMsg(subject(key))
+		marker.Header.Set("KV-Operation", "DEL")
+		answer, err := js.PublishMsgAsync(marker)
+		if err != nil {
+			t.Fatalf("publish the answer of the verify request %s: %v", key, err)
+		}
+		futures = append(futures, put, answer)
+		answeredKeys[key] = true
+	}
+	testwait.Receive(t, "the stream's acknowledgements of the answered requests' messages", js.PublishAsyncComplete())
+	for _, future := range futures {
+		select {
+		case err := <-future.Err():
+			t.Fatalf("the stream refused the message on %s (%v): %v", future.Msg().Subject, future.Msg().Header, err)
+		default:
+		}
+	}
+	var want []string
+	for i := range live {
+		key, value, head := request(answered + i)
+		if _, err := h.ci.Put(key, value); err != nil {
+			t.Fatalf("write the verify request %s: %v", key, err)
+		}
+		want = append(want, fmt.Sprintf("%+v", head))
+	}
+	writer, err := h.reconciler.Open()
+	if err != nil {
+		t.Fatalf("open a writer: %v", err)
+	}
+	// Both subscriptions are made on the connection the writer reads through, so the server takes
+	// them ahead of every request VerifyRequests sends on it.
+	conn := h.bus.Conn
+	leaderReads, err := conn.SubscribeSync("$JS.API.STREAM.MSG.GET.KV_" + bus.CIStateBucket)
+	if err != nil {
+		t.Fatalf("subscribe to the stream message gets of the CI bucket: %v", err)
+	}
+	t.Cleanup(func() { _ = leaderReads.Unsubscribe() })
+	sentinels := make(chan *nats.Msg, 1)
+	sentinel, err := conn.ChanSubscribe(nats.NewInbox(), sentinels)
+	if err != nil {
+		t.Fatalf("subscribe to the sentinel: %v", err)
+	}
+	t.Cleanup(func() { _ = sentinel.Unsubscribe() })
+
+	requests, err := writer.VerifyRequests(h.ctx)
+	if err != nil {
+		t.Fatalf("VerifyRequests: %v", err)
+	}
+	if err := conn.Publish(sentinel.Subject, nil); err != nil {
+		t.Fatalf("publish the sentinel: %v", err)
+	}
+	testwait.Receive(t, "the sentinel published once VerifyRequests answered", sentinels)
+	pending, _, err := leaderReads.Pending()
+	if err != nil {
+		t.Fatalf("count the stream message gets: %v", err)
+	}
+	var read []string
+	for range pending {
+		// Each is held already (Pending), so the read takes it at once.
+		request, err := leaderReads.NextMsg(0)
+		if err != nil {
+			t.Fatalf("read a stream message get the subscription holds: %v", err)
+		}
+		var body struct {
+			LastBySubj string `json:"last_by_subj"`
+		}
+		if err := json.Unmarshal(request.Data, &body); err != nil {
+			t.Fatalf("decode the stream message get %s: %v", request.Data, err)
+		}
+		if key := strings.TrimPrefix(body.LastBySubj, "$KV."+bus.CIStateBucket+"."); answeredKeys[key] {
+			read = append(read, key)
+		}
+	}
+	if len(read) != 0 {
+		t.Errorf("VerifyRequests read %d of the %d answered requests from the stream's leader, among them %v; want none, since its watch delivers each one's marker",
+			len(read), answered, read[:min(len(read), 3)])
+	}
+	var listed []string
+	for _, request := range requests {
+		listed = append(listed, fmt.Sprintf("%+v", request.Head))
+	}
+	slices.Sort(listed)
+	slices.Sort(want)
+	if !slices.Equal(listed, want) {
+		t.Fatalf("VerifyRequests listed %v, want the %d live requests %v alone", listed, live, want)
 	}
 }
 
@@ -300,7 +472,7 @@ func TestAFailedWriteOfTheReadLeavesNoAnswerUntilALaterOneLands(t *testing.T) {
 		t.Fatalf("the request at revision %d is gone after the write of the read failed", request.Revision)
 	}
 
-	h.replica().Verify(h.ctx)
+	h.verifyPassOf(h.replica())
 	if settled := h.settlement(settlements, "after a later answer landed"); settled.Passed.Count != 1 {
 		t.Fatalf("settlement = %+v, want ci-ok passed", settled)
 	}
@@ -312,18 +484,19 @@ const verifyGaveUp = "ci verify gave up an episode: no later read of the head me
 // A GitHub that fails every read of a head for longer than ten minutes, the point at which the
 // verify loop once gave the episode up, does not end it: each failed answer is read again after a
 // wait that doubles from verifyRetry up to verifyRetryMax, so the head is read 0, 1, 3, 7, 15 and
-// 23 minutes after the first read (the pass's clock moves 30 seconds at each pass here, and the
-// listener's request stays), with no ERROR and no answer; and the first read after GitHub answers
-// again, at 31 minutes, writes the answer, and the head is published.
+// 23 minutes after the first read (the pass's clock, the harness's, moves 30 seconds at each pass
+// here, and the listener's request stays), with no ERROR and no answer; and the first read after
+// GitHub answers again, at 31 minutes, writes the answer, and the head is published.
 func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoes(t *testing.T) {
 	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	start := time.Now()
-	clock := start
-	h.reconciler.now = func() time.Time { return clock }
+	// The verify loop reads its moments on the harness's clock (Reconciler.Clock), which this test
+	// moves 30 seconds after each pass, and elapsed is how far it has moved.
+	start := h.clock.Now()
+	elapsed := func() time.Duration { return h.clock.Now().Sub(start) }
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -333,11 +506,11 @@ func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoe
 	// reads is the clock's offset from start at each pass that read the head's check runs.
 	var reads []time.Duration
 	passesUntil := func(offset time.Duration) {
-		for ; clock.Sub(start) <= offset; clock = clock.Add(30 * time.Second) {
+		for ; elapsed() <= offset; h.clock.Advance(30 * time.Second) {
 			before := h.github.count()
 			h.verifyPass()
 			if len(h.github.sincePath(before, checkRunsPath)) != 0 {
-				reads = append(reads, clock.Sub(start))
+				reads = append(reads, elapsed())
 			}
 		}
 	}
@@ -383,9 +556,10 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	start := time.Now()
-	clock := start
-	h.reconciler.now = func() time.Time { return clock }
+	// The verify loop reads its moments on the harness's clock (Reconciler.Clock), which this test
+	// moves 30 seconds before each pass after the first, and elapsed is how far it has moved.
+	start := h.clock.Now()
+	elapsed := func() time.Duration { return h.clock.Now().Sub(start) }
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -404,13 +578,31 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	if err != nil {
 		t.Fatalf("read the request: %v", err)
 	}
+	// held reports whether the bucket still holds the request at revision: the newest message on
+	// requestKey, read from the stream's leader through the harness's handle. That is the fact a
+	// listing shows, read at its source: VerifyRequests lists requestKey at revision exactly when
+	// the key's newest message is a put at that revision, since asked.Value() names its own key,
+	// and the delete marker DoneVerifying leaves reads as nats.ErrKeyNotFound. The listing is not
+	// what this test is about, and each one opens a KV watch (bus.KeyValue.HeldEntries), which a
+	// listing after each of the loop's 62 passes would pay again.
+	held := func(revision uint64) bool {
+		t.Helper()
+		entry, err := h.ci.GetFromLeader(h.giveUp, requestKey)
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read the request %s from the stream's leader: %v", requestKey, err)
+		}
+		return entry.Revision() == revision
+	}
 	h.github.answerStatus(checkRunsPath, http.StatusNotFound)
 
 	h.verifyPass()
 	if lines := h.lines(verifyGaveUp); len(lines) != 1 {
 		t.Fatalf("a read GitHub answered 404 logged %d give-ups, want 1", len(lines))
 	}
-	if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == request.Revision }) {
+	if held(request.Revision) {
 		t.Fatalf("the request at revision %d is still held after a failure no read mends", request.Revision)
 	}
 	if state, _, _ := h.record(); state.VerifiedRev != 0 {
@@ -418,8 +610,8 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	}
 
 	before := h.github.count()
-	for clock = clock.Add(30 * time.Second); clock.Sub(start) <= 31*time.Minute; clock = clock.Add(30 * time.Second) {
-		if clock.Sub(start) == 16*time.Minute {
+	for h.clock.Advance(30 * time.Second); elapsed() <= 31*time.Minute; h.clock.Advance(30 * time.Second) {
+		if elapsed() == 16*time.Minute {
 			h.github.answerStatus(checkRunsPath, 0)
 		}
 		rewritten, err := kv.Put(requestKey, asked.Value())
@@ -427,8 +619,8 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 			t.Fatalf("write the request again: %v", err)
 		}
 		h.verifyPass()
-		if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == rewritten }) {
-			t.Fatalf("the request of the given-up episode written again at revision %d is still held at %v", rewritten, clock.Sub(start))
+		if held(rewritten) {
+			t.Fatalf("the request of the given-up episode written again at revision %d is still held at %v", rewritten, elapsed())
 		}
 	}
 	if read := h.github.sincePath(before, checkRunsPath); len(read) != 0 {
@@ -454,8 +646,8 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 }
 
 // A failure no later read mends ends the episode at once: here a check-runs listing that does not
-// end within maxPages (ten thousand runs, a hundred full pages), which writes no answer, logs one
-// ERROR and deletes the request.
+// end within maxPages (GitHub reporting ten thousand runs and every page full, a hundred pages
+// read), which writes no answer, logs one ERROR and deletes the request.
 func TestAVerifyListingThatDoesNotEndWithinMaxPagesIsGivenUpAtOnce(t *testing.T) {
 	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
@@ -464,14 +656,20 @@ func TestAVerifyListingThatDoesNotEndWithinMaxPagesIsGivenUpAtOnce(t *testing.T)
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.post("check_run", webhookBody("check_run", run), "d1")
 	request := h.waitForRequest(0)
-	runs := make([]object, 0, maxPages*100)
-	for i := range maxPages * 100 {
-		runs = append(runs, checkRun(int64(1000+i), fmt.Sprintf("job-%d", i), "completed", "success", otherApp, "2026-11-22T00:05:00Z"))
+	// One full page, a hundred runs as the read asks them, answers every page of the listing,
+	// encoded once (setFullCheckRunPages): GitHub reporting full pages however many are read.
+	page := make([]object, 0, 100)
+	for i := range 100 {
+		page = append(page, checkRun(int64(1000+i), fmt.Sprintf("job-%d", i), "completed", "success", otherApp, "2026-11-22T00:05:00Z"))
 	}
-	h.github.setCheckRuns(gitHubRepository, headSHA, runs...)
+	h.github.setFullCheckRunPages(gitHubRepository, headSHA, maxPages*100, page...)
+	before := h.github.count()
 
 	h.verifyPass()
 
+	if read := h.github.sincePath(before, checkRunsPath); len(read) != maxPages {
+		t.Fatalf("the verify read asked for %d pages of the head's check runs, want the %d it reads before it gives a listing up", len(read), maxPages)
+	}
 	if lines := h.lines(verifyGaveUp); len(lines) != 1 {
 		t.Fatalf("a listing past %d pages logged %d give-ups, want 1", maxPages, len(lines))
 	}
@@ -518,8 +716,8 @@ func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	clock := time.Now()
-	h.reconciler.now = func() time.Time { return clock }
+	// The verify loop reads its moments on the harness's clock (Reconciler.Clock), which this test
+	// moves past the verify retry.
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	running := checkSuite(901, "in_progress", "", otherApp, "2026-11-22T00:05:01Z")
@@ -539,7 +737,7 @@ func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing
 	}
 
 	h.github.setCheckSuites(gitHubRepository, headSHA, checkSuite(901, "completed", "success", otherApp, "2026-11-22T00:06:00Z"))
-	clock = clock.Add(verifyRetry + time.Second)
+	h.clock.Advance(verifyRetry + time.Second)
 	h.verifyPass()
 	renewed := h.waitForRequest(request.Revision)
 	h.verifyPass()

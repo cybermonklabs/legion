@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -45,7 +46,7 @@ func headNumber(sha string) (int64, bool) {
 }
 
 // runsOf is the path the stand-in lists one head's check runs at, which is the request a test
-// stalls to make GitHub slower than the pass's own bound.
+// holds to make GitHub slower than the pass's own bound (fakeGitHub.hold).
 func runsOf(pull fakePull) string {
 	return "/repos/" + gitHubRepository + "/commits/" + pull.sha + "/check-runs"
 }
@@ -111,12 +112,11 @@ func TestAPassEndsOnItsBoundAndTheNextTakesTheCursorUpThere(t *testing.T) {
 	// Forty-five open pull requests are three pages of twenty, twenty and five.
 	h.listHeads(heads(45)...)
 	h.reconciler.PassTimeout = 2 * time.Second
-	h.boundEndsAtTheStall()
 	// GitHub never answers the second page within what the pass has left, so the pass's own
 	// bound ends it there.
-	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	h.github.holdQuery(gitHubRepository, 1)
 
-	h.pass()
+	h.passCutByItsBound()
 
 	line := h.passLine()
 	if line["deadline_reached"] != true {
@@ -144,7 +144,7 @@ func TestAPassEndsOnItsBoundAndTheNextTakesTheCursorUpThere(t *testing.T) {
 	}
 
 	// GitHub answers that page again, and the pass after it starts where this one stopped.
-	h.github.stallQuery(gitHubRepository, 1, 0)
+	h.github.releaseQuery(gitHubRepository, 1)
 	askedBefore := len(h.github.queriesAsked())
 
 	h.pass()
@@ -179,21 +179,20 @@ func TestAPageThePassDidNotReachIsReadByTheNextPass(t *testing.T) {
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
 	h.reconciler.PassTimeout = 2 * time.Second
-	h.boundEndsAtTheStall()
 	// The run the first pass never reaches: it is at a head of the third page.
 	late := head(41)
 	h.github.setCheckRuns(gitHubRepository, late.sha,
 		atHead(gitHubRepository, late.sha, checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
 	)
-	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	h.github.holdQuery(gitHubRepository, 1)
 
-	h.pass()
+	h.passCutByItsBound()
 
 	if h.recordOf(late, 41) != nil {
 		t.Fatalf("the first pass recorded a head of a page it never reached: %+v", h.recordOf(late, 41))
 	}
 
-	h.github.stallQuery(gitHubRepository, 1, 0)
+	h.github.releaseQuery(gitHubRepository, 1)
 
 	h.pass()
 
@@ -536,16 +535,18 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 }
 
 // boundRecordLimits ends the pass's own bound when a REST limit is recorded, using the caller
-// context captured by Wait. Record checks that the client detached and bounded the ledger write.
-// With refuse set it returns that error without touching the ledger; otherwise it records the
-// limit through the real shared ledger.
+// context captured by Wait. With refuse set, Record checks that the client detached the ledger
+// write from the pass and bounded it at githubapp.LimitRecordTimeout on recordClock, the clock the
+// stand-in's client bounds that write on (fakeGitHub.recordClock), and returns refuse without
+// touching the ledger; otherwise it records the limit through the real shared ledger.
 type boundRecordLimits struct {
 	githubapp.Limits
-	t      *testing.T
-	falls  func()
-	refuse error
-	mu     sync.Mutex
-	pass   context.Context
+	t           *testing.T
+	recordClock *clocktest.Fake
+	falls       func()
+	refuse      error
+	mu          sync.Mutex
+	pass        context.Context
 }
 
 func (l *boundRecordLimits) Wait(ctx context.Context, scope string) (time.Duration, time.Time, error) {
@@ -566,11 +567,11 @@ func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.
 		testwait.Receive(l.t, "the pass deadline inside the rate-limit write", pass.Done())
 	}
 	if l.refuse != nil {
-		deadline, bounded := ctx.Deadline()
-		remaining := time.Until(deadline)
-		if !bounded || remaining <= 0 || remaining > 5*time.Second {
-			l.t.Fatalf("the REST ledger write has deadline %v (bounded=%v, remaining=%s), want a live bound no later than 5s", deadline, bounded, remaining)
-		}
+		// The write's bound falls LimitRecordTimeout after the moment of the write on the clock
+		// that bounds it, which no test moves: a timer pending there at exactly that moment. A
+		// deadline context of a clocktest.Fake answers Deadline from its parent, so the bound is
+		// read off that clock rather than off ctx.
+		l.recordClock.AwaitArmedAt(l.t, "the bound of the REST ledger write", l.recordClock.Now().Add(githubapp.LimitRecordTimeout))
 		if err := ctx.Err(); err != nil {
 			l.t.Fatalf("the REST ledger write inherited the ended pass's context: %v", err)
 		}
@@ -629,17 +630,24 @@ func TestAHeadCutShortKeepsItsETags(t *testing.T) {
 
 	for _, cut := range []struct {
 		name string
+		// cut runs the pass the cut ends, and undo takes the cut away again.
 		cut  func(h *harness)
 		undo func(h *harness)
 	}{
 		{
 			name: "the pass's own bound",
-			cut:  func(h *harness) { h.github.stall(runsOf(head(8)), time.Minute) },
-			undo: func(h *harness) { h.github.stall(runsOf(head(8)), 0) },
+			cut: func(h *harness) {
+				h.github.hold(runsOf(head(8)))
+				h.passCutByItsBound()
+			},
+			undo: func(h *harness) { h.github.release(runsOf(head(8))) },
 		},
 		{
 			name: "a rate limit GitHub answered",
-			cut:  func(h *harness) { h.github.rateLimitNext(suitesOf(head(8))) },
+			cut: func(h *harness) {
+				h.github.rateLimitNext(suitesOf(head(8)))
+				h.pass()
+			},
 			undo: func(h *harness) {
 				scope := githubapp.InstallationScope(h.github.installationID())
 				limit, found, err := h.reconciler.Limits.Get(h.ctx, scope)
@@ -660,7 +668,6 @@ func TestAHeadCutShortKeepsItsETags(t *testing.T) {
 			h.github.refuseChecks(gitHubRepository, head(7).sha)
 			h.github.refuseChecks(gitHubRepository, head(8).sha)
 			h.reconciler.PassTimeout = 2 * time.Second
-			h.boundEndsAtTheStall()
 			h.github.setCheckRuns(gitHubRepository, head(8).sha,
 				atHead(gitHubRepository, head(8).sha, checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")),
 			)
@@ -672,7 +679,6 @@ func TestAHeadCutShortKeepsItsETags(t *testing.T) {
 			}
 
 			cut.cut(h)
-			h.pass()
 
 			after, held := kept(h)
 			if !held {
@@ -711,19 +717,18 @@ func TestASecondCycleReadsEveryHeadConditionally(t *testing.T) {
 	for _, pull := range all {
 		h.github.refuseChecks(gitHubRepository, pull.sha)
 	}
-	// Only the first pass is bound, and only so that it is cut off at the stalled page: the two
+	// Only the first pass is bound, and only so that it is cut off at the held page: the two
 	// passes after it have every head of the repository to read and nothing to prove about a
-	// bound, so a bound on them would be a race between a loaded machine and 51 requests.
+	// bound.
 	h.reconciler.PassTimeout = 3 * time.Second
-	h.boundEndsAtTheStall()
 	// The first cycle takes two passes: the first is cut off at the second page, and the second
 	// reads that page and reaches the end of the order, which closes the cycle.
-	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	h.github.holdQuery(gitHubRepository, 1)
 
-	h.pass()
+	h.passCutByItsBound()
 
 	h.reconciler.PassTimeout = 0
-	h.github.stallQuery(gitHubRepository, 1, 0)
+	h.github.releaseQuery(gitHubRepository, 1)
 
 	h.pass()
 

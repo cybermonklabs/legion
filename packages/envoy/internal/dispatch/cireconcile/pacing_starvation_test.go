@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rows of this file are the floor of the passes after a starved one (Reconciler.starved, and
@@ -57,14 +58,14 @@ func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
 	}
 }
 
-// starveFirstPass ends the first pass at its held read of the first head, after it listed both.
-// Both the pass deadline and its pacing gaps use the test clock, so no retry or wall time is needed.
+// starveFirstPass ends the first pass on its own bound at its read of the first head, which GitHub
+// holds (passCutByItsBound), after the pass listed both heads. Both the pass's bound and its
+// pacing gaps run on the test's clock, so no retry or wall time is needed.
 func starveFirstPass(t *testing.T, h *harness) {
 	t.Helper()
 	h.reconciler.PassTimeout = time.Second
-	h.github.stall(runsOf(head(7)), time.Minute)
-	h.github.atStall(h.endBound)
-	h.pass()
+	h.github.hold(runsOf(head(7)))
+	h.passCutByItsBound()
 	line := h.passLine()
 	if number(t, line, "heads") != 0 {
 		t.Fatalf("a pass reached %v heads while GitHub held the first head's check runs, want none: nothing here is tested: %v", line["heads"], line)
@@ -75,8 +76,7 @@ func starveFirstPass(t *testing.T, h *harness) {
 	if line["deadline_reached"] != true {
 		t.Fatalf("the pass that listed both heads and reached neither reads deadline_reached %v, want its bound to end it: nothing here is tested: %v", line["deadline_reached"], line)
 	}
-	h.github.stall(runsOf(head(7)), 0)
-	h.github.atStall(nil)
+	h.github.release(runsOf(head(7)))
 	h.reconciler.PassTimeout = 5 * time.Second
 }
 
@@ -180,11 +180,10 @@ func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) 
 	starveFirstPass(t, h)
 	h.requireWaits(clock, 100*time.Millisecond)
 
-	// The pass at the floor reads the first head whole. End its bound when GitHub holds the
-	// second head's check runs, independently of the hook starveFirstPass already cleared.
-	h.github.stall(runsOf(head(8)), time.Minute)
-	h.github.atStall(h.endBound)
-	h.pass()
+	// The pass at the floor reads the first head whole, and its own bound ends it once GitHub
+	// holds the second head's check runs.
+	h.github.hold(runsOf(head(8)))
+	h.passCutByItsBound()
 	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
@@ -194,7 +193,7 @@ func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) 
 		t.Fatalf("the pass at the floor reached %v heads (deadline_reached %v), want the first head and its bound to end it in the second: nothing here is tested: %v",
 			line["heads"], line["deadline_reached"], line)
 	}
-	h.github.stall(runsOf(head(8)), 0)
+	h.github.release(runsOf(head(8)))
 
 	// The work is the first head's two listings and the repository's identity: nine tenths of
 	// five seconds over three requests is 1.5 seconds, which the ceiling clamps to 500ms.
@@ -235,19 +234,22 @@ func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 	readBothHeads(t, h, clock)
 
 	// GitHub holds the first head's check runs until the request is given up, and the caller's
-	// own deadline, a second away, gives it up well inside the pass's own bound of five seconds.
-	h.github.stall(runsOf(head(7)), time.Minute)
+	// own deadline, a second away on a clock of its own, gives it up once the stand-in holds the
+	// request, well inside the pass's own bound of five seconds.
+	h.github.hold(runsOf(head(7)))
 	caller := clocktest.New(clock.Now())
-	h.github.atStall(func() { caller.Advance(time.Second) })
 	ctx, cancel := caller.WithTimeout(h.ctx, time.Second)
-	h.reconciler.Pass(ctx)
+	ended := h.startPass(ctx)
+	testwait.Next(t, "GitHub to hold the pass's read of the first head's check runs", &h.github.held, func(string) bool { return true })
+	caller.Advance(time.Second)
+	testwait.Receive(t, "the pass to end on its caller's deadline", ended)
 	cancel()
 	h.requireWaits(clock, 500*time.Millisecond)
 	if line := h.passLine(); number(t, line, "heads") != 0 || line["deadline_reached"] != true {
 		t.Fatalf("the pass the caller's deadline ended reached %v heads (deadline_reached %v), want a deadline to end it before it reached one: nothing here is tested: %v",
 			line["heads"], line["deadline_reached"], line)
 	}
-	h.github.stall(runsOf(head(7)), 0)
+	h.github.release(runsOf(head(7)))
 
 	h.pass()
 	h.requireWaits(clock, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond)
@@ -272,7 +274,7 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 	readBothHeads(t, h, clock)
 
 	h.reconciler.GitHub = h.github.client(&boundRecordLimits{
-		Limits: ratelimit.New(h.pool), t: t, falls: h.endBound, refuse: context.DeadlineExceeded,
+		Limits: ratelimit.New(h.pool), t: t, recordClock: h.github.recordClock, falls: h.endBound, refuse: context.DeadlineExceeded,
 	})
 	h.github.rateLimitNext(runsOf(head(7)))
 	h.pass()
@@ -311,8 +313,8 @@ func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 	// sent -- the shared limits', which the pass reads first, and the covered repositories' -- so
 	// no request reaches GitHub and the walk counts no cut.
 	h.reconciler.PassTimeout = time.Nanosecond
-	passClock := h.reconciler.passClock
-	h.reconciler.passClock = expiredPassClock{Clock: passClock, advance: clock.Advance}
+	passClock := h.reconciler.Clock
+	h.reconciler.Clock = expiredPassClock{Clock: passClock, advance: clock.Advance}
 	sentBefore := h.github.count()
 	h.pass()
 	h.requireWaits(clock)
@@ -321,7 +323,7 @@ func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 			line["heads"], line["deadline_reached"], h.github.count()-sentBefore, line)
 	}
 	h.reconciler.PassTimeout = 5 * time.Second
-	h.reconciler.passClock = passClock
+	h.reconciler.Clock = passClock
 
 	h.pass()
 	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)

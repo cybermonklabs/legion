@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  Dispatch's CI verify pass now reads a verify request that the listener writes again while
+  Dispatch lists the requests in that same pass. Before, the list could leave such a request out,
+  and Dispatch read it only at the next pass, 5 s later.
+time: 2026-11-28T10:26:11Z
+custom:
+    Issue: INFRA-6356

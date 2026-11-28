@@ -178,6 +178,18 @@ type Reconciler struct {
 	// it, for up to githubapp's LimitRecordTimeout (5 s), so a pass's last write can end that
 	// much past PassTimeout.
 	PassTimeout time.Duration
+	// Clock is the time a pass's bound (PassTimeout), the gap it leaves between two REST
+	// requests (Pace), the time each query takes and the wait it earns (graphQLPace), the pass's
+	// own start and length (its line) and the hold of an answer that the App is not installed
+	// (AbsentAppRecheck) run on: clock.Real() when nil, which is every deployment's, and a test's
+	// clocktest.Fake, which ends the pass's bound, a wait or a hold only when the test moves it.
+	// It is also what the end of a limit GitHub answered is placed from (stopAt): GitHub's wait,
+	// which the GitHub client read against its own clock (githubapp.WithRateLimitClock), added to
+	// this clock's reading. A limit held in the ledger every process shares ends where the ledger
+	// says, on the database's clock. The verify loop reads its moments on it too: when its next
+	// pass is due (Verify), when a head it failed to answer is read again (verifyRetryAfter) and
+	// when that failure is forgotten (verifyForget).
+	Clock clock.Clock
 	// Instance answers this process's row in the registry of live server processes, the id
 	// processes.Register gave it, and "" while the process holds none yet. It is what each pass
 	// records its row under (beginPass), and the registry row it names is what says later
@@ -198,12 +210,6 @@ type Reconciler struct {
 	// on, since both can be inside a lease at once. Nil answers with no lease, which is a test's
 	// Reconciler.
 	VerifyLeases duty.Leases
-	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
-	// which is every Reconciler but a test's: a test of how long an answer is held moves its
-	// own clock rather than waiting out AbsentAppRecheck.
-	now func() time.Time
-	// passClock owns pass deadlines, pacing gaps and query durations. Nil uses clock.Real.
-	passClock clock.Clock
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which an old name and the name it was renamed to share as one entry:
@@ -294,13 +300,15 @@ func (r *Reconciler) limited(ctx context.Context, under ...string) *stop {
 // stopAt is the stop a GitHub error ends the pass at, and nil for every other error.
 // githubapp.Client.request records GitHub's own limit in the shared ledger itself, so the pass
 // records nothing here; scope is what the request was budgeted under, which a limit GitHub
-// answered with rather than one already held does not carry.
-func stopAt(err error, scope string) *stop {
+// answered with rather than one already held does not carry. The stop's end is the wait GitHub
+// named from the reconciler's clock (Clock), the clock its GitHub client read that wait against
+// (githubapp.WithRateLimitClock): both are the real clock in a deployment.
+func (r *Reconciler) stopAt(err error, scope string) *stop {
 	limited, ok := githubapp.AsRateLimit(err)
 	if !ok {
 		return nil
 	}
-	at := &stop{scope: limited.Scope, until: time.Now().Add(limited.Wait)}
+	at := &stop{scope: limited.Scope, until: r.clock().Now().Add(limited.Wait)}
 	if at.scope == "" {
 		at.scope = scope
 	}
@@ -341,21 +349,13 @@ func see[K comparable](held *map[K]struct{}, key K) {
 	remember(held, key, struct{}{})
 }
 
-// clock is the time the Reconciler's held answers are timed by (Reconciler.now).
-func (r *Reconciler) clock() time.Time {
-	if r.now != nil {
-		return r.now()
+// clock is the time the pass's bound, its waits and its held answers, and the verify loop's
+// moments, run on (Reconciler.Clock): Clock, or the wall clock when the caller set none.
+func (r *Reconciler) clock() clock.Clock {
+	if r.Clock == nil {
+		return clock.Real()
 	}
-	return time.Now()
-}
-
-// deadlineClock supplies pass deadlines, pacing gaps and query durations. A test can set
-// passClock to advance them together; nil preserves the real clock and its timer semantics.
-func (r *Reconciler) deadlineClock() clock.Clock {
-	if r.passClock != nil {
-		return r.passClock
-	}
-	return clock.Real()
+	return r.Clock
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the

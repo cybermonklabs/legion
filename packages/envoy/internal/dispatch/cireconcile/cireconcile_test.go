@@ -590,6 +590,14 @@ func atHead(repository, sha string, item object) object {
 	return item
 }
 
+// stagedAhead is how far ahead of the database's clock a row stages a moment its verdict needs
+// still to come when the pass or the read meets it: the end of a limit the row records in force
+// (ratelimit.Store.Record), or a process's heartbeat (registerProcess, at -stagedAhead), which
+// keeps the process live (processes.LiveWindow). It is staged state for that clock, not a wait: a
+// day, longer than any -timeout CI gives this package, so the moment is still to come however
+// long the machine takes to reach it, where ten minutes could pass on a loaded one.
+const stagedAhead = 24 * time.Hour
+
 // A limit already in force on the App ends a pass before it sends GitHub anything, and the pass
 // line names the scope and when the limit ends.
 func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
@@ -597,7 +605,7 @@ func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
-	if err := h.reconciler.Limits.Record(h.ctx, "app", 10*time.Minute); err != nil {
+	if err := h.reconciler.Limits.Record(h.ctx, "app", stagedAhead); err != nil {
 		t.Fatalf("record a limit on the App: %v", err)
 	}
 
@@ -909,7 +917,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 		arrange: func(h *harness) {
 			h.seedProjectDefault(rowRepository)
 			h.listHead()
-			if err := h.reconciler.Limits.Record(h.ctx, githubapp.AppScope, 10*time.Minute); err != nil {
+			if err := h.reconciler.Limits.Record(h.ctx, githubapp.AppScope, stagedAhead); err != nil {
 				h.t.Fatalf("record a limit on the App: %v", err)
 			}
 		},
@@ -927,23 +935,17 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 		arrange: func(h *harness) {
 			h.seedProjectDefault(rowRepository)
 			h.listHead()
-			// GitHub holds its answer about the repository past the moment the caller cancels.
-			h.github.stall("/repos/"+rowRepository, time.Minute)
+			// GitHub holds its answer about the repository until the caller cancels the pass.
+			h.github.hold("/repos/" + rowRepository)
 		},
 		pass: func(h *harness) {
 			ctx, cancel := context.WithCancel(h.ctx)
 			defer cancel()
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				h.reconciler.Pass(ctx)
-			}()
-			testwait.Until(h.t, "the pass's GitHub repository request before cancellation", func() (int, bool) {
-				count := h.github.countPath("/repos/" + rowRepository)
-				return count, count != 0
-			})
+			ended := h.startPass(ctx)
+			testwait.Next(h.t, "GitHub to hold the pass's request about the repository", &h.github.held,
+				func(path string) bool { return path == "/repos/"+rowRepository })
 			cancel()
-			<-done
+			testwait.Receive(h.t, "the pass its caller cancelled to end", ended)
 		},
 		nothing: true,
 	}} {

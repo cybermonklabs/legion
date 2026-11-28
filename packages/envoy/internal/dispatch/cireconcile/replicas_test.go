@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // One process serves each period. Two Reconcilers stand for the two processes a deployment runs,
@@ -25,10 +26,21 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 	)
 	other := h.replica()
 	leases := storetest.Leases(t, h.pool)
+	// exclusive runs r's pass under the lease for the period due names, as the loop does, and
+	// waits through the shared wait for it to return, as passOf does; it reports whether r took
+	// the lease.
+	exclusive := func(due time.Time, r *Reconciler) (ran bool) {
+		t.Helper()
+		testwait.Returns(t, "a reconcile pass under the lease to return", func() {
+			ran = duty.Exclusive(h.ctx, nil, leases, Lease, due, Interval, r.Pass)
+		})
+		return ran
+	}
 
 	// Two ticks one Interval apart, the second process first in the second period, so neither
-	// test passes by being the one that always runs.
-	due := time.Now()
+	// test passes by being the one that always runs. The moment is the test's own: this test's
+	// database holds no period of the lease, so any moment keys a period no pass has served.
+	due := harnessStart
 	for _, period := range []struct {
 		name   string
 		due    time.Time
@@ -39,14 +51,14 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 		{name: "the period after it", due: due.Add(Interval), first: other, second: h.reconciler},
 	} {
 		before := h.github.count()
-		if ran := duty.Exclusive(h.ctx, nil, leases, Lease, period.due, Interval, period.first.Pass); !ran {
+		if ran := exclusive(period.due, period.first); !ran {
 			t.Fatalf("%s: the process that took the lease ran no pass", period.name)
 		}
 		served := h.github.count()
 		if served == before {
 			t.Fatalf("%s: the process that served it sent GitHub nothing", period.name)
 		}
-		if ran := duty.Exclusive(h.ctx, nil, leases, Lease, period.due, Interval, period.second.Pass); ran {
+		if ran := exclusive(period.due, period.second); ran {
 			t.Fatalf("%s: both processes ran a pass", period.name)
 		}
 		if sent := h.github.count(); sent != served {
@@ -77,7 +89,7 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 	// limit stands: a mint is budgeted under the App, not under the installation the limit is on,
 	// and this test is about the reads that limit stops.
 	h.pass()
-	other.Pass(h.ctx)
+	h.passOf(other)
 
 	h.github.rateLimitNext(checkRunsPath)
 
@@ -100,7 +112,7 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 	h.github.forgetRequests()
 
 	h.pass()
-	other.Pass(h.ctx)
+	h.passOf(other)
 
 	if sent := h.github.count(); sent != 0 {
 		t.Fatalf("the two processes sent GitHub %d requests under a limit in force: %+v", sent, h.github.received())
@@ -144,9 +156,11 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pass line's rate_limit_until is not RFC3339: %v", err)
 	}
-	// The stand-in's own answer resets ninety seconds out, so the line's time is ahead of now and
-	// not far ahead of it.
-	if !until.After(time.Now()) || until.After(time.Now().Add(5*time.Minute)) {
-		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset, which is moments away", until)
+	// The stand-in's own answer resets at a whole second it records, on the passes' clock, which
+	// githubapp reads GitHub's wait against (githubapp.WithRateLimitClock) and the pass adds back
+	// to (stopAt): that clock does not move between the two, so the line's moment is the reset.
+	reset := h.github.lastReset()
+	if !until.Equal(reset) {
+		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset at %s", until, reset)
 	}
 }

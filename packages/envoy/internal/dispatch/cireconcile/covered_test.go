@@ -173,11 +173,10 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 	// inside that repository and leaves the cursor there.
 	cutAt := head(2)
 	h.github.refuseChecks(letteredRepository, cutAt.sha)
-	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", time.Minute)
+	h.github.hold("/repos/" + letteredRepository + "/commits/" + cutAt.sha + "/check-runs")
 	h.reconciler.PassTimeout = 3 * time.Second
-	h.boundEndsAtTheStall()
 
-	h.pass()
+	h.passCutByItsBound()
 
 	first := h.passLine()
 	if first["deadline_reached"] != true {
@@ -190,7 +189,7 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 	if _, err := h.pool.Exec(h.ctx, `update projects set default_repo = null where default_repo = $1`, letteredRow); err != nil {
 		t.Fatalf("clear the default %s: %v", letteredRow, err)
 	}
-	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", 0)
+	h.github.release("/repos/" + letteredRepository + "/commits/" + cutAt.sha + "/check-runs")
 	h.reconciler.PassTimeout = 0
 
 	h.pass()

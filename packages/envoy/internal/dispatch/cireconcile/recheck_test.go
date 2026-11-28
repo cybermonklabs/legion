@@ -13,10 +13,8 @@ import (
 func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	// The clock is this test's own, read by the pass on the test's goroutine: the answer is
-	// held for an hour, which no test waits out.
-	now := time.Now()
-	h.reconciler.now = func() time.Time { return now }
+	// The hold runs on the pass's clock (Reconciler.Clock), the harness's fake, which moves only
+	// when this test moves it: the answer is held for an hour, which no test waits out.
 	h.issueInRepository(rowRepository)
 
 	h.pass()
@@ -35,7 +33,7 @@ func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
 	settlements := h.subscribe()
-	now = now.Add(AbsentAppRecheck - time.Second)
+	h.clock.Advance(AbsentAppRecheck - time.Second)
 
 	h.pass()
 
@@ -50,7 +48,7 @@ func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing
 		t.Errorf("the pass before the answer lapsed read %d heads, want none: %v", got, line)
 	}
 
-	now = now.Add(time.Second)
+	h.clock.Advance(time.Second)
 
 	h.pass()
 

@@ -238,7 +238,7 @@ func (r *Reconciler) readStatuses(ctx context.Context, writer Writer, head pullH
 		return objectPage(answer), err
 	})
 	if err != nil {
-		if at := stopAt(err, head.scope); at != nil {
+		if at := r.stopAt(err, head.scope); at != nil {
 			return false, false, at
 		}
 		if r.cutShort(ctx, c) {
@@ -333,7 +333,7 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 	// reads it (identify, openPullRequests, the query): it is GitHub's answer, not a request the
 	// ending killed, so the pass line says rate_limited even where the bound fell while the limit
 	// was being recorded.
-	if at := stopAt(err, head.scope); at != nil {
+	if at := r.stopAt(err, head.scope); at != nil {
 		return at
 	}
 	if r.cutShort(ctx, c) {

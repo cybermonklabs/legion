@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -56,7 +55,8 @@ const (
 	// key. A record key always has four tokens (Key), so a request key has five, and no record of
 	// an owner named "verify" is ever taken for one (isVerifyKey, verifyRequestKeys).
 	verifyKeyPrefix = "verify"
-	// verifyRequestKeys is the watch filter of every verify request and of nothing else.
+	// verifyRequestKeys is the key pattern of every verify request and of nothing else, which
+	// VerifyRequests lists the requests under (bus.KeyValue.HeldEntries).
 	verifyRequestKeys = verifyKeyPrefix + ".*.*.*.*"
 
 	// verifyTimeout is how long the summary loop waits for an answer before it writes the
@@ -144,14 +144,6 @@ func verifyBackoffAfter(stops int) time.Duration {
 	return min(backoff, verifyBackoffMax)
 }
 
-// clock is the time a claim is stamped by (Store.now).
-func (s *Store) clock() time.Time {
-	if s.now != nil {
-		return s.now()
-	}
-	return time.Now()
-}
-
 // verifyRequest is the value of a verify request: the head to read, under the owner and name
 // GitHub gives the repository, which is what the record is keyed by, and the settlement episode it
 // asks for, the generation of the claim it was written for. Kind names it, so a value read alone
@@ -184,7 +176,7 @@ func (s *Store) requestVerify(ctx context.Context, st State, generation uint64) 
 // at revision, the summary loop's own: a request written since is another listener's, or a later
 // one, and stays.
 func (s *Store) dropRequest(key string, revision uint64) {
-	ctx, cancel := context.WithTimeout(context.Background(), recordWait)
+	ctx, cancel := context.WithTimeout(context.Background(), RecordWait)
 	defer cancel()
 	kv := s.kv()
 	_, err := kvCall(ctx, s.logger, s.nextRewatch(), func() (struct{}, error) {
@@ -203,7 +195,7 @@ func (s *Store) refreshClaim(key string, generation uint64, hash string) (bool, 
 		if state.Claim == nil || state.Claim.Generation != generation || state.Claim.Hash != hash || state.Generation != generation {
 			return false, nil
 		}
-		state.Claim.ClaimedAt = s.clock().UnixMilli()
+		state.Claim.ClaimedAt = s.clock.Now().UnixMilli()
 		return true, nil
 	})
 	return refreshed, err
@@ -250,27 +242,24 @@ func streamIdentity(ctx context.Context, kv bus.KeyValue) (int64, error) {
 
 // VerifyRequests lists every verify request the bucket holds, each with the revision it holds it
 // at, the episode it asks for, and the identity of the stream it was read in: what an answer to it
-// carries (MarkVerified). It reads the stream's identity, then the requests in one watch, within
-// ctx and recordWait, and a watch that ends before it has delivered every request is an error.
+// carries (MarkVerified). It reads them through bus.KeyValue.HeldEntries, within ctx and
+// RecordWait, so a request the listener writes again while the list is read, as it does when a
+// request goes unanswered for verifyTimeout, is still listed and is read in this pass: the
+// jetstream watcher's first delivery could leave it out until the next pass, one
+// cireconcile.VerifyInterval (five seconds) later. HeldEntries reads the stream's state before
+// it lists the keys and answers that state, so the stream's identity is taken from it, as
+// streamIdentity takes it, and the stream is read once.
 func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyRequest, error) {
-	ctx, cancel := context.WithTimeout(ctx, recordWait)
+	ctx, cancel := context.WithTimeout(ctx, RecordWait)
 	defer cancel()
 	kv := w.store.kv()
-	stream, err := streamIdentity(ctx, kv)
+	state, entries, err := kv.HeldEntries(ctx, verifyRequestKeys)
 	if err != nil {
 		return nil, err
 	}
-	watcher, err := kv.WatchKeys(ctx, verifyRequestKeys, jetstream.IgnoreDeletes())
-	if err != nil {
-		return nil, err
-	}
+	stream := state.Created.UnixNano()
 	var requests []contracts.CIVerifyRequest
-	for entry := range watcher.Updates() {
-		if entry == nil {
-			_ = watcher.Stop()
-			go bus.DrainWatcher(watcher)
-			return requests, nil
-		}
+	for _, entry := range entries {
 		var request verifyRequest
 		if err := json.Unmarshal(entry.Value(), &request); err != nil ||
 			entry.Key() != verifyKey(request.Owner, request.Repo, request.Number, request.SHA) {
@@ -284,7 +273,7 @@ func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyReques
 			Stream:   stream,
 		})
 	}
-	return nil, fmt.Errorf("cistore: the watch of the verify requests ended before it delivered them all: %w", ctx.Err())
+	return requests, nil
 }
 
 // errStreamChanged is MarkVerified's refusal of an answer read in a stream the bucket is no longer
@@ -306,7 +295,7 @@ var errStreamChanged = errors.New("cistore: the CI bucket was created again sinc
 // the bucket no longer holds is not made again for it. It answers whether the write changed the
 // record.
 func (w *Writer) MarkVerified(ctx context.Context, head contracts.CIHead, revision uint64, stream int64) (bool, error) {
-	read, cancel := context.WithTimeout(ctx, recordWait)
+	read, cancel := context.WithTimeout(ctx, RecordWait)
 	current, err := streamIdentity(read, w.store.kv())
 	cancel()
 	if err != nil {
@@ -394,7 +383,7 @@ func claimHeldFor(st State, wait verifyWait) bool {
 // keeps the wait with no revision, and the next pass writes it again; the claim holds the head
 // meanwhile.
 func (z *summarizer) ask(logger *logging.Logger, key string, st State, now int64, wait verifyWait) {
-	ctx, cancel := context.WithTimeout(context.Background(), recordWait)
+	ctx, cancel := context.WithTimeout(context.Background(), RecordWait)
 	defer cancel()
 	revision, err := z.store.requestVerify(ctx, st, wait.generation)
 	if err != nil {

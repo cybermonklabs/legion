@@ -30,13 +30,14 @@ func (c *advancingPaceClock) Sleep(ctx context.Context, d time.Duration) error {
 	return ctx.Err()
 }
 
+// paceOnTheTestClock runs the harness's passes on an advancingPaceClock over the harness's own
+// clock, checked as boundByTheTest checks it, and answers that clock so the test reads back the
+// waits the passes requested. The stand-in stamps its queries and moves on by a query's time on
+// the same clock (fakeGitHub.clock).
 func (h *harness) paceOnTheTestClock() *advancingPaceClock {
 	h.t.Helper()
-	h.boundByTheTest()
-	c := &advancingPaceClock{Fake: h.bound}
-	h.reconciler.passClock = checkedPassClock{Clock: c, h: h}
-	h.github.now = c.Now
-	h.github.queryWait = c.Advance
+	c := &advancingPaceClock{Fake: h.clock}
+	h.reconciler.Clock = checkedPassClock{Clock: c, h: h}
 	return c
 }
 

@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -34,9 +33,9 @@ import (
 
 // fakeQuery is one GraphQL query the stand-in was asked: the repository it named, the page
 // cursor it carried, the ordinal of the page that cursor names, the document it was, and when
-// the stand-in began and finished answering it. A test reads these back to say which pages a
-// pass asked for, in what order, with which document, and how much of GitHub's own time the
-// pass took.
+// the stand-in began and finished answering it, read off the passes' own clock. A test reads
+// these back to say which pages a pass asked for, in what order, with which document, and how
+// much of GitHub's own time the pass took.
 type fakeQuery struct {
 	repository string
 	after      string
@@ -53,7 +52,7 @@ type fakeQuery struct {
 // alone: GitHub's cursor is a keyset cursor, the key of the last node of the answer it came in
 // (cursor.after), so the page after it is the heads above that number and a pull request merged
 // below the page moves no page of the query. The ordinal decides no window at all -- it is the
-// label the stand-in's own verbs key a page by, which refusePage and stallQuery name a page
+// label the stand-in's own verbs key a page by, which refusePage and holdQuery name a page
 // with and which the query log reports (harness.pagesAsked) -- so a test may still say "the
 // second page of this repository" about a listing no position is read by.
 type queryAfter struct {
@@ -157,13 +156,13 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		at = known
 	}
-	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: f.clockNow()})
+	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: f.clock.Now()})
 	asked := len(f.queries) - 1
 	f.inFlight++
 	f.mostInFlight = max(f.mostInFlight, f.inFlight)
 	defer func() {
 		f.mu.Lock()
-		f.queries[asked].ended = f.clockNow()
+		f.queries[asked].ended = f.clock.Now()
 		f.inFlight--
 		f.mu.Unlock()
 	}()
@@ -173,8 +172,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	if len(f.graphQLLimits) > 0 {
 		limit, f.graphQLLimits = &f.graphQLLimits[0], f.graphQLLimits[1:]
 	}
-	stall := f.graphQLStalls[queryKey(repository, at.page)]
-	stalled := f.stalled
+	released, held := f.heldQueries[queryKey(repository, at.page)]
 	takes := f.queryTakes
 	pulls := append([]fakePull(nil), f.pulls[repository]...)
 	refusedPage := false
@@ -187,22 +185,21 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		f.answerQueryLimit(w, *limit)
 		return
 	}
-	if stall > 0 && stalled != nil {
-		stalled()
-	}
-	if takes > 0 && f.queryWait != nil {
-		f.queryWait(takes)
-		takes = 0
-	}
-	for _, wait := range []time.Duration{stall, takes} {
-		if wait <= 0 {
-			continue
-		}
+	if held {
+		// GitHub is slower to answer this page than the pass has left: the answer waits until the
+		// test releases the page, or until the caller gives up on the request, the pass's bound
+		// falling or its caller cancelling it.
+		f.held.Add(fmt.Sprintf("the query for page %d of %s", at.page, repository))
 		select {
-		case <-time.After(wait):
+		case <-released:
 		case <-r.Context().Done():
 			return
 		}
+	}
+	if takes > 0 {
+		// GitHub's own time over the query passes on the passes' clock while the pass waits for
+		// the answer.
+		f.clock.Advance(takes)
 	}
 	if verbatim != "" {
 		// GitHub's own answer, captured from the real API and given back byte for byte.
@@ -216,7 +213,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		// entry about it, which is a page the pass cannot read a head of and has no cursor to
 		// read past.
 		f.encode(w, map[string]any{
-			"data": map[string]any{"rateLimit": rateLimitNode(), "repository": nil},
+			"data": map[string]any{"rateLimit": f.rateLimitNode(), "repository": nil},
 			"errors": []any{map[string]any{
 				"type":    "FORBIDDEN",
 				"path":    []any{"repository"},
@@ -283,7 +280,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		nodes = append(nodes, node)
 	}
 	answer := map[string]any{"data": map[string]any{
-		"rateLimit": rateLimitNode(),
+		"rateLimit": f.rateLimitNode(),
 		"repository": map[string]any{"pullRequests": map[string]any{
 			"pageInfo": map[string]any{
 				"hasNextPage": to < len(pulls),
@@ -319,13 +316,13 @@ func (f *fakeGitHub) answerQueryLimit(w http.ResponseWriter, limit graphQLLimit)
 		})
 	default:
 		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(graphQLReset).Unix(), 10))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(f.clock.Now().Add(graphQLReset).Unix(), 10))
 		if limit == limitForbiddenByErrorEntry {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 		}
 		f.encode(w, map[string]any{
-			"data": map[string]any{"rateLimit": rateLimitNode(), "repository": nil},
+			"data": map[string]any{"rateLimit": f.rateLimitNode(), "repository": nil},
 			"errors": []any{map[string]any{
 				"type":    "RATE_LIMITED",
 				"message": "API rate limit exceeded for installation",
@@ -335,9 +332,9 @@ func (f *fakeGitHub) answerQueryLimit(w http.ResponseWriter, limit graphQLLimit)
 }
 
 // rateLimitNode is the query's own rateLimit field: one point a query, which is what GitHub
-// charges a page of this size.
-func rateLimitNode() map[string]any {
-	return map[string]any{"cost": 1, "remaining": 4999, "resetAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+// charges a page of this size, and the budget's reset an hour from the passes' clock.
+func (f *fakeGitHub) rateLimitNode() map[string]any {
+	return map[string]any{"cost": 1, "remaining": 4999, "resetAt": f.clock.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
 }
 
 // checkSuiteNodes is one commit's checkSuites connection: the suites a test declared, each
@@ -514,7 +511,7 @@ func nullable(value any) any {
 	return text
 }
 
-// queryKey names one page of one repository, which is what a stall is held under.
+// queryKey names one page of one repository, which is what a held query is held under.
 func queryKey(repository string, page int) string {
 	return repository + "#" + strconv.Itoa(page)
 }
@@ -600,20 +597,26 @@ func (f *fakeGitHub) rateLimitQuery(limit graphQLLimit) {
 	f.graphQLLimits = append(f.graphQLLimits, limit)
 }
 
-// stallQuery holds back the answer to one page of one repository, as stall does for a REST
-// path: a wait of zero answers it as fast as every other page again.
-func (f *fakeGitHub) stallQuery(repository string, page int, wait time.Duration) {
+// holdQuery holds back the answer to one page of one repository until the test releases it
+// (releaseQuery) or the request is given up, as hold does for a REST path, and names each such
+// query on held as it is held. A page already held stays held as it was.
+func (f *fakeGitHub) holdQuery(repository string, page int) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if wait <= 0 {
-		delete(f.graphQLStalls, queryKey(repository, page))
-		return
-	}
-	f.graphQLStalls[queryKey(repository, page)] = wait
+	holdIn(f.heldQueries, queryKey(repository, page))
+	f.mu.Unlock()
 }
 
-// everyQueryTakes makes every query's answer take this long, which is what a test of the pass's
-// GraphQL pacing measures the pass's own waits against.
+// releaseQuery answers that page as fast as every other page again, and lets each query held
+// there go on to its answer.
+func (f *fakeGitHub) releaseQuery(repository string, page int) {
+	f.mu.Lock()
+	releaseIn(f.heldQueries, queryKey(repository, page))
+	f.mu.Unlock()
+}
+
+// everyQueryTakes makes every query's answer take this long on the passes' clock, which the
+// stand-in moves on by it while it answers: what a test of the pass's GraphQL pacing measures
+// the pass's own waits against.
 func (f *fakeGitHub) everyQueryTakes(wait time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -690,7 +693,10 @@ func TestAQueryGitHubAnsweredWithNoBodyEndsItsErrorAtTheStatus(t *testing.T) {
 				w.WriteHeader(http.StatusBadGateway)
 				fmt.Fprint(w, answer)
 			}})
-			_, pemText := githubapptest.Key(t)
+			pemText, err := appKeyPEM()
+			if err != nil {
+				t.Fatalf("generate App key: %v", err)
+			}
 			client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: pemText}, base)
 			if err != nil {
 				t.Fatalf("new client: %v", err)
