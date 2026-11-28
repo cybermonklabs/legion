@@ -18,7 +18,8 @@ export interface DisplayMenuOption {
 
 /** One pick the menu offers: a heading and the choices under it. */
 export interface DisplayMenuSection {
-  /** Tells this section's radios apart from the next section's; never read by anything else. */
+  /** Tells this section's radios apart from the next section's, and is the React `key` of the
+   *  section's `fieldset`; never read by anything else. */
   readonly id: string;
   readonly label: string;
   readonly onChange: (value: string) => void;

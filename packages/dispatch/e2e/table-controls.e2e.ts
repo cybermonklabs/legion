@@ -8591,15 +8591,16 @@ test("the Inbox's Decline dialog keeps the keyboard focus inside itself while it
 // and da0804df, and this row in -n-red at 3fce6150): an issue's Artifacts tab has read the issue's
 // references once, and a message on another issue that mentions it makes the live feed read them
 // again, which fails (500, three times by the shared retry policy). The tab says "References
-// unavailable" with Retry, over the answer the read still holds. Enter on Retry, with the read it
-// sends held, draws Retry natively disabled (`disabled={retrying}`, components/QueryError.tsx:49,
-// given `retrying={references.isFetching}` by features/artifacts/ArtifactsTab.tsx:488), and the
-// focus falls to the body for the whole hold, in Chromium, Firefox and WebKit at 1440x900 and
-// 390x664, at both commits. A read that holds no answer yet is another path, which this row does
-// not take: TanStack sets it back to pending the moment Retry sends, so the line and Retry go in
-// the press's own render. The rule: a control held while the read its press started is out is
-// held through components/held-press.ts, never natively disabled, so it keeps the keyboard focus
-// (its own doc comment). A focused control disabled under the press, which each engine
+// unavailable" with Retry, over the answer the read still holds. At the commits the row was
+// measured on, Retry was natively disabled while its read was out (`disabled={retrying}` in
+// components/QueryError.tsx, given `retrying={references.isFetching}` by
+// features/artifacts/ArtifactsTab.tsx): Enter on Retry, with the read it sends held, drew Retry
+// disabled, and the focus fell to the body for the whole hold, in Chromium, Firefox and WebKit at
+// 1440x900 and 390x664, at both commits. A read that holds no answer yet is another path, which
+// this row does not take: TanStack sets it back to pending the moment Retry sends, so the line and
+// Retry go in the press's own render. The rule: a control held while the read its press started is
+// out is held through components/held-press.ts, never natively disabled, so it keeps the keyboard
+// focus (its own doc comment). A focused control disabled under the press, which each engine
 // moves to the body at its own time: the clause of the `webkit` and `firefox` projects that names
 // the page-own focus row (e2e/playwright.config.ts).
 test("a references Retry on the Artifacts tab keeps the keyboard focus while its read is out @firefox @webkit", async ({

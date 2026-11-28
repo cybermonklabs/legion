@@ -1,5 +1,5 @@
 import { hashKey, type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
@@ -177,7 +177,10 @@ export function AgentMessageComposer({
     queryFn: () => api.listIssues({ open: true }),
     queryKey: ["agents", "issue-picker"],
   });
-  const titles = new Map((issues.data ?? []).map((issue) => [issue.key, issue.title]));
+  const titles = useMemo(
+    () => new Map((issues.data ?? []).map((issue) => [issue.key, issue.title])),
+    [issues.data]
+  );
   /** The committed issue, once the open list has come back without it: closed since it was
    *  picked. The list and the toggle keep naming it, marked, until the reader picks another -
    *  the issue header's Status pick keeps a closed issue's own status among its options the same
