@@ -158,7 +158,7 @@ test("with no node focused, the facts are the issue's", () => {
 });
 
 // Edit on the reader's own comment is drawn only under the page's writer, and sets it to edit
-// that comment and its words; the page draws no box that saves it yet.
+// that comment and its words.
 test("Edit on the reader's own comment sets the writer to edit it", async () => {
   let writer: OutlineWriter | undefined;
   function Probe(): ReactNode {
