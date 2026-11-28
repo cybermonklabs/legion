@@ -42,7 +42,7 @@ The daemon could not ask the session store for a role's start. Open one finding 
 
 ## `pod-wait-held`
 
-`role` waits for a pod made before the deployment defined it, and no update round or release of the pod comes. `dispatch ask` the operator to resume or stop a claim the operator suspended, and resume or stop yours. If the idle release is off, ask the operator, quoting `reason`. Never propose deleting the pod. It comes once per wait.
+`role` waits for a pod made before the deployment defined it, and no update round or release of the pod comes. `dispatch ask` the operator to resume or stop a claim the operator suspended, and resume or stop yours. If the idle release is off and no role runs in the pod, ask the operator, quoting `reason`. Never propose deleting the pod. It comes once per wait.
 
 ## `provider-errors`
 

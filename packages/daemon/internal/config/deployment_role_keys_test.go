@@ -55,12 +55,14 @@ func TestTheCheckAcrossKeysSeesEveryKeyItJudges(t *testing.T) {
 
 // A token pasted where a role's name goes is named by its line or its place, never as written,
 // though it fits the role grammar (claim.IsRole, `^[a-z][a-z0-9-]{0,31}$`): a 32-hex API key that
-// starts with a letter, and a short lower-case base36 token. Before the grammar took a role of the
-// deployment, only Legion's six passed it, and main's token guard (keyShape) saw every other name;
-// now such a token passes the grammar, so each reader of a role's name refuses a name holding a
+// starts with a letter, and a short lower-case base36 token. Such a token passes the role grammar,
+// which takes a role of the deployment, so each reader of a role's name refuses a name holding a
 // token's run (tokenShaped) before any refusal can name it: the three role-keyed settings, a role
-// `roles` defines, a hook's `roles` and a project's `default_steps`. The control is a role of the
-// grammar that no token is (`ghost`), named as written by the check across keys.
+// `roles` defines, a hook's `roles`, a project's `default_steps` and an experiment's `roles`. A
+// `default_steps` entry is judged before it is parsed as a step, so an entry no step's grammar
+// takes (a 32-hex key that starts with a digit, or a role and a token in one entry) is named by its
+// number too. The control is a role of the grammar that no token is (`ghost`), named as written by
+// the check across keys.
 //
 // It reads the refusal's text for each 8-character piece of the token, not whether a guard ran or
 // which error was returned. The leak this test exists for was a guard that ran, on a path the
@@ -73,6 +75,14 @@ func TestATokenThatFitsTheRoleGrammarIsNeverPrinted(t *testing.T) {
 	stepsOf := func(role string) string {
 		return strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO: {default_steps: [implementer, "+role+"]}\n", 1)
 	}
+	holdsNoPiece := func(t *testing.T, err error, token string) {
+		t.Helper()
+		for i := 0; i+8 <= len(token); i++ {
+			if strings.Contains(err.Error(), token[i:i+8]) {
+				t.Fatalf("the refusal %q holds %q of the token", err, token[i:i+8])
+			}
+		}
+	}
 	for _, token := range []string{"deadbeefcafe0123456789abcdef0123", "kq7zm2xw9rt4pvn8ys3lgj5"} {
 		for name, body := range map[string]string{
 			"worker_backends":             minimalFile + "worker_backends: {" + token + ": omp}\n",
@@ -81,19 +91,32 @@ func TestATokenThatFitsTheRoleGrammarIsNeverPrinted(t *testing.T) {
 			"roles":                       minimalFile + "roles: {" + token + ": {type: testing, prompt_file: checker.md}}\n",
 			"a hook's roles":              minimalFile + hookOf(token),
 			"default_steps":               stepsOf(token),
+			"an experiment's roles":       experimentsFile("{alpha: {roles: [implementer, "+token+"], variants: [{name: only}]}}", ""),
 		} {
 			t.Run(name+"/"+token[:3], func(t *testing.T) {
 				_, err := Load(configFileWith(t, body, "checker.md"), noEnv)
 				if err == nil {
 					t.Fatalf("Load took the token as a role's name, want it refused")
 				}
-				for i := 0; i+8 <= len(token); i++ {
-					if strings.Contains(err.Error(), token[i:i+8]) {
-						t.Fatalf("the refusal %q holds %q of the token", err, token[i:i+8])
-					}
-				}
+				holdsNoPiece(t, err, token)
 			})
 		}
+	}
+	const digitToken = "0123456789abcdef0123456789abcdef"
+	for name, entry := range map[string]string{
+		"a 32-hex token that starts with a digit": digitToken,
+		"a role and a token in one entry":         "implementer " + digitToken,
+	} {
+		t.Run("default_steps/"+name, func(t *testing.T) {
+			_, err := Load(configFileWith(t, stepsOf(entry)), noEnv)
+			if err == nil {
+				t.Fatalf("Load took the entry %q, want it refused", entry)
+			}
+			if !strings.Contains(err.Error(), "default_steps entry 2 ") {
+				t.Fatalf("the refusal %q names no entry 2", err)
+			}
+			holdsNoPiece(t, err, digitToken)
+		})
 	}
 	want := `worker_backends names "ghost", which is not an issue role (architect, planner, implementer, tester, reviewer, merger)`
 	if _, err := Load(rolesFile(t, "worker_backends: {ghost: omp}\n"), noEnv); err == nil || err.Error() != want {

@@ -55,7 +55,7 @@ func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Ba
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, backendNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
-		if !claim.IsRole(role) || tokenShaped(roleNode.Value) {
+		if !roleName(role) {
 			if !keyShape(roleNode.Value) {
 				return nil, fmt.Errorf("%s: it must be an issue role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(claim.Roles))
 			}

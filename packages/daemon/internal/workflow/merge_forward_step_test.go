@@ -219,19 +219,14 @@ func TestTheReviewOfAMergeForwardAtAStepTellsTheStepsRole(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		at     phase.Phase
-		status string
 		steps  []string
 		worker claim.Role
 	}{
-		{name: "the checker's step", at: phase.Step, status: "in_progress", steps: []string{"implementer", "reviewer", "checker"}, worker: "checker"},
-		{name: "control: the tester's step", at: phase.Testing, status: "testing", steps: []string{"implementer", "reviewer", "tester"}, worker: claim.RoleTester},
+		{name: "the checker's step", at: phase.Step, steps: []string{"implementer", "reviewer", "checker"}, worker: "checker"},
+		{name: "control: the tester's step", at: phase.Testing, steps: []string{"implementer", "reviewer", "tester"}, worker: claim.RoleTester},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
-			seedStepsPlan(t, pool, "LEGION-208", 1, tc.steps...)
-			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning)
-			})
+			pool := plannedConflictIssue(t, tc.at, settledGreen("lint"), tc.steps...)
 			if tc.at == phase.Step {
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: tc.worker, Claim: claim.Token(string(tc.worker) + "-claim"), Entry: 1})
 			}
@@ -245,9 +240,6 @@ func TestTheReviewOfAMergeForwardAtAStepTellsTheStepsRole(t *testing.T) {
 			review := landed[1]
 			if got := review.Tells(); got != tc.worker {
 				t.Errorf("the review tells %q beside the architect, want %q", got, tc.worker)
-			}
-			if says := "Then tell the architect and the " + string(tc.worker) + " what you decided"; !strings.Contains(review.Message("LEGION-208", record.PullRequest{Repo: "sjawhar/legion"}), says) {
-				t.Errorf("the review reads %q, want it to say %q", review.Message("LEGION-208", record.PullRequest{Repo: "sjawhar/legion"}), says)
 			}
 		})
 	}

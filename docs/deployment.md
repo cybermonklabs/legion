@@ -836,7 +836,7 @@ Dispatch identity the broker can issue").
 ## Roles the deployment defines
 
 `roles` defines roles of the deployment's own, which a step of an owner's plan names as it names Legion's planner, implementer, tester, reviewer and acceptance.
-Each key is the role's name: a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`).
+Each key is the role's name: a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit, and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`).
 Each value holds the role's `type` and `prompt_file`, and may hold its `model` and `github_app`.
 The `type` of its steps is one of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds.
 The `prompt_file` is the deployment's own words for the role, resolved against the directory of the file that names it.

@@ -3888,9 +3888,11 @@ func (i Issue) HoldsStart(start SuperviseRequest) bool {
 // the work of issue, the record of the issue its claim works: the issue holds the work
 // (HoldsQueued) and, for a task of a run (generation above 0), is on that run. An issue the record
 // does not hold (nil) holds every task, since only a claim the workflow never made has none. It is
-// the one definition of that question: the daemon answers supervise's Deps.PhaseHolds with it
-// (daemon's workflowRuntime.phaseHolds, which says why each half is compared), and a test that
-// wires the answer itself calls it too, so the rule it exercises is the one production runs.
+// the one definition of that question: the daemon answers supervise's Deps.PhaseHolds with it,
+// and with BroughtBackHolds for a delivery marked BringsBack (daemon's workflowRuntime.phaseHolds,
+// which says why each half is compared). A test that wires the answer itself calls it too (api's
+// holdPhases calls it alone), so the rule it exercises on a delivery not marked BringsBack is the
+// one production runs.
 func PhaseHolds(issue *Issue, role claim.Role, queuedFor phase.Phase, generation uint64) bool {
 	return issue == nil || (issue.HoldsQueued(role, queuedFor) && (generation == 0 || generation == issue.Generation))
 }

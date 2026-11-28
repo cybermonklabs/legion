@@ -4855,8 +4855,9 @@ test("a state change names a role exactly for a claim, and a value of its own fi
 
 // A move between two steps of roles the deployment defines moves no phase, so the step role is the
 // field its change names, from one role to the other, and the move out of the step names it going to
-// null. A claim of such a role names it as the claim's role. A step role is a name of the role
-// grammar, so a phase in its place is refused.
+// null. A claim of such a role names it as the claim's role. A step role is a name of the step
+// grammar, `^[a-z][a-z0-9-]{0,31}$`, which a phase's name fits too: a name outside it (`Checker`)
+// is refused, and so is a claim of the controller, which is no role of an issue's claim.
 test("a state change carries the step role and a claim of a role the deployment defines", () => {
   expect(
     legionStateMessage.safeParse(

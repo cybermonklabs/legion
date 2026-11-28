@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -661,14 +662,12 @@ func authorOrder(roles map[legionclaim.Role]bool) []legionclaim.Role {
 			order = append(order, role)
 		}
 	}
-	var others []legionclaim.Role
-	for role := range roles {
-		if !slices.Contains(legionclaim.Roles, role) {
-			others = append(others, role)
+	for _, role := range slices.Sorted(maps.Keys(roles)) {
+		if !legionclaim.IsBuiltin(role) {
+			order = append(order, role)
 		}
 	}
-	slices.Sort(others)
-	return append(order, others...)
+	return order
 }
 
 // jjSetCommit is one commit of the set the push sends, as the step follows it.

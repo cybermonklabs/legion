@@ -88,7 +88,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 		field := key + "." + name
 		switch {
 		case nameNode.Kind == yaml.ScalarNode && tokenShaped(name):
-			return nil, fmt.Errorf("%s: a role's name is a word of %s", unknownKeyAt(nameNode, key), strings.Trim(roleWord.String(), "^$"))
+			return nil, fmt.Errorf("%s: it holds %s", unknownKeyAt(nameNode, key), tokenRunWords)
 		case nameNode.Kind != yaml.ScalarNode || !roleWord.MatchString(name):
 			return nil, fmt.Errorf("%s names %q, which is outside %s", key, name, strings.Trim(roleWord.String(), "^$"))
 		case len(name) > maxRoleWord:

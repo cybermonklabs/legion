@@ -448,7 +448,7 @@ func registeredRoles(t *testing.T, contract int) []string {
 		}, nil)
 		if added := entryNumber(deploymentRolesContract); role == "checker" && contract < added {
 			wantRefusal(t, answer, http.StatusConflict, fmt.Sprintf("the role checker is one this "+
-				"deployment defines, and pi-legion speaks daemon API contract %d, which reads a claim's "+
+				"deployment defines, and the plugin speaks daemon API contract %d, which reads a claim's "+
 				"role as one of Legion's six; a plugin of contract %d or later registers it",
 				contract, added))
 			continue

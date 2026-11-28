@@ -129,7 +129,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 			"the contract that reads such a role", "claim", c.Token, "role", c.Role,
 			"generation", launch.Generation, "pluginContract", req.PluginContract, "contract", first)
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("the role %s is one this deployment "+
-			"defines, and pi-legion speaks daemon API contract %d, which reads a claim's role as "+
+			"defines, and the plugin speaks daemon API contract %d, which reads a claim's role as "+
 			"one of Legion's six; a plugin of contract %d or later registers it",
 			c.Role, req.PluginContract, first))
 		return

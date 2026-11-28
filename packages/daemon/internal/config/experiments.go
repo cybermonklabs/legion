@@ -396,7 +396,8 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 // (claim.Roles), each named once. The controller is no word of it, since a controller runs in no
 // experiment. An empty list is refused rather than read as every role: it reads as no role, and an
 // experiment whose arms reach no launch treats nothing, so the file would say the opposite of what
-// the daemon did.
+// the daemon did. An entry that holds a token's run (tokenShaped) is refused by its place alone,
+// never as written.
 func readExperimentRoles(value *yaml.Node, key string) ([]claim.Role, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("%s must be a sequence of Legion issue roles, e.g. [planner, implementer]", key)
@@ -405,7 +406,10 @@ func readExperimentRoles(value *yaml.Node, key string) ([]claim.Role, error) {
 		return nil, fmt.Errorf("%s names no role: an experiment whose arms reach no launch treats nothing, so name the roles its arms reach, or leave the key out for every role", key)
 	}
 	roles := make([]claim.Role, 0, len(value.Content))
-	for _, entry := range value.Content {
+	for i, entry := range value.Content {
+		if entry.Kind == yaml.ScalarNode && tokenShaped(entry.Value) {
+			return nil, fmt.Errorf("%s entry %d holds %s", key, i+1, tokenRunWords)
+		}
 		role := claim.Role(entry.Value)
 		if entry.Kind != yaml.ScalarNode || !slices.Contains(claim.Roles, role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion issue role (%s)", key, entry.Value, runtime.JoinRoles(claim.Roles))

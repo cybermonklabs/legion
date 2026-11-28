@@ -99,7 +99,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := string(req.Role)
-	if !claim.IsBuiltin(req.Role) && (plan.RunsAs(role) != phase.Step || !s.deployment.Defines(role)) {
+	if !claim.IsBuiltin(req.Role) && !s.spawnableDeploymentRole(role) {
 		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a spawnable role; deployment-defined roles: %s",
 			req.Role, s.deploymentRoleNames()))
 		return
@@ -155,12 +155,18 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
 }
 
+// spawnableDeploymentRole says whether role is a role of the deployment the operator may start: one
+// the deployment's settings define that runs as the phase step and is none of Legion's six. The
+// plan's built-in steps, including owner acceptance, are not deployment roles.
+func (s *server) spawnableDeploymentRole(role string) bool {
+	return plan.RunsAs(role) == phase.Step && !claim.IsBuiltin(claim.Role(role)) && s.deployment.Defines(role)
+}
+
 // deploymentRoleNames lists the spawnable roles configured in addition to Legion's six.
 func (s *server) deploymentRoleNames() string {
 	var names []string
 	for role := range s.deployment.Roles {
-		// The plan's built-in steps, including owner acceptance, are not deployment roles.
-		if plan.RunsAs(role) == phase.Step && !claim.IsBuiltin(claim.Role(role)) {
+		if s.spawnableDeploymentRole(role) {
 			names = append(names, role)
 		}
 	}

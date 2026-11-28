@@ -704,8 +704,17 @@ func tokenShaped(name string) bool {
 	return false
 }
 
+// roleName reports whether role is a role's name a reader takes: a name of the role grammar
+// (claim.IsRole) that holds no token's run (tokenShaped).
+func roleName(role claim.Role) bool {
+	return claim.IsRole(role) && !tokenShaped(string(role))
+}
+
 // keyShapeWords is keyShape as a refusal says it.
 const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit"
+
+// tokenRunWords is tokenShaped as a refusal of a role's name says it.
+const tokenRunWords = "a run of 8 hex digits or of 10 letters and digits with a digit, as a token does and no role's name does"
 
 // unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
 // mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of

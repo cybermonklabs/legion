@@ -353,15 +353,15 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	}
 	steps := make([]plan.Step, 0, len(words))
 	for index, word := range words {
+		if tokenShaped(word) {
+			return nil, fmt.Errorf("%s entry %d names a role holding %s", key, index+1, tokenRunWords)
+		}
 		parsed, err := plan.ParseSteps(word)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
 		if len(parsed) != 1 {
 			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
-		}
-		if tokenShaped(parsed[0].Role) {
-			return nil, fmt.Errorf("%s entry %d names a role holding a run of 8 hex digits or of 10 letters and digits with a digit, as a token does and no role's name does", key, index+1)
 		}
 		steps = append(steps, parsed[0])
 	}

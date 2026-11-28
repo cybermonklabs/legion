@@ -1,8 +1,10 @@
 kind: Added
 body: |-
   A deployment defines roles of its own under `roles` in `legion.yaml`. Each holds its `type` and
-  `prompt_file`, and may hold its `model` and `github_app`. `role_types` adds types to Legion's
-  five. `worker_backends`, `role_config_files`, `worker_stall_backstop_hours`, each hook's `roles`
+  `prompt_file`, and may hold its `model` and `github_app`. A role's name holds no run of 8 hex
+  digits and no run of 10 letters and digits that holds a digit, so a name such as `checker2025` or
+  `codereviewer2` is refused. `role_types` adds types to Legion's five.
+  `worker_backends`, `role_config_files`, `worker_stall_backstop_hours`, each hook's `roles`
   and `projects.<KEY>.default_steps` take such a role, and `legion config check` prints one line
   for each. An owner's plan names such a role as a step. The step runs in the phase `step`, on the
   role's prompt, model, backend and App. Its completion reports pass or fail and the commit its

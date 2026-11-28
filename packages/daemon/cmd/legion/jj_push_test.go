@@ -164,8 +164,8 @@ func rolePushAuthorRows() []rolePushRow {
 		}},
 		// A role the deployment defines writes its own trailer, and LEGION_ROLE_IDENTITIES carries its
 		// identity beside Legion's (internal/daemon's specs.go): its commit, made under another role's
-		// App in the working copy the issue's roles share, is rewritten to its own identity, after
-		// Legion's six, as main's #4580 rewrites a commit of each role of the table.
+		// App in the working copy the issue's roles share, is rewritten to its own identity
+		// (setAuthors, authorOrder).
 		{name: "a role of the deployment's trailer, another role's author", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			checker := rolePushIdentity{"legion-checker[bot]", "100000004+legion-checker[bot]@users.noreply.github.com"}
 			table := `{"checker":{"name":"legion-checker[bot]","email":"100000004+legion-checker[bot]@users.noreply.github.com"},` + rolePushTable[1:]

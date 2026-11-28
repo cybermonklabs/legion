@@ -1223,10 +1223,12 @@ type Deps struct {
 	// start a role for a phase or a step the issue has left (daemon/outbox.go), so a delivery
 	// queued before the phase, the step or the run moved on is that same staleness one step later
 	// and is dropped rather than sent. The same answer judges a start's work before the claim is
-	// brought back for it (StartWork), as a delivery of that phase and run. It is asked only about
-	// a delivery or a start that names a phase; a task an operator delivered by hand names none and
-	// is never put to it, which the machine decides rather than this answer. d's generation is 0
-	// for a task of no run. nil holds every delivery.
+	// brought back for it (StartWork), as a delivery of that phase and run. A start that brings a
+	// role back and hands it nothing marks its delivery (BringsBack), and the answer then holds it
+	// to its phase and run alone (record.BroughtBackHolds). It is asked only about a delivery or a
+	// start that names a phase; a task an operator delivered by hand names none and is never put to
+	// it, which the machine decides rather than this answer. d's generation is 0 for a task of no
+	// run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, c Claim, d Delivery) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of

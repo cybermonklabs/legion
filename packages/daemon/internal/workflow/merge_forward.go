@@ -594,14 +594,14 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // (Walk.passedStep) - stands on a review of the old head, so the reviewer is asked to read the
 // merge and approve the new head or request changes (record.MergeForwardReview), and the record
 // keeps that the review was asked for (ReviewAsked), which the merger's task (task) and the
-// landed the merger is told in merging (record.MergeForwardMessage.Message) read. At step the
-// review names the role of the running step, the worker the landed reaches, which it tells beside
-// the architect (record.MergeForwardMessage.Worker), since no phase names that role. In the default
-// steps that is an issue in accepting, retro or merging. A reviewer step still to come reviews
-// the head the issue stands at when it runs, so it is asked nothing now. A task whose plan has no
-// reviewer step stands on no review of the old head, no reviewer step runs for it, and a merger
-// told to wait for a reviewer's approval would wait for good, so nothing is asked and the merger
-// goes on at the new head.
+// landed the merger is told in merging (record.MergeForwardMessage.Message) read. In the default
+// steps that is an issue in accepting, retro or merging. At step the review names the role of the
+// running step, the worker the landed reaches, which it tells beside the architect
+// (record.MergeForwardMessage.Worker), since no phase names that role. A reviewer step still to
+// come reviews the head the issue stands at when it runs, so it is asked nothing now. A task whose
+// plan has no reviewer step stands on no review of the old head, no reviewer step runs for it, and
+// a merger told to wait for a reviewer's approval would wait for good, so nothing is asked and the
+// merger goes on at the new head.
 // The daemon records no decision outside reviewing, so that review is the roles' to hold to the
 // head they merge. The architect and the role asked are told nothing more: the architect's
 // checks-red notice already said the merge was asked for, and the role asked pushed it; in merging
@@ -624,13 +624,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	}
 	review := w.passedStep(at, phase.Reviewing)
 	var recipients []roleRecipient
-	// stepWorker is, at step, the role of the running step the landed reaches, which the review
-	// names beside the architect (record.MergeForwardMessage.Worker), since no phase names it.
-	var stepWorker claim.Role
 	worker, told := e.mergeForwardWorker(issue, at, record.MergeForwardLanded)
-	if told && at == phase.Step {
-		stepWorker = worker
-	}
 	if told && owedTo(issue, *asked) {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
@@ -646,7 +640,10 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		message := record.MergeForwardMessage{Role: role, Step: record.MergeForwardLanded, Head: asked.Head, Landed: pr.HeadSHA,
 			Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}
 		if review && role == claim.RoleReviewer {
-			message.Step, message.Worker = record.MergeForwardReview, stepWorker
+			message.Step = record.MergeForwardReview
+			if at == phase.Step {
+				message.Worker = worker
+			}
 		}
 		if err := e.enqueue(ctx, tx, to.issue, message); err != nil {
 			return err

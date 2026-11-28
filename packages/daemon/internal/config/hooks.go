@@ -173,8 +173,7 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	for index, name := range named {
 		role := claim.Role(name)
 		if tokenShaped(name) {
-			return nil, fmt.Errorf("%s entry %d holds a run of 8 hex digits or of 10 letters and digits with a digit, as a token does and no role's name does: it must be a Legion role (%s)",
-				key, index+1, runtime.JoinRoles(claim.Roles))
+			return nil, fmt.Errorf("%s entry %d holds %s: it must be a Legion role (%s)", key, index+1, tokenRunWords, runtime.JoinRoles(claim.Roles))
 		}
 		if !claim.IsRole(role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
