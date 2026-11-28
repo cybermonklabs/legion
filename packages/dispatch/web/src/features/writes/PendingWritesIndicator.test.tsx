@@ -526,8 +526,7 @@ test("a key after a pointer press no click ended lets the indicator note where t
 // A touch that scrolls the indicator's list ends in a `pointercancel` and no `click`, which ends
 // the press as a key does: the focus a Stop trying pressed by keyboard hands to its row's Retry,
 // once its write is refused, is noted as the focus coming in, so the Discard the reader then
-// presses gives the focus back to where it came from as the indicator goes. The touch starts on
-// the Stopping… the reader pressed, which leaves that press armed (`armHandOff`).
+// presses gives the focus back to where it came from as the indicator goes.
 test("a touch press on the indicator that the browser cancels lets it note the focus it hands on", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -542,18 +541,17 @@ test("a touch press on the indicator that the browser cancels lets it note the f
     const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
     act(() => elsewhere.focus());
     await user.tab();
-    const stop = within(indicator).getByRole("button", { name: "Stop trying" });
-    expect(stop).toHaveFocus();
+    expect(within(indicator).getByRole("button", { name: "Stop trying" })).toHaveFocus();
     await user.keyboard("{Enter}");
     await settle();
+    const list = within(indicator).getByRole("list");
     act(() => {
       for (const type of ["pointerdown", "pointercancel"]) {
-        stop.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "touch" }));
+        list.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "touch" }));
       }
     });
 
     attempt.reject(refusal);
-    await settle();
     await jump(30 * 60_000);
     expect(within(indicator).getByRole("button", { name: "Retry" })).toHaveFocus();
     await user.tab();
@@ -608,12 +606,13 @@ test("a press elsewhere that leaves the focus in the indicator keeps where the f
   }
 });
 
-// A write that ends by itself is no press of the reader's: with nothing armed (`armHandOff`), the
-// going of its Stop trying while it holds the focus leaves the focus where the browser puts it, on
-// the page's body, and the indicator asks for no focus and no scroll - neither the other write's
-// Stop trying, which the reader did not choose and may not see, once the write lands, nor the
-// Retry its refusal draws in the same row, once Dispatch refuses it.
-test("a write that lands by itself, or is refused, while its Stop trying holds the focus leaves the focus on the body, with no scroll", async () => {
+// A write that ends by itself is no press of the reader's, and the going of its Stop trying while
+// it holds the focus would leave a keyboard reader on the page's body. With nothing armed
+// (`armHandOff`), the indicator hands the focus on in the order a press does, with nothing read of
+// what the reader can see and nothing scrolled: to the Retry its refusal draws in the same row,
+// once Dispatch refuses it, else, once it lands and its row goes, to the indicator's first
+// control, the other write's Stop trying.
+test("a write that lands by itself, or is refused, while its Stop trying holds the focus hands the focus to its row's Retry, else to the indicator's first control, with no scroll", async () => {
   for (const end of ["lands", "is refused"] as const) {
     jest.useFakeTimers();
     const user = userOnFakeClock();
@@ -626,7 +625,9 @@ test("a write that lands by itself, or is refused, while its Stop trying holds t
       await settle();
       await jump(SEND_DEADLINE_MS);
       const indicator = screen.getByTestId("pending-writes");
-      const [, secondStop] = within(indicator).getAllByRole("button", { name: "Stop trying" });
+      const [firstStop, secondStop] = within(indicator).getAllByRole("button", {
+        name: "Stop trying",
+      });
       act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
       await user.tab();
       await user.tab();
@@ -637,8 +638,15 @@ test("a write that lands by itself, or is refused, while its Stop trying holds t
       else second.reject(verdict);
       await settle();
       expect(secondStop, `the write that ${end} kept its Stop trying`).not.toBeInTheDocument();
-      expect(document.body, `a write that ${end} by itself moved the focus`).toHaveFocus();
-      expect(moves.focused.slice(asked)).toEqual([]);
+      const landed =
+        end === "lands" ? firstStop : within(indicator).getByRole("button", { name: "Retry" });
+      expect(
+        landed,
+        `a write that ${end} by itself left the focus off the indicator`
+      ).toHaveFocus();
+      expect(moves.focused.slice(asked)).toEqual([
+        { options: { preventScroll: true }, target: landed },
+      ]);
       expect(moves.scrolled).toEqual([]);
     } finally {
       moves.restore();
