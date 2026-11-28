@@ -4452,6 +4452,18 @@ Each item below names a case and how it is driven, then what must hold for it to
   After the event the basis names A3 at the event's own update time, as the pull request's update time and not as a read.
   The unreadable repository is reported as that, with no pass standing, and never as nothing to compare with
 
+- `after-merge-answer` — one `after_merge` check, its pull request `#31` merged, then three results recorded with `dispatch result`.
+  A pass is recorded at the merge commit and a fail at a later commit, and `dispatch results` runs.
+  A pass is then recorded at that later commit, and `dispatch results` runs again
+
+  the fail stands at the check's basis, and the first `dispatch results` prints `A pass stands: no, as the newest result is fail <id> at <later commit>`.
+  The second prints `A pass stands: not known, as pass <id> and fail <id> both count at <later commit>. A retraction of the wrong one ends it.`
+
+- `deploy-recorded` — `dispatch deploy --repo acme/verification-live --program proof --commit <build> --json` with an agent token of the run's person, then `dispatch deploys --repo acme/verification-live` with the same token
+
+  both exit 0, and the deploy's answer names the program `proof`, that build and `alice` as the user who recorded it.
+  The list holds `proof`, the build and `user alice`
+
 - `live-subject` — one `after_merge` check that marks neither subject nor program, its pull request `#51` merged, then five steps.
   Step 1 seeds the issue and publishes the merge.
   Step 2 reads `verification.md` with `dispatch doc-read` and uploads it whole again with `dispatch artifact --force --precondition-json '{"document":"<token>"}'`, the check's opening line now carrying `subject="production" program="live-proof"`.
@@ -4568,10 +4580,10 @@ git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 For `live-subject`, the input is a binary built from `2326c5d65772`, which reads a check's `subject` and `program` (block schema 6) but refuses to write them, with `VERIFICATION_RESULTS_E2E_CASES` running that case alone:
 
 ```sh
-mkdir -p "$TMPDIR/part-a-src"
-git --git-dir=<the checkout's git directory> archive 2326c5d65772 packages/envoy | tar -x -C "$TMPDIR/part-a-src"
-go -C "$TMPDIR/part-a-src/packages/envoy" build -o "$TMPDIR/envoy-dispatch-part-a" ./cmd/dispatch
-DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-part-a" VERIFICATION_RESULTS_E2E_CASES=live-subject \
+mkdir -p "$TMPDIR/schema6-src"
+git --git-dir=<the checkout's git directory> archive 2326c5d65772 packages/envoy | tar -x -C "$TMPDIR/schema6-src"
+go -C "$TMPDIR/schema6-src/packages/envoy" build -o "$TMPDIR/envoy-dispatch-schema6" ./cmd/dispatch
+DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-schema6" VERIFICATION_RESULTS_E2E_CASES=live-subject \
   bash scripts/e2e/verification-results.sh
 # → FAIL live-subject: step 2: dispatch artifact … exited 1, want 0: the check's
 #   subject="production" program="live-proof" was not written

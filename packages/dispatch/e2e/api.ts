@@ -473,6 +473,12 @@ export function recordCheckResult(
   return post("/api/v1/issues/{key}/results", { body: input, params: { key: issue } }, options);
 }
 
+/** `POST /api/v1/deploys`: one deploy of `program` from `repo` at `commit`, which the results
+ *  read compares a check of that program's production with. */
+export function recordDeploy(input: Body<"/api/v1/deploys", "post">, options: ApiOptions = {}) {
+  return post("/api/v1/deploys", { body: input }, options);
+}
+
 /** `POST /api/v1/results/{id}/retract`: one recorded result marked wrong, with the reason it
  *  is wrong. The result is neither updated nor deleted, and the retraction is a record of its
  *  own. The seeded agent is the session that recorded the result, which is one of the three

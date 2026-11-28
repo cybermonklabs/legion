@@ -265,6 +265,16 @@ function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
   return call(method, path, { Cookie: personCookie, Origin: origin }, body);
 }
 
+/** Mints an agent token of the run's person, scoped `person` and named `name`, so a `dispatch`
+ *  command run with it acts as that person. */
+async function personToken(name: string): Promise<string> {
+  const credential = (await asPerson("POST", "/api/v1/me/agent-tokens", {
+    name,
+    scopes: ["person"],
+  })) as { token: string };
+  return credential.token;
+}
+
 function issuePath(key: string, rest = ""): string {
   return `/api/v1/issues/${encodeURIComponent(key)}${rest}`;
 }
@@ -288,13 +298,18 @@ async function checkOf(key: string, blockID: string): Promise<CheckBlock> {
   return found;
 }
 
-/** Where one result's commit stands, in one word a case compares with: the `commit_stands`
- *  answer, with the reason an `unknown` carries after a colon. */
-function standsOf(result: CheckResult): string {
-  const stands = result.commit_stands;
-  if (stands === undefined) return "unset";
+/** One answer in one word a case compares with: `answer`, with the reason it carries after a
+ *  colon where it carries one. */
+function answerWord(stands: { answer: string; reason?: string }): string {
   const reason = stands.reason ?? "";
   return reason === "" ? stands.answer : `${stands.answer}:${reason}`;
+}
+
+/** Where one result's commit stands, in one word a case compares with: the `commit_stands`
+ *  answer, with the reason an `unknown` carries after a colon (`answerWord`). */
+function standsOf(result: CheckResult): string {
+  const stands = result.commit_stands;
+  return stands === undefined ? "unset" : answerWord(stands);
 }
 
 /** Where the commit of the newest result recorded at `commit` against `blockID` stands, or
@@ -333,11 +348,10 @@ async function awaitCommitStands(
 }
 
 /** Whether a pass of `blockID` stands, in one word with the reason it carries: the `pass_stands`
- *  answer, with its reason after a colon, as `standsOf` writes where a commit stands. */
+ *  answer, with its reason after a colon (`answerWord`), as `standsOf` writes where a commit
+ *  stands. */
 async function passReasonOf(key: string, blockID: string): Promise<string> {
-  const pass = (await checkOf(key, blockID)).pass_stands;
-  const reason = pass.reason ?? "";
-  return reason === "" ? pass.answer : `${pass.answer}:${reason}`;
+  return answerWord((await checkOf(key, blockID)).pass_stands);
 }
 
 /** Waits, bounded, for a pass of `blockID` to stand as `want` says, and answers what it last
@@ -389,6 +403,30 @@ async function publishPullRequest(payload: Record<string, string>): Promise<stri
   );
   await nats.flush();
   return subject;
+}
+
+/** Publishes the merge of pull request `number` of `repo`, whose head branch, body and title
+ *  name `issue`, with `commit` as both its head and its merge commit, merged now. */
+async function publishMerge(issue: string, number: number, commit: string): Promise<string> {
+  const mergedAt = new Date().toISOString();
+  return publishPullRequest({
+    action: "closed",
+    base_ref: "main",
+    body: `Proves ${issue}.`,
+    head_ref: `legion/${issue}`,
+    head_repo: repo,
+    head_sha: commit,
+    kind: "pr",
+    merge_commit_sha: commit,
+    merged_at: mergedAt,
+    merged: "true",
+    state: "closed",
+    number: String(number),
+    repo,
+    title: `${issue} merged work`,
+    updated_at: mergedAt,
+    url: `https://github.com/${repo}/pull/${number}`,
+  });
 }
 
 /** One basis of a check, in the words a case compares with: the kind, the commit or the branch
@@ -895,19 +933,17 @@ The result read back under this check is the one that was recorded.
   note(`the pull-request body line is ${JSON.stringify(answered.line)}`);
   note(`the record's answer says it was stored at ${answered.result.created_at}`);
   const check = await checkOf(a2Issue, "a2");
+  const rows = check.results ?? [];
   note(
-    `${a2Issue} check a2 (${check.when}) holds ${(check.results ?? []).length} result(s): ${(
-      check.results ?? []
-    )
+    `${a2Issue} check a2 (${check.when}) holds ${rows.length} result(s): ${rows
       .map(
         (row) =>
           `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${standsOf(row)})`
       )
       .join(", ")}`
   );
-  if ((check.results ?? []).length !== 1)
-    return `the check holds ${(check.results ?? []).length} results, want 1`;
-  const [recorded] = check.results ?? [];
+  if (rows.length !== 1) return `the check holds ${rows.length} results, want 1`;
+  const [recorded] = rows;
   if (recorded?.commit_sha !== commits.a2 || recorded.verdict !== "pass") {
     return `the result read back is ${JSON.stringify(recorded)}`;
   }
@@ -1116,8 +1152,8 @@ The pre-merge check runs before it.
   });
   note(`the after-merge result recorded: ${JSON.stringify(afterMerge.line)}`);
   const check = await checkOf(a5Issue, "after");
-  if ((check.results ?? []).length !== 1)
-    return `the after-merge check holds ${(check.results ?? []).length} results, want 1`;
+  const rows = check.results ?? [];
+  if (rows.length !== 1) return `the after-merge check holds ${rows.length} results, want 1`;
 
   const { answer: beforeMerge } = await refusal("POST", issuePath(a5Issue, "/results"), {
     check: "before",
@@ -1207,10 +1243,11 @@ A result is recorded only at a commit the repository holds.
     return `the refusal does not name ${repo}: ${refused.error}`;
   }
   const check = await checkOf(unheldIssue, "unheld");
-  note(`${unheldIssue} check unheld holds ${(check.results ?? []).length} result(s)`);
-  return (check.results ?? []).length === 0
+  const rows = check.results ?? [];
+  note(`${unheldIssue} check unheld holds ${rows.length} result(s)`);
+  return rows.length === 0
     ? undefined
-    : `the refused result left ${(check.results ?? []).length} row(s) under the check`;
+    : `the refused result left ${rows.length} row(s) under the check`;
 });
 
 // The unreadable repository: Dispatch cannot say where the commit stands, so it answers unknown
@@ -1617,25 +1654,7 @@ await runCase("after-merge-answer", async () => {
     "The newest after-merge result decides the command's line",
     ':::check{#newest when="after_merge" surface="cli" run="bash scripts/e2e/verification-results.sh"}\nThe newest result names the build it proves.\n:::\n'
   );
-  const mergedAt = new Date().toISOString();
-  await publishPullRequest({
-    action: "closed",
-    base_ref: "main",
-    body: `Proves ${issue}.`,
-    head_ref: `legion/${issue}`,
-    head_repo: repo,
-    head_sha: commits.answerMerge,
-    kind: "pr",
-    merge_commit_sha: commits.answerMerge,
-    merged_at: mergedAt,
-    merged: "true",
-    state: "closed",
-    number: "31",
-    repo,
-    title: `${issue} merged work`,
-    updated_at: mergedAt,
-    url: `https://github.com/${repo}/pull/31`,
-  });
+  await publishMerge(issue, 31, commits.answerMerge);
   const recordWithCommand = async (verdict: "pass" | "fail", commit: string): Promise<string> => {
     const argv = resultArgv(issue, "newest", commit);
     argv[argv.indexOf("--verdict") + 1] = verdict;
@@ -1669,10 +1688,7 @@ await runCase("after-merge-answer", async () => {
 });
 
 await runCase("deploy-recorded", async () => {
-  const credential = (await asPerson("POST", "/api/v1/me/agent-tokens", {
-    name: "verification-deploy",
-    scopes: ["person"],
-  })) as { token: string };
+  const deployer = await personToken("verification-deploy");
   const argv = [
     "deploy",
     "--repo",
@@ -1683,7 +1699,7 @@ await runCase("deploy-recorded", async () => {
     commits.deployedBuild,
     "--json",
   ];
-  const recorded = await runDispatch(argv, { token: credential.token });
+  const recorded = await runDispatch(argv, { token: deployer });
   if (recorded.code !== 0) return stepFailed(1, argv, recorded, 0);
   const answer = JSON.parse(recorded.stdout) as {
     deploy: { program: string; commit: string; recorded_by: { kind: string; id: string } };
@@ -1696,7 +1712,7 @@ await runCase("deploy-recorded", async () => {
   ) {
     return `the deploy command did not name the run's person: ${recorded.stdout}`;
   }
-  const listed = await runDispatch(["deploys", "--repo", repo], { token: credential.token });
+  const listed = await runDispatch(["deploys", "--repo", repo], { token: deployer });
   if (listed.code !== 0) return stepFailed(2, ["deploys", "--repo", repo], listed, 0);
   note(listed.stdout.trim());
   return ["proof", commits.deployedBuild, `user ${person}`].every((value) =>
@@ -1723,25 +1739,7 @@ await runCase("live-subject", async () => {
     "A production check counts the result of the build deployed now",
     ':::check{#live serves="dispatch://%KEY%/spec#b-r1" when="after_merge" surface="cli" run="bash scripts/e2e/verification-results.sh"}\nThe build the program runs answers.\n:::\n'
   );
-  const mergedAt = new Date().toISOString();
-  await publishPullRequest({
-    action: "closed",
-    base_ref: "main",
-    body: `Proves ${issue}.`,
-    head_ref: `legion/${issue}`,
-    head_repo: repo,
-    head_sha: commits.liveMerge,
-    kind: "pr",
-    merge_commit_sha: commits.liveMerge,
-    merged_at: mergedAt,
-    merged: "true",
-    state: "closed",
-    number: "51",
-    repo,
-    title: `${issue} merged work`,
-    updated_at: mergedAt,
-    url: `https://github.com/${repo}/pull/51`,
-  });
+  await publishMerge(issue, 51, commits.liveMerge);
   note(`${issue} holds the after-merge check live, merged at ${commits.liveMerge} by #51`);
 
   // Step 2: the whole Verification document again, with the check's opening line marking
@@ -1802,13 +1800,10 @@ await runCase("live-subject", async () => {
   if (!noDeployOutput.includes(noDeployLine)) return `step 3: the command omitted ${noDeployLine}`;
 
   // Steps 4 and 5 deploy as the run's person, as deploy-recorded does.
-  const credential = (await asPerson("POST", "/api/v1/me/agent-tokens", {
-    name: "verification-live-deploy",
-    scopes: ["person"],
-  })) as { token: string };
+  const deployer = await personToken("verification-live-deploy");
   const deploy = async (step: number, commit: string): Promise<string> => {
     const argv = ["deploy", "--repo", repo, "--program", program, "--commit", commit, "--json"];
-    const run = await runDispatch(argv, { token: credential.token });
+    const run = await runDispatch(argv, { token: deployer });
     if (run.code !== 0) throw new Error(stepFailed(step, argv, run, 0));
     const answer = JSON.parse(run.stdout) as {
       deploy: { program: string; commit: string; deployed_at: string };

@@ -1,6 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
 
-import type { Body } from "../web/src/api/paths";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
@@ -17,7 +16,6 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import {
-  baseUrl,
   createComment,
   createIssue,
   createIssueArtifact,
@@ -26,8 +24,8 @@ import {
   getIssueCoverage,
   getIssueResults,
   recordCheckResult,
+  recordDeploy,
   retractCheckResult,
-  userHeaders,
 } from "./api";
 import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
@@ -1540,17 +1538,7 @@ test("the Verification view reads a production check after the merge by the depl
       "with no deploy of its program, the production check does not read Cannot tell"
     ).toHaveAttribute("data-node-state", "unmarked");
 
-    const deploy: Body<"/api/v1/deploys", "post"> = {
-      commit: STRAY_SHA,
-      program: "dispatch",
-      repo: seeded.repository,
-    };
-    const deployed = await fetch(new URL("/api/v1/deploys", baseUrl), {
-      body: JSON.stringify(deploy),
-      headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
-      method: "POST",
-    });
-    expect(deployed.status, `the deploy was not recorded: ${await deployed.text()}`).toBe(201);
+    await recordDeploy({ commit: STRAY_SHA, program: "dispatch", repo: seeded.repository });
     await expect
       .poll(() => liveAnswer(seeded), {
         message:

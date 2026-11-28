@@ -49,8 +49,6 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
   one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
-  A check that reads production or another live system after the merge names what it reads in `subject` (`production`, or `graph` for Dispatch's stored graph) and `program`.
-  It names both only where `dispatch deploys --repo <the issue's repository>` lists that program, and neither otherwise.
   A check carrying `ci_check` is CI's and takes no `run` (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
 
 - Where this tree builds or changes a page, screen or dashboard a person opens, that person sees it and answers before you request approval (`skill://legion-architect/references/surface-round.md`).
@@ -82,8 +80,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
 
-- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none.
-  The deployment instructions say how a pod runs one.
+- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 

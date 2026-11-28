@@ -6,6 +6,7 @@ import {
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
 } from "./page-words";
+import { speaksForTheCheckNow } from "./statement-rules";
 
 /**
  * What a check and a recorded result hold that their rows have no line for, as the facts their
@@ -53,22 +54,16 @@ export function checkFacts(check: CheckBlock): NodeFact[] {
  *  who ran it where and how, the commit it ran at, what it counted, and its screenshots. The
  *  result's own `observed` is the node's text and is no fact of its own. */
 export function resultFacts(result: CheckResult): NodeFact[] {
-  // "Up to date" means three things: at the commit the work stands at, against the words the
-  // result proved, and counted by the server. A check reworded since the result ran keeps the
-  // first and loses the second, so the result is out of date whatever its commit is
-  // (`check_words_moved`, which `statement-rules.ts`'s `checkState` reads for the same reason).
-  // A result the server marks `not_counted` keeps the first two and loses the third: it names a
-  // commit its live check's current deploy does not run, or was recorded before that deploy went
-  // out (`markNotCounted`), so it speaks for no build that runs now, and it is out of date
-  // whatever its commit is too (`statement-rules.ts`'s `standsAtBasis` reads it for the same
-  // reason). Both are read before where its commit stands. The server reads all three per result
-  // (`results_comparison.go`, `results_deploys.go`).
-  const stands =
-    result.check_words_moved === true || result.not_counted !== undefined
-      ? NODE_STATE_WORDS.check.older
-      : result.commit_stands === undefined
-        ? undefined
-        : RESULT_STANDS_WORDS[result.commit_stands.answer];
+  // "Up to date" means two things: the result speaks for its check now, against the words it
+  // proved and counted by the server (`statement-rules.ts`'s `speaksForTheCheckNow`), and it is
+  // at the commit the work stands at. One that no longer speaks for its check is out of date
+  // whatever its commit is, so that is read before where its commit stands. The server reads
+  // each per result (`results_comparison.go`, `results_deploys.go`).
+  const stands = !speaksForTheCheckNow(result)
+    ? NODE_STATE_WORDS.check.older
+    : result.commit_stands === undefined
+      ? undefined
+      : RESULT_STANDS_WORDS[result.commit_stands.answer];
   const verdicts: Readonly<Record<string, string>> = RESULT_VERDICT_WORDS;
   const facts: NodeFact[] = [
     { draw: "word", name: "verdict", value: verdicts[result.verdict] ?? result.verdict },

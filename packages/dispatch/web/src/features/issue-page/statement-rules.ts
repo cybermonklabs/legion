@@ -260,21 +260,24 @@ function liveStanding(check: CheckStateReads): CheckStanding {
   return { state, ...(stands === undefined ? {} : { stands }) };
 }
 
-/** Whether `result` stands at its check's basis: recorded against the check's words now
- *  (`check_words_moved`), at the commit the server names for the check (`commit_stands` is
- *  `at_basis`), as the server's `standingCommit` reads it, and counted: a result the server
- *  marks `not_counted`, one that names a commit its live check's current deploy does not run or
- *  that was recorded before that deploy went out (`markNotCounted`), stands at no basis,
- *  whatever commit it ran at. It is the one reading of "this result stands at its check's basis"
- *  that a check's state (`checkStanding`) and its body's mark (`statement-state.ts`'s `atBasis`)
- *  share, so the two never disagree. Whether anybody withdrew the result is no part of it: both
- *  read it only of a result that stands (`standingResults`). */
+/** Whether `result` still speaks for its check, wherever its commit stands: it was recorded
+ *  against the check's words now (`check_words_moved`), and the server counts it, since a result
+ *  marked `not_counted`, one that names a commit its live check's current deploy does not run or
+ *  that was recorded before that deploy went out (`markNotCounted`), speaks for no build that runs
+ *  now. A result that does not is out of date whatever commit it ran at: it stands at no basis
+ *  (`standsAtBasis`), and its own fact reads so (`check-facts.ts`'s `resultFacts`). */
+export function speaksForTheCheckNow(result: CheckResult): boolean {
+  return result.not_counted === undefined && result.check_words_moved !== true;
+}
+
+/** Whether `result` stands at its check's basis: it speaks for the check now
+ *  (`speaksForTheCheckNow`), at the commit the server names for the check (`commit_stands` is
+ *  `at_basis`), as the server's `standingCommit` reads it. It is the one reading of "this result
+ *  stands at its check's basis" that a check's state (`checkStanding`) and its body's mark
+ *  (`statement-state.ts`'s `atBasis`) share, so the two never disagree. Whether anybody withdrew
+ *  the result is no part of it: both read it only of a result that stands (`standingResults`). */
 export function standsAtBasis(result: CheckResult): boolean {
-  return (
-    result.not_counted === undefined &&
-    result.check_words_moved !== true &&
-    result.commit_stands?.answer === "at_basis"
-  );
+  return speaksForTheCheckNow(result) && result.commit_stands?.answer === "at_basis";
 }
 
 /** Every result of `check` nobody withdrew, which is every result that stands as evidence: the

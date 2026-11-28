@@ -63,7 +63,7 @@ func TestAnAuthorWritesACheckSubjectAndProgram(t *testing.T) {
 	opening := `:::check{#k8 serves="dispatch://` + issue.Key + `/spec#b-r1" surface="cli"` +
 		` run="go test ./internal/dispatch/api" when="after_merge" negative_control="Stop the server and watch the read fail."`
 	words := "\nProduction answers the results read at the deploy's commit.\n:::\n"
-	verification := uploadDocument(t, handler, owner, "verification.md", opening+"}"+words)
+	uploadDocument(t, handler, owner, "verification.md", opening+"}"+words)
 	kept := []struct{ name, want string }{
 		{"serves", `["dispatch://` + issue.Key + `/spec#b-r1"]`},
 		{"surface", `"cli"`},
@@ -78,22 +78,8 @@ func TestAnAuthorWritesACheckSubjectAndProgram(t *testing.T) {
 		requireCheckMember(t, before, "k8", member.name, member.want)
 	}
 
-	recorded := recordResult(t, handler, issue.Key, resultBody("k8", "pass", mergeCommit, nil))
-	if recorded.Code != http.StatusCreated {
-		t.Fatalf("record a pass of k8: status=%d body=%s", recorded.Code, recorded.Body.String())
-	}
-	pass := decodeBody[recordedResult](t, recorded).Result
-	token := uploadBase(t, handler, verification.Artifact.ID)
-
-	edited := postUpload(t, handler, issue.Key, map[string]any{
-		"name":         "verification.md",
-		"content":      opening + ` subject="production" program="dispatch"}` + words,
-		"precondition": token,
-	})
-	if edited.Code != http.StatusCreated {
-		t.Fatalf("the author's upload adding subject and program to k8 under the token %q: status=%d body=%s, want 201",
-			token["document"], edited.Code, edited.Body.String())
-	}
+	pass := recordStored(t, handler, issue.Key, "k8", mergeCommit)
+	uploadDocument(t, handler, owner, "verification.md", opening+` subject="production" program="dispatch"}`+words)
 
 	after := servedCheckMembers(t, handler, issue.Key)
 	requireCheckMember(t, after, "k8", "subject", `"production"`)
