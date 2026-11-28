@@ -10,10 +10,10 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import {
   buildIssueTree,

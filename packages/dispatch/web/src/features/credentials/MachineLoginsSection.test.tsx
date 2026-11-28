@@ -1,10 +1,11 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { ApproverGrantResp, LauncherCredentialResp } from "../../api/types";
@@ -76,7 +77,7 @@ const adaPod: LauncherCredentialResp = {
 };
 
 function renderPage() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   return render(
     <MemoryRouter initialEntries={["/credentials/machine"]}>
       <QueryClientProvider client={queryClient}>
@@ -149,7 +150,7 @@ test("revoking a machine login refreshes Live grants", async () => {
     grants = [];
   });
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
 
   try {
     render(

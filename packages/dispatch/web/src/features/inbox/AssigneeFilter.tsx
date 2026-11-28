@@ -1,8 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-import { usersQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
+import { useUsers } from "../../hooks/useHoldsPersonScope";
 import { EVERYONE_FILTER_VALUE, isOwnList, UNASSIGNED_FILTER_VALUE } from "./sections";
 
 function triggerText(selected: readonly string[], viewer: string): string {
@@ -42,9 +41,10 @@ export function AssigneeFilter({
   viewer: string;
 }): ReactNode {
   // Every Inbox reader renders this control and few open it, so the people are fetched on the
-  // first open and kept from then on: a reader who never filters costs no `/api/v1/users`.
+  // first open and kept from then on: a reader who never filters costs no `/api/v1/users`. The
+  // route needs the `person` scope, which the read waits for (`useUsers`).
   const [wanted, setWanted] = useState(false);
-  const people = useQuery({ ...usersQuery(), enabled: wanted });
+  const people = useUsers(wanted);
 
   // A login equal to either reserved word would be a row that means the filter rather than the
   // person, so neither is offered among the people.

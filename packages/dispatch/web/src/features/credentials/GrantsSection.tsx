@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./logic/grants";
@@ -103,7 +104,13 @@ const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
  */
 export function GrantsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
+  // Read under the `person` scope, once a read says the viewer's credential holds it
+  // (`useHoldsPersonScope`).
+  const grants = useQuery({
+    ...credentialGrantsQuery(),
+    enabled: useHoldsPersonScope(),
+    select: (data) => data.grants ?? [],
+  });
 
   return (
     <RevocableList

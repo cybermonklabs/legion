@@ -9,6 +9,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import {
   pageAvatar,
@@ -29,7 +30,7 @@ import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
-import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
+import { standsFailed } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";

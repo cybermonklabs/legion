@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
 import { lazy, type ReactNode } from "react";
 
+import { PERSON_SCOPE_LACKING, usePersonScope } from "../../hooks/useHoldsPersonScope";
+import { dangerText } from "../../theme/classes";
 import { NotFoundPage } from "../shell/NotFoundPage";
-import { credentialCapabilitiesQuery } from "./logic/capabilities";
+import { useCredentialCapabilities } from "./logic/capabilities";
 
 const MachineLoginPage = lazy(() =>
   import("./MachineLoginPage").then((module) => ({ default: module.MachineLoginPage }))
@@ -17,7 +18,9 @@ const MachineLoginPage = lazy(() =>
  *
  * While the answer is still out the route renders nothing rather than "not found": a person who
  * followed a link to a page that does exist must not read that it does not, and the page's own
- * lazy chunk is a blank moment anyway.
+ * lazy chunk is a blank moment anyway. The answer is read under the `person` scope
+ * (`useCredentialCapabilities`): for a viewer whose credential lacks it nothing is asked, and the
+ * route says why it has no page.
  *
  * The gate is the route `app.tsx` names, and the page behind it is this module's own `lazy()`:
  * the gate is a few lines and the ask for the deployment's capabilities starts with the route,
@@ -25,7 +28,11 @@ const MachineLoginPage = lazy(() =>
  * (`e2e/two-builds-routes.ts` walks the route under this name).
  */
 export function MachineLoginRoute(): ReactNode {
-  const capabilities = useQuery(credentialCapabilitiesQuery());
+  const scope = usePersonScope();
+  const capabilities = useCredentialCapabilities();
+  if (scope === "lacking") {
+    return <p className={dangerText}>Could not load this page: {PERSON_SCOPE_LACKING}</p>;
+  }
   if (capabilities.isPending) {
     return null;
   }

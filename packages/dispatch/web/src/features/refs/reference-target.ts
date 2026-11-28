@@ -15,7 +15,7 @@ import { useContext } from "react";
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
 import { issueCollaboratorsQuery, issueQuery, usersQuery } from "../../api/queries";
-import { refetchFailedOnFocus } from "../../api/query-refresh";
+import { EVENT_FRESH, refetchFailedOnFocus } from "../../api/query-refresh";
 import type {
   ArchitectureComponentRead,
   Artifact,
@@ -72,21 +72,6 @@ import { prefixReference, routeWithWholeIds, type TextSource } from "./text-refe
  * window focus (`refetchFailedOnFocus`). An ask, comment or message reference reads its own
  * record alone.
  */
-
-/**
- * The options of a read that events keep fresh, spread into its query: window focus fetches it
- * again only while it is in error (`refetchFailedOnFocus`), and it is never stale by its age, so
- * no mount reads it again while it holds an answer. What reads it again is an event whose refresh
- * rule names its key (`api/event-refresh.ts`), a gap in the feed, which refreshes every read the
- * app holds (`refreshQueries`), or a write that invalidates its key. Staleness is per observer,
- * so a view that observes such a read takes these options too: under the app's defaults
- * (`main.tsx`: a 30 s `staleTime`, and a window focus fetches a stale read) a focus more than
- * 30 s after the load would read it again for that view alone.
- */
-export const EVENT_FRESH = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
 
 /**
  * `EVENT_FRESH` while the shell shows the new issue page, and `undefined` on every other page,

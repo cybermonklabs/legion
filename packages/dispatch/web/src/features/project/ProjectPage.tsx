@@ -7,7 +7,7 @@ import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
-import { useIsHuman } from "../../hooks/useIsHuman";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import {
   borderDefault,
   dangerText,
@@ -66,14 +66,14 @@ export function ProjectPage(): ReactNode {
   // Whose questions the pill counts, read as every other surface that counts work waiting on
   // the reader reads it.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  // The asks waiting on the reader, read under the `person` scope, which an agent viewer's bearer
-  // may not hold: they are asked for once whoami names a person (`useIsHuman`), so for an agent
-  // the pill counts none and nothing is asked, not even while whoami loads.
-  const human = useIsHuman();
+  // The asks waiting on the reader, read under the `person` scope: they are asked for once a read
+  // says the viewer's credential holds it (`useHoldsPersonScope`), so for a viewer without it the
+  // pill counts none and nothing is asked, not even while whoami or its scopes load.
+  const holdsPerson = useHoldsPersonScope();
   const inbox = useQuery({
     queryKey: ["inbox", projectKey],
     queryFn: () => api.getInbox(projectKey),
-    enabled: projectKey !== undefined && human,
+    enabled: projectKey !== undefined && holdsPerson,
   });
   const projects = useQuery(projectsQuery());
   const project = projects.data?.find((candidate) => candidate.key === route?.project);

@@ -363,12 +363,14 @@ test("AskRecipients never asks for subscribers unless the signed-in principal is
   }
 });
 
-// An agent viewer of the dashboard is answered `kind: "agent"`, and its bearer may hold no
-// `person` scope: the card lists the ask's own followers for it and asks for no subscribers.
+// An agent viewer of the dashboard is answered `kind: "agent"`, and here its credential's scopes
+// (`GET /api/v1/whoami`) name no `person` scope: the card lists the ask's own followers for it
+// and asks for no subscribers.
 test("AskRecipients asks an agent viewer's card for no subscribers", async () => {
   const user = userEvent.setup();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -406,6 +408,7 @@ test("AskRecipients asks an agent viewer's card for no subscribers", async () =>
     view.unmount();
     listAgents.mockRestore();
     getIssueSubscribers.mockRestore();
+    whoAmIScopes.mockRestore();
   }
 });
 

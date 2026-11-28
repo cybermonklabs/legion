@@ -4,9 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { api, isSourceNotFound } from "../../api/client";
-import { issueCollaboratorsQuery, usersQuery } from "../../api/queries";
+import { issueCollaboratorsQuery } from "../../api/queries";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
-import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
+import { useHoldsPersonScope, useUsers } from "../../hooks/useHoldsPersonScope";
 import { useSettled } from "../../hooks/useSettled";
 import { useAgents } from "../conversation/useAgents";
 import { searchResultKind, stepActive } from "../search/search-model";
@@ -358,11 +358,11 @@ export function useRefPicker({
     enabled: readsCollaborators,
   });
   // Everyone who has signed in, and below an agent's documents, are read under the `person`
-  // scope: each is asked once a read says the viewer's credential holds it (`useHoldsPersonScope`),
-  // and for a viewer without it the picker offers none of them.
+  // scope: each is asked once a read says the viewer's credential holds it (`useUsers`,
+  // `useHoldsPersonScope`), and for a viewer without it the picker offers none of them.
   const holdsPerson = useHoldsPersonScope();
   const readsUsers = open && issueKey === undefined && holdsPerson;
-  const users = useQuery({ ...usersQuery(), enabled: readsUsers });
+  const users = useUsers(open && issueKey === undefined);
   const componentProject =
     project ?? (issueKey === undefined ? undefined : issueKey.slice(0, issueKey.lastIndexOf("-")));
   const readsComponents = open && componentProject !== undefined;

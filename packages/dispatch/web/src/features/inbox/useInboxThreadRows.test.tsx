@@ -123,10 +123,12 @@ function InboxThreads(): ReactNode {
 }
 
 // The reader's threads are read under the `person` scope. A person's Inbox reads them; an agent
-// viewer's, whose bearer may hold none, asks for none and lists none.
+// viewer's, whose credential's scopes (`GET /api/v1/whoami`) name none, asks for none and lists
+// none.
 test("a person's Inbox reads their threads, and an agent viewer's asks for none", async () => {
   const read = spyOn(api, "listMyReplies").mockResolvedValue(dismissedPage([replyRow("c1")]));
-  restores.push(read);
+  const scopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
+  restores.push(read, scopes);
   for (const viewer of [
     { event_head: "0", kind: "user" as const, login: "alice" },
     { event_head: "0", kind: "agent" as const, login: "agent", session: null },

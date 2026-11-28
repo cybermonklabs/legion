@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
+import { EVENT_FRESH } from "../../api/query-refresh";
 import { compareTimestamps } from "../../lib/timestamps";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import type { TreeNode } from "./issue-tree";
 import { conversationItem } from "./outline-writer";

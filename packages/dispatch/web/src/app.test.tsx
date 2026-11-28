@@ -1118,10 +1118,14 @@ test("a live socket refused once the person is signed out takes the page to sign
 });
 
 /** The shell drawn for an agent's whoami, opened at `path`: at a wide width, or below the compact
- *  width with `compact`. The agent's credential holds no `person` scope (`GET /api/v1/whoami`
- *  names none). Each read of a person's own, and the sign-out, is answered, so a call is counted
- *  rather than refused. `restore` unmounts it and puts back what it replaced. */
-function renderAgentShell(path: string, { compact = false }: { compact?: boolean } = {}) {
+ *  width with `compact`. The agent's credential holds the scopes `scopes` names
+ *  (`GET /api/v1/whoami`), none unless it names some, so no `person` scope by default. Each read
+ *  of a person's own, and the sign-out, is answered, so a call is counted rather than refused.
+ *  `restore` unmounts it and puts back what it replaced. */
+function renderAgentShell(
+  path: string,
+  { compact = false, scopes = [] }: { compact?: boolean; scopes?: string[] } = {}
+) {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = ((query: string) =>
     ({
@@ -1149,7 +1153,7 @@ function renderAgentShell(path: string, { compact = false }: { compact?: boolean
       login: "agent",
       session: null,
     }),
-    whoAmIScopes: spyOn(api, "whoAmIScopes").mockResolvedValue([]),
+    whoAmIScopes: spyOn(api, "whoAmIScopes").mockResolvedValue(scopes),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([project]),
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources").mockResolvedValue(
       []
@@ -1253,5 +1257,41 @@ test("an agent viewer's compact header offers no Inbox and no Peek, and its Inbo
     expect(home.spies.listMyReplies).not.toHaveBeenCalled();
   } finally {
     home.restore();
+  }
+});
+
+// The answers page lists the person's answers, read under the `person` scope
+// (`GET /api/v1/me/answers`): the Inbox page draws its link only where the viewer's credential
+// holds it, so an agent viewer whose credential lacks it is offered no page it cannot read.
+test("the Inbox page draws no link to the answers page for an agent viewer without the person scope", async () => {
+  const home = renderAgentShell("/");
+  try {
+    await screen.findByText(
+      "The Inbox lists the asks, threads and credential requests that wait on a person, so an agent has none."
+    );
+    await waitFor(() => expect(home.spies.whoAmIScopes).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Answered by you" })).not.toBeInTheDocument();
+  } finally {
+    home.restore();
+  }
+});
+
+// What the shell reads of a person's own lists it asks under the one gate of the `person` scope,
+// and the viewer's kind decides only what it draws: an agent viewer whose credential holds the
+// scope gets the shell's read of its conversations' state, and the rail counts their unread
+// replies, while it is still drawn no Inbox and no Peek.
+test("an agent viewer whose credential holds the person scope gets the shell's agent-state read, and still no Inbox or Peek", async () => {
+  const { restore, spies } = renderAgentShell("/projects/ACME/settings", { scopes: ["person"] });
+  spies.getMyAgentState.mockResolvedValue({ "planner-session": { unread_replies: 2 } });
+  try {
+    await waitFor(() => expect(spies.getMyAgentState).toHaveBeenCalled());
+    const rail = await screen.findByRole("navigation", { name: "Navigation" });
+    expect(await within(rail).findByText("New replies 2")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Inbox/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: PEEK })).not.toBeInTheDocument();
+  } finally {
+    restore();
   }
 });

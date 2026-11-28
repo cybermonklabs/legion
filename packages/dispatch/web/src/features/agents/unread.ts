@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { agentStateRequest } from "../../api/client";
@@ -11,7 +11,7 @@ import type {
   UserAgentStateInput,
   UserAgentStates,
 } from "../../api/types";
-import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
+import { useUserAgentState } from "../../hooks/useHoldsPersonScope";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -102,9 +102,8 @@ export function storeAgentState(
  * shared agent-state query. The send-once rule, its retries and what a final failure forgets are
  * `useSendMarkOnce`'s; a change in the unread count wakes it, so a mark that failed for good is
  * sent again then, rather than the badge staying up until the session replies once more. The
- * count is read under the `person` scope, which an agent viewer's bearer may not hold: it is asked
- * for once a read says the viewer's credential holds it (`useHoldsPersonScope`), so a view whose
- * viewer holds none counts none unread and marks nothing.
+ * count is read under the `person` scope (`useUserAgentState`), so a view whose viewer's
+ * credential lacks it counts none unread and marks nothing.
  */
 function useSendReadMark<V>(
   sessionId: string,
@@ -113,7 +112,7 @@ function useSendReadMark<V>(
   input: (value: V) => UserAgentStateInput
 ): void {
   const queryClient = useQueryClient();
-  const states = useQuery({ ...userAgentStateQuery(), enabled: useHoldsPersonScope() }).data;
+  const states = useUserAgentState().data;
   const unread = states?.[sessionId]?.unread_replies ?? 0;
   useSendMarkOnce({
     mark: value === undefined ? undefined : { key: dedupeKey(value), value: input(value) },

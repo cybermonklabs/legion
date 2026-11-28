@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";
 import { GrantsSection } from "./GrantsSection";
@@ -69,7 +70,7 @@ test("a judged grant is granted by the judge, a person's own by that person, and
   const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
     grants: [judged, byAda],
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
 
   try {
     render(
@@ -104,7 +105,7 @@ for (const operator of [""]) {
     const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
       grants: [operated, nobodys(operator)],
     });
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = signedInQueryClient();
 
     try {
       render(

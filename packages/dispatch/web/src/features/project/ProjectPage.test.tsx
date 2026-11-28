@@ -103,7 +103,8 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
 /** `path` is the address the page opens at, or the reader's history, oldest first, ending at that
  *  address: a page with history behind it draws a Go back button beside it. `login` is the person
  *  `/auth/whoami` answers, `null` for an answer that never comes, or the answer itself, which the
- *  test settles. `sources` is what
+ *  test settles; an agent it answers holds no scope (`GET /api/v1/whoami` names none).
+ *  `sources` is what
  *  `GET /projects/CORE/architecture-sources` answers: the project's sources (a non-empty list
  *  opens it on Architecture; `[]`, the default, on Issues, as every render here expects unless it
  *  says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup that never
@@ -138,6 +139,7 @@ function renderPage(
   } else {
     whoAmI.mockReturnValue(login);
   }
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
 
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
@@ -178,6 +180,7 @@ function renderPage(
     listProjectArtifacts.mockRestore();
     listProjects.mockRestore();
     whoAmI.mockRestore();
+    whoAmIScopes.mockRestore();
   };
   return {
     listProjectArchitectureSources,
@@ -409,9 +412,10 @@ test("shows a compact blocker link only when asks await the viewer", async () =>
   }
 });
 
-// The asks the pill counts are read under the `person` scope, which an agent viewer's bearer may
-// not hold: the page asks for them once whoami names a person, so neither the wait for whoami nor
-// an agent's answer asks, and a person's answer that comes late asks then.
+// The asks the pill counts are read under the `person` scope, which an agent viewer's credential
+// may not hold: the page asks for them once a read says the viewer's credential holds it, so
+// neither the wait for whoami nor an agent's answer asks, and a person's answer that comes late
+// asks then.
 test("an agent viewer whose whoami is still loading makes no person-scope read", async () => {
   const agentAnswer = Promise.withResolvers<AuthenticatedUser>();
   const agent = renderPage("/projects/CORE", undefined, agentAnswer.promise, [inboxRow()]);

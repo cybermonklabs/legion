@@ -1,11 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { userStateQuery } from "../../api/queries";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
+import { useUserState } from "../../hooks/useHoldsPersonScope";
 import {
   borderDefault,
   dangerText,
@@ -154,8 +152,8 @@ export function IssuesTable({
   const { attachAbove, boxWidth, responsive } = layout;
   const flags = useIssueFilters();
   // The viewer's per-issue state, read under the `person` scope once a read says the viewer's
-  // credential holds it (`useHoldsPersonScope`).
-  const userState = useQuery({ ...userStateQuery(), enabled: useHoldsPersonScope() });
+  // credential holds it (`useUserState`).
+  const userState = useUserState();
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
 

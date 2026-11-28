@@ -3,10 +3,11 @@ import { useCallback, useMemo } from "react";
 
 import { roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery } from "../../../api/queries";
+import { EVENT_FRESH } from "../../../api/query-refresh";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
-import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
+import { standsFailed } from "../../refs/reference-target";
 import { decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";

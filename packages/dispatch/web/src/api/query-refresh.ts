@@ -32,6 +32,21 @@ export const refetchFailedOnFocus = (query: {
 }) => (query.state.status === "error" ? "always" : false);
 
 /**
+ * The options of a read that events keep fresh, spread into its query: window focus fetches it
+ * again only while it is in error (`refetchFailedOnFocus`), and it is never stale by its age, so
+ * no mount reads it again while it holds an answer. What reads it again is an event whose refresh
+ * rule names its key (`api/event-refresh.ts`), a gap in the feed, which refreshes every read the
+ * app holds (`refreshQueries`), or a write that invalidates its key. Staleness is per observer,
+ * so a view that observes such a read takes these options too: under the app's defaults
+ * (`main.tsx`: a 30 s `staleTime`, and a window focus fetches a stale read) a focus more than
+ * 30 s after the load would read it again for that view alone.
+ */
+export const EVENT_FRESH = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
+
+/**
  * The one refresh scheduler: what happens to the queries an event batch names (`api/event-feed.ts`
  * asks, `api/event-refresh.ts` decides which), and to the reads an owner of a query asks for
  * (`ownQuery`). It never cancels a request, and it fetches one query at most once a second:

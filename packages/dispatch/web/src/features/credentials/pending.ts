@@ -2,7 +2,7 @@ import { type Query, type QueryClient, queryOptions, useQuery } from "@tanstack/
 
 import { api } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
-import { useIsHuman } from "../../hooks/useIsHuman";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
@@ -47,6 +47,16 @@ export function reaskHeldCredentialList(queryClient: QueryClient): void {
   void queryClient.prefetchQuery({ ...query, staleTime: 0 });
 }
 
+/** The read of the credential-request list (`credentialPendingQuery`), under the `person` scope:
+ *  it is asked for once a read says the viewer's credential holds it (`useHoldsPersonScope`), so
+ *  for a viewer without it, and while whoami or its scopes load, nothing is asked and the read
+ *  stays pending. The Inbox's reading below and the Settings page, which draws the broker's
+ *  sections only where the list answered, read the key here. */
+export function useCredentialPending() {
+  const options = credentialPendingQuery();
+  return useQuery(useHoldsPersonScope() ? options : { ...options, enabled: false });
+}
+
 /** What the Inbox knows about the credential requests waiting on the viewer. `listed` carries the
  *  list, empty where the broker is not configured (a deployment without one has none); while the
  *  list is `loading`, `requests` is empty and the Inbox claims nothing about them. `failed` means
@@ -60,13 +70,10 @@ export interface CredentialRequests {
 
 /** The one reading of the credential-request list. The section that lists the requests, the
  *  Inbox's empty state and every `Needs you` count read it here, so none of them can count a
- *  request another does not show. The list is the requests a person decides, read under the
- *  `person` scope, which an agent viewer's bearer may not hold: it is asked for once whoami names
- *  a person (`useIsHuman`), so for an agent, and while whoami loads, nothing is asked and the list
- *  reads as loading. */
+ *  request another does not show. Its read is `useCredentialPending`'s, so the list reads as
+ *  loading wherever nothing is asked. */
 export function useCredentialRequests(): CredentialRequests {
-  const options = credentialPendingQuery();
-  const pending = useQuery(useIsHuman() ? options : { ...options, enabled: false });
+  const pending = useCredentialPending();
   if (pending.isPending) return { requests: [], status: "loading" };
   if (pending.isLoadingError) return { requests: [], status: "failed" };
   return { requests: pending.data?.pending ?? [], status: "listed" };

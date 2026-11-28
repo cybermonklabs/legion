@@ -21,7 +21,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
+import { askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
 import type {
   Actor,
   CommentWithTrees,
@@ -33,6 +33,7 @@ import type {
   MyReplyThreadRow,
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { useAgentMessages } from "../../hooks/useHoldsPersonScope";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -582,7 +583,9 @@ function AgentThreadBody({
   thread: MyReplyAgentRow;
 }): ReactNode {
   const sessionId = thread.session.id;
-  const messages = useQuery(agentMessagesQuery(sessionId));
+  // Read under the `person` scope (`useAgentMessages`), as the Inbox's thread rows that draw this
+  // body are (`useInboxThreadRows`).
+  const messages = useAgentMessages(sessionId);
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
   const sendKey = threadSendKey(thread.thread_id);

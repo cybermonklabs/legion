@@ -3,8 +3,9 @@ import { useMemo, useState } from "react";
 
 import { threadReadRequest } from "../../api/client";
 import { myRepliesKey, myRepliesOwnerQuery } from "../../api/queries";
+import type { EVENT_FRESH } from "../../api/query-refresh";
 import type { Ask } from "../../api/types";
-import { type EventFreshness, useIsHuman } from "../../hooks/useIsHuman";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { unreadWrites } from "./thread-layout";
@@ -38,8 +39,8 @@ export interface MarkThreadReadOptions {
   /** The thread's writes, as the surface holds them, for the unread set below; none while the
    *  thread is still loading, and none at all from a surface that wants no set. */
   readonly writes?: readonly { readonly id: string; readonly created_at: string }[];
-  /** How long the sign-in read and unread set stay fresh, and whether a focus reads them again. */
-  readonly freshness?: EventFreshness;
+  /** How long the unread set stays fresh, and whether a focus reads it again. */
+  readonly freshness?: typeof EVENT_FRESH;
 }
 
 /** What a thread's read mark answers: where the watch goes, and what the thread still holds
@@ -80,10 +81,11 @@ export function useMarkThreadRead({
   writes,
 }: MarkThreadReadOptions): ThreadRead {
   const queryClient = useQueryClient();
-  // The routes need the `person` scope, which a signed-in browser holds; any other principal
-  // never asks, so never cycles on a 403.
-  const human = useIsHuman(freshness);
-  const watching = enabled && human && owner !== undefined && newestShownAt !== undefined;
+  // The routes need the `person` scope: the set is asked for, and the thread watched, once a read
+  // says the viewer's credential holds it (`useHoldsPersonScope`), so a viewer without it never
+  // asks, and never cycles on a 403.
+  const holdsPerson = useHoldsPersonScope();
+  const watching = enabled && holdsPerson && owner !== undefined && newestShownAt !== undefined;
   const unreadSetQuery = { ...myRepliesOwnerQuery(owner ?? NO_OWNER), ...freshness };
   const unreadSet = useQuery({ ...unreadSetQuery, enabled: watching });
   const rows = unreadSet.data;

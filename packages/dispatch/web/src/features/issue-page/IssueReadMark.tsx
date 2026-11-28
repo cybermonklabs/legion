@@ -4,7 +4,7 @@ import { type ReactNode, useState } from "react";
 import { api, issueStateRequest } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import type { UserState } from "../../api/types";
-import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
+import { useHoldsPersonScope, useUserState } from "../../hooks/useHoldsPersonScope";
 import { stateForIssue } from "../issue/pins";
 import { useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
@@ -25,14 +25,13 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * answer that lands after the reader moved on is put where it belongs. It is drawn with no view
  * on and no document open alone (`slots/foot.tsx`): a view is a part of the conversation, and
  * its end is not the conversation's. The mark and the state it is read against are the person's
- * (`me/state`, the `person` scope, which an agent viewer's bearer may not hold): both wait for a
- * read that says the viewer's credential holds it (`useHoldsPersonScope`), and a viewer without
- * it reads and marks nothing.
+ * (`me/state`, the `person` scope): both wait for a read that says the viewer's credential holds
+ * it (`useUserState`, `useHoldsPersonScope`), and a viewer without it reads and marks nothing.
  */
 export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   const queryClient = useQueryClient();
   const holdsPerson = useHoldsPersonScope();
-  const state = useQuery({ ...userStateQuery(), enabled: holdsPerson });
+  const state = useUserState();
   const lastReadSeq = stateForIssue(state.data, issueKey).last_read_seq;
   // The issue's head: what a dwell on the end marks read.
   const head = useQuery({

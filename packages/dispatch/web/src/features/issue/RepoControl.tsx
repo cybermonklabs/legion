@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { projectsQuery } from "../../api/queries";
+import type { EVENT_FRESH } from "../../api/query-refresh";
 import { QueryError } from "../../components/QueryError";
 import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
@@ -19,7 +20,6 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import type { EVENT_FRESH } from "../refs/reference-target";
 import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
 import { useDetailsRefusal } from "./HeaderDetails";
@@ -269,11 +269,8 @@ export function RepoControl({
    *  place of the app's defaults. A host whose reads events keep fresh passes their options,
    *  since a project's event reads the list again (`api/event-refresh.ts`), and a window focus
    *  30 s after the read, the app's staleness, would read it again for nothing. Without it the
-   *  read keeps the app's defaults. The host passes the options rather than this file importing
-   *  them because the new page's browser tests load this file in Node
-   *  (`e2e/issue-page-h.e2e.ts`), and `EVENT_FRESH`'s module reaches the document schema's JSON
-   *  (`refs/markdown-engine.ts`, `doc/schema.ts`), which stops that test file from loading. Only
-   *  its type is imported, which the build removes. */
+   *  read keeps the app's defaults. Only the host knows whether events keep its reads fresh, so
+   *  the host passes the options, and this file imports their type alone. */
   projectsFreshness?: typeof EVENT_FRESH;
   repo: string | null;
   resolvedRepo: string | null;

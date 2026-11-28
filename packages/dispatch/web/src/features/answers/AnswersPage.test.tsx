@@ -527,3 +527,28 @@ test("a reply row whose comment was edited says so on its label, and one nobody 
     listMyAnswers.mockRestore();
   }
 });
+
+// The list is read under the `person` scope (`GET /api/v1/me/answers`): an agent viewer whose
+// credential lacks it asks for none, and the page says why it has no list rather than drawing
+// one that is still loading.
+test("an agent viewer without the person scope is told why the answers page has no list, and asks for none", async () => {
+  whoAmI.mockResolvedValue({
+    event_head: "0",
+    kind: "agent",
+    login: "agent:planner-session",
+    session: "planner-session",
+  });
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(page([answerRow()]));
+  const { view } = renderPage();
+  try {
+    await view.findByText(/Could not load your answers: .*person scope/);
+    expect(view.queryByLabelText("Loading your answers")).toBeNull();
+    expect(whoAmIScopes).toHaveBeenCalled();
+    expect(listMyAnswers).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+    whoAmIScopes.mockRestore();
+  }
+});

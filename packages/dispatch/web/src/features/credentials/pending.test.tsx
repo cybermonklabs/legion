@@ -10,14 +10,20 @@ import { credentialPendingQuery, useCredentialRequests } from "./pending";
 
 const alice: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
 
-/** The hook drawn for `viewer`, `/auth/whoami`'s answer, which is in the cache before the first
- *  render, or for a whoami that never answers where `viewer` is `"loading"`. */
+/** The hook drawn for `viewer`, `/auth/whoami`'s answer: a person's is in the cache before the
+ *  first render, an agent's is what that read answers, whose credential's scopes
+ *  (`GET /api/v1/whoami`) name none, and a whoami that never answers is drawn where `viewer` is
+ *  `"loading"`. */
 function renderPending(viewer: AuthenticatedUser | "loading" = alice) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const whoAmI = spyOn(api, "whoAmI").mockImplementation(
-    () => Promise.withResolvers<never>().promise
+  const agent = viewer !== "loading" && viewer.kind === "agent" ? viewer : undefined;
+  const whoAmI = spyOn(api, "whoAmI").mockImplementation(() =>
+    agent === undefined ? Promise.withResolvers<never>().promise : Promise.resolve(agent)
   );
-  if (viewer !== "loading") queryClient.setQueryData(whoAmIQuery().queryKey, viewer);
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
+  if (viewer !== "loading" && agent === undefined) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, viewer);
+  }
   const view = renderHook(() => useCredentialRequests(), {
     wrapper: ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -26,6 +32,7 @@ function renderPending(viewer: AuthenticatedUser | "loading" = alice) {
   const restore = () => {
     view.unmount();
     whoAmI.mockRestore();
+    whoAmIScopes.mockRestore();
   };
   return { queryClient, restore, view, whoAmI };
 }
@@ -88,9 +95,9 @@ test("a poll that fails after a list already loaded keeps showing that list, not
   }
 });
 
-// The list is the requests a person decides, read under the `person` scope, which an agent
-// viewer's bearer may not hold: it is asked for once whoami names a person, so a page whose whoami
-// is still loading, and an agent's, asks nothing and reads the list as loading.
+// The list is the requests a person decides, read under the `person` scope: it is asked for once
+// a read says the viewer's credential holds it, so a page whose whoami is still loading, and an
+// agent's whose credential names no scope, asks nothing and reads the list as loading.
 test("an agent viewer, and a page whose whoami is still loading, ask for no credential request", async () => {
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
     pending: [],

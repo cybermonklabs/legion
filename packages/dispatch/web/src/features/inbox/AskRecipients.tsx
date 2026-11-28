@@ -11,7 +11,7 @@ import {
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
-import { useIsHuman } from "../../hooks/useIsHuman";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { textMutedOnSurface } from "../../theme/classes";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
@@ -238,17 +238,17 @@ export function AskRecipients({
 }: AskRecipientsProps): ReactNode {
   const queryClient = useQueryClient();
   const subscription = ownerSubscription(owner);
-  // The subscribers endpoints need the `person` scope, which a signed-in browser holds; the card
-  // only asks once the sign-in read says the principal is a user, so nothing without the scope
-  // cycles on a 403.
-  const human = useIsHuman();
+  // The subscribers endpoints need the `person` scope: the card only asks once a read says the
+  // viewer's credential holds it (`useHoldsPersonScope`), so nothing without the scope cycles on
+  // a 403.
+  const holdsPerson = useHoldsPersonScope();
   // Same key as the issue header (`IssueHeader`) and the project document page
   // (`DocumentPage`), so an Inbox of cards on one issue shares one fetch with its header. Each
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
   // while rather than refetched on every mount and focus; the event feed's invalidation still
   // refreshes it.
   const subscribersQuery = useQuery({
-    enabled: subscription !== undefined && human,
+    enabled: subscription !== undefined && holdsPerson,
     queryKey: ["subscribers", subscription?.id],
     queryFn: () => {
       if (subscription === undefined) {

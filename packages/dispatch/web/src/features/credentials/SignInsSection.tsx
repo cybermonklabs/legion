@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { PersonSignInResp } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { shortThumbprint, signInsQuery } from "./logic/signins";
@@ -42,7 +43,13 @@ const columns: readonly RevocableColumn<PersonSignInResp>[] = [
  */
 export function SignInsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const signIns = useQuery({ ...signInsQuery(), select: (data) => data.signins ?? [] });
+  // Read under the `person` scope, once a read says the viewer's credential holds it
+  // (`useHoldsPersonScope`).
+  const signIns = useQuery({
+    ...signInsQuery(),
+    enabled: useHoldsPersonScope(),
+    select: (data) => data.signins ?? [],
+  });
 
   return (
     <RevocableList

@@ -19,9 +19,9 @@ function isHumanFor(viewer: AuthenticatedUser): boolean {
   return renderHook(() => useIsHuman(), { wrapper }).result.current;
 }
 
-// Every surface behind a route that needs the `person` scope asks only for a person: an agent
-// viewer of the dashboard is answered `kind: "agent"`, whatever login label it carries - its
-// token's owner included - so none of those surfaces asks for it.
+// A control the server takes from a person alone is offered only to a person: an agent viewer of
+// the dashboard is answered `kind: "agent"`, whatever login label it carries - its token's owner
+// included - so no surface offers it one.
 test("a person is human, and an agent viewer is not, whatever its login label", () => {
   expect(isHumanFor({ event_head: "0", kind: "user", login: "alice" })).toBe(true);
   expect(isHumanFor({ event_head: "0", kind: "agent", login: "agent", session: null })).toBe(false);

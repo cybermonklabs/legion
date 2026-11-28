@@ -1,11 +1,12 @@
 import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -60,10 +61,7 @@ function expiredSecretRow(overrides: Partial<CredentialPendingRow> = {}): Creden
   });
 }
 
-function renderSection(
-  credentials: CredentialRequests,
-  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-) {
+function renderSection(credentials: CredentialRequests, client = signedInQueryClient()) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -206,7 +204,7 @@ test("an expired row with no deadline says only that its deadline passed", () =>
 test("Dismiss on an expired row sends that record's dismissal and reads the list again", async () => {
   const user = userEvent.setup();
   const dismiss = spyOn(api, "dismissCredentialRequest").mockResolvedValue(undefined);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   const invalidate = spyOn(client, "invalidateQueries");
   try {
     renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
@@ -230,7 +228,7 @@ test("a refused dismissal shows the broker's message and reads the list again", 
   const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
     new ApiError(403, { code: "NOT_APPROVER", error: refusal })
   );
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   const invalidate = spyOn(client, "invalidateQueries");
   try {
     renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
@@ -251,7 +249,7 @@ test("a dismissal the reader stopped says it may have been made, not that it fai
   const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
     new NetworkError("/api/v1/credentials/requests/req-9/dismiss", new TypeError("Failed to fetch"))
   );
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   jest.useFakeTimers();
   try {
     renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
@@ -406,7 +404,7 @@ test("a row's request-only session id is shown with no preamble", async () => {
 // already made. Refreshing it is the shell's one poller's job (`AgentRegistryPoller`).
 test("reads the agents list once for the whole list, not once per pending row", async () => {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([runningAgent()]);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   const tree = (requests: CredentialPendingRow[]) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>

@@ -1,9 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { DispatchUser } from "../../api/types";
 import { AssigneeFilter } from "./AssigneeFilter";
@@ -60,7 +61,7 @@ function renderFilter({
   } else {
     listUsers.mockResolvedValue(users);
   }
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   const view = render(
     <QueryClientProvider client={queryClient}>
       <Host onChange={onChange} selected={selected} />
