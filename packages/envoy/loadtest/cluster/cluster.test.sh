@@ -4382,8 +4382,10 @@ stop_watchdog_end() {
   # watcher takes the TERM as a flag and leaves at the end of the act, its three tries, recording
   # nothing: a TERM ignored there would leave pg_disk_watch_stop waiting on a watcher that polls on.
   # pg_disk_watch_stop then sends its own TERM, which finds the watcher leaving or gone, and waits
-  # for it to go. Its 1 s naps are fast ones on FAKE_DIR/clock, so a watcher that stays reaches the
-  # stop's 300 s bound at the stop's 300th reading, whatever the watcher itself does meanwhile.
+  # for it to go. Its first 20 naps are real 0.05 s sleeps that leave FAKE_DIR/clock unchanged.
+  # Only its fast 1 s naps after that advance the fake clock. If the watcher stays and nothing
+  # else advances the clock, poll 321 reaches the 300 s bound, or reading 322 including the TERM.
+  # The first poll precedes any nap, and the bound takes 20 fine naps and 300 fast ones.
   export FAKE_RC_UNTIL_STOP=1 FAKE_LOCK_GET_FAIL=1 FAKE_LOCK_GET_HOLD=1 FAKE_FAST_SLEEP="1 2 30"
   rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go" "$oneread_dir/step-failed.json"
   df_seq "$pg_size $pg_used_high $pg_free_high"
@@ -4409,8 +4411,9 @@ stop_watchdog_end() {
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"
   # The same TERM with the bound small: a watcher that will not leave is killed at the bound and
   # the step says so, instead of hanging every path out of the step on it. Its first read of the
-  # lock holds until the stop is over, so it never leaves; the stop's 1 s naps are fast sleeps on
-  # FAKE_DIR/clock, so its bound costs no real second.
+  # lock holds until the stop is over, so the watcher never leaves. The first 20 naps are real
+  # 0.05 s sleeps that leave FAKE_DIR/clock unchanged, so the bound costs about one real second.
+  # Only the fast 1 s naps after those advance the fake clock.
   rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go" "$oneread_dir/step-failed.json"
   df_seq "$pg_size $pg_used_high $pg_free_high"
   pg_disk_watch pgbound "$oneread_dir" step-pgbound "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
@@ -4856,10 +4859,12 @@ printf '%s\n' "$clock_start" >"$fake/clock"
 # step has nothing but this wait left. The step's heartbeat is gated as in (o) until its pid is
 # read below: with fast periods it could otherwise stop, and take its pidfile with it, as soon as
 # the step command has ended. The disk watcher's 30 s nap is a real one, which the step's EXIT
-# trap ends. The stop of that watcher in the EXIT trap (pg_disk_watch_stop) naps 1 s between its
-# readings, and that nap is a fast one that moves the fake clock too, so a watcher that ignores its
-# TERM reaches the stop's 300 s bound at the stop's 300th reading and fails below by name, where a
-# frozen clock would leave the stop polling until the CI step's deadline.
+# trap ends. The stop in that trap (pg_disk_watch_stop) takes 20 real 0.05 s naps first, which
+# leave FAKE_DIR/clock unchanged. Only its fast 1 s naps after that advance the fake clock.
+# If the watcher ignores TERM and nothing else advances the clock, poll 321 reaches the 300 s
+# bound, or reading 322 including the TERM. The first poll precedes all 320 naps.
+# The test then fails below by name. A frozen clock would leave the stop polling until the CI
+# step's deadline.
 FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_RUNNER_EXEC_FAIL_AT_START=1 FAKE_FAST_SLEEP="1 15 60" \
   FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
   bash "$tmp/step-bounded.sh" step --namespace "$ns" unreach 1 --duration 1s >"$unreach_step" 2>&1 &
