@@ -635,7 +635,7 @@ builds, and the two workflow files that hold the steps. The retired `dispatch` j
 filter also held three fixture sets whose only readers are the dashboard's and the
 proof editor's unit tests, and they are not here: dispatch-ui's filter names all
 three, and with the dispatch_browser_pr output ungated on a pull request they would
-start four shard machines and the merge job for a fixture-only change. The
+start the lane's shard machines and the merge job for a fixture-only change. The
 dispatch_browser gate (browser_gate in .github/scripts/ci_job_reads.py) says what this
 suite reads, and the changes job computes this filter from it: a path is in this filter
 because a browser row reads it and for no other reason. The dispatch_browser_pr gate is
@@ -664,7 +664,7 @@ whole suite's result before the merge can put it on a pull request with
 `lane:dispatch_browser`, and the group is where a change to that file meets it before main
 anyway. The nightly itself is not in this list:
 no step of this suite reads it, which rule 9's second direction refuses, since
-four shard machines and the merge job would start over a change no row sees. It
+the lane's shard machines and the merge job would start over a change no row sees. It
 is a read of the ci_filters gate instead, so a change to it re-runs this check,
 which holds this filter and that gate together.
 
@@ -808,7 +808,7 @@ The text checks of the three Go modules, the Dispatch API's eleven static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' twenty-three tests
+which the three Go lanes leave out of their own runs, those checks' twenty-four tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -1195,7 +1195,7 @@ file of each covered box of the writing list, whose change can take a box's pick
 away, and no more: over the 200 newest pull-request runs of 2026-11-13, a list that
 also named the six feature directories mounting the field and the shared harness
 selected about half of them (about 300 runs and 6,000 runner-minutes a day), so the
-four shard machines start for a pull request that changes the references or a box
+lane's shard machines start for a pull request that changes the references or a box
 that holds the picker, and not for every dashboard change.
 For the same reason its file of .github/ci-gates, dispatch-references.py, declares it EXCLUDED
 (`EXCLUDED = excluded(...)`, its patterns written by hand) rather than as a gate, so the changes
@@ -1243,8 +1243,10 @@ dorny/paths-filter filter per job, the jobs that read those paths; each job runs
 filter matches (lint and priority-conflicts run on every change, and typecheck, test,
 tooling-checks, daemon-go, plugin-pack, private-names-port, sessions-script and text-checks also
 run when `changes` itself failed). A pull request runs the fast jobs its paths select, and the
-merge queue runs all of
-them (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+merge queue runs a job when the queue's own generator, against the queue's base, selects it,
+except a job whose `if:` admits only a pull request (dispatch-browser-pr, dispatch-references and
+worker-image), which never runs there
+(.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 ci-ok condenses every job's result into one check: it fails when a job `changes` selected did
 not succeed.
 Main's ruleset requires ci-ok and pr-title. ci-ok is the `ci-ok` job
@@ -1604,8 +1606,10 @@ tests, and
 the list of those jobs whose `if:` also admits only pull_request (ci-ok.sh and ci-ok.jq say how
 they decide a job's selection). The ci-ok job's step takes both from this env; ci-ok-report.sh,
 which runs from a composite action this file hands its job's own inputs alone, reads both out
-of this file at the commit the run checked out. check-ci-filters.sh holds both to the jobs'
-`if:`s.
+of this file at the commit the run checked out; and lane-verdicts.py reads the map alone, to name
+each gated output's job
+(.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite). check-ci-filters.sh
+holds both to the jobs' `if:`s.
 
 ## The jobs that run on every change
 
@@ -1858,8 +1862,9 @@ of its own, and gates nothing
 ## Which lane a job runs in: the pull request or the merge queue
 
 A pull request's run is a fast filter: the builds, the vets, the format, typecheck and lint
-checks, and the fast tests. The merge queue runs every job its paths select on the tree the
-change lands as, so a slow test runs once, in the queue, and main stays green. The rule that
+checks, and the fast tests. The merge queue runs a job when the queue's own generator selects it,
+on the tree the change lands as, except the three jobs that run on a pull request alone (below),
+so a slow test runs once, in the queue, and main stays green. The rule that
 sorts a job, read off its pull-request runs (attempt 1, every leg of the job that ran succeeded,
 a job's time from its first leg's start to its last leg's end; the numbers below are
 2026-11-22's):
@@ -1868,7 +1873,8 @@ a job's time from its first leg's start to its last leg's end; the numbers below
   request wherever its paths select it.
 - A build, vet, format, typecheck or lint check runs on a pull request whatever its job's time,
   so a change that does not build or is not formatted fails while its author still has it.
-- Every other test is a slow suite: the merge queue runs it, and a pull request runs it only
+- Every other test is a slow suite: the merge queue runs it when the queue's own generator selects
+  it, and a pull request runs it only
   under its `lane:<output>` label, for a need the pull request names
   (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request says what
   `full-ci`, every slow suite, is for). A slow suite is held back through its job's `changes`
@@ -1897,7 +1903,10 @@ dashboard is held to (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-
 A job whose numbers cross the line moves class by the same rule. dispatch-references is in
 neither class: it is outside ci-ok, runs on a pull request alone and never in the queue, whose
 full lane already runs every row of it
-(.github/ci-notes/ci.md#the-reference-rows-preview-job).
+(.github/ci-notes/ci.md#the-reference-rows-preview-job). dispatch-browser-pr and worker-image,
+the two jobs CI_OK_PULL_REQUEST_ONLY names, run on a pull request alone too, and ci-ok accepts
+their skip in the queue
+(.github/ci-notes/ci.md#what-ci_ok_selected_by-holds-and-which-programs-read-it).
 
 What this accepts: a slow test that would have failed the pull request now fails first in the
 queue, where the failure takes the entry out and the queue rebuilds the groups behind it. Every
@@ -1922,12 +1931,16 @@ tree.
 ## How a slow suite is held back on a pull request
 
 A slow suite (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue)
-is held back through its job's `changes` output. The merge queue runs it on the
-tree the change lands as, and that is where its result normally comes from; a pull request runs
+is held back through its job's `changes` output. The merge queue runs it when the queue's own
+generator, against the queue's base, selects it, and that is where its result normally comes from; a pull request runs
 it only when it carries the label `full-ci`, or that one when it carries its `lane:<output>`
 label (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). Each such output is false on a pull-request run without the label, so
 the skip is one `changes` chose: ci-ok reads it as it reads any other output, and no job's `if:`
-knows about the label. The label is read
+knows about the label. The run says so where a reader looks: the changes job's log names each
+suite it held back and why
+(.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite), and ci-ok's notice on
+the pull request's checks names them again
+(.github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term). The label is read
 from the pull request the run's own event carries, so it takes effect at the next push,
 reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
 trigger, which would start a run that joins this workflow's concurrency group and cancels the
@@ -1936,6 +1949,38 @@ since every later push would run the slow suites again, unless a `ci_check` of t
 names one of them: then that job's own `lane:<output>`, never `full-ci`, stays on, since without
 it that job's own check run (`test`) concludes `skipped`, no job of the file it calls starts, and
 the run the check names (`test / test`) is absent.
+
+## The changes job says what decided each slow suite
+
+dorny/paths-filter's own log prints `Filter <name> = true` for each filter whose paths matched,
+and for a slow suite on a pull request without its label that line says the opposite of what the
+run does: the suite's output is false and the suite does not run on this head. The step "Say what
+decided each slow suite on this run" (`.github/scripts/lane-verdicts.py`) prints, for each output
+that reads the pull request's labels, what decided it: whether its paths matched, the label the
+pull request carries, whether the suite runs on this run, and, for one held back, that the merge
+queue runs the suites its own generator selects against its own base, which may be fewer than
+this head's selection. Whether a line says its suite runs is the output's own expression,
+evaluated by ci_router_outputs.py's evaluator over what the step is handed, and the reason beside
+it is a fact the step is handed too: that the run selects every job, that the filters file dorny
+read was widened to every path, that the paths matched, or the label carried. Whether a filter was
+widened is read from that file's first line, which must be, as a whole line, one of the four
+ci-filters-generate.sh writes: the fail-open line, the every-filter FORCED line, the FORCED line
+naming the filters that differ from the base tree's, or the computed filters' own header (the
+first line of ci_filter_coverage's GENERATED_HEAD, nothing widened). The script imports that
+header only when the first line is none of the other three, since the fail-open file is what the
+generator writes when the engine fails, and on that run the engine may not import. A file that
+cannot be read, a first line in no such form, or a computed header that cannot be checked
+because ci_filter_coverage does not import, is an `::error::`, and each line that would say its
+paths matched says instead that whether its filter was widened is UNKNOWN.
+ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to on pull requests
+with and without a label, a merge group, and dispatches of main and of a branch. It checks that
+the step's FILTERS_FILE is the file the paths-filter step reads, feeds the script files the real
+ci-filters-generate.sh wrote (this run's computed filters, its fail-open file, and what it writes
+for a base it cannot read and for a base whose filters differ), and holds each suite's line to
+its output. The step writes no notice, since ci-ok's notice names the suites a run held back; it
+writes one `::error::` for an output it cannot evaluate, for a line that would contradict the
+output, and for a filters file whose widening it cannot read. A failure of the step is its own red
+mark and fails no job (`continue-on-error`): it only reads.
 
 ## A citation names a symbol, never a line
 
@@ -2097,13 +2142,17 @@ a dispatch of a branch the step runs and this is its verdicts, which no label te
 
 A job a pull request held back did not run at this head, and ci-ok passes over its skip, so
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
-`not run at this head: <job> (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:<output> runs it here only for a need the pull request names)`,
+`not run at this head: <job> (selected by paths, held back on a pull request; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection, and lane:<output> runs it here only for a need the pull request names)`,
 where `<output>` is the job's own `changes` output, so the line names the one label that runs it
 on a pull request and never `full-ci`
 (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). The same lines
-go to the ci-ok job's summary, apart from the jobs that ran and passed, so a green ci-ok on a
-pull request without the label is not read as those jobs passing. No job runs in part, so a job
-that ran and passed ran all its steps. A run that held nothing back writes no summary.
+go to the ci-ok job's summary, apart from the jobs that ran and passed, and all of them to one
+notice annotation, which GitHub shows on the pull request's checks beside ci-ok, so a green ci-ok
+on a pull request without the label is not read as those jobs passing, whether its reader opens
+the run or only the pull request. The notice is written inside the verdict step, so a run
+cancelled before that step ends carries none, as it carries no verdict. No job runs in part, so a
+job that ran and passed ran all its steps. A run that held nothing back writes no summary and no
+notice.
 
 ## What the filter step diffs on a dispatched run
 
@@ -2686,7 +2735,7 @@ What it runs, and why it gates nothing.
 
 The reference rows' preview: every Chromium row of the eleven spec files
 the reference framework's Verification document names and the nine of the reading list's
-walk, through the `references` lane of dispatch-browser.yaml - its binaries job, its four shard
+walk, through the `references` lane of dispatch-browser.yaml - its binaries job, its shard
 legs and its merge job, and none of its
 alone, two-process, embedder or visual jobs. The pull-request lane, the dispatch-browser-pr job,
 runs only the few of those rows that carry `@pr`, so without this job a change to the
@@ -2947,7 +2996,7 @@ The checks whose subject is text: each module's internal/textcheck package, the 
 eleven static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-build) leave those
-packages, those twenty-three tests and those two pins out of their own runs
+packages, those twenty-four tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,
