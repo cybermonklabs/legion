@@ -159,11 +159,11 @@ func buildCounted(t *testing.T) error {
 	if _, ok := modules["github.com/yuin/goldmark/extension"]; !ok {
 		return fmt.Errorf("go list did not name github.com/yuin/goldmark/extension among the counted packages")
 	}
-	root, err := filepath.Abs(os.TempDir())
+	dir, err := os.MkdirTemp("", "pmdoc-counted-")
 	if err != nil {
 		return err
 	}
-	dir, err := os.MkdirTemp(root, "pmdoc-counted-")
+	dir, err = filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
