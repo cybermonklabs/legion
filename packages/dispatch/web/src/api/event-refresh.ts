@@ -2,7 +2,10 @@ import { isIdPrefix } from "@legion/contracts";
 import { hashKey, type Query, type QueryCache, type QueryClient } from "@tanstack/react-query";
 
 import { askProject } from "../features/inbox/list-row";
-import { indexedTreeTarget } from "../features/issue-page/tree-read/indexed-refresh";
+import {
+  indexedTreeTarget,
+  readAfterIndexBurst,
+} from "../features/issue-page/tree-read/indexed-refresh";
 import { routeItem } from "../features/refs/block-reference";
 import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
@@ -857,6 +860,13 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
  * since it was judged. An event that moves no kind reaches none: a child's comment or message
  * reads nothing of its parent's tree. A child's plain ask is on no node its parent's answers hold,
  * so it reads none of them.
+ *
+ * An `artifact.indexed` event marks none of them at once, since the block index sends one for each
+ * pass while it catches up: each tree or view it reaches asks instead for the index read of the
+ * issue it is the tree of (`indexed-refresh.ts`' `readAfterIndexBurst`), which reads the tree and
+ * every view under that issue's key once for each burst of such events that reach them, as the
+ * event's own issue's tree is read (`indexedTreeTarget`); a view that waits for its outline's
+ * answer asks for it once that answer lands.
  */
 function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
@@ -874,6 +884,15 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
   // view that holds a block of that issue may gain the ask though it holds no node the ask is
   // on. No other answer gains a tie.
   const tie = event.type === "ask.answered" && namesBlock(event.payload.block_id);
+  // An `artifact.indexed` event marks no tree or view it reaches now: it asks for the index read
+  // of the issue the query is the tree of (`readAfterIndexBurst`). A check handed no client marks
+  // it now, as `indexedTreeTarget`'s does.
+  const indexed = event.type === "artifact.indexed";
+  const markNow = (query: Query, client: QueryClient | undefined): boolean => {
+    if (!indexed || client === undefined) return true;
+    readAfterIndexBurst(client, String(query.queryKey[1]));
+    return false;
+  };
   // The issues above the event's issue, read once for a document event, from the cache of the one
   // client the event's refresh runs on; none for any other event. A check handed no client reads
   // no cache, and keeps nothing for the checks that are handed one.
@@ -953,7 +972,7 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
               ? [{ exact: true, queryKey: each.queryKey }]
               : []
           );
-          if (unread.length > 0) {
+          if (unread.length > 0 && markNow(outline, client)) {
             refreshQueries(client, unread);
           }
         });
@@ -977,7 +996,7 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
           VIEWS_CARRYING_TIES[view] === true &&
           treeNodesOf(data).some((node) => node.kind === "block" && ofIssue(node, key)))
       ) {
-        return true;
+        return markNow(query, client);
       }
       // Conversation's read (`conversationTreeKey`, its kinds the last member of its key) is an
       // outline as the tree read is: it is judged by its own answer alone.
@@ -1005,7 +1024,7 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
         waitForOutline(client, outline, query, issues);
         return false;
       }
-      return holds(answer, issues);
+      return holds(answer, issues) && markNow(query, client);
     },
   };
 }

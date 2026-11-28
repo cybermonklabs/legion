@@ -4,12 +4,15 @@ import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 
 /**
- * How the issue page's tree read is told of the block index catching up (`artifact.indexed`):
- * once for each burst of such events of one issue (`indexedTreeTarget`). A module of its own
- * beside `tree-read.ts`, which keeps the tree read fresh otherwise (`subscribeTreeFreshness`),
- * since `api/event-refresh.ts` imports this and the app's entry imports that, and the entry loads
- * no file of the new issue page's model (`__tests__/entry-closure.test.ts`), which `tree-read.ts`
- * imports. It imports the tree's key and the refresh scheduler alone.
+ * How the issue page's trees are told of the block index catching up (`artifact.indexed`): once
+ * for each burst of such events that reach one issue's trees (`readAfterIndexBurst`), the tree of
+ * the event's own issue (`indexedTreeTarget`) and the trees and views of every other issue that
+ * hold what the event moves, each issue above it among them (`api/event-refresh.ts`'
+ * `treesHolding`). A module of its own beside `tree-read.ts`, which keeps the tree read fresh
+ * otherwise (`subscribeTreeFreshness`), since `api/event-refresh.ts` imports this and the app's
+ * entry imports that, and the entry loads no file of the new issue page's model
+ * (`__tests__/entry-closure.test.ts`), which `tree-read.ts` imports. It imports the tree's key and
+ * the refresh scheduler alone.
  *
  * While an issue's block index catches up it sends one such event for each pass, and each read
  * the whole outline again, with every page it had loaded: on the copy of INFRA-1196, 64 passes in
@@ -25,18 +28,18 @@ import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
  */
 
 /**
- * How long after the last `artifact.indexed` event of an issue its tree and its views are read
- * again, once, for every event of the burst (`indexedTreeTarget`), unless the burst reached
- * `INDEX_REFRESH_SPACING_MS` first, and no sooner than that long after the issue's previous index
- * read. So a pass of the index that comes alone, after ten seconds with no pass and no index read,
- * reaches the outline within it: two and a half seconds, root R43's bound on drawing a view's
- * first screen from a cold load, so the outline draws such a pass no later than a reload begun at
- * the event would, its read aside.
+ * How long after the last `artifact.indexed` event that reaches an issue's trees its tree and its
+ * views are read again, once, for every event of the burst (`readAfterIndexBurst`), unless the
+ * burst reached `INDEX_REFRESH_SPACING_MS` first, and no sooner than that long after the issue's
+ * previous index read. So a pass of the index that comes alone, after ten seconds with no pass and
+ * no index read, reaches the outline within it: two and a half seconds, root R43's bound on
+ * drawing a view's first screen from a cold load, so the outline draws such a pass no later than a
+ * reload begun at the event would, its read aside.
  */
 export const INDEX_REFRESH_QUIET_MS = 2_500;
 
 /**
- * The longest an `artifact.indexed` event waits for its read (`indexedTreeTarget`), however many
+ * The longest an `artifact.indexed` event waits for its read (`readAfterIndexBurst`), however many
  * events follow it, and the shortest time between two index reads of one issue. So a catch-up
  * reads the outline at most once in each ten seconds, not once a second as the scheduler would
  * (`MIN_REFETCH_INTERVAL_MS`), and the outline is never more than ten seconds behind the index
@@ -49,8 +52,8 @@ export const INDEX_REFRESH_QUIET_MS = 2_500;
  */
 export const INDEX_REFRESH_SPACING_MS = 10_000;
 
-/** The open burst of `artifact.indexed` events of one issue: when its first event came, and the
- *  timer that reads the issue's tree at its end. */
+/** The open burst of `artifact.indexed` events that reach one issue's trees: when its first event
+ *  came, and the timer that reads them at its end. */
 interface IndexBurst {
   readonly first: number;
   timer: number | undefined;
@@ -66,40 +69,51 @@ interface IndexReads {
 const indexReads = new WeakMap<QueryClient, IndexReads>();
 
 /**
+ * Asks on `client` for the index read of issue `key`'s trees, for an `artifact.indexed` event that
+ * reaches one of them: the tree's key, by prefix, so the tree read and each view under it, read
+ * once at the end of the burst the event is one of (`refreshQueries`), under the scheduler's rules
+ * and the hold of the issue's writes, for every event the burst held. The burst ends
+ * `INDEX_REFRESH_QUIET_MS` after its last event, or `INDEX_REFRESH_SPACING_MS` after its first,
+ * whichever is sooner, but no sooner than `INDEX_REFRESH_SPACING_MS` after the previous index read
+ * of `key`, and the next event starts another burst. No wait is longer than
+ * `INDEX_REFRESH_SPACING_MS`, a wall clock stepped backwards included. This is the one rule for
+ * every tree such an event reaches: the event's own issue's (`indexedTreeTarget`) and each one of
+ * another issue (`api/event-refresh.ts`' `treesHolding`), by the key of the issue it is the tree
+ * of, so the events of an issue and of each issue under it share that issue's bursts.
+ */
+export function readAfterIndexBurst(client: QueryClient, key: string): void {
+  const reads = indexReads.get(client) ?? { bursts: new Map(), last: new Map() };
+  indexReads.set(client, reads);
+  const now = Date.now();
+  const burst = reads.bursts.get(key) ?? { first: now, timer: undefined };
+  reads.bursts.set(key, burst);
+  window.clearTimeout(burst.timer);
+  const ends = Math.min(INDEX_REFRESH_QUIET_MS, burst.first + INDEX_REFRESH_SPACING_MS - now);
+  const spaced = (reads.last.get(key) ?? Number.NEGATIVE_INFINITY) + INDEX_REFRESH_SPACING_MS;
+  burst.timer = window.setTimeout(
+    () => {
+      reads.bursts.delete(key);
+      reads.last.set(key, Date.now());
+      refreshQueries(client, [{ queryKey: issueTreeKey(key) }]);
+    },
+    Math.min(INDEX_REFRESH_SPACING_MS, Math.max(ends, spaced - now))
+  );
+}
+
+/**
  * The target an `artifact.indexed` event of issue `key` names its tree by (`event-refresh.ts`):
  * the tree's key, by prefix, as every event of the issue names it, with a check that reads nothing
- * now and puts the issue's read `INDEX_REFRESH_QUIET_MS` after this event, or
- * `INDEX_REFRESH_SPACING_MS` after the burst's first, whichever is sooner, but no sooner than
- * `INDEX_REFRESH_SPACING_MS` after the issue's previous index read. At the burst's end the tree
- * and each view under its key are asked for once (`refreshQueries`), under the scheduler's rules
- * and the hold of the issue's writes, for every event the burst held, and the next event starts
- * another burst. Any other event of the issue refreshes them as it did. A query whose read is out
- * as the event comes is judged as that read lands (`refreshQueries`), and counts as an event of
- * then. No wait is longer than `INDEX_REFRESH_SPACING_MS`, a wall clock stepped backwards
- * included. A check handed no client, apart from a refresh, reads the tree as another event's
- * would.
+ * now and asks for the issue's index read (`readAfterIndexBurst`). Any other event of the issue
+ * refreshes them as it did. A query whose read is out as the event comes is judged as that read
+ * lands (`refreshQueries`), and counts as an event of then. A check handed no client, apart from a
+ * refresh, reads the tree as another event's would.
  */
 export function indexedTreeTarget(key: string): RefreshTarget {
   return {
     queryKey: issueTreeKey(key),
     when: (_data, _query, client) => {
       if (client === undefined) return true;
-      const reads = indexReads.get(client) ?? { bursts: new Map(), last: new Map() };
-      indexReads.set(client, reads);
-      const now = Date.now();
-      const burst = reads.bursts.get(key) ?? { first: now, timer: undefined };
-      reads.bursts.set(key, burst);
-      window.clearTimeout(burst.timer);
-      const ends = Math.min(INDEX_REFRESH_QUIET_MS, burst.first + INDEX_REFRESH_SPACING_MS - now);
-      const spaced = (reads.last.get(key) ?? Number.NEGATIVE_INFINITY) + INDEX_REFRESH_SPACING_MS;
-      burst.timer = window.setTimeout(
-        () => {
-          reads.bursts.delete(key);
-          reads.last.set(key, Date.now());
-          refreshQueries(client, [{ queryKey: issueTreeKey(key) }]);
-        },
-        Math.min(INDEX_REFRESH_SPACING_MS, Math.max(ends, spaced - now))
-      );
+      readAfterIndexBurst(client, key);
       return false;
     },
   };

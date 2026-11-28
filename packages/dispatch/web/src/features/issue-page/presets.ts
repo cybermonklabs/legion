@@ -792,10 +792,11 @@ function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean
  * belongs to, where that is an issue under `key`; the tasks it waits on (`plan.needs`), each by
  * the id the tree draws it by (`drawnId`) - an issue's half is no task, and a far end the read
  * holds no node of, a task of an issue above (`TreeOrder.Fixed`), is none here; and the cycle the
- * read puts it in (`plan.cycle`, `planCycles`). A size that is no whole number of minutes is no
- * size. This is the one place the page reads `plan.position`, `plan.size`, `plan.needs` and
- * `plan.cycle`; `tree-read/tree-nodes.ts`' `draftServing` reads only whether the read answered a
- * `plan`.
+ * read puts it in, from `planCycles`' map (`cycles`). A size that is no whole number of minutes is
+ * no size. Two functions read what the read's `plan` holds: this one, `plan.position`,
+ * `plan.size` and `plan.needs`, and `planCycles`, `plan.needs` and `plan.cycle` of every node but
+ * an issue's and `plan.start` and `plan.done` of an issue's node; `tree-read/tree-nodes.ts`'
+ * `draftServing` reads only whether the read answered a `plan`.
  */
 function planFactsOf(
   node: TreeAnswerNode,

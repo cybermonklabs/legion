@@ -2,6 +2,7 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { realClock, settle, tick } from "../__tests__/fake-clock";
+import { INDEX_REFRESH_QUIET_MS } from "../features/issue-page/tree-read/indexed-refresh";
 import {
   type TreeNodeExtra,
   treeAnswer,
@@ -1126,16 +1127,84 @@ test("a grandchild's document version marks its grandparent's outline and view w
 // A version whose write left even its typed blocks to the block index - its two renders of the
 // tree disagreed - makes its checks nodes only in the index's pass, whose one event is
 // `artifact.indexed` on the grandchild alone, with no ancestors: the page places the grandchild
-// from what it holds, as for a version.
-test("a grandchild's block index catching up marks its grandparent's outline and view where the grandchild's detail names its parent", () => {
+// from what it holds, as for a version. The pass marks nothing at once: the grandparent's outline
+// and view are marked at the end of the pass's burst, `INDEX_REFRESH_QUIET_MS` after it, as the
+// grandchild's own tree would be (`indexed-refresh.ts`' `readAfterIndexBurst`).
+test("a grandchild's block index catching up marks its grandparent's outline and view at the end of the index's quiet time, not at once, where the grandchild's detail names its parent", () => {
+  jest.useFakeTimers();
   const client = new QueryClient();
-  const { outline, verification } = grandparentHolding(client, "detail");
-  const indexed = eventOf("artifact.indexed", { artifact_ids: ["artifact-3"] }, "CORE-3");
-  refreshQueries(client, eventRefreshTargets(indexed, "alice"));
-  expect({
-    outline: client.getQueryState(outline)?.isInvalidated,
-    verification: client.getQueryState(verification)?.isInvalidated,
-  }).toEqual({ outline: true, verification: true });
+  try {
+    const { outline, verification } = grandparentHolding(client, "detail");
+    const marks = () => ({
+      outline: client.getQueryState(outline)?.isInvalidated,
+      verification: client.getQueryState(verification)?.isInvalidated,
+    });
+    const indexed = eventOf("artifact.indexed", { artifact_ids: ["artifact-3"] }, "CORE-3");
+    refreshQueries(client, eventRefreshTargets(indexed, "alice"));
+    const atOnce = marks();
+    jest.advanceTimersByTime(INDEX_REFRESH_QUIET_MS - 1);
+    const before = marks();
+    jest.advanceTimersByTime(1);
+    const none = { outline: false, verification: false };
+    expect({ atOnce, before, ended: marks() }).toEqual({
+      atOnce: none,
+      before: none,
+      ended: { outline: true, verification: true },
+    });
+  } finally {
+    client.clear();
+    realClock();
+  }
+});
+
+// While the grandchild's block index catches up it sends one `artifact.indexed` for each pass, and
+// each read of the grandparent's outline reads all of it again. Five passes a second apart, each
+// inside the quiet time after the one before it, are one burst: they read the open outline once,
+// `INDEX_REFRESH_QUIET_MS` after the last pass, as they would the grandchild's own tree, where the
+// scheduler alone would read it on each pass. The parent CORE-2's held outline places the
+// grandchild under CORE-2 on every pass; a held detail of the grandchild would place it on the
+// first alone, whose refresh marks that detail stale.
+test("a burst of a grandchild's block index passes reads its grandparent's open outline once, at the end of the burst, not once for each pass", async () => {
+  jest.useFakeTimers();
+  const client = new QueryClient();
+  trackQueryFetches(client);
+  const { outline } = grandparentHolding(client, "parent's outline");
+  // When each read of the grandparent's outline began.
+  const begun: number[] = [];
+  const stop = new QueryObserver(client, {
+    queryFn: async () => {
+      begun.push(Date.now());
+      return OUTLINE_WITH_CHILD;
+    },
+    queryKey: outline,
+    staleTime: Number.POSITIVE_INFINITY,
+  }).subscribe(() => undefined);
+  // Moves the clock `ms` on and lets a read begun then answer.
+  const step = async (ms: number) => {
+    jest.advanceTimersByTime(ms);
+    await settle();
+  };
+  try {
+    for (let pass = 1; pass <= 5; pass += 1) {
+      if (pass > 1) await step(1_000);
+      const indexed = eventOf("artifact.indexed", { artifact_ids: [`artifact-${pass}`] }, "CORE-3");
+      refreshQueries(client, eventRefreshTargets(indexed, "alice"));
+      await settle();
+    }
+    // The last pass came at this instant.
+    const last = Date.now();
+    await step(INDEX_REFRESH_QUIET_MS - 1);
+    const before = begun.length;
+    await step(1);
+    expect({ before, reads: begun.map((at) => at - last) }).toEqual({
+      before: 0,
+      reads: [INDEX_REFRESH_QUIET_MS],
+    });
+  } finally {
+    stop();
+    client.clear();
+    realClock();
+  }
 });
 
 // The feed refreshes every event of one window in one refresh, so an earlier event of the
