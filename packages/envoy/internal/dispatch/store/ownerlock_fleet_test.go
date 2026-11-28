@@ -282,23 +282,20 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
-// fleetLockMargin is how long before the test binary's deadline a fleet test's own transaction
-// stops waiting for a lock (setFleetLockTimeout). It is shorter than testwait's own margin, so a
-// wait of the test that waits on such a transaction gives up first and names what it waited for;
-// a transaction no wait of the test watches still ends before Go's alarm panics the binary.
-const fleetLockMargin = 10 * time.Second
-
-// setFleetLockTimeout bounds tx's lock waits by the test binary's deadline less fleetLockMargin, so
-// a lock wait that is merely slow is never refused by a span of the clock, and one that never ends
-// still fails rather than hangs. Under -timeout 0 the binary has no deadline and the waits no
-// bound. A deadline already less than the margin away leaves a bound of 1 ms, since 0 would turn
-// the bound off.
+// setFleetLockTimeout bounds tx's lock waits by the moment every wait of the test gives up
+// (testwait.GiveUpAt), so a lock wait that is merely slow is never refused by a span of the clock,
+// and one that never ends still fails rather than hangs. Postgres counts lock_timeout from the
+// start of each lock wait, which comes after this call, so no lock wait ends before the shared wait
+// gives up: a wait of the test that waits on such a transaction gives up first and names what it
+// waited for, and a transaction no wait of the test watches still ends before Go's alarm panics the
+// binary. Under -timeout 0 the shared wait has no end, and the lock waits no bound. A moment
+// already passed leaves a bound of 1 ms, since 0 would turn the bound off.
 func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
-	deadline, ok := t.Deadline()
-	if !ok {
+	end, bounded := testwait.GiveUpAt(t)
+	if !bounded {
 		return nil
 	}
-	left := max(time.Until(deadline)-fleetLockMargin, time.Millisecond)
+	left := max(time.Until(end), time.Millisecond)
 	_, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", left.Milliseconds()))
 	return err
 }
@@ -310,9 +307,9 @@ func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
 // hold it longer than the function's 5 s, the function's own bound would refuse the registration
 // and fail the row by the clock. Without it, a registration waits as long as its own transaction
 // allows, and arriveOn bounds that when the transaction starts (setFleetLockTimeout): every
-// registration, however late in the row it starts, gives up fleetLockMargin before the test binary's
-// deadline, and fails the row by name rather than on Go's alarm. A bound written into the function
-// once, when the row starts, ends a registration that starts later past that deadline.
+// registration, however late in the row it starts, gives up no sooner than the shared wait does,
+// and fails the row by name rather than on Go's alarm. A bound written into the function once,
+// when the row starts, ends a registration that starts later past that moment.
 // TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
 func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
 	t.Helper()
@@ -322,7 +319,7 @@ func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
 }
 
 // arriveOn runs arrival for key in a transaction of its own on conn, its lock waits bounded by the
-// test binary's deadline (setFleetLockTimeout), and commits it.
+// moment the shared wait gives up (setFleetLockTimeout), and commits it.
 func arriveOn(ctx context.Context, t *testing.T, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -417,9 +414,9 @@ const (
 // earlier build in the fleet (fleetModeWriter alone; false for the others), and the transaction's
 // error. This build's writers take their write phase's row locks in touch's order, an order of the
 // handler's appends, which no rule fixes since the advisory locks they hold already exclude each
-// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its lock waits end only
-// fleetLockMargin before the test binary's deadline (setFleetLockTimeout), so a writer that is
-// merely slow behind another is never counted a failure by the clock.
+// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its lock waits end no
+// sooner than the shared wait gives up (setFleetLockTimeout), so a writer that is merely slow
+// behind another is never counted a failure by the clock.
 func raceWriter(ctx context.Context, t *testing.T, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -499,10 +496,41 @@ type raceLedger struct {
 	committed map[Owner]int
 	tallies   map[string]*gateRaceTally
 	modes     map[bool]int
+	// marks is how many moments of the race the test has marked (mark), and newest, by mode, the
+	// latest of those marks that a transaction of this build which committed in that mode began
+	// after (committedSince).
+	marks  int
+	newest map[bool]int
 }
 
 func newRaceLedger() *raceLedger {
-	return &raceLedger{committed: map[Owner]int{}, tallies: map[string]*gateRaceTally{}, modes: map[bool]int{}}
+	return &raceLedger{committed: map[Owner]int{}, tallies: map[string]*gateRaceTally{}, modes: map[bool]int{}, newest: map[bool]int{}}
+}
+
+// mark marks the present moment of the race and answers it: every transaction write begins from
+// here on began after it.
+func (l *raceLedger) mark() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.marks++
+	return l.marks
+}
+
+// committedSince reports whether a writer of this build has committed in a mode, beside an earlier
+// build (true) or advisory (false), in a transaction that began after mark: a commit made after
+// mark's moment, however late the ledger counted it.
+func (l *raceLedger) committedSince(besideAnEarlierBuild bool, mark int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.newest[besideAnEarlierBuild] >= mark
+}
+
+// commitsIn is how many commits of this build's writers the ledger has counted in a mode, beside
+// an earlier build (true) or advisory (false).
+func (l *raceLedger) commitsIn(besideAnEarlierBuild bool) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.modes[besideAnEarlierBuild]
 }
 
 // record counts one transaction of role that touched touched: its commit, or its failure, a
@@ -532,13 +560,18 @@ func (l *raceLedger) record(t *testing.T, role string, err error, touched []Owne
 }
 
 // write runs one writer of shape over a random subset of all and records it, and for this
-// build's writer as its fleet read answers, the mode it committed in.
+// build's writer as its fleet read answers, the mode it committed in and the latest mark its
+// transaction began after.
 func (l *raceLedger) write(ctx context.Context, t *testing.T, s *Store, shape writerShape, all []Owner) {
 	subset, touch := randomOwners(all)
+	l.mu.Lock()
+	began := l.marks
+	l.mu.Unlock()
 	legacy, err := raceWriter(ctx, t, s, shape, subset, touch)
 	if err == nil && shape == fleetModeWriter {
 		l.mu.Lock()
 		l.modes[legacy]++
+		l.newest[legacy] = max(l.newest[legacy], began)
 		l.mu.Unlock()
 	}
 	l.record(t, string(shape), err, touch)
@@ -598,8 +631,8 @@ func randomOwners(all []Owner) (subset, touch []Owner) {
 }
 
 // heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
-// registry's lock, in a transaction of its own whose lock waits are bounded by the test binary's
-// deadline (setFleetLockTimeout).
+// registry's lock, in a transaction of its own whose lock waits are bounded by the moment the
+// shared wait gives up (setFleetLockTimeout).
 func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -618,12 +651,110 @@ func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance 
 	return tx.Commit(ctx)
 }
 
+// modeTx is a transaction that keeps the mode the read-phase owner locks run on it took: the fleet
+// read each owner lock statement answered (legacy_fleet, which lockOwnersAt answers and LockOwner
+// and the other exported locks drop), read off the statement's rows as the lock scans them. A test
+// runs a lock on it and reads that lock's own mode (mode), as raceWriter reads its own
+// transaction's answer: the mode noteOwnerLockMode records is the latest lock of the whole
+// process's, which a test running beside it moves.
+type modeTx struct {
+	pgx.Tx
+	mu    sync.Mutex
+	taken ownerLockMode
+}
+
+// recordModes is tx, keeping the mode of each read-phase owner lock run on it (modeTx).
+func recordModes(tx pgx.Tx) *modeTx { return &modeTx{Tx: tx} }
+
+// mode is the mode the latest read-phase owner lock run on m took, by its fleet read: unknown, the
+// zero value, while none has answered a row.
+func (m *modeTx) mode() ownerLockMode {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.taken
+}
+
+// note records a row's fleet read, as noteOwnerLockMode records it for the process.
+func (m *modeTx) note(legacy bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.taken = ownerLockAdvisory
+	if legacy {
+		m.taken = ownerLockAdvisoryAndRow
+	}
+}
+
+// readPhaseOwnerLock reports whether sql is a read-phase owner lock statement: that of one of the
+// three levels lockOwnersAt runs.
+func readPhaseOwnerLock(sql string) bool {
+	return sql == ownerLockExclusive.statement || sql == ownerLockShared.statement || sql == ownerLockTry.statement
+}
+
+// Query runs sql in the transaction and, when it is a read-phase owner lock statement, answers its
+// rows through a reader that keeps their fleet read (modeRows).
+func (m *modeTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	rows, err := m.Tx.Query(ctx, sql, args...)
+	if err != nil || !readPhaseOwnerLock(sql) {
+		return rows, err
+	}
+	return &modeRows{Rows: rows, tx: m}, nil
+}
+
+// SendBatch sends b in the transaction. A batch whose first statement is a read-phase owner lock's,
+// as LockOwnersAndRead sends one ahead of the read it guards, answers that statement's rows, the
+// batch's first Query, through a reader that keeps their fleet read (modeRows).
+func (m *modeTx) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	results := m.Tx.SendBatch(ctx, b)
+	if len(b.QueuedQueries) == 0 || !readPhaseOwnerLock(b.QueuedQueries[0].SQL) {
+		return results
+	}
+	return &modeBatch{BatchResults: results, tx: m}
+}
+
+// modeBatch is the results of a batch that begins with a read-phase owner lock statement.
+type modeBatch struct {
+	pgx.BatchResults
+	tx   *modeTx
+	read bool
+}
+
+// Query answers the batch's next result, the first through a reader that keeps its fleet read.
+func (b *modeBatch) Query() (pgx.Rows, error) {
+	first := !b.read
+	b.read = true
+	rows, err := b.BatchResults.Query()
+	if err != nil || !first {
+		return rows, err
+	}
+	return &modeRows{Rows: rows, tx: b.tx}, nil
+}
+
+// modeRows is the rows of a read-phase owner lock statement, each of which carries the fleet read
+// in its last column (legacy_fleet): Scan notes it on tx once it has scanned it.
+type modeRows struct {
+	pgx.Rows
+	tx *modeTx
+}
+
+func (r *modeRows) Scan(dest ...any) error {
+	if err := r.Rows.Scan(dest...); err != nil {
+		return err
+	}
+	if len(dest) > 0 {
+		if legacy, ok := dest[len(dest)-1].(*bool); ok {
+			r.tx.note(*legacy)
+		}
+	}
+	return nil
+}
+
 // Each read-phase owner lock takes its owners' rows, before it answers, exactly while an earlier
 // build is in the fleet, and the owner lock gate, shared, exactly while none is: LockOwner,
 // LockOwners over every kind, LockOwnerAndRead, LockOwnersAndRead, LockOwnersShared and
 // TryLockOwners. A process of an earlier build whose heartbeat and mark are older than the window,
 // or a live process of this build, makes it take no row.
 func TestTheOwnerLockTakesTheOwnerRowWhileAnEarlierBuildIsInTheFleet(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
 	locks := []struct {
@@ -665,11 +796,12 @@ func TestTheOwnerLockTakesTheOwnerRowWhileAnEarlierBuildIsInTheFleet(t *testing.
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := lock.lock(tx); err != nil {
+				locker := recordModes(tx)
+				if err := lock.lock(locker); err != nil {
 					_ = tx.Rollback(ctx)
 					t.Fatalf("%s: %v", lock.name, err)
 				}
-				if mode := lastOwnerLockMode(); mode != want {
+				if mode := locker.mode(); mode != want {
 					t.Errorf("%s beside %s took the %s mode, want %s", lock.name, state.name, mode, want)
 				}
 				for _, owner := range owners.all() {
@@ -710,32 +842,34 @@ func holdRowAsAnEarlierBuild(t *testing.T, s *Store, owner Owner) pgx.Tx {
 	return holder
 }
 
-// awaitRowLockWaiter waits up to ten seconds for a backend to wait on a row lock in a statement
-// of lockOwnerRows (an owner row's lock taken beside the advisory lock), or for answered.
+// awaitRowLockWaiter waits for a backend to wait on a row lock in a statement of lockOwnerRows
+// (an owner row's lock taken beside the advisory lock), or for answered. The wait has no bound of
+// its own (testwait.Until). A try that finds neither reads each backend whose statement is one
+// of lockOwnerRows': its pid, state and wait event. The pattern is spelled in two halves so the
+// read's own text, which pg_stat_activity shows too, does not match it.
 func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	var answer error
+	var early bool
+	testwait.Until(t, "an owner lock to wait on the owner's row, or to answer", func() (string, bool) {
 		select {
 		case err := <-answered:
-			return err, true
+			answer, early = err, true
+			return fmt.Sprintf("answered: %v", err), true
 		default:
 		}
 		var waiting int
+		var backends string
 		if err := s.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-			  and query like '%= any($1::%order by%for %'`).Scan(&waiting); err != nil {
+			select count(*) filter (where wait_event_type = 'Lock'),
+				coalesce(string_agg(format('%s %s (wait %s/%s)', pid, state, wait_event_type, wait_event), '; ' order by pid), 'none')
+			from pg_stat_activity
+			where datname = current_database() and query like '%= any($1' || '::%order by%for %'`).Scan(&waiting, &backends); err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			return nil, false
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no owner lock waited on the owner's row within 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return "not answered; the backends in a statement of lockOwnerRows: " + backends, waiting > 0
+	})
+	return answer, early
 }
 
 // The read a lock guards sees what a writer of an earlier build committed while it held the row:
@@ -758,6 +892,7 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 			go func() {
 				tx, err := s.Pool.Begin(ctx)
 				if err != nil {
+					read <- ""
 					answered <- err
 					return
 				}
@@ -769,16 +904,16 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 			}()
 			if state.legacy {
 				if err, early := awaitRowLockWaiter(t, s, answered); early {
-					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, <-read)
+					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, testwait.Receive(t, "the guarded read's title, sent before its answer", read))
 				}
-			} else if err := <-answered; err != nil {
+			} else if err := testwait.Receive(t, "LockOwnerAndRead to answer beside a writer that holds no row", answered); err != nil {
 				t.Fatal(err)
 			}
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if state.legacy {
-				if err := <-answered; err != nil {
+				if err := testwait.Receive(t, "LockOwnerAndRead to answer once the earlier build's writer committed", answered); err != nil {
 					t.Fatal(err)
 				}
 			}

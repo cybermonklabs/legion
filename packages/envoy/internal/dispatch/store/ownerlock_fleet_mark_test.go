@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ const ownerLockLegacyGateVersion = 20261115200014
 // Without the migration's insert the earlier build's write goes through while this build's is
 // held, and is lost under it.
 func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		publish bool
@@ -44,10 +46,7 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
-			s := openEmptyTestStore(t)
-			if err := s.migrate(ctx, migrationsThrough(t, ownerLockLegacyGateVersion-1)); err != nil {
-				t.Fatalf("migrate through %d: %v", ownerLockLegacyGateVersion-1, err)
-			}
+			s := openMigratedTestStore(t, ownerLockLegacyGateVersion-1)
 			if _, err := s.Pool.Exec(ctx, `
 				insert into projects (key, name, default_assignee) values ('FLT', 'Fleet', 'alice@example.com');
 				insert into issues (key, number, project_key, rank, title, created_by) values ('FLT-1', 1, 'FLT', 'a', 'One', '{}')`); err != nil {
@@ -77,14 +76,15 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer writer.Rollback(ctx)
-			if err := LockOwner(ctx, writer, issue); err != nil {
+			lock := recordModes(writer)
+			if err := LockOwner(ctx, lock, issue); err != nil {
 				t.Fatal(err)
 			}
 			want := ownerLockAdvisory
 			if c.legacy {
 				want = ownerLockAdvisoryAndRow
 			}
-			if mode := lastOwnerLockMode(); mode != want {
+			if mode := lock.mode(); mode != want {
 				t.Errorf("this build's write after the migration took the %s mode, want %s", mode, want)
 			}
 			if !c.legacy {
@@ -153,10 +153,6 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 	}
 }
 
-// markExpiryWindow is the earlier build's mark's window in the race below, short enough for the
-// mark to expire inside it.
-const markExpiryWindow = 2 * time.Second
-
 // The earlier build's mark expires while writers of this build are in flight in both modes:
 // those whose fleet read found the mark take the owners' rows beside their advisory locks, and
 // those that start once it has expired take the advisory locks alone, behind the gate, while
@@ -165,39 +161,105 @@ const markExpiryWindow = 2 * time.Second
 // that still writes past the mark is in the fleet only by its registration, and "What the fleet
 // does not see" (cmd/dispatch/README.md) names the three cases where it is not. No update is
 // lost, nothing deadlocks and nothing else fails, and this build's writers commit in both modes.
-// The mark's window is shortened to markExpiryWindow so that it expires inside the run.
+// The test expires the mark itself, as the passing of its window would (ageLegacyMark), once the
+// two builds' writes have overlapped - a writer of the earlier build has committed, and a writer
+// of this build has committed beside the earlier build after it - and the earlier build's writers
+// have stopped, each write of theirs in flight ended, so the expiry falls inside the run at a
+// point the run has reached, however slow the machine: a window of real time could close before
+// the earlier build's writers had written at all, or while a write of theirs was still in flight.
+// The mark's age is read by the database's clock, the clock the fleet read judges it by, and this
+// build's writers run until one of them has committed in the advisory mode, which only a fleet
+// read that no longer counts the mark answers.
 func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
-	window := OwnerLockMarkWindow
-	OwnerLockMarkWindow = markExpiryWindow
-	t.Cleanup(func() { OwnerLockMarkWindow = window })
 	ctx := context.Background()
 	all := owners.all()
 	start := ownerSeqs(t, s, all)
 	ledger := newRaceLedger()
 	publishAsAnEarlierBuild(t, s)
-	stamped := time.Now()
 
+	// Each build's writers have a stop and a join of their own: the earlier build's stop, and
+	// their writes in flight end, before the mark is aged; this build's once one of them has
+	// committed in the advisory mode. Each stop and join also runs as a cleanup, so no writer
+	// outlives the test however it ends. A join is the shared wait's (testwait.Returns), outside
+	// the once that closes its stop, since a give-up inside a sync.OnceFunc becomes a panic with a
+	// nil argument; a second call closes nothing and finds the writers already joined.
+	earlierStop := make(chan struct{})
+	var earlier sync.WaitGroup
+	closeEarlierStop := sync.OnceFunc(func() { close(earlierStop) })
+	stopEarlier := func() {
+		closeEarlierStop()
+		testwait.Returns(t, "the earlier build's writers to end their writes in flight once stopped", earlier.Wait)
+	}
+	t.Cleanup(stopEarlier)
+	stop := make(chan struct{})
 	var writers sync.WaitGroup
+	closeStop := sync.OnceFunc(func() { close(stop) })
+	stopThisBuild := func() {
+		closeStop()
+		testwait.Returns(t, "this build's writers to end their writes in flight once stopped", writers.Wait)
+	}
+	t.Cleanup(stopThisBuild)
+	// earlierCommits is how many commits of the earlier build's writers the ledger has counted.
+	earlierCommits := func() int {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		if tally := ledger.tallies[string(rowFirstWriter)]; tally != nil {
+			return tally.commits
+		}
+		return 0
+	}
+
 	for range gateRaceWriters {
 		writers.Go(func() {
-			for time.Since(stamped) < 2*markExpiryWindow {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
 				ledger.write(ctx, t, s, fleetModeWriter, all)
 			}
 		})
 	}
 	for range 2 {
-		writers.Go(func() {
-			for time.Since(stamped) < markExpiryWindow/2 {
+		earlier.Go(func() {
+			for {
+				select {
+				case <-earlierStop:
+					return
+				default:
+				}
 				ledger.write(ctx, t, s, rowFirstWriter, all)
 			}
 		})
 	}
-	writers.Wait()
+	// The two builds' writes overlap before the earlier build stops: one of its writers commits,
+	// and then a writer of this build commits beside it, in a transaction begun once the earlier
+	// build's commit was counted (raceLedger.committedSince).
+	testwait.Until(t, "a writer of the earlier build to commit", func() (string, bool) {
+		return fmt.Sprintf("%d commits of this build beside an earlier build so far", ledger.commitsIn(true)), earlierCommits() > 0
+	})
+	overlapped := ledger.mark()
+	testwait.Until(t, "a writer of this build to commit beside the earlier build after a writer of the earlier build committed", func() (string, bool) {
+		return fmt.Sprintf("%d commits of the earlier build; %d of this build beside it, none begun after the earlier build's first was counted",
+			earlierCommits(), ledger.commitsIn(true)), ledger.committedSince(true, overlapped)
+	})
+	stopEarlier()
+	ageLegacyMark(t, s, OwnerLockMarkWindow+time.Second)
+	// Only a fleet read that no longer counts the mark answers the advisory mode, and a transaction
+	// begun after the expiry reads the mark expired.
+	expired := ledger.mark()
+	testwait.Until(t, "a writer of this build to commit in the advisory mode once the mark expired", func() (string, bool) {
+		return fmt.Sprintf("%d commits of this build in the advisory mode, %d beside an earlier build, none in the advisory mode begun after the expiry",
+			ledger.commitsIn(false), ledger.commitsIn(true)), ledger.committedSince(false, expired)
+	})
+	stopThisBuild()
 
 	lost, deadlocks, failures := ledger.settle(t, s, all, start)
-	t.Logf("the mark expired %s after its stamp: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d increments lost",
-		markExpiryWindow, ledger.modes[true], ledger.modes[false], lost)
+	t.Logf("the mark expired once a writer of this build committed beside the earlier build: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d increments lost",
+		ledger.modes[true], ledger.modes[false], lost)
 	if lost != 0 || deadlocks != 0 || failures != 0 {
 		t.Errorf("%d increments lost, %d deadlocks, %d other failures; want none of each", lost, deadlocks, failures)
 	}
