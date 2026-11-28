@@ -27,8 +27,8 @@
 #       lines and answers one empty array for a missing log;
 #   (j) k10's control tree (k10_control_tree), made from this module's own load.go, differs from it
 #       by the policy loader's read of the judge tag alone, and k10's control (k10_tag_control)
-#       builds its broker in that copy. For a tree with no such read to take out, the control
-#       reports UNKNOWN and builds nothing;
+#       builds its broker in that copy. For a tree with no such read to take out, or one whose read
+#       the edit does not match, the control reports UNKNOWN and builds nothing;
 #   (k) page_of and post_decision, the approval k10's card case makes, post back each
 #       profile_digest field the page prints, against a stand-in page that refuses an approval
 #       naming none, as the broker does (403 Profile changed); with page_of's profile_digest taken
@@ -263,21 +263,23 @@ check "judge-check.sh's report fails a run with one property of two failing" \
   test "$(judge_report 0 1)" = "1:check test: failed (1 of 2)"
 check "judge-check.sh's report passes a run whose every property passed" \
   test "$(judge_report 0 0)" = "0:check test: passed"
-# --- (j) k10's control: the tree k10_control_tree makes and the guard k10_tag_control keeps, on two
+# --- (j) k10's control: the tree k10_control_tree makes and the guard k10_tag_control keeps, on three
 # fixture modules. One holds this module's own internal/cipher/policy/load.go, so a change to the
 # loader's read of the judge tag that the control's edit no longer matches fails here, and not in
-# a run of k10 by hand. The other holds a load.go with no read of the tag. The stand-in go records
-# the directory it was started in and how often that tree's load.go reads the tag, and fails the
-# build, so neither case goes on to start a broker. ---
+# a run of k10 by hand. One holds a load.go with no read of the tag, and one a load.go whose read
+# the edit does not match. The stand-in go records the directory it was started in and how often
+# that tree's load.go reads the tag, and fails the build, so no case goes on to start a broker. ---
 for function in k10_control_tree k10_tag_control; do
   definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/judge-check.sh")"
   [[ -n "$definition" ]] || { printf 'FAIL: judge-check.sh defines no %s()\n' "$function"; exit 1; }
   eval "$definition"
 done
 own_load="$script_dir/../internal/cipher/policy/load.go"
-mkdir -p "$work/tagged-module/internal/cipher/policy" "$work/untagged-module/internal/cipher/policy" "$work/control-bin"
+mkdir -p "$work/tagged-module/internal/cipher/policy" "$work/untagged-module/internal/cipher/policy" \
+  "$work/unmatched-module/internal/cipher/policy" "$work/control-bin"
 cp "$own_load" "$work/tagged-module/internal/cipher/policy/load.go"
 printf 'package policy\n' >"$work/untagged-module/internal/cipher/policy/load.go"
+printf 'package policy\n\nvar judge = ls.Tags[TagJudge]\n' >"$work/unmatched-module/internal/cipher/policy/load.go"
 cat >"$work/control-bin/go" <<EOF
 #!/usr/bin/env bash
 printf '%s %s\n' "\$PWD" "\$(grep -c 'Tags\[TagJudge\]' internal/cipher/policy/load.go)" >"$work/control-go-ran"
@@ -312,6 +314,10 @@ said="$(control_run "$work/untagged-module")"
 # shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
 check "k10's control reports UNKNOWN, naming the loader's read of the judge tag, and builds nothing, for a tree with no such read to take out" \
   bash -c '[[ "$1" == *UNKNOWN* && "$1" == *"Tags[TagJudge]"* && "$1" == *FAIL-CALLED* && ! -e "$2" ]]' _ "$said" "$work/control-go-ran"
+said="$(control_run "$work/unmatched-module")"
+# shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
+check "k10's control reports UNKNOWN, naming the control's pattern, and builds nothing, for a tree whose read of the judge tag the edit does not match" \
+  bash -c '[[ "$1" == *UNKNOWN* && "$1" == *"no longer matches the control"* && "$1" == *FAIL-CALLED* && ! -e "$2" ]]' _ "$said" "$work/control-go-ran"
 said="$(control_run "$work/tagged-module")"
 built_in="$(cat "$work/control-go-ran" 2>/dev/null || true)"
 check "k10's control builds its broker in its own copy of the tree, whose load.go reads no judge tag" \

@@ -841,7 +841,7 @@ k10_tag_control() {
 	local tree="$WORK_DIR/k10-control-src" binary="$WORK_DIR/broker-no-judge-tag" built=0
 	local sentence="negative control: a broker that reads no key's judge tag gives the first request to a person"
 	if ! k10_control_tree "$tree"; then
-		control "UNKNOWN: the control tree under $tree could not be made: the policy loader's one read of the judge tag (Tags[TagJudge] in internal/cipher/policy/load.go) was not found to take out"
+		control "UNKNOWN: the control tree under $tree could not be made: the policy loader's read of the judge tag (Tags[TagJudge] in internal/cipher/policy/load.go) was not found exactly once, or the edit did not take it out (its text no longer matches the control's pattern)"
 		fail "$sentence — UNKNOWN, the control was not run"
 		return
 	fi
