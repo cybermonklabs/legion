@@ -28,7 +28,7 @@ beforeAll(async () => {
   // The one hook of this file that does real work: it loads seed.ts, owner-walk-seed.ts and what
   // they import (dispatch's e2e/api.ts and its harness modules, @legion/contracts, zod). Each load
   // is waited for through the shared wait, so a load that outlasts the row's deadline fails here,
-  // naming it, rather than as Bun's unnamed "a beforeEach/afterEach hook timed out" once it returns.
+  // naming it, rather than as Bun's unnamed "a beforeEach/afterEach hook timed out".
   seed = await settled("seed.ts and the modules it imports to load", import("./seed"));
   ownerWalkSeed = await settled(
     "owner-walk-seed.ts and the modules it imports to load",

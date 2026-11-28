@@ -412,7 +412,7 @@ const CHECKS: Readonly<Record<LiveCapability, Check>> = {
 };
 
 /** The longest detail a row carries, in UTF-8 bytes: the daemon's `capabilities.MaxReportDetail`. */
-const MAX_DETAIL_BYTES = 1024;
+export const MAX_DETAIL_BYTES = 1024;
 
 /** What `cleanDetail` holds a control character as while it redacts, what it holds U+009B as, and
  * what its second reading holds a control sequence's introducer as: the daemon's `held`,
@@ -423,7 +423,7 @@ const OPENER = "\ufdd0";
 
 /** `cleanDetail`'s readings of held text after the first, in order: the daemon's `heldReadings`,
  * whose second takes no `.` as an intermediate, since it separates a JWT's segments. */
-const HELD_READINGS: readonly (readonly [RegExp, string])[] = [
+export const HELD_READINGS: readonly (readonly [RegExp, string])[] = [
   [/(?:\uffff\[|\ufffe)[0-?]*[!-)+,/-]*/g, OPENER],
   [/\ufdd0[@-~]?/g, HELD],
   [/\uffff/g, " "],

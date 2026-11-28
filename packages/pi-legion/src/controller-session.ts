@@ -291,8 +291,11 @@ export function createControllerSession(
         // Refused before the send, whichever command or session change ran the claim: the start
         // `session_start` marked due is not coming from it, so the mark goes, and the Envoy entry,
         // which reads an unsent mark again every second for up to 30 s, stops holding the
-        // session's startup cards for it at its next read.
-        if (!startMessageSent) clearStartupTurn(claimed);
+        // session's startup cards for it at its next read. While another claim waits behind this
+        // one (`serialised` counts this claim and each claim queued after it until it ends), the
+        // mark stays: that claim may still send the start, and a card the cleared mark let take an
+        // idle turn would run ahead of it.
+        if (!startMessageSent && claimsQueued <= 1) clearStartupTurn(claimed);
         throw error;
       }
       return;
@@ -409,7 +412,11 @@ export function createControllerSession(
         return;
       }
       if (context.isIdle?.() === false) {
-        pi.sendUserMessage(startMessage, { deliverAs: "followUp" });
+        // A follow-up is never marked sent, so a send the host fails clears nothing here; the host
+        // logs the failure itself, and the rejection is taken so that it is not left unhandled.
+        void Promise.resolve(pi.sendUserMessage(startMessage, { deliverAs: "followUp" })).catch(
+          () => undefined
+        );
       } else {
         markStartupTurnSent(sessionID);
         startTurnSession = sessionID;
@@ -582,9 +589,10 @@ export function createControllerSession(
    * the unsent mark. The send marks it sent, which holds them for at most 30 s from the send; the
    * session's first `agent_start` (an operator turn started before the command, after which the
    * start message goes as a follow-up) and its shutdown clear it, and so do a claim that fails
-   * before the send or hands over to a new session (`claimOnce`) and a send the host fails. A start
-   * that never comes (a claim that never answers, a start command that never runs) holds the cards
-   * back once, for those 30 s.
+   * before the send with no other claim queued behind it (`claimOnce`), a claim that hands over to
+   * a new session (`claimWith`), and a send the host fails (`claimWith`). A start that never comes
+   * (a claim that never answers, a start command that never runs) holds the cards back once, for
+   * those 30 s.
    */
   const handleSessionStart = async (context: SessionContext): Promise<void> => {
     if (!daemonLaunchedController(process.env)) {
@@ -609,8 +617,9 @@ export function createControllerSession(
    * controller's whole claim (`claim`), which sends the start message right before the role
    * claim. A refusal anywhere in it is logged and shown to the operator as one warning, which says
    * what the claim left: refused before the send, nothing was sent, the unsent `startupTurn` mark
-   * `session_start` set is cleared, and `/legion-claim-controller` claims again and sends the
-   * start message once that claim succeeds; refused after it (the role
+   * `session_start` set is cleared unless another claim waits behind this one (`claimOnce`), and
+   * `/legion-claim-controller` claims again and sends the start message once that claim succeeds;
+   * refused after it (the role
    * claim or the subscription), the start turn runs holding the registration, and
    * `/legion-claim-controller` claims the role and its wakes again. The command itself never fails
    * past that notice. A refusal that comes once the session's stop has begun (`stop`) is neither

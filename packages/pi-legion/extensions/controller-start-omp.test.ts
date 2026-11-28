@@ -193,6 +193,8 @@ afterEach(async () => {
 /** One Messages request the stand-in holds until the case answers it. */
 interface Turn {
   readonly request: Request;
+  /** When the stand-in took the request, on this process's `performance.now()` clock. */
+  readonly takenAt: number;
   /** Answers it with one text block. */
   reply(text: string): void;
   /** Answers it with `blocks` (a tool call among them). */
@@ -450,6 +452,7 @@ async function serveController(
       const answer = Promise.withResolvers<string>();
       turns.push({
         request: { path: url.pathname, body },
+        takenAt: performance.now(),
         reply: (text) => answer.resolve(messageStream([{ type: "text", text }], `msg_${index}`)),
         replyBlocks: (blocks) => answer.resolve(messageStream(blocks, `msg_${index}`)),
       });
@@ -2179,8 +2182,11 @@ test.skipIf(skip)(
 // launched without the start word on its command line. A card that reached the idle session must
 // still get a turn of its own, without waiting for the operator to type: pi-envoy holds it only
 // until the unsent mark's cap (STARTUP_TURN_CAP_MS, 30 s from its first read of the mark) and then
-// sends its wake. No clock carries the verdict: nobody types here, so a model request at all is
-// that wake's turn, and a hold with no end fails the wait at the row's deadline.
+// sends its wake. Nobody types here, so a model request at all is that wake's turn. The wait for it
+// runs to the row's deadline, so a hold with no end fails there by name; the bound is that the
+// request comes within three times that cap (90 s) of the startup hold's release, read from when
+// the stand-in took it.
+const UNSENT_MARK_BOUND_MS = 3 * 30_000;
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
     `a startup card held by an unsent start mark gets its turn when ${variant}`,
@@ -2212,8 +2218,10 @@ for (const variant of ["the start claim never answers", "the start command never
       await taken;
       await inbound.repeat(opened, card);
       startupHold.release();
+      const released = performance.now();
 
       const first = await session.until("the startup card's model request", () => session.turns[0]);
+      expect(first.takenAt - released).toBeLessThanOrEqual(UNSENT_MARK_BOUND_MS);
       expect(conversation(first.request)).toContain(card.summary);
       expect(newestMessage(first.request.body)).toContain(WAKE_ONE);
     },

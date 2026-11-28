@@ -24,6 +24,7 @@ import {
   type StallWatchdog,
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { until } from "@legion/test-fixtures/wait";
 // The import above is this file's merge-base check: on the merge base there is no
@@ -857,8 +858,10 @@ test("a 429 rate limited for another reason is not sent again", async () => {
       evidenceWritten: true,
       ownerTold: false,
     });
-    // A resend's first act is its wait, which it takes before `tellOverdue` returns, so a wait
-    // recorded by then is the state that shows a resend started.
+    // A resend's first act is its wait, which it takes before `tellOverdue` returns, and the rig's
+    // `sleep` and publish resolve at once: a resend started at all has taken its wait by the end of
+    // the turn after it, so a wait recorded by then is the state that shows a resend started.
+    await turn();
     expect(rig.waits).toEqual([]);
     expect(rig.published).toHaveLength(1);
     expect(rig.warnings.map((line) => line.message)).toContain(

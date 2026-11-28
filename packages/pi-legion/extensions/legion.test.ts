@@ -68,7 +68,7 @@ import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/h
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
-import { turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
@@ -76,7 +76,7 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
-import { settled, until } from "@legion/test-fixtures/wait";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ConnectionOptions, NatsConnection } from "nats";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
@@ -485,9 +485,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-  // `finally`, so the real clock comes back here first, before the removals below and the next row.
+  // A row that holds Bun's fake clock, or pins the system time, and is ended by the command's
+  // guard never reaches its own `finally`, so the real clock comes back here first, before the
+  // removals below and the next row.
   jest.useRealTimers();
+  setSystemTime();
   globalThis.fetch = originalFetch;
   // OMP's `session_shutdown` removes each envoy instance from the process-wide interface's
   // role-claim bridge; this suite binds a fixture per test and never shuts it down, so it clears
@@ -1188,18 +1190,6 @@ async function firstTurn(pane: ClaimPane): Promise<void> {
         request.body.role === pane.claimToken
     );
   await until("the session's first turn to claim its Envoy role", claimed);
-}
-
-/**
- * Resolves once every microtask queued before it has run: Bun's fake timers leave `setImmediate`
- * real (measured on Bun 1.4.4), and the event loop runs an immediate only once the microtask
- * queue is empty. Under fake timers, work the stand-in answered in memory has run on by then, up
- * to the next timer it arms.
- */
-function everyMicrotask(): Promise<void> {
-  const ran = Promise.withResolvers<void>();
-  setImmediate(ran.resolve);
-  return ran.promise;
 }
 
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
@@ -3481,12 +3471,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       for (const failed of [1, 2]) {
         await posted[failed - 1]?.promise;
         // The stand-in answers in memory, so the failure is read and its pause armed in microtasks.
-        await everyMicrotask();
+        await turn();
         jest.advanceTimersByTime(999);
-        await everyMicrotask();
+        await turn();
         expect(readyPosts()).toBe(failed);
         jest.advanceTimersByTime(1);
-        await posted[failed]?.promise;
+        // The next attempt is armed for this millisecond: a pause any longer leaves it unposted.
+        await turn();
+        expect(readyPosts()).toBe(failed + 1);
       }
       await booting;
     } finally {
@@ -3875,9 +3867,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         // The host answers from memory, so every row but the search has answered once the
         // microtasks queued so far have run; then the check budget runs out, and the measurement
         // ends and its report is sent on the clock it started on.
-        await everyMicrotask();
+        await turn();
         jest.advanceTimersByTime(budgets.checkMs);
-        await everyMicrotask();
+        await turn();
       } finally {
         jest.useRealTimers();
       }
@@ -4458,7 +4450,7 @@ async function launchedController(options: {
   });
   const fixture = await createPi({
     bindEnvoy: options.order !== "legion.ts",
-    ...(options.sendUserMessage !== undefined && { sendUserMessage: options.sendUserMessage }),
+    sendUserMessage: options.sendUserMessage,
   });
   legionExtension(fixture.pi);
   if (options.order === "legion.ts") await envoyExtension(fixture.pi as never);
@@ -5628,8 +5620,10 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   });
 
   // The host rejects a start it fails to send (a prompt it drops before dispatch, or refuses): no
-  // run starts, so no `agent_start` clears the mark the send set, and pi-envoy would hold the
-  // session's startup cards until that sent mark's 30 s cap rather than wake for them at once.
+  // run starts, so no `agent_start` clears the mark the send set, and every check pi-envoy makes
+  // would hold the session's startup cards until that sent mark's 30 s cap. Cleared, the mark
+  // holds no later check; a check that read it before the rejection keeps the cards it saw until
+  // 30 s after the send, or until the next card, since clearing the mark schedules no check.
   test("a start message whose send the host fails clears the startup-turn mark the send set", async () => {
     const failed = Promise.withResolvers<void>();
     const marksAtSend: EnvoyPluginInterface["startupTurn"][] = [];
@@ -5681,6 +5675,53 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
     expect(controller.sentUserMessages).toEqual([]);
     expect(envoyPluginInterface().startupTurn).toBeUndefined();
+  });
+
+  // A claim refused before the send while another claim waits behind it leaves the unsent mark:
+  // the claim behind it may still send the start, and a card the cleared mark let take an idle turn
+  // would run ahead of it. The mark each registration read is what shows it.
+  test("a claim refused before the send while another claim waits behind it leaves the unsent startup-turn mark for that claim's send", async () => {
+    const session = "ses_controller_claim_queued";
+    const firstRegistering = Promise.withResolvers<void>();
+    const refuseFirst = Promise.withResolvers<void>();
+    const marksAtRegister: EnvoyPluginInterface["startupTurn"][] = [];
+    const controller = await launchedController({
+      sessionId: session,
+      register: async () => {
+        marksAtRegister.push(envoyPluginInterface().startupTurn);
+        if (marksAtRegister.length > 1) return undefined;
+        firstRegistering.resolve();
+        await refuseFirst.promise;
+        return Response.json({ error: "capability revoked" }, { status: 403 });
+      },
+    });
+    const context = controller.context(session);
+    await controller.handlers.get("session_start")?.({}, context);
+
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    await loggedErrors(async () => {
+      const first = claimCommand.handler("", commandContext(context));
+      await firstRegistering.promise;
+      // Queued while the first claim waits on its registration.
+      const second = claimCommand.handler("", commandContext(context));
+      refuseFirst.resolve();
+      await expect(first).rejects.toThrow(
+        "POST /legion/v1/claims/register failed with 403: capability revoked"
+      );
+      await second;
+    });
+
+    expect(marksAtRegister).toEqual([
+      { session, sentAt: undefined },
+      { session, sentAt: undefined },
+    ]);
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(envoyPluginInterface().startupTurn).toEqual({ session, sentAt: expect.any(Number) });
   });
 
   // The operator's controller claims and sends only from `/legion-controller-start`, which Oh My
@@ -6154,7 +6195,10 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // claim's transport attempts. So the row holds the clock they run on (Bun's fake timers)
       // and moves it a millisecond a turn until the command gives up, and the stand-ins answer in
       // memory between: the tries wait as long as the product says, and the row spends none of it.
+      // A claim that never gives up fails, by name, once the real time left before the row's
+      // deadline (`timeLeft`, read before the fake clock starts) has passed.
       await loggedWarnings(async () => {
+        const boundMs = timeLeft();
         jest.useFakeTimers();
         try {
           let ended = false;
@@ -6168,6 +6212,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
             }
           );
           await turnsUntil(() => ended, "the typed claim to give up after its counted tries", {
+            boundMs,
             each: () => jest.advanceTimersByTime(1),
             state: () => `${claims} role claims answered 503, ${notices.length} notices`,
           });
@@ -7249,6 +7294,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       natsSubscribeObserver = (subject) => {
         if (subject === relaySubject) reopened.resolve();
       };
+      const boundMs = timeLeft();
       jest.useFakeTimers();
       natsConnectGates.set("omp-ses_controller_first", async () => undefined);
       failingConnect.reject(new Error("nats: connection refused"));
@@ -7262,20 +7308,18 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         reopenedYet = true;
       });
       // turnsUntil takes a turn of the event loop after each move; a relay that never comes back
-      // fails, by name, at turnsUntil's bound of real time.
+      // fails, by name, once the real time left before the row's deadline (`timeLeft`, read before
+      // the fake clock starts) has passed.
       await turnsUntil(() => reopenedYet, "the relay subject subscribed again", {
+        boundMs,
         each: () => {
           if (jest.getTimerCount() > 0) jest.advanceTimersByTime(60_000);
         },
       });
       jest.useRealTimers();
-      const settled = Promise.withResolvers<void>();
-      setImmediate(settled.resolve);
-      await settled.promise;
+      await turn();
       for (const tick of ticks) tick();
-      const registered = Promise.withResolvers<void>();
-      setImmediate(registered.resolve);
-      await registered.promise;
+      await turn();
 
       const openSubjects = natsConnections
         .filter((candidate) => candidate.name === "omp-ses_controller_first" && !candidate.closed)

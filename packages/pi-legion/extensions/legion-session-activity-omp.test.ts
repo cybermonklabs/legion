@@ -358,9 +358,9 @@ test.skipIf(skip)(
     // sends a report between turns only when the reading changed, so a service the host reported
     // would change the reading and be sent within a period of the service's start. Whether it is
     // reported is an absence: no state of the pane says the service was read and left out, and no
-    // later action of the case reaches the period's tick, so the case holds the window the base
-    // held, three periods and two seconds, from the service's first heartbeat, and then reads
-    // every report since. One that came before the service started tells nothing of it.
+    // later action of the case reaches the period's tick, so the case holds three periods and two
+    // seconds from the service's first heartbeat, and then reads every report since. One that came
+    // before the service started tells nothing of it.
     await span(
       3 * SESSION_ACTIVITY_PERIOD_MS + 2_000,
       "three of the pane's 5 s activity periods from the named service's start, in which a service the host reported would change the reading and be sent; no state or later action reaches that tick"

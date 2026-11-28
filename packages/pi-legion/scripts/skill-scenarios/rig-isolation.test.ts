@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -26,8 +26,10 @@ import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
 //     (a run names its pin's omp by path).
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
-// must stop its server when it ends. Each row runs two rigs end to end, under the guard the
-// package's `bun run test` declares (`test-timeout-preload.ts`).
+// must stop its server when it ends. Every hook and row here takes this guard: the `beforeAll`
+// runs the batch's two rigs at once, end to end, and three rows start rigs of their own, the
+// stale-profile and link rows one each and the bun-failure row two in turn.
+setDefaultTimeout(120_000);
 
 // Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
 // in a process group of its own (`runRig` below says why it must). Read once, so one warning names

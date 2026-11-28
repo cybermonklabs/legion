@@ -8,6 +8,7 @@ import {
   type LegionCapabilityReportBody,
 } from "@legion/contracts/legion-api";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import {
   CAPABILITY_CHECK_TIMEOUT_MS,
   CAPABILITY_REPORT_TIMEOUT_MS,
@@ -18,8 +19,10 @@ import {
   cleanDetail,
   credentialRuleCharacters,
   ENVOY_TOOL_NAMES,
+  HELD_READINGS,
   LIVE_CAPABILITIES,
   type LiveCapability,
+  MAX_DETAIL_BYTES,
   measureCapabilities,
   WEB_SEARCH_PROBE_QUERY,
 } from "./capability-report";
@@ -92,18 +95,6 @@ afterEach(() => {
 
 /** The moment a row that holds the clock (Bun's fake timers) starts it at. */
 const CLOCK_START = 1_793_000_000_000;
-
-/**
- * Resolves once every microtask queued before it has run: Bun's fake timers leave `setImmediate`
- * real (measured on Bun 1.4.4), and the event loop runs an immediate only once the microtask
- * queue is empty. Under fake timers a check that answers at once has answered by then, and so
- * has every continuation of a timer the row fired.
- */
-function everyMicrotask(): Promise<void> {
-  const ran = Promise.withResolvers<void>();
-  setImmediate(ran.resolve);
-  return ran.promise;
-}
 
 function input(overrides: Partial<CapabilityInput> = {}): CapabilityInput {
   return {
@@ -250,9 +241,9 @@ describe("the report", () => {
       }
     );
     // Every check that answers at once has answered before the report's budget passes.
-    await everyMicrotask();
+    await turn();
     jest.advanceTimersByTime(20);
-    await everyMicrotask();
+    await turn();
     order.push("the commands answered");
     // Resolving lets the abandoned checks settle, so their 30 s timers clear.
     pending.resolve({ code: 0, stdout: "", stderr: "" });
@@ -302,7 +293,7 @@ describe("the report", () => {
     // the first search's budget, after every check that answers at once has answered.
     jest.useFakeTimers({ now: CLOCK_START });
     const measuringFirst = measureCapabilities(host, input(), budgets);
-    await everyMicrotask();
+    await turn();
     jest.advanceTimersByTime(budgets.checkMs);
     const first = await measuringFirst;
     const second = await measureCapabilities(host, input(), budgets);
@@ -948,21 +939,26 @@ describe("cleanDetail", () => {
   // cleans before it cuts it to 1,024 bytes, so one such detail stalls a session's start. Each
   // fixture unit, repeated, holds a start for every repetition.
   //
-  // No clock carries the verdict, since no limit on time holds a 2-CPU pod and CI alike. A count
-  // of the work does: this row holds `cleanDetail`'s own count of the characters its rules' passes
-  // are handed (`credentialRuleCharacters`) to one pass of every rule over the detail, one more
-  // after each reading of held text, and one over what the cut keeps, so an extra pass, or a rule
-  // run once per match, exceeds it. JavaScriptCore counts no step a regular expression takes, so
-  // the count does not catch a pass that backtracks within itself: a rule made quadratic is not
-  // caught here, as it was not by the time limit this row held before, a risk INFRA-985's architect
-  // accepted on 2026-11-07.
+  // Each row holds `cleanDetail`'s own count of the characters its rules' passes are handed
+  // (`credentialRuleCharacters`) to one pass of every rule over the detail, one more after each of
+  // `HELD_READINGS`, and one over what the cut keeps. A unit spends less than that where a reading
+  // shrinks its text or changes nothing, which sends nothing to the rules again: the three units
+  // where only `HELD_READINGS[2]` changes the text (the two U+FFFD units and BEL) spend two passes
+  // fewer, so the count allows them two extra passes over the whole detail, and every other unit
+  // at most one. A pass loop that did not stop at a pass that changes nothing would hand the rules
+  // eight passes for each, which every row fails. JavaScriptCore counts no step a regular
+  // expression takes, so the count does not catch a pass that backtracks within itself.
+  //
+  // The limit on each row is a hang guard. The JWT rule made quadratic by hand cost 13,570 to
+  // 14,088 ms on a 2-CPU gVisor agent pod, which the 10 s guard fails; CI is about 4.5 times
+  // faster, where that same regression would cost about 3 s and pass (an estimate from those
+  // ratios, not a run on CI), so a rule made quadratic is not caught on CI, a risk INFRA-985's
+  // architect accepted on 2026-11-07. On bun 1.4.4 a per-test limit is reported for a body that
+  // blocks the thread only once that body comes back, so the guard ends a blow-up that returns at
+  // all, and a rule that never returns is ended by the pi-legion job's own limit
+  // (timeout-minutes: 28, .github/workflows/ci-job-pi-legion.yaml).
   const RULES = CREDENTIAL_RULES.length;
-  /** The readings of held text after the first (capability-report.ts's HELD_READINGS): each that
-   *  changes the text has the rules read it again. */
-  const READINGS = 3;
-  /** The most of a detail the cut keeps, in UTF-8 bytes and so in characters, which the rules
-   *  read once more (capability-report.ts's MAX_DETAIL_BYTES). */
-  const MAX_DETAIL_BYTES = 1024;
+  const READINGS = HELD_READINGS.length;
   for (const { name, unit } of redaction.linear) {
     test(`cleans 64 KiB of ${name} in rule passes bounded by its length`, () => {
       const text = unit.repeat(Math.ceil((64 * 1024) / unit.length));
@@ -971,12 +967,13 @@ describe("cleanDetail", () => {
       const handed = credentialRuleCharacters() - before;
       // No rule redacts anything in these texts, so each reading settles in its first pass.
       expect(cleaned).not.toContain("***");
+      // The cut keeps at most MAX_DETAIL_BYTES UTF-8 bytes, and so at most that many characters.
       const allowed = RULES * ((1 + READINGS) * text.length + MAX_DETAIL_BYTES);
       expect(
         handed,
         `cleaning 64 KiB of ${name} handed the rules ${handed} characters, where at most ${allowed} (${RULES} rules, each over the ${text.length} characters once and once more after each of ${READINGS} readings, and over the ${MAX_DETAIL_BYTES} the cut keeps) are allowed`
       ).toBeLessThanOrEqual(allowed);
-    });
+    }, 10_000);
   }
 });
 
