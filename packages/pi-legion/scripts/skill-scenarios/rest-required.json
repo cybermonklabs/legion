@@ -3,7 +3,12 @@
   "commit": "c9c95fe34ced05fe076001f5c55704742bc8e7f8",
   "file": "descriptions/api.github.com/api.github.com.json",
   "routes": {
+    "GET /app": "GET /app",
+    "GET /app/installations": "GET /app/installations",
+    "GET /installation/repositories": "GET /installation/repositories",
+    "GET /rate_limit": "GET /rate_limit",
     "GET /repos/{owner}/{repo}": "GET /repos/{owner}/{repo}",
+    "GET /repos/{owner}/{repo}/actions/workflows": "GET /repos/{owner}/{repo}/actions/workflows",
     "GET /repos/{owner}/{repo}/commits/{sha}": "GET /repos/{owner}/{repo}/commits/{ref} application/vnd.github.sha",
     "GET /repos/{owner}/{repo}/commits/{sha}/pulls": "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
     "GET /repos/{owner}/{repo}/installation": "GET /repos/{owner}/{repo}/installation",
@@ -48,6 +53,55 @@
     "PUT repos/{owner}/{repo}/pulls/{number}/reviews/{id}": "PUT /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}"
   },
   "operations": {
+    "GET /app": {
+      "operation_id": "apps/get-authenticated",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "integration"
+      }
+    },
+    "GET /app/installations": {
+      "operation_id": "apps/list-installations",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "installation"
+        }
+      }
+    },
+    "GET /installation/repositories": {
+      "operation_id": "apps/list-repos-accessible-to-installation",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "required": ["total_count", "repositories"],
+        "keys": ["total_count", "repositories", "repository_selection"],
+        "properties": {
+          "repositories": {
+            "items": {
+              "allOf": [
+                {
+                  "ref": "repository"
+                },
+                {
+                  "keys": ["custom_properties"]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "GET /rate_limit": {
+      "operation_id": "rate-limit/get",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "rate-limit-overview"
+      }
+    },
     "GET /repos/{owner}/{repo}": {
       "operation_id": "repos/get",
       "status": 200,
@@ -83,6 +137,22 @@
           "jobs": {
             "items": {
               "ref": "job"
+            }
+          }
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/actions/workflows": {
+      "operation_id": "actions/list-repo-workflows",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "required": ["total_count", "workflows"],
+        "keys": ["total_count", "workflows"],
+        "properties": {
+          "workflows": {
+            "items": {
+              "ref": "workflow"
             }
           }
         }
@@ -3081,6 +3151,74 @@
         }
       }
     },
+    "rate-limit": {
+      "required": ["limit", "remaining", "reset", "used"],
+      "keys": ["limit", "remaining", "reset", "used"]
+    },
+    "rate-limit-overview": {
+      "required": ["rate", "resources"],
+      "keys": ["resources", "rate"],
+      "properties": {
+        "resources": {
+          "required": ["core", "search"],
+          "keys": [
+            "core",
+            "graphql",
+            "search",
+            "code_search",
+            "source_import",
+            "integration_manifest",
+            "actions_runner_registration",
+            "scim",
+            "dependency_snapshots",
+            "dependency_sbom",
+            "code_scanning_autofix",
+            "copilot_usage_records"
+          ],
+          "properties": {
+            "core": {
+              "ref": "rate-limit"
+            },
+            "graphql": {
+              "ref": "rate-limit"
+            },
+            "search": {
+              "ref": "rate-limit"
+            },
+            "code_search": {
+              "ref": "rate-limit"
+            },
+            "source_import": {
+              "ref": "rate-limit"
+            },
+            "integration_manifest": {
+              "ref": "rate-limit"
+            },
+            "actions_runner_registration": {
+              "ref": "rate-limit"
+            },
+            "scim": {
+              "ref": "rate-limit"
+            },
+            "dependency_snapshots": {
+              "ref": "rate-limit"
+            },
+            "dependency_sbom": {
+              "ref": "rate-limit"
+            },
+            "code_scanning_autofix": {
+              "ref": "rate-limit"
+            },
+            "copilot_usage_records": {
+              "ref": "rate-limit"
+            }
+          }
+        },
+        "rate": {
+          "ref": "rate-limit"
+        }
+      }
+    },
     "reaction-rollup": {
       "required": [
         "url",
@@ -4380,6 +4518,33 @@
     "verification": {
       "required": ["verified", "reason", "payload", "signature", "verified_at"],
       "keys": ["verified", "reason", "payload", "signature", "verified_at"]
+    },
+    "workflow": {
+      "required": [
+        "id",
+        "node_id",
+        "name",
+        "path",
+        "state",
+        "url",
+        "html_url",
+        "badge_url",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "name",
+        "path",
+        "state",
+        "created_at",
+        "updated_at",
+        "url",
+        "html_url",
+        "badge_url",
+        "deleted_at"
+      ]
     },
     "workflow-run": {
       "required": [

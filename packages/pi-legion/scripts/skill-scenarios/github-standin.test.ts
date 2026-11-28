@@ -90,16 +90,20 @@ function callsOf(log: string): string[] {
   return [...new Set(calls)].sort();
 }
 
-/** A run directory holding a world: a remote whose default branch has one commit and whose issue
- * branch two above it, made by the implementer's App (AUTHOR), which opened the pull request, the
- * world rig.sh's fixture_write writes for it, and the gh answers the stand-in reads the
- * repository and the pull request's title and body from. */
+/** A run directory holding a world: a remote whose default branch has one commit, which holds a
+ * README and the world's workflow, and whose issue branch two above it, made by the implementer's
+ * App (AUTHOR), which opened the pull request, the world rig.sh's fixture_write writes for it, and
+ * the gh answers the stand-in reads the repository and the pull request's title and body from. */
 function world() {
   const dir = freshDir("github-world");
   const src = path.join(dir, "src");
-  mkdirSync(src);
+  mkdirSync(path.join(src, ".github", "workflows"), { recursive: true });
   git(src, "init", "-q", "-b", "main");
   writeFileSync(path.join(src, "README.md"), "# widgets\n");
+  writeFileSync(
+    path.join(src, ".github", "workflows", "greet.yml"),
+    "name: Greet\non: [pull_request]\njobs:\n  test:\n    name: test\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun greet.ts Ada\n"
+  );
   git(src, "add", "-A");
   git(src, "commit", "-qm", "init");
   const base = git(src, "rev-parse", "HEAD");
@@ -182,11 +186,13 @@ async function serving(dir: string) {
 const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJJdjEuZTJlZmFrZSJ9.c2lnbmVk";
 
 // Catches: a route answered for another repository or installation; an installation-token route
-// answered without a token the stand-in minted; a pull request whose head is not the remote's tip
-// at the call, before or after a push (the head the world reports, in gh's answers and Dispatch's
-// alike); a commit's pull requests that do not follow the remote; a commit read in a shape other
-// than the one measured; and a route the world was never measured to read answered quietly rather
-// than refused, logged with what was asked.
+// answered without a token the stand-in minted, and an App's route without the App's JWT; a pull
+// request whose head is not the remote's tip at the call, before or after a push (the head the
+// world reports, in gh's answers and Dispatch's alike); a commit's pull requests that do not
+// follow the remote; a commit read in a shape other than the one measured; a read of Dispatch's
+// rate reading refused (since main's #4681 every world's Dispatch makes them at its start, and
+// the boot runs of rig 3abb0726 were refused the first); and a route the world was never measured
+// to read answered quietly rather than refused, logged with what was asked.
 test("the stand-in answers the measured routes from the run's remote, and refuses any other naming it", async () => {
   const { dir, src, base, first, second } = world();
   const github = await serving(dir);
@@ -267,6 +273,35 @@ test("the stand-in answers the measured routes from the run's remote, and refuse
       422,
       `No commit found for SHA: ${zero}`,
     ]);
+    // Dispatch's rate reading: the App's installations and the App, to the App's JWT alone, and
+    // the installation's first repository, its workflows and its counters, to a minted token alone.
+    const installations = await get("/app/installations?per_page=100&page=1", JWT);
+    expect([
+      installations.status,
+      z
+        .array(z.object({ id: z.number() }))
+        .parse(await installations.json())
+        .map((one) => one.id),
+    ]).toEqual([200, [id]]);
+    expect((await get("/app/installations?per_page=100&page=1", token)).status).toBe(401);
+    const app = await get("/app", JWT);
+    expect([app.status, z.object({ id: z.number() }).parse(await app.json()).id]).toEqual([
+      200, 2_101_400,
+    ]);
+    expect((await get("/app")).status).toBe(401);
+    const listed = await get("/installation/repositories?per_page=1", token);
+    expect([
+      listed.status,
+      z
+        .object({ repositories: z.array(z.object({ full_name: z.string() })) })
+        .parse(await listed.json())
+        .repositories.map((one) => one.full_name),
+    ]).toEqual([200, [REPO]]);
+    expect((await get("/installation/repositories?per_page=1", JWT)).status).toBe(401);
+    expect((await get(`/repos/${REPO}/actions/workflows?per_page=1`, token)).status).toBe(200);
+    expect((await get("/repos/someone/else/actions/workflows?per_page=1", token)).status).toBe(404);
+    expect((await get("/rate_limit", token)).status).toBe(200);
+    expect((await get("/rate_limit", "ghs_not-minted")).status).toBe(401);
     expect((await get(`/repos/${REPO}/commits/${first}`, token)).status).toBe(501);
     expect((await get(`/repos/${REPO}/pulls/1000/commits`, token)).status).toBe(501);
   } finally {
@@ -310,6 +345,11 @@ test("the stand-in answers the measured routes from the run's remote, and refuse
     "GET /repos/{owner}/{repo} 200",
     "GET /repos/{owner}/{repo}/commits/{sha}/pulls 200",
     "GET /repos/{owner}/{repo}/pulls/{number} 200",
+    "GET /app/installations 200",
+    "GET /app 200",
+    "GET /installation/repositories 200",
+    "GET /repos/{owner}/{repo}/actions/workflows 200",
+    "GET /rate_limit 200",
   ]);
   const succeeded = lines.filter((line) => typeof line.status === "number" && line.status < 400);
   expect(new Set(succeeded.map((line) => `${line.route} ${line.status}`))).toEqual(
@@ -374,7 +414,8 @@ test("the pull request Dispatch reads carries the merge state and mergeability i
 // INFRA-764's read search reads one: an installation with no `app_id` or `access_tokens_url` and
 // its account a login alone, a repository short of its URLs and times, and a pull request short
 // of its `_links`, its user or its counts, in the listing of a commit's pull requests and by its
-// number alike; and a route of GITHUB_ROUTES this row makes no call of.
+// number alike; an App, a listed repository, a workflow or a counter of the rate reading's reads
+// short of one; and a route of GITHUB_ROUTES this row makes no call of.
 test("every route the HTTP stand-in serves answers every field GitHub's description requires", async () => {
   const { dir, first } = world();
   const github = await serving(dir);
@@ -413,6 +454,19 @@ test("every route the HTTP stand-in serves answers every field GitHub's descript
         `/repos/${REPO}/pulls/1000`,
         token
       ),
+      "GET /app/installations": await ask("GET", "/app/installations?per_page=100&page=1", JWT),
+      "GET /app": await ask("GET", "/app", JWT),
+      "GET /installation/repositories": await ask(
+        "GET",
+        "/installation/repositories?per_page=1",
+        token
+      ),
+      "GET /repos/{owner}/{repo}/actions/workflows": await ask(
+        "GET",
+        `/repos/${REPO}/actions/workflows?per_page=1`,
+        token
+      ),
+      "GET /rate_limit": await ask("GET", "/rate_limit", token),
     };
     expect(
       GITHUB_ROUTES.map(({ route }) => {
@@ -425,8 +479,256 @@ test("every route the HTTP stand-in serves answers every field GitHub's descript
         ];
       })
     ).toEqual(GITHUB_ROUTES.map(({ route, status }) => [route, status, []]));
-    // The listing names the pull request it lists, which is no empty list's absence of fields.
+    // Each listing names what it lists, which is no empty list's absence of fields: the commit's
+    // pull request, the App's installation, the installation's repository and the world's
+    // workflow.
     expect(answers["GET /repos/{owner}/{repo}/commits/{sha}/pulls"]?.[1]).toHaveLength(1);
+    expect(answers["GET /app/installations"]?.[1]).toHaveLength(1);
+    expect(
+      z
+        .object({ repositories: z.array(z.unknown()) })
+        .parse(answers["GET /installation/repositories"]?.[1]).repositories
+    ).toHaveLength(1);
+    expect(
+      z
+        .object({ workflows: z.array(z.unknown()) })
+        .parse(answers["GET /repos/{owner}/{repo}/actions/workflows"]?.[1]).workflows
+    ).toHaveLength(1);
+  } finally {
+    await github.stop();
+  }
+}, 60_000);
+
+/** The counters production named in GET /rate_limit to a role App's installation token, in its
+ * order (`gh api -i rate_limit`, `Date: Sat, 28 Nov 2026 19:07:28 GMT`), search and five more
+ * resetting a minute after that Date and the rest an hour after. */
+const PRODUCTION_COUNTERS = [
+  "core",
+  "search",
+  "graphql",
+  "integration_manifest",
+  "source_import",
+  "code_scanning_autofix",
+  "actions_runner_registration",
+  "scim",
+  "dependency_snapshots",
+  "dependency_sbom",
+  "audit_log",
+  "audit_log_streaming",
+  "code_search",
+  "copilot_usage_records",
+  "enterprise_token_inventory",
+];
+/** The fields production's list of an installation's repositories gave each repository
+ * (`gh api 'installation/repositories?per_page=1'`, 2026-11-28 at 19:07Z), in byte order. */
+const PRODUCTION_LISTED_FIELDS =
+  "allow_forking archive_url archived assignees_url blobs_url branches_url clone_url collaborators_url comments_url commits_url compare_url contents_url contributors_url created_at custom_properties default_branch deployments_url description disabled downloads_url events_url fork forks forks_count forks_url full_name git_commits_url git_refs_url git_tags_url git_url has_discussions has_downloads has_issues has_pages has_projects has_pull_requests has_wiki homepage hooks_url html_url id is_template issue_comment_url issue_events_url issues_url keys_url labels_url language languages_url license merges_url milestones_url mirror_url name node_id notifications_url open_issues open_issues_count owner permissions private pull_request_creation_policy pulls_url pushed_at releases_url size ssh_url stargazers_count stargazers_url statuses_url subscribers_url subscription_url svn_url tags_url teams_url topics trees_url updated_at url visibility watchers watchers_count web_commit_signoff_required".split(
+    " "
+  );
+
+// Dispatch's rate reading (github-routes.ts's RATE_READING) as production answered its reads to a
+// role App's installation token on 2026-11-28 (`gh api -i`, from 19:07:28Z to 19:08:23Z): a list
+// paged as GitHub pages one, its `Link` naming the other pages and a page past the last naming
+// the last; every answer to an installation token naming the core counter in its rate limit
+// headers, each read counting one call but GET /rate_limit, whose answer names every counter of
+// the installation in production's order and its own `Cache-Control: no-cache`; an installation's
+// repository in the form its list gives one, the token's permissions all false; and the
+// workflows of the default branch alone, each time to the millisecond. The App's list and the App
+// itself no pod can read (the App's JWT): they are held to the installation the world names.
+// Catches each of those answered otherwise, which the reading takes as a failed counter, a wrong
+// count or a repository and a workflow of no world; and an App whose id, slug or client id is not
+// its installation's.
+test("the rate reading's reads are answered as production answered them", async () => {
+  const { dir, src } = world();
+  // A workflow on the issue branch alone, which GitHub does not list, and a second one on the
+  // default branch, named by no `name:`.
+  writeFileSync(path.join(src, ".github", "workflows", "branch.yml"), "name: Branch\n");
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "ci: a branch's workflow");
+  git(src, "push", "-q", path.join(dir, "remote.git"), "legion/WID-1");
+  git(src, "checkout", "-q", "main");
+  writeFileSync(path.join(src, ".github", "workflows", "lint.yaml"), "on: [push]\n");
+  git(src, "add", "-A");
+  git(src, "commit", "-qm", "ci: lint");
+  git(src, "push", "-q", path.join(dir, "remote.git"), "main");
+  const github = await serving(dir);
+  try {
+    const get = (route: string, token: string) =>
+      fetch(`${github.origin}${route}`, {
+        headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
+      });
+    const installation = z
+      .object({ id: z.number(), app_id: z.number(), app_slug: z.string(), client_id: z.string() })
+      .parse(await (await get(`/repos/${REPO}/installation`, JWT)).json());
+    const ids = z.array(z.object({ id: z.number() }));
+    const first = await get("/app/installations?per_page=100&page=1", JWT);
+    expect([first.headers.get("link"), ids.parse(await first.json()).map((one) => one.id)]).toEqual(
+      [null, [installation.id]]
+    );
+    const past = await get("/app/installations?per_page=100&page=2", JWT);
+    const pageOf = (page: number) =>
+      `<https://api.github.com/app/installations?per_page=100&page=${page}>`;
+    expect([past.headers.get("link"), await past.json()]).toEqual([
+      `${pageOf(1)}; rel="prev", ${pageOf(1)}; rel="last", ${pageOf(1)}; rel="first"`,
+      [],
+    ]);
+    expect(
+      z
+        .object({
+          id: z.number(),
+          slug: z.string(),
+          client_id: z.string(),
+          installations_count: z.number(),
+        })
+        .parse(await (await get("/app", JWT)).json())
+    ).toEqual({
+      id: installation.app_id,
+      slug: installation.app_slug,
+      client_id: installation.client_id,
+      installations_count: 1,
+    });
+    const minted = await fetch(
+      `${github.origin}/app/installations/${installation.id}/access_tokens`,
+      { method: "POST", headers: { Authorization: `Bearer ${JWT}` } }
+    );
+    const { token } = z.object({ token: z.string() }).parse(await minted.json());
+    // The core counter as an answer names it: its limit, what is left, the calls counted, and
+    // whether it resets within the hour from now.
+    const counted = (answered: Response) => {
+      const reset = Number(answered.headers.get("x-ratelimit-reset"));
+      const now = Date.now() / 1000;
+      return [
+        answered.headers.get("x-ratelimit-resource"),
+        answered.headers.get("x-ratelimit-limit"),
+        answered.headers.get("x-ratelimit-remaining"),
+        answered.headers.get("x-ratelimit-used"),
+        reset > now && reset <= now + 3601,
+      ];
+    };
+    const listed = await get("/installation/repositories?per_page=1", token);
+    expect(counted(listed)).toEqual(["core", "15000", "14999", "1", true]);
+    const repositories = z
+      .object({
+        total_count: z.number(),
+        repository_selection: z.string(),
+        repositories: z.array(
+          z.looseObject({
+            full_name: z.string(),
+            permissions: z.unknown(),
+            custom_properties: z.unknown(),
+          })
+        ),
+      })
+      .parse(await listed.json());
+    expect([
+      repositories.total_count,
+      repositories.repository_selection,
+      repositories.repositories.map((one) => [
+        one.full_name,
+        one.permissions,
+        one.custom_properties,
+        Object.keys(one).sort(),
+      ]),
+    ]).toEqual([
+      1,
+      "selected",
+      [
+        [
+          REPO,
+          { admin: false, maintain: false, pull: false, push: false, triage: false },
+          {},
+          PRODUCTION_LISTED_FIELDS,
+        ],
+      ],
+    ]);
+    const workflows = await get(`/repos/${REPO}/actions/workflows?per_page=1`, token);
+    expect(counted(workflows)).toEqual(["core", "15000", "14998", "2", true]);
+    const workflowPage = (page: number) =>
+      `<https://api.github.com/repositories/1/actions/workflows?per_page=1&page=${page}>`;
+    expect(workflows.headers.get("link")).toBe(
+      `${workflowPage(2)}; rel="next", ${workflowPage(2)}; rel="last"`
+    );
+    const Workflows = z.object({
+      total_count: z.number(),
+      workflows: z.array(
+        z.looseObject({
+          name: z.string(),
+          path: z.string(),
+          state: z.string(),
+          created_at: z.string(),
+          html_url: z.string(),
+          badge_url: z.string(),
+        })
+      ),
+    });
+    const named = (answer: z.infer<typeof Workflows>) =>
+      answer.workflows.map((one) => [one.name, one.path, one.state, one.html_url, one.badge_url]);
+    const page1 = Workflows.parse(await workflows.json());
+    expect([page1.total_count, named(page1)]).toEqual([
+      2,
+      [
+        [
+          "Greet",
+          ".github/workflows/greet.yml",
+          "active",
+          `https://github.com/${REPO}/blob/main/.github/workflows/greet.yml`,
+          `https://github.com/${REPO}/workflows/Greet/badge.svg`,
+        ],
+      ],
+    ]);
+    expect(page1.workflows[0]?.created_at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z$/);
+    const page2 = Workflows.parse(
+      await (await get(`/repos/${REPO}/actions/workflows?per_page=1&page=2`, token)).json()
+    );
+    expect(named(page2).map(([name, at]) => [name, at])).toEqual([
+      [".github/workflows/lint.yaml", ".github/workflows/lint.yaml"],
+    ]);
+    // The counters' read counts no call: the core counter stands at the three reads above.
+    const rate = await get("/rate_limit", token);
+    expect([counted(rate), rate.headers.get("cache-control")]).toEqual([
+      ["core", "15000", "14997", "3", true],
+      "no-cache",
+    ]);
+    const Counter = z.object({
+      limit: z.number(),
+      used: z.number(),
+      remaining: z.number(),
+      reset: z.number(),
+    });
+    const counters = z
+      .object({ resources: z.record(z.string(), Counter), rate: Counter })
+      .parse(await rate.json());
+    const now = Date.now() / 1000;
+    const resetIn = (counter: z.infer<typeof Counter>) =>
+      counter.reset - now <= 61 ? "minute" : counter.reset - now <= 3601 ? "hour" : "later";
+    expect(
+      Object.entries(counters.resources).map(([name, counter]) => [
+        name,
+        Object.keys(counter),
+        counter.used,
+        resetIn(counter),
+      ])
+    ).toEqual(
+      PRODUCTION_COUNTERS.map((name) => [
+        name,
+        ["limit", "used", "remaining", "reset"],
+        name === "core" ? 3 : 0,
+        [
+          "search",
+          "source_import",
+          "code_scanning_autofix",
+          "dependency_snapshots",
+          "dependency_sbom",
+          "code_search",
+        ].includes(name)
+          ? "minute"
+          : "hour",
+      ])
+    );
+    expect([counters.rate, counters.resources.graphql?.limit]).toEqual([
+      counters.resources.core,
+      10_000,
+    ]);
   } finally {
     await github.stop();
   }
@@ -435,7 +737,7 @@ test("every route the HTTP stand-in serves answers every field GitHub's descript
 // Catches: a read Dispatch's code adds later, which a batch would meet as a refusal and no test
 // would name; a row of either table whose code is gone; and a site claimed twice.
 test("every place Dispatch builds a GitHub request is a route the stand-in serves or one no world reaches, with why", () => {
-  const sites = requestSites(path.join(CHECKOUT, "packages", "envoy", "internal", "dispatch"));
+  const sites = requestSites(path.join(CHECKOUT, "packages", "envoy"));
   const claimed = [...GITHUB_ROUTES.map((row) => row.site), ...UNREACHED.map((row) => row.site)];
   expect(new Set(claimed).size).toBe(claimed.length);
   expect(claimed.toSorted()).toEqual(sites);
@@ -454,9 +756,15 @@ test("each run's provenance names the GitHub stand-in and its routes, shared, fr
       "bash",
       "-c",
       [
-        ...["given_services", "safe_url", "file_digest", "system_gitconfig", "services_from"].map(
-          fn
-        ),
+        ...[
+          "given_services",
+          "safe_url",
+          "file_digest",
+          "system_gitconfig",
+          "services_from",
+          // The Oh My Pi a run starts (main's rig_omp), the pin's install below.
+          "rig_omp",
+        ].map(fn),
         "pinned_omp() { echo /x/omp; }",
         `here=${import.meta.dir} co=/co pin=omp@pin I=/w/installs/0a1b2c3d4e5f profile=legion`,
         "nats_url=nats://127.0.0.1:4222 pg_url=postgres://127.0.0.1:5432/postgres",
@@ -895,7 +1203,7 @@ function worldRun(call: string, after: string[] = []) {
     // A worker run's end judges what its agents wrote (judge.ts's `judgeWorker`), and these
     // agents are stubbed: they wrote nothing, and no transcript names their session.
     "judge_ts() { :; }",
-    `trap 'stop_pid "\${watcher_pid:-}" >/dev/null 2>&1; stop_tree "\${standin:-}" >/dev/null 2>&1; stop_tree "\${dispatch_pid:-}" >/dev/null 2>&1; stop_tree "\${github_pid:-}" >/dev/null 2>&1; cp "$R/logs/github.log" "$SCRATCH/github.log"; pg_sql "$PG" "DROP DATABASE IF EXISTS $DATABASE_PREFIX$RUN_ID WITH (FORCE)" >/dev/null 2>&1 || true' EXIT`,
+    `trap 'stop_pid "\${watcher_pid:-}" >/dev/null 2>&1; stop_tree "\${standin:-}" >/dev/null 2>&1; stop_tree "\${dispatch_pid:-}" >/dev/null 2>&1; stop_tree "\${github_pid:-}" >/dev/null 2>&1; cp "$R/logs/github.log" "$SCRATCH/github.log"; cp "$R/logs/dispatch.log" "$SCRATCH/dispatch.log" 2>/dev/null; pg_sql "$PG" "DROP DATABASE IF EXISTS $DATABASE_PREFIX$RUN_ID WITH (FORCE)" >/dev/null 2>&1 || true' EXIT`,
     "results() {",
     '  env -i PATH="$PATH" HOME="$SCRATCH/home" DISPATCH_STATE_DIR="$SCRATCH/state" \\',
     '    DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" \\',
@@ -926,6 +1234,50 @@ function worldRun(call: string, after: string[] = []) {
   return { scratch, code: ran.exitCode, stderr: ran.stderr.toString() };
 }
 
+/** The calls Dispatch's rate reading makes of a world's GitHub at the server's start (github-
+ * routes.ts's RATE_READING), as callsOf writes them: the App's installations, a token of its one
+ * installation, that installation's first repository, the repository's workflows and the
+ * installation's counters. Its read of the App itself it makes only where the list names no App,
+ * and a world's names one. */
+const RATE_READING_CALLS = [
+  "GET /app/installations?per_page=100&page=1",
+  "GET /installation/repositories?per_page=1",
+  "GET /rate_limit",
+  "GET /repos/{owner}/{repo}/actions/workflows?per_page=1",
+  "POST /app/installations/{id}/access_tokens",
+];
+/** A line of a world run's that waits, for up to a minute, until the run's GitHub has answered
+ * the rate reading's last read, which ends its first pass. */
+const RATE_READ =
+  'for _ in $(seq 600); do grep -q \'"path":"/rate_limit"\' "$R/logs/github.log" && break; sleep 0.1; done';
+/** The rate reading's lines in a world run's Dispatch log: each a JSON object of msg
+ * `github_rate_reading`, read here for its installation, its count and its error or counters. */
+function rateReadings(log: string) {
+  return log
+    .split("\n")
+    .filter((line) => line.startsWith("{") && line.includes('"msg":"github_rate_reading"'))
+    .map((line) =>
+      z
+        .looseObject({
+          installation_id: z.string(),
+          installations: z.number(),
+          error: z.string().optional(),
+          core_used: z.number().optional(),
+          core_limit: z.number().optional(),
+          graphql_limit: z.number().optional(),
+        })
+        .parse(JSON.parse(line))
+    )
+    .map(({ installation_id, installations, error, core_used, core_limit, graphql_limit }) => ({
+      installation_id,
+      installations,
+      error,
+      core_used: (core_used ?? 0) > 0,
+      core_limit,
+      graphql_limit,
+    }));
+}
+
 // Catches: a world whose Dispatch cannot read its repository (GitHub at port 1, or a stand-in that
 // refuses the default-branch read), which answers "not known" where production answers that the
 // commit is none of the compared commits; a read of the world's GitHub the measurement did not
@@ -933,7 +1285,10 @@ function worldRun(call: string, after: string[] = []) {
 // production's Dispatch asks nothing, or the other way round: both seeded results stand at the
 // head the world stored, which Dispatch answers from that head (results_linked.go's
 // refuseUnknownCommit, since #5416), so the seeds ask nothing and rule 18 holds the run to no
-// request, and GitHub is first asked at the read one push below the head.
+// request but the rate reading's, which Dispatch makes at its start, and GitHub is first asked of
+// the repository at the read one push below the head. And a rate reading GitHub refused, as the
+// boot runs of rig 3abb0726 were refused its first read: its line in Dispatch's log carries an
+// error and no counter.
 test.skipIf(pg === undefined)(
   "a reviewer reads a result one push below the head as production answers it, and nothing reads not known",
   () => {
@@ -953,6 +1308,7 @@ test.skipIf(pg === undefined)(
         'git -C "$SCRATCH/later" push -q origin "HEAD:legion/$worker_key"',
         'seed_ts pull-request "$R/fixture.json" "$R/fixtures.json" "$R/remote.git"',
         "results one-below",
+        RATE_READ,
       ]
     );
     expect({ code, stderr }).toMatchObject({ code: 0 });
@@ -977,18 +1333,31 @@ test.skipIf(pg === undefined)(
     }
     const seededLog = read("at-seeds/logs/github.log");
     expect([
-      seededLog.split("\n").filter((line) => line !== "").length,
-      callsOf(seededLog),
-    ]).toEqual([1, []]);
+      seededLog
+        .split("\n")
+        .filter((line) => line !== "")
+        .every((line) => line.includes('"listening"') || line.includes('"route"')),
+      callsOf(seededLog).filter((call) => !RATE_READING_CALLS.includes(call)),
+    ]).toEqual([true, []]);
     expect(
       githubRefusal({ dir: path.join(scratch, "at-seeds"), scenario: "reviewer-text-findings" })
     ).toBeUndefined();
-    expect(callsOf(read("github.log"))).toEqual([
-      "GET /repos/{owner}/{repo}",
-      "GET /repos/{owner}/{repo}/commits/{sha}/pulls",
-      "GET /repos/{owner}/{repo}/installation",
-      "POST /app/installations/{id}/access_tokens",
-    ]);
+    expect(callsOf(read("github.log"))).toEqual(
+      [
+        ...RATE_READING_CALLS,
+        "GET /repos/{owner}/{repo}",
+        "GET /repos/{owner}/{repo}/commits/{sha}/pulls",
+        "GET /repos/{owner}/{repo}/installation",
+      ].sort()
+    );
+    expect(rateReadings(read("dispatch.log"))[0]).toEqual({
+      installation_id: "51204113",
+      installations: 1,
+      error: undefined,
+      core_used: true,
+      core_limit: 15_000,
+      graphql_limit: 10_000,
+    });
     mkdirSync(path.join(scratch, "logs"));
     writeFileSync(path.join(scratch, GITHUB_LOG), read("github.log"));
     expect(githubRefusal({ dir: scratch, scenario: "reviewer-text-findings" })).toBeUndefined();
@@ -997,9 +1366,10 @@ test.skipIf(pg === undefined)(
 );
 
 // Catches: a plain-session world whose Dispatch starts asking GitHub, which changes what its
-// agent is told and which no other row would see. Each was measured asking nothing.
+// agent is told and which no other row would see. Each was measured asking nothing, and since
+// main's #4681 its Dispatch asks the rate reading's reads at its start and nothing else.
 test.skipIf(pg === undefined)(
-  "the plain-session worlds ask GitHub nothing",
+  "the plain-session worlds ask GitHub nothing but the rate reading's reads",
   () => {
     for (const call of [
       "run_ask_on_message pin",
@@ -1007,14 +1377,10 @@ test.skipIf(pg === undefined)(
       "run_brainstorm pin",
       "run_askgate pin facts",
     ]) {
-      const { scratch, code, stderr } = worldRun(call);
+      const { scratch, code, stderr } = worldRun(call, [RATE_READ]);
       expect({ call, code, stderr }).toMatchObject({ call, code: 0 });
       const log = readFileSync(path.join(scratch, "github.log"), "utf8");
-      expect([call, log.split("\n").filter((line) => line !== "").length, callsOf(log)]).toEqual([
-        call,
-        1,
-        [],
-      ]);
+      expect([call, callsOf(log)]).toEqual([call, RATE_READING_CALLS]);
     }
   },
   600_000

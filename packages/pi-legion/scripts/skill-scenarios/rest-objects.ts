@@ -18,8 +18,41 @@ import path from "node:path";
 import { z } from "zod";
 
 type Json = Record<string, unknown>;
-const API = "https://api.github.com";
-const WEB = "https://github.com";
+/** GitHub's API origin and its web origin, which every URL of an object names. */
+export const API = "https://api.github.com";
+export const WEB = "https://github.com";
+
+/** Each counter GitHub keeps for an installation of an App on the world's organization, with its
+ * limit and whether it resets an hour or a minute after the call that began it, in the order
+ * GitHub names them: production's answer to GET /rate_limit with a role App's installation token
+ * on cybermonklabs, an Enterprise Cloud organization (`gh api -i rate_limit`, `Date: Sat, 28 Nov
+ * 2026 19:07:28 GMT`), each counter that was unused then resetting 60 s or 3600 s after that Date.
+ * The world counts core and graphql: the gh stand-in names the one each answer spends in its rate
+ * limit headers, and the GitHub stand-in Dispatch reads names core in its own and every counter in
+ * its GET /rate_limit (github-standin.ts). */
+export const INSTALLATION_COUNTERS: readonly (readonly [string, number, "hour" | "minute"])[] = [
+  ["core", 15_000, "hour"],
+  ["search", 30, "minute"],
+  ["graphql", 10_000, "hour"],
+  ["integration_manifest", 5_000, "hour"],
+  ["source_import", 100, "minute"],
+  ["code_scanning_autofix", 10, "minute"],
+  ["actions_runner_registration", 20_000, "hour"],
+  ["scim", 15_000, "hour"],
+  ["dependency_snapshots", 100, "minute"],
+  ["dependency_sbom", 200, "minute"],
+  ["audit_log", 1_750, "hour"],
+  ["audit_log_streaming", 15, "hour"],
+  ["code_search", 10, "minute"],
+  ["copilot_usage_records", 1_750, "hour"],
+  ["enterprise_token_inventory", 1_750, "hour"],
+];
+/** The limit of the installation's counter `name` (INSTALLATION_COUNTERS). */
+export function counterLimit(name: string): number {
+  const limit = INSTALLATION_COUNTERS.find(([counter]) => counter === name)?.[1];
+  if (limit === undefined) throw new Error(`GitHub keeps no installation counter ${name}`);
+  return limit;
+}
 
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);

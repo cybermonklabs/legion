@@ -158,12 +158,14 @@ import {
   unknownField,
 } from "./gh-view";
 // GitHub's REST objects more than one route carries — an account, an App, the repository, the
-// pull request — built one way for this stand-in and the HTTP one Dispatch reads.
+// pull request — built one way for this stand-in and the HTTP one Dispatch reads, and the limits
+// of an installation's counters, which both name.
 import {
   accountsOf,
   appJson,
   checkRunApp,
   committerJson,
+  counterLimit,
   githubInstant,
   githubTime,
   type PullFacts,
@@ -935,7 +937,8 @@ let paging: { first: number; perPage: number; total: number } | undefined;
  * validator of the world's own body (production's is no hash of the body it sent: its repository's
  * 6814 bytes hash to cbc29673… and its ETag was W/"3019da26…"), `X-Github-Request-Id` one of the
  * world's in GitHub's form, and the rate limit the role App's: production's limit for the
- * resource (15000 a core hour and 10000 a GraphQL hour for a role App), used by every `gh api`
+ * resource (15000 a core hour and 10000 a GraphQL hour for a role App, rest-objects.ts's
+ * INSTALLATION_COUNTERS), used by every `gh api`
  * call of that resource the run's record holds from the call's role and GitHub answered, this one
  * counted, and reset an hour after the first of them. `Last-Modified` for every other route
  * (production sent one for the commits, refs, trees, tags and contents, at times the world's
@@ -986,7 +989,7 @@ function headerBlock(
     headers["Last-Modified"] = new Date(modified).toUTCString();
   if (served) {
     const resource = graphql ? "graphql" : "core";
-    const limit = graphql ? 10_000 : 15_000;
+    const limit = counterLimit(resource);
     const by = process.env.LEGION_ROLE || undefined;
     const counted = recordedCalls(RECORD).filter(
       (call) =>

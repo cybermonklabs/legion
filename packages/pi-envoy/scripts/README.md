@@ -2158,6 +2158,22 @@ the installation is held to `rest-required.json` alone. A REST read the pin does
 installation, the answer of a write — is held to the fields GitHub requires and the fields its
 description declares, and no more, and is not claimed to answer in production's whole shape.
 
+Since main's #4681 every world's Dispatch also makes its GitHub rate reading's reads at its start
+and every ten minutes (`github-routes.ts`'s `RATE_READING`). Two of them it makes with its App's
+JWT, which no pod holds: `GET /app/installations`, the App's installations, the world's one, and
+`GET /app`, the App, which it reads only where that list names no App. Both are held to
+`rest-required.json` and to the installation the world names. The other three it makes with an
+installation token: `GET /installation/repositories`, the installation's first repository,
+`GET /repos/<o>/<r>/actions/workflows`, whose rate limit headers name the core counter, and
+`GET /rate_limit`, every counter. These are held to `rest-required.json` and to the answers
+production gave a role App's installation token on 2026-11-28 from 19:07:28Z to 19:08:23Z (`gh api
+-i`), which `github-standin.test.ts`'s row "the rate reading's reads are answered as production
+answered them" holds: a list paged as GitHub pages one, with its `Link`; the core counter in every
+answer to an installation token, each read counting a call but `GET /rate_limit`; the counters'
+names, limits and resets; a listed repository's fields and its token's permissions; and a
+workflow's time to the millisecond. No pin holds them, and they are not claimed to answer in
+production's whole shape.
+
 The reads of the run's remote that no pin holds are held to the fields GitHub requires and
 declares (`rest-required.json`) and to the answers GitHub gave on 2026-11-21, which a row of
 `gh-standin.test.ts` holds for each, and to no more, and are not claimed to answer in

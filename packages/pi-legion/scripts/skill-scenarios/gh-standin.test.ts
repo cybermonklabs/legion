@@ -8240,7 +8240,9 @@ for (const pin of PINNED_REST)
  * refused it (`gh api repos/cybermonklabs/legion/installation`, exit 1, `gh: A JSON web token
  * could not be decoded (HTTP 401)`, measured at about 08:47Z on 2026-11-18), so it has no pinned
  * read and is held to rest-required.json alone (github-standin.test.ts); and the token's mint is
- * no read. */
+ * no read. The rate reading's five reads (github-routes.ts's RATE_READING), the App's two by its
+ * JWT and the installation's three, no pin holds either: github-standin.test.ts holds them to
+ * rest-required.json and to production's answers of 2026-11-28. */
 const PINNED_HTTP: readonly {
   name: string;
   path: (head: string) => string;
