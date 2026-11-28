@@ -1416,7 +1416,8 @@ It compares the operation and the tree that the working copy recorded (`jj debug
 Only on a stale working copy does it run `jj workspace update-stale`, which snapshots the working copy.
 That update leaves the edits that no jj command recorded in a commit of `@`'s change that is not checked out: `@`'s change is then divergent, and those edits are no longer on disk.
 The shim names each such commit in its answer (`editsCommits`) and in one line of its log.
-The daemon adds a sentence to the task that names the commit and says that the edits are there, and every later send of the task carries it.
+The daemon records the commit on the role's claim, and every prompt it sends that role names the commit and says that the edits are there, until a turn takes one of those prompts.
+So a later send of the same task names it, and so does the next task when that task is dropped or replaced before any prompt of it reaches the agent.
 A role restores the edits from that commit, which `jj show <commit>` prints.
 Next the shim runs `jj --ignore-working-copy log` on `@`, which takes no snapshot either.
 Then it runs `jj --ignore-working-copy metaedit --update-author` on an `@` that has no description, or `jj --ignore-working-copy new` on an `@` that has one.
@@ -1490,8 +1491,10 @@ A search that finds no line for a time before the first line does not show that 
   A hold that lasts more than 10 minutes also writes `supervise: a phase task has waited more than 10 minutes behind another claim of its issue in a turn; the issue's architect is told` at Warn, once per hold, with the `delivery`, its `phase`, the `issue`, `inTurn`, `heldSince` and `held`, and the issue's architect gets one `worker-stalled` notice that names the held claim, its task and the claim in the turn.
 
 - `supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it` is an adoption whose update left edits in a commit.
-  It names the `delivery` that carries the commit, the delivery it replaced as `was`, the `issue` and `editsCommits`.
-  The line is written before the adoption's own outcome, so a refused adoption writes it too, and the next send carries the commit.
+  It names the task under its new id as `delivery`, its old id as `was`, the `issue` and `editsCommits`.
+  The line is written before the adoption's own outcome, so a refused adoption writes it too.
+  The claim keeps the commit until a turn takes a prompt that names it, so the next prompt that the claim is sent names the commit, whichever task that prompt carries.
+  When the task has stopped being that send's task during the adoption, the daemon writes `supervise: the adoption left the edits no jj command had recorded in a commit, and the task it was made for is no longer this send's; the claim's next prompt names the commit` at Warn instead.
 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
   The task stays queued and is sent again at the next sweep. The refusal costs the claim no prompt budget, because the shim answered, and the pending task counts it in `sendFailures`.

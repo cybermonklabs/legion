@@ -1705,9 +1705,18 @@ func (w *workflowRuntime) workingCopy(_ context.Context, c supervise.Claim, d su
 	if len(d.News) == 0 {
 		return task, d.News, nil
 	}
-	news, err := newsTask(c, d.News, func(t string) string { return w.engine.WorkingCopyAtSend(t, c.Issue, *c.WorkingRepository) })
+	carried, err := heldNews(c, d.News)
 	if err != nil {
 		return "", nil, err
+	}
+	own := w.engine.WorkingCopyAtSend(carried.Task, c.Issue, *c.WorkingRepository)
+	if own == carried.Task {
+		return task, d.News, nil
+	}
+	carried.Task = own
+	news, err := json.Marshal(carried)
+	if err != nil {
+		return "", nil, fmt.Errorf("encode the news the task held for %s carries: %w", c.Token, err)
 	}
 	return task, news, nil
 }

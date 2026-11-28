@@ -181,6 +181,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the run of the claim's session since it last finished a turn, which decides the controller's replacement of a failing session and reaches the daemon's log and the fresh session's first task, and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,
 		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in an architect's catch-up, and no surface"},
+	{Field: "LeftEdits", Column: ColumnWithheld,
+		Reason: "the commits a stale working copy's update left a role's edits in, which reach that role in its next prompt and the daemon's log, and no surface"},
 	{Field: "SessionLost", Column: ColumnWithheld,
 		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }

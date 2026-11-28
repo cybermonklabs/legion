@@ -227,6 +227,14 @@ type Claim struct {
 	// let-go replaces it — as the union of the two while it is still untold (joined). A claim
 	// whose let-gos ended nothing worth telling records none.
 	EndedWork EndedWork
+	// LeftEdits is the commits in which a stale working copy's update, made by the adoption of one
+	// of this claim's tasks, left the edits that no jj command had recorded, for the agent to be
+	// told in the next prompt a turn takes (LeftEdits, leftEdits). It is the claim's rather than
+	// that task's, since the task can be dropped or replaced before any prompt of it reaches the
+	// agent, and it is persisted, since that prompt can be a relaunch and a daemon restart away. A
+	// later adoption that leaves more adds them while it is still untold (LeftEdits.with). A claim
+	// no adoption left edits for records none.
+	LeftEdits LeftEdits
 	// ServingGeneration is the issue generation of the last confirmed delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
 	// the three sources ServingRun reads (serving): the pending delivery whose turn is running,
@@ -1298,15 +1306,6 @@ type Deps struct {
 	// line, are answered as they are. It is asked at every send of such a task (startSend), the one
 	// place a prompt goes out, and nil leaves every task as it was queued.
 	WorkingCopy func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
-	// NewsTask is news, the news of the approved design a task carries (Delivery.News), with the
-	// start's own text it holds (the daemon's record.DeliveryNews.Task) written through rewrite,
-	// and encoded again. Every send of such a task renders the task's text from that copy anew
-	// (DesignNews), so a sentence the machine adds to the task's text outlives the next render only
-	// where it is added to that copy too: the commits a stale working copy's update left the edits
-	// in (leftEdits). This package cannot decode the news, so the daemon, whose record it is,
-	// answers it. An error is news that does not decode, and nil leaves the news as it is, so only
-	// the task's own text carries the sentence, until the next render.
-	NewsTask func(c Claim, news []byte, rewrite func(task string) string) ([]byte, error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
 	// than a refusal. It is asked for the operator's own close — the workflow's linger close is its
@@ -1936,15 +1935,17 @@ type Machine struct {
 	// EndedWork.TaskTurn). letGo clears it with the process. It is memory only: a daemon
 	// restarted inside such a park records the end without it, from what the claim still holds.
 	cutTurnOf string
-	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
-	// current process carried the sentence of (sentences, Delivery.message): the session the claim
-	// abandoned, and what its last let-go ended, each marked only where the prompt's text carries
-	// that record's own sentence. It is what confirmCarrying reads to mark each record told, so a
-	// turn whose prompt went out before a record existed — the takeover of a process another
-	// runtime still runs, whose relaunch the pacing parks — tells nothing of it. It is set where
-	// the send goes out (startSend), and goes with the process (letGo) and, for the record of the
-	// let-go, with that record (recordEnd), since a newer record is words no earlier prompt
-	// carried. It is memory only: a daemon restarted inside the turn of such a prompt reads none
+	// carried is which of the claim's three untold records a prompt this machine sent to the
+	// claim's current process carried the sentence of (sentences, Delivery.message): the session
+	// the claim abandoned, what its last let-go ended, and the commits a stale working copy's
+	// update left the edits in, each marked only where the prompt's text carries that record's own
+	// sentence. It is what confirmCarrying reads to mark each record told, so a turn whose prompt
+	// went out before a record existed — the takeover of a process another runtime still runs,
+	// whose relaunch the pacing parks — tells nothing of it. It is set where the send goes out
+	// (startSend, and leftEdits, which composes that send's prompt again), and goes with the
+	// process (letGo) and, for the record of the let-go and the record of the edits, with that
+	// record (recordEnd, leftEdits), since a newer record is words no earlier prompt carried. It is
+	// memory only: a daemon restarted inside the turn of such a prompt reads none
 	// (confirmCarrying).
 	carried sentences
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
@@ -5893,6 +5894,7 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	c.LeftEdits.Commits = slices.Clone(c.LeftEdits.Commits)
 	c.SessionRun.Endings = slices.Clone(c.SessionRun.Endings)
 	return c
 }

@@ -6,9 +6,11 @@ body: |-
     that no jj command had recorded in a divergent commit that is not checked out and no longer
     on disk. The shim's answer names each such commit in the new optional field `editsCommits` of
     `adopt-working-copy-result` (a daemon or a shim of an earlier release reads the frame as
-    before), the shim's log names it, and the daemon adds one sentence to the task that names it
-    and says that the edits are there, which every later send of the task carries
-    (dispatch://INFRA-3916, R1).
+    before), and the shim's log names it. The daemon records the commit on the role's claim, in
+    the new nullable column `claims.left_edits`, and every prompt it sends that role names the
+    commit in one sentence that says the edits are there, until a turn takes one of those
+    prompts: a task dropped or replaced before any prompt of it reaches the agent leaves the
+    sentence to the next task, across a daemon restart too (dispatch://INFRA-3916, R1).
 time: 2026-11-27T18:00:01Z
 custom:
     Issue: INFRA-3916

@@ -1,0 +1,26 @@
+-- 20261128034924_claim_left_edits.up.sql — the commits in which a stale working copy's update left
+-- the edits that no jj command had recorded, for the role to be told in its next task
+-- (dispatch://INFRA-3916 R1).
+--
+-- claims.left_edits is supervise.Claim.LeftEdits: recorded where the adoption of a phase task's
+-- send brings a stale working copy up to date with `jj workspace update-stale` and the shim names
+-- the commits that update left those edits in, which are no longer on disk (supervise's
+-- leftEdits). It holds the commits, when the adoption answered, the task it was made for, whether
+-- a turn has taken a prompt that named them, and the delivery whose confirmation told them. The
+-- record is the claim's rather than the task's, since that task can be dropped or replaced before
+-- any prompt of it reaches the agent, and the role is told in whichever task it takes next; that
+-- task can be a relaunch and a daemon restart away, so the record is durable rather than held in
+-- the machine's memory.
+--
+-- jsonb on the claim's own row, as the abandoned session and what a let-go ended are, because it
+-- is written in the same decision as the rest of the claim. Every existing row takes null, which
+-- is "no adoption left edits in a commit": nothing backfills it, since no release before this one
+-- brings a stale working copy up to date at the adoption.
+--
+-- There is no down file: migrations here are forward-only. The release before this one names each
+-- column of claims it reads and writes (the claim store's claimSelect and upsertClaim), so it
+-- boots with the column standing, reads none of it, and leaves it as it is on every write; the
+-- database needs nothing taken off for a rollback. What a rollback costs is the telling: that
+-- release names no commit in any task, so a record still untold at the rollback is told after the
+-- roll-forward, in the claim's next task, whatever turns that release ran meanwhile.
+alter table claims add column left_edits jsonb;

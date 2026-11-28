@@ -163,10 +163,10 @@ type Delivery struct {
 	// at every send, by the one render that writes both (Deps.DesignNews, and Deps.RootTask where a
 	// root architect's task is narrowed, and at every send of a resume task, whose text RootTask
 	// writes from the record with this news rendered after it), so the news a delivery holds is
-	// exactly what its text names: no writer keeps one beside a text it did not render with it. The
-	// one writer of the start's own text in it outside a render is the sentence a stale working
-	// copy's adoption adds to the task (leftEdits, Deps.NewsTask), written to both alike.
-	// Empty for a task that carries none, which no send asks about.
+	// exactly what its text names: no writer keeps one beside a text it did not render with it. No
+	// sentence the machine adds to a prompt is written into it: those are composed at each send
+	// from the claim (message), after the render, so no render drops them. Empty for a task that
+	// carries none, which no send asks about.
 	News []byte
 	// Carried is the copy of News that the prompt whose turn this delivery's confirmation takes
 	// carried, and, while the delivery is confirmed, its credit: what its audiences are read as
@@ -270,16 +270,18 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 	return d.Generation < generation || (d.Generation == generation && d.Entry < entry)
 }
 
-// sentences is which of the claim's two untold records a prompt carries the sentence of: the
-// session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
-// process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
+// sentences is which of the claim's three untold records a prompt carries the sentence of: the
+// session the claim abandoned (AbandonedSession, abandonedTask), what the last let-go of its
+// process ended (EndedWork, relaunchSentence), and the commits a stale working copy's update left
+// the edits in (LeftEdits, staleEditsSentence). Delivery.message answers it beside the prompt it
 // composes, so what a prompt is marked as telling is what its text holds (Machine.carried, which
 // confirmCarrying reads).
-type sentences struct{ abandoned, ended bool }
+type sentences struct{ abandoned, ended, leftEdits bool }
 
-// message is the prompt a delivery is sent as, and which of the claim's two untold records it
+// message is the prompt a delivery is sent as, and which of the claim's three untold records it
 // tells (sentences): its task, behind the sentences the claim's state gives it that say what
-// became of the agent's earlier work, and then the provider's. In order:
+// became of the agent's earlier work, and then the provider's, and after it the sentence that says
+// where a stale working copy's update left the edits. In order:
 //
 //   - The first task the agent that replaced an abandoned session is given names that session
 //     (abandonedTask), and says that everything of the old session is gone. A record that still
@@ -308,6 +310,15 @@ type sentences struct{ abandoned, ended bool }
 //     (interruptedTask): the let-go that took it back, whichever path that was, rather than the
 //     last death's words. With an abandoned session still to tell, that turn was the old
 //     session's, and the abandoned session's sentence stands in its place (the first item).
+//   - While the claim's record of the commits a stale working copy's update left the edits in is
+//     untold (LeftEdits.Tells), every prompt carries that record's sentence after its text
+//     (staleEditsSentence, withStaleEdits): the task whose adoption left the edits, and whatever
+//     the claim is given after it — a phase task, a task of news alone, an operator's task, the
+//     daemon's own delivery of a relaunch's record — so a role whose task is dropped or replaced
+//     before any prompt of it reaches the agent is told in the next one it takes. It is composed
+//     here from the claim at every send, after the render of the task's news (currentNews), so no
+//     render drops it. A reviewer's task keeps the two sentences of its review round last, as
+//     below.
 //
 // Composing a prompt tells nothing (confirmCarrying).
 //
@@ -323,7 +334,8 @@ type sentences struct{ abandoned, ended bool }
 // The abandoned session's sentence, the out-of-memory note and the provider's go in front of that
 // text as they go in front of a task, the abandoned session's without the task's instruction,
 // since there is no task to continue (abandonedTask); the record's sentence does not, because it
-// is the text.
+// is the text. The sentence of the commits a stale working copy's update left the edits in
+// follows it, as it follows a task.
 //
 // A task of the reviewer ends with the daemon's two sentences of its review round, the last two
 // of each task the reviewer is sent (reviewround.Sentences), and this is the one place each
@@ -346,6 +358,9 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	relaunch := d.Relaunch()
 	if relaunch && c.EndedWork.Tells() {
 		text, carried.ended = RelaunchSentence(c.EndedWork), true
+	}
+	if c.LeftEdits.Tells() {
+		text, carried.leftEdits = withStaleEdits(text, !relaunch && d.RoundNamed, c.LeftEdits.Commits), true
 	}
 	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
 		text += reviewround.Sentences("", 0)
@@ -1218,9 +1233,10 @@ func renderedID(was string, news, held []byte) string {
 // for when to rewrite and when to retire. Its callers render the task's text and its news
 // together, so news is always what task names. The write comes first, so a restart reads the task
 // the send that follows carries, and a failed write leaves memory as the record holds it. The one
-// other rewrite of a held task, leftEdits', runs in the other order, memory first and a failed
-// write settled later: it runs once the send is under way, and the commits it names are named by
-// that one adoption alone, so memory must keep them whether the write holds or not.
+// other rewrite of a held task, leftEdits' new id, runs in the other order, memory first and a
+// failed write settled later: it runs once the send is under way, and the commits it records on
+// the claim are named by that one adoption alone, so memory must keep them whether the write
+// holds or not.
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
@@ -1698,8 +1714,8 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // no send of a worker's task, the first or any resend after a busy answer, a lost answer or a
 // relaunch, goes out with the line its start was composed with. The task is marked as put to the
 // agent before the goroutine starts (Delivery.Prompted), whatever the agent then answers: from
-// here on, a prompt of it has gone out. Of the claim's two untold records, this marks which the
-// prompt carries the sentence of, as message composed it (Machine.carried), and tells neither, as
+// here on, a prompt of it has gone out. Of the claim's three untold records, this marks which the
+// prompt carries the sentence of, as message composed it (Machine.carried), and tells none, as
 // confirmCarrying states. Whether the send adopts the working copy first is decided here, under
 // the machine's lock, so the goroutine acts on the claim the hold in sendPending was decided
 // against.
@@ -1715,11 +1731,12 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // The prompt's text is fixed here, before the adoption runs, and an adoption that brought a stale
 // working copy up to date can answer commits in which the update left the edits that no jj
 // command had recorded (runtime.Adoption). Such a send does not prompt with the text fixed here:
-// the goroutine hands the commits to the machine first (leftEdits), which writes them into the
-// pending task under a new id, and the send goes on with that task, so the prompt the agent gets
-// names them. A refusal that names commits is recorded on the task the same way before the
-// refusal's own handling, so the next send carries them, though its own adoption, of a working
-// copy that is up to date by then, names none.
+// the goroutine hands the commits to the machine first (leftEdits), which records them on the
+// claim (LeftEdits) and moves the pending task to a new id, and the send goes on with that task,
+// composed again, so the prompt the agent gets names them. A refusal that names commits is
+// recorded on the claim the same way before the refusal's own handling, so the next prompt the
+// claim sends carries them, though its own adoption, of a working copy that is up to date by
+// then, names none: that task's own, or whichever task the claim holds next.
 func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 	if err := m.currentWorkingCopy(ctx); err != nil {
 		return err
@@ -1927,53 +1944,102 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 	return adoption.EditsCommits, nil
 }
 
-// leftEdits writes into the pending task the commits in which the adoption of send, bringing a
-// stale working copy up to date, left the edits that no jj command had recorded, which are no
-// longer on disk (staleEditsSentence), and answers the delivery and the prompt send goes on with:
-// the rewritten task, under a new id, and its prompt (compose). The sentence is the task's own
-// text from here on, so every later send of the task carries it — after a refusal, a busy answer
-// or a daemon restart — where the adoption of each, of a working copy that is up to date by then,
-// names no commit. A task that carries news of the approved design is rendered
-// anew at each later send from the start's own text its news holds (Deps.DesignNews), so the
-// sentence is written there too (Deps.NewsTask) and stored with the task in the same write: this
-// send names the commits at the task's end, and each later one after the start's own text, before
-// the news. News the daemon cannot write again is logged and left as it was: this send still
-// names the commits, and a later send of the task, whose render reads that news, does not. The
-// new id keeps the shim's dedupe by id (shimwire's Dedupe) from answering the new text from its
-// record of the old, and send takes it, so the outcome send posts is the pending task's
-// (fenceOutcome). The task is written as memory holds it, and a write that failed is written again
-// before the next decision (saved, settle): the commits are named once, by this adoption, and a
-// write that waited for the store to take it would lose them.
+// LeftEdits is the claim's record of the commits in which the adoption's update of a stale
+// working copy (`jj workspace update-stale`) left the edits that no jj command had recorded, which
+// are no longer on disk (runtime.Adoption, dispatch://INFRA-3916 R1). The role is told in a
+// prompt: the sentence staleEditsSentence composes from the record, after the text of every
+// prompt the claim is sent while the record tells (Delivery.message), and marked told at the
+// confirmation of a prompt that carried it (confirmCarrying). It is the claim's and not the task's
+// because the task the adoption was made for can be dropped or replaced before any prompt of it
+// reaches the agent — its phase moved on, a stop retired it, a newer entry took its place — and
+// the role is still owed where its edits are, in the next task it takes. It is written where a
+// send's adoption names the commits (leftEdits) and persisted on the claim's row (the store's
+// left_edits), since that next task can be a relaunch and a daemon restart away.
+//
+// The zero value is a claim no adoption left edits for: Commits is empty.
+type LeftEdits struct {
+	// Commits are the commits that hold the edits, in the order the adoptions named them, each
+	// once.
+	Commits []string `json:"commits"`
+	// At is when the last adoption that named commits answered, by the machine's clock, and
+	// Delivery the id of the task that adoption was made for, as its send carried it.
+	At       time.Time `json:"at"`
+	Delivery string    `json:"delivery"`
+	// Told is whether a turn has taken a prompt that carried the record's sentence, and ToldBy
+	// the delivery whose confirmation told it, as confirmCarrying states. A confirmation taken
+	// back takes the telling back with it (moveTelling).
+	Told   bool   `json:"told,omitempty"`
+	ToldBy string `json:"toldBy,omitempty"`
+}
+
+// Tells is whether the next prompt to this claim's agent must still carry the record: an adoption
+// left edits in a commit and no turn has confirmed a prompt that carried its sentence.
+func (l LeftEdits) Tells() bool { return len(l.Commits) > 0 && !l.Told }
+
+// with is the record once the adoption of the task delivery, answering at at, has left the edits
+// in commits: those commits after the ones l still tells, each once, since what an earlier
+// adoption left is still true and still untold; and in place of a record already told, whose
+// commits the agent has read.
+func (l LeftEdits) with(commits []string, delivery string, at time.Time) LeftEdits {
+	var held []string
+	if l.Tells() {
+		held = slices.Clone(l.Commits)
+	}
+	for _, commit := range commits {
+		if !slices.Contains(held, commit) {
+			held = append(held, commit)
+		}
+	}
+	return LeftEdits{Commits: held, At: at, Delivery: delivery}
+}
+
+// leftEdits records on the claim the commits in which the adoption of send, bringing a stale
+// working copy up to date, left the edits that no jj command had recorded, which are no longer on
+// disk (LeftEdits), and answers the delivery and the prompt send goes on with: the pending task
+// under a new id, and its prompt composed again (compose), which carries the record's sentence
+// (staleEditsSentence, Delivery.message). The sentence is the claim's from here on and not the
+// task's: every prompt the claim is sent carries it until a turn takes one that did
+// (confirmCarrying). That is every later send of this task — after a refusal, a busy answer or a
+// daemon restart — where the adoption of each, of a working copy that is up to date by then,
+// names no commit; and, where this task is dropped or replaced before a prompt of it reaches the
+// agent, the next task the claim is given. It is composed at each send after the render of the
+// task's news (currentNews), so no render drops it. The new id keeps the shim's dedupe by id
+// (shimwire's Dedupe) from answering the new text from its record of the old, and send takes it,
+// so the outcome send posts is the pending task's (fenceOutcome).
+//
+// A record still untold keeps its commits and takes these after them (LeftEdits.with). No prompt
+// sent before carried these words, so the mark of such a prompt goes (Machine.carried), as
+// recordEnd's does for a record of its own, and only a prompt composed from here on tells the
+// record. The claim and the task are written as memory holds them, and a write that failed is
+// written again at the next decision (saved, owes): the commits are named once, by this
+// adoption, and a write that waited for the store to take it would lose them.
 //
 // It is a decision of the send's goroutine, made under the machine's lock and ended by unlock as
-// every decision is, on the one condition that send is still the pending task's: no outcome has
-// ended it and the task it was made for is still pending at the generation it was made at. A send
-// that is not goes on as it was (ok false), and its outcome is fenced as ever; the commits are
-// logged, so the log still names them.
+// every decision is. The record is the claim's whatever became of the send. The task moves to a
+// new id only on the one condition that send is still the pending task's: no outcome has ended
+// it and the task it was made for is still pending at the generation it was made at. A send that
+// is not goes on as it was (ok false), and its outcome is fenced as ever; the claim is written
+// with its record, and the next prompt it is sent names the commits.
 func (m *Machine) leftEdits(ctx context.Context, send *sending, commits []string) (next Delivery, prompt string, ok bool) {
 	m.mu.Lock()
 	defer m.unlock()
+	m.claim.LeftEdits = m.claim.LeftEdits.with(commits, send.id, m.deps.Clock.Now())
+	m.carried.leftEdits = false
 	p := m.claim.Pending
 	if m.send != send || p == nil || p.ID != send.id || send.generation != m.claim.Generation {
-		m.log.Warn("supervise: the adoption left the edits no jj command had recorded in a commit, and the task it was made for is no longer this send's; no task names the commit",
+		if err := m.persist(ctx); err != nil {
+			m.log.Warn("supervise: the claim that records the commits the adoption left the edits in was not written",
+				"error", err)
+		}
+		m.log.Warn("supervise: the adoption left the edits no jj command had recorded in a commit, and the task it was made for is no longer this send's; the claim's next prompt names the commit",
 			"delivery", send.id, "pending", pendingID(p), "editsCommits", commits)
 		return Delivery{}, "", false
 	}
-	naming := func(task string) string { return withStaleEdits(task, p.RoundNamed, commits) }
 	next = *p
-	next.ID, next.Task = rotateTaskID(p.ID), naming(p.Task)
-	if len(p.News) > 0 && m.deps.NewsTask != nil {
-		news, err := m.deps.NewsTask(m.claim, p.News, naming)
-		if err != nil {
-			m.log.Warn("supervise: the news the task carries could not be written with the commits the adoption left the edits in; this send names them, and a later send, whose text is rendered from that news, does not",
-				"delivery", next.ID, "editsCommits", commits, "error", err)
-		} else {
-			next.News = news
-		}
-	}
+	next.ID = rotateTaskID(p.ID)
 	*m.claim.Pending = next
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
-		m.log.Warn("supervise: the task that names the commits the adoption left the edits in was not written; settle writes it again",
+	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx))); err != nil {
+		m.log.Warn("supervise: the claim that records the commits the adoption left the edits in, and its task under a new id, were not written; they are written again at the next decision",
 			"delivery", next.ID, "error", err)
 	}
 	was := send.id
@@ -1992,15 +2058,15 @@ func (m *Machine) compose(d Delivery) string {
 	prompt, carried := d.message(m.claim)
 	m.carried.abandoned = m.carried.abandoned || carried.abandoned
 	m.carried.ended = m.carried.ended || carried.ended
+	m.carried.leftEdits = m.carried.leftEdits || carried.leftEdits
 	return prompt
 }
 
 // withStaleEdits is task with the sentence that names the commits a stale working copy's update
 // left the edits in (staleEditsSentence), a blank line before it where the task says anything. It
-// goes at the task's end, except before the two sentences of a reviewer's review round where the
-// task ends with them (roundNamed, Delivery.RoundNamed), which stay the last two of each task the
-// reviewer is sent (reviewround). The same holds of the start's own text a task's news carries,
-// which ends with those two sentences where the task does.
+// goes at the task's end, after any news the task's text renders, except before the two sentences
+// of a reviewer's review round where the task ends with them (roundNamed, Delivery.RoundNamed),
+// which stay the last two of each task the reviewer is sent (reviewround).
 func withStaleEdits(task string, roundNamed bool, commits []string) string {
 	body, round := task, ""
 	if roundNamed {
@@ -2050,15 +2116,16 @@ func staleEditsSentence(commits []string) string {
 // the delivery when the turn ends, and the handshake is what keeps when the worker took that
 // entry's work. The same write carries it, since the claim is half of it.
 //
-// This is also where the claim's two records of what became of the agent's earlier work — the
-// session the claim abandoned (AbandonedSession) and what the last let-go of its process ended
-// (EndedWork) — become told, and it is the rule every other mention of their telling points to.
+// This is also where the claim's three records of what became of the agent's earlier work — the
+// session the claim abandoned (AbandonedSession), what the last let-go of its process ended
+// (EndedWork), and the commits a stale working copy's update left the edits in (LeftEdits) —
+// become told, and it is the rule every other mention of their telling points to.
 // A record is told at the confirmation of a prompt that carried its sentence to this process
 // (Delivery.message, Machine.carried), since the turn starting is the agent reading that prompt,
 // and it records the delivery whose confirmation told it (ToldBy). A confirmation later taken
 // back takes that telling back with it, so the next prompt carries the sentence again
 // (moveTelling); one a let-go takes back once the prompt's result has come keeps it
-// (interrupted). Neither is marked at the prompt's acknowledgement (acked): the pinned Oh My Pi
+// (interrupted). None is marked at the prompt's acknowledgement (acked): the pinned Oh My Pi
 // acknowledges a prompt at its admission and can then answer it busy, and a sentence marked told
 // there would never reach the agent, since the prompt sent after the busy answer would carry none.
 // A turn whose prompt carried no sentence — one sent before the record was written, or one an
@@ -2066,8 +2133,8 @@ func staleEditsSentence(commits []string) string {
 // carries the sentence again: told twice, never not at all. So it goes where a let-go cuts off a
 // turn that confirmed the task while the send of its prompt was still in flight or a prompt of the
 // task still waited on its result: that turn may have been another input's, so the let-go takes
-// the telling back (untellInFlight). Both records are the claim's fields, so they go in the same
-// write as the confirmation, and a restart reads both or neither. The one record told anywhere
+// the telling back (untellInFlight). The records are the claim's fields, so they go in the same
+// write as the confirmation, and a restart reads all of them or none. The one record told anywhere
 // else is the old session's record of a let-go, which the abandonment of that session ends by no
 // delivery (forgetSession, where that rule is written).
 //
@@ -2097,6 +2164,11 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 		e.Told, e.ToldBy = true, p.ID
 		m.log.Info("supervise: a turn took the prompt that told the agent what its relaunch ended",
 			"delivery", p.ID, "cause", e.Cause, "ended", e.Generation)
+	}
+	if l := &m.claim.LeftEdits; m.carried.leftEdits && l.Tells() {
+		l.Told, l.ToldBy = true, p.ID
+		m.log.Info("supervise: a turn took the prompt that told the agent where a stale working copy's update left its edits",
+			"delivery", p.ID, "editsCommits", l.Commits)
 	}
 	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx))); err != nil {
 		return err
@@ -2773,7 +2845,7 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 
 // moveTelling hands what the confirmation of delivery from told (confirmCarrying) to to, the id
 // that confirmation stands under from here on, and reports whether any record had a telling to
-// hand: each of the claim's two records whose ToldBy is from names to instead. to "" is the
+// hand: each of the claim's three records whose ToldBy is from names to instead. to "" is the
 // confirmation taken back, which tells nothing any more, so such a record goes back to untold and
 // the next prompt carries its sentence again. Its callers:
 //
@@ -2801,6 +2873,9 @@ func (m *Machine) moveTelling(from, to string) bool {
 	}
 	if e := &m.claim.EndedWork; e.Told && e.ToldBy == from {
 		e.Told, e.ToldBy, moved = to != "", to, true
+	}
+	if l := &m.claim.LeftEdits; l.Told && l.ToldBy == from {
+		l.Told, l.ToldBy, moved = to != "", to, true
 	}
 	if moved && to == "" {
 		m.log.Info("supervise: the confirmation of the prompt that told the agent what became of its earlier work was taken back; the next prompt tells it again",

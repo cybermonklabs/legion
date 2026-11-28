@@ -17,12 +17,13 @@ import (
 
 // A phase task that carries news of the approved design is rendered anew at every send from the
 // start's own text its news holds (designNews, renderNews), not from the text the delivery held.
-// So the commit in which the adoption's update of a stale working copy left the edits that no jj
-// command had recorded, which the machine writes into the task once, after that adoption, is
-// written into that copy too (supervise's Deps.NewsTask, newsTask): the reviewer's phase task,
-// carrying the news of version 5, is sent naming the commit, its prompt is refused, and the next
-// send of the same task, whose adoption names no commit and whose text the render writes again,
-// still names it, with the news, and the two sentences of the reviewer's round still last.
+// The commit in which the adoption's update of a stale working copy left the edits that no jj
+// command had recorded is recorded on the claim after that adoption (supervise's LeftEdits), and
+// the sentence that names it is composed into every prompt from that record, after the render
+// (supervise's Delivery.message): the reviewer's phase task, carrying the news of version 5, is
+// sent naming the commit, its prompt is refused, and the next send of the same task, whose
+// adoption names no commit and whose text the render writes again, still names it, with the
+// news, and the two sentences of the reviewer's round still last.
 func TestAStaleAdoptionsCommitStaysInEverySendOfATaskThatCarriesNews(t *testing.T) {
 	t.Parallel()
 	const commit = "c45ff7e33d4899a2b99db849241fe128115021b0"
@@ -106,7 +107,7 @@ func TestAStaleAdoptionsCommitStaysInEverySendOfATaskThatCarriesNews(t *testing.
 		t.Fatalf("the reviewer's prompts after the refused one = %+v, want the task sent again, once", again)
 	}
 	says("at the send after the refused one", again[0].Message)
-	if held := reviewer.Claim().Pending; held == nil || !strings.Contains(pendingNewsOf(t, reviewer).Task, commit) {
-		t.Fatalf("the reviewer holds %+v, want the news it carries to name %s in the start's own text", held, commit)
+	if left := reviewer.Claim().LeftEdits; !left.Tells() || len(left.Commits) != 1 || left.Commits[0] != commit {
+		t.Fatalf("the reviewer's claim records %+v, want %s untold: no turn has taken a prompt that named it", left, commit)
 	}
 }
