@@ -183,27 +183,43 @@ func isClosed(ch <-chan struct{}) bool {
 
 // settleWithin settles room's current generation and fails the test if the settlement has not
 // returned within roomWait, naming the goroutine parked in ygo's persistence hand-off, the one a
-// commit that waits on the worker parks in. unwind breaks the cycle so the test binary is not held
-// by it.
+// commit that waits on the worker parks in. The settlement runs on the test's goroutine, because
+// it and the hooks it calls fail the test with t.Fatal, which ends only the goroutine it runs on. A
+// watchdog on a goroutine of its own reads the parked stack once roomWait has passed and calls
+// unwind, which breaks the cycle so the settlement returns and the test binary is not held by it.
+// The watchdog calls no t.Fatal, and settleWithin waits for it to end before it returns or fails.
 func settleWithin(t *testing.T, service *Service, room string, unwind func()) {
 	t.Helper()
-	done := make(chan struct{})
+	wait := roomWait(t)
+	settled := make(chan struct{})
+	watched := make(chan struct{})
+	// Written by the watchdog alone, and read only once it has ended (watched).
+	fired := false
+	var parked string
 	go func() {
-		defer close(done)
+		defer close(watched)
+		select {
+		case <-settled:
+			return
+		case <-time.After(wait):
+		}
+		fired = true
+		for _, stack := range goroutinetest.Traces() {
+			if strings.Contains(stack, "provider/websocket.(*Server).loadRoom") && strings.Contains(stack, "settle") {
+				parked = stack
+			}
+		}
+		unwind()
+	}()
+	func() {
+		// Deferred, so a settlement that fails the test still ends the watchdog before the test ends.
+		defer func() {
+			close(settled)
+			<-watched
+		}()
 		settleCurrentGeneration(t, service, room)
 	}()
-	select {
-	case <-done:
-		return
-	case <-time.After(roomWait(t)):
+	if fired {
+		t.Fatalf("the settlement did not return within %s: a commit into the room waited on its persistence worker\n%s", wait, parked)
 	}
-	var parked string
-	for _, stack := range goroutinetest.Traces() {
-		if strings.Contains(stack, "provider/websocket.(*Server).loadRoom") && strings.Contains(stack, "settle") {
-			parked = stack
-		}
-	}
-	unwind()
-	testwait.Receive(t, "the settlement once the cycle was broken", done)
-	t.Fatalf("the settlement did not return within %s: a commit into the room waited on its persistence worker\n%s", roomWait(t), parked)
 }

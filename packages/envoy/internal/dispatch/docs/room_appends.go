@@ -19,8 +19,10 @@ import (
 
 // A room's browser updates reach the store through ygo's per-room persistence worker, which calls
 // StoreUpdateContext once per update, in order (PersistCoalesceWindow = -1 keeps one call, and one
-// stored row, per update), and returns from a flush - a CloseRoom, the idle sweep, Shutdown - only
-// once every update it buffered has had its call return. A person typing makes an update every
+// stored row, per update). The flush of a CloseRoom or of the idle sweep returns once every update
+// committed before it began has had its call return; an update committed after it began can reach
+// StoreUpdateContext after CloseRoom has returned, from the room's feeder (ygo's persistStranded).
+// Shutdown returns once every update's call has returned. A person typing makes an update every
 // keystroke or so. Stored in a transaction each, on a connection of the shared request pool, every
 // keystroke cost the API a connection and about ten round trips under the document's lock. The
 // room's queued updates are stored together instead, which is what this file does.
@@ -45,7 +47,8 @@ import (
 //
 //   - Durable on return. A call returns nil only once its update is committed: by its own
 //     transaction, or by another writer's that stored it first and marked its class stored
-//     (RoomFlush.markStored). ygo's flush still means every update it held is durable.
+//     (RoomFlush.markStored). A flush of ygo's still means every update it covers, each one
+//     committed before the flush began, is durable.
 //   - Stored once. No class is stored by two transactions. A class is stored only by a transaction
 //     that holds the document's advisory lock and finds it, under the room's state lock, still
 //     queued and not stored (Service.flushRun), and every such transaction marks what it
