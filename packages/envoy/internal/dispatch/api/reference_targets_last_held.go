@@ -137,8 +137,8 @@ var lastHeldBlocksStatement = `
 			select parent.to_kind, parent.to_id, child.kind, child.id
 			from placed child
 			cross join lateral (` + refs.AsOfPlacement("child.kind", "child.id", lastHeldCut) + `) parent
-			-- The climb ends at a comment or a message. The part_of log alone does not prove
-			-- that the walk's conversation held it at this cut; the item's row does (below).
+			-- The climb ends at a comment or a message, or a block of one. The part_of log alone does
+			-- not prove that the walk's conversation held it at this cut; the item's row does (below).
 			where child.kind not in ('issue', 'comment', 'comment_block', 'message', 'message_block')
 			  and ` + refs.TreeOwnsSQL("block.issue_key", "child.kind", "child.id") + `
 			  and (` + refs.AsOfValue("child.kind", "child.id", graphstore.AttributeState, lastHeldCut, false) + `) is distinct from $4
@@ -159,12 +159,29 @@ var lastHeldBlocksStatement = `
 		join messages item on item.id = ` + store.CastableUUID("item_root.id") + `
 		where item_root.kind = '` + graphstore.KindMessage + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
 		union all
-		-- A block placed directly under an ancestor's block is also a root of the
-		-- second half of WalkIssueTree (TreePlacedAbove). Prove its membership at the cut.
+		-- A block of such a comment or message is a root of the walk as well: readConversation
+		-- puts each current block of an item of the conversation in the frontier. The item's table
+		-- of blocks names the block's item by the block's address; read the item's row through it.
+		select 1 from placed item_root
+		join comment_blocks own on own.node_id = item_root.id
+		join comments item on item.id = own.comment_id
+		where item_root.kind = '` + refs.ItemComment.BlockKind() + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
+		union all
+		select 1 from placed item_root
+		join message_blocks own on own.node_id = item_root.id
+		join messages item on item.id = own.message_id
+		where item_root.kind = '` + refs.ItemMessage.BlockKind() + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
+		union all
+		-- A block placed directly under an ancestor's block, or under an ancestor's ask, comment
+		-- or message or a block of one (refs.ItemOfIssuesSQL), is also a root of the second half
+		-- of WalkIssueTree (TreePlacedAbove). Prove its membership at the cut.
 		select 1 from placed foreign_parent
 		join spec_chain ancestor on ancestor.subject = block.issue_key and ancestor.depth > 0
-		  and ancestor.key = split_part(foreign_parent.id, '/', 1)
-		where foreign_parent.kind = '` + refs.BlockNodeKind + `' and foreign_parent.child_kind = '` + refs.BlockNodeKind + `'
+		where foreign_parent.child_kind = '` + refs.BlockNodeKind + `'
+		  and (foreign_parent.kind = '` + refs.BlockNodeKind + `' and ancestor.key = split_part(foreign_parent.id, '/', 1)
+		    or ` + refs.ItemOfIssuesSQL(refs.ItemAsk, "asks", "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `
+		    or ` + refs.ItemOfIssuesSQL(refs.ItemComment, "comments", "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `
+		    or ` + refs.ItemOfIssuesSQL(refs.ItemMessage, "messages", "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `)
 		  and exists (
 		      select 1 from artifacts d
 		      cross join lateral (` + refs.AsOfPlacement(`'`+graphstore.KindArtifact+`'`, "d.ref_key", lastHeldCut) + `) top
