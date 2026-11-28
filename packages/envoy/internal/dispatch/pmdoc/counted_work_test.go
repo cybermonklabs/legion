@@ -408,6 +408,10 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 		t.Log(countedHelperRan + op.String() + ": " + call().String())
 		return
 	}
+	if mode == "census" {
+		writeCensus(t)
+		return
+	}
 	operationDir, combinedDir := os.Getenv(countedOEnv), os.Getenv(countedPOEnv)
 	if mode == "none" {
 		writeCountedSnapshot(t, operationDir)
@@ -415,7 +419,7 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 		return
 	}
 	if mode != "count" && mode != "plain" {
-		t.Fatalf("%s = %q, want count, plain, or none", countedModeEnv, mode)
+		t.Fatalf("%s = %q, want count, plain, none, or census", countedModeEnv, mode)
 	}
 	row, shape, operation := os.Getenv(countedRowEnv), os.Getenv(countedShapeEnv), os.Getenv(countedOpEnv)
 	shapes, ok := countedRows[row]
