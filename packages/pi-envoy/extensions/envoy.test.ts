@@ -88,6 +88,7 @@ import {
   onEnvoyRoleRegained,
   refusedForRoleNotHeld,
   subscribeLegionNotice,
+  unsubscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
 import { testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
@@ -7270,6 +7271,100 @@ console.log(JSON.stringify(args));
     const left = await followedTopics(fixture.tools, context);
     expect(left).not.toContain(lane);
     expect(left).not.toContain(mention);
+  });
+
+  // A Legion controller whose later registration names another list of watched workflows closes,
+  // through the bridge, each of its watched default-branch topics the new list leaves out
+  // (pi-legion's watched-workflows.ts). pi-envoy closes that one subscription the role owns as the
+  // role's end closes them all: the session follows it no more, the listener's row loses it (a
+  // registration only ever adds to the row), and no later registration carries it. The role and
+  // its other topics stay. A topic the session does not follow as the role's changes nothing and
+  // says nothing: one it closed already, and one it follows as its own.
+  test("an unsubscription through the bridge closes one of the role's watched default-branch topics: the listener's row loses it, the next registration leaves it out, and the role's other topic stays", async () => {
+    const role = "legion-acme-controller";
+    const session = "ses_watched_unsubscribe";
+    const dropped = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "schedule"
+    );
+    const kept = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "release.yml",
+      "completed",
+      "push"
+    );
+    const own = "notifications.github.acme.widgets.issue.7.>";
+    // The topics of every registration, in order, and of every removal from the registry.
+    const registrations: string[][] = [];
+    const unregistered: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        registrations.push(Array.isArray(body?.topics) ? body.topics : []);
+      }
+      if (url.pathname === "/v1/interests/unsubscribe") {
+        unregistered.push(Array.isArray(body?.topics) ? body.topics : []);
+        return response({});
+      }
+      if (url.pathname === "/v1/roles/set") {
+        return response({
+          session_id: session,
+          machine_id: "test",
+          dir: "/tmp/envoy-omp-test",
+          topics: [`notifications.role.${role}`],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    // A fresh module per row, as every row here loads one: the entry keeps its state in module
+    // scope.
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?watched-unsubscribe");
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const notified: string[] = [];
+    const base = sessionContext(session);
+    const context = { ...base, ui: { ...base.ui, notify: (text: string) => notified.push(text) } };
+    await fixture.handlers.get("session_start")?.({}, context);
+    await claimEnvoyRole(session, role, context);
+    await subscribeLegionNotice(session, dropped, context, role);
+    await subscribeLegionNotice(session, kept, context, role);
+    expect(registrations.at(-1)).toEqual(expect.arrayContaining([dropped, kept]));
+
+    await unsubscribeLegionNotice(session, dropped, context);
+
+    expect(unregistered).toEqual([[dropped]]);
+    const left = await followedTopics(fixture.tools, context);
+    expect(left).not.toContain(dropped);
+    expect(left).toContain(kept);
+    // The controller's next claim of the role registers the session again first: that
+    // registration, and every one after it, leaves the closed topic out and keeps the other.
+    const before = registrations.length;
+    await claimEnvoyRole(session, role, context);
+    expect(registrations.length).toBeGreaterThan(before);
+    for (const topics of registrations.slice(before)) {
+      expect(topics).not.toContain(dropped);
+      expect(topics).toContain(kept);
+    }
+
+    // Neither a topic closed already nor one the session follows as its own is the role's to
+    // close: nothing leaves the registry, the own topic stays followed, and nothing is said.
+    const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
+    await subscribe.execute("", { topics: [own] });
+    const said = notified.length + fixture.messages.length;
+    await unsubscribeLegionNotice(session, dropped, context);
+    await unsubscribeLegionNotice(session, own, context);
+
+    expect(unregistered).toEqual([[dropped]]);
+    expect(await followedTopics(fixture.tools, context)).toEqual(
+      expect.arrayContaining([kept, own])
+    );
+    expect(notified.length + fixture.messages.length).toBe(said);
   });
 
   test("a session that holds no controller role registers no controller notice lane", async () => {

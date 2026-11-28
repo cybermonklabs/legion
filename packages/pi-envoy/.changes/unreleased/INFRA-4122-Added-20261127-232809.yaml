@@ -9,7 +9,12 @@ body: |-
   edge listener that cannot read the project's repositories refuse the role claim and every other
   topic. A Legion plugin's subscription that lasts while the session holds a role, asked while it
   does not hold that role, is refused with `RoleNotHeldError`, which the Legion plugin reads by its
-  name. The log line of a failed removal now names the resumed controller's retired role-owned
+  name. The plugin interface carries a member that unsubscribes one such role-bound topic of a
+  session (`unsubscribe`, which pi-legion reaches through `unsubscribeLegionNotice`), and pi-envoy
+  carries it out as the role's end closes its topics: the session follows that topic no more, the
+  listener's interest row loses it, and no later registration carries it, while the role and its
+  other topics stay; a topic the session does not follow as the role's changes nothing and says
+  nothing. The log line of a failed removal now names the resumed controller's retired role-owned
   topics. Plugin interface version 7, which pi-envoy reads; install it with the
   `@sjawhar/pi-legion` released beside it.
 time: 2026-11-27T23:28:09Z

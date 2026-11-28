@@ -77,10 +77,11 @@ const daemon = createLegionDaemonClient("http://daemon.test", {
   }) as typeof fetch,
 });
 
-// Envoy's one bound instance: every role claim and notice subscription lands.
+// Envoy's one bound instance: every role claim, notice subscription and unsubscription lands.
 legionRoleClaimBridge().instances.push({
   claim: async () => undefined,
   subscribe: async () => undefined,
+  unsubscribe: async () => undefined,
   sessionID: () => SESSION,
 });
 

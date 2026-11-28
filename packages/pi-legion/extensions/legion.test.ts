@@ -7145,6 +7145,50 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       expect(watchedAmong(await followedTopics(resumedProcess, resumedContext))).toEqual([pushed]);
     });
 
+    // A later claim in the same process and the same session, here `/legion-claim-controller`
+    // typed in the daemon's controller, whose registration names another list: through the real
+    // Envoy plugin, the topic the new list leaves out leaves the listener's row and what the
+    // session follows, the topic it adds is registered, and the topic both lists name stays.
+    test("watched workflows: a later claim of the same session whose registration names another list unregisters the topic it leaves out and registers the one it adds", async () => {
+      const session = "ses_controller_watched_relisted";
+      let typed = false;
+      const controller: LaunchedController = await daemonController(session, "", {
+        watchedWorkflows: [nightly],
+        register: () =>
+          typed
+            ? Response.json({
+                ...controller.registration,
+                watchedWorkflows: [{ ...nightly, events: ["schedule"] }, release],
+              })
+            : undefined,
+      });
+      const context = controller.context(session);
+      await controller.handlers.get("session_start")?.({}, context);
+      await until("the first claim's watched registration", () =>
+        registeredTopics(controller.requests, session).includes(dispatched)
+      );
+
+      typed = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined)
+        throw new Error("controller claim command was not registered");
+      await claimCommand.handler("", commandContext(context));
+      await until("the later claim's watched registration", () =>
+        registeredTopics(controller.requests, session).includes(pushed)
+      );
+
+      expect(controller.exits).toEqual([]);
+      expect(controller.holder()).toBe(session);
+      expect(unregisteredTopics(controller.requests, session)).toEqual([[dispatched]]);
+      const registered = registeredTopics(controller.requests, session);
+      expect(watchedAmong(registered)).toEqual([scheduled, pushed]);
+      expect(registered).toContain(lane);
+      expect(watchedAmong(await followedTopics(controller, context))).toEqual([scheduled, pushed]);
+      expect(toldWatched(controller)).toEqual([]);
+    });
+
     test("watched workflows: a topic the edge refuses 403 repository_not_in_project is dropped and named to the session, and the notice and Slack topics stay", async () => {
       let refusals = 0;
       const controller = await daemonController("ses_controller_watched_refused", "C00000000", {

@@ -763,8 +763,11 @@ What each part is for:
   `controller` setting, and the controller's prompt names each entry with its events.
   Under the sandbox runtime a daemon restarted with another list relaunches its controller into
   its session, and the relaunched controller hears the new list.
-  Under the tmux runtime, and under `legion controller start`, the controller takes a changed list
-  at its next launch.
+  Under the tmux runtime, and under `legion controller start`, the controller's prompt, and so
+  the read of each entry's newest run at its start, takes a changed list at its next launch.
+  A later claim of a running controller, after a `/new`, a `/resume` or a typed
+  `/legion-claim-controller`, subscribes the list the daemon names at that claim, and drops each
+  watched topic that list leaves out.
   The loader refuses, naming the key, the entry's place in the list and the entry: an entry of
   another shape; an `@` with no event, or an empty event; a name that is not one of GitHub's
   trigger events, compared with case; an event an entry names twice; and one workflow in two

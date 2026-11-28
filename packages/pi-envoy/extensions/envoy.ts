@@ -200,6 +200,7 @@ import type {
 } from "@legion/pi-shared/pi-types";
 import {
   type LegionNoticeSubscription,
+  type LegionNoticeUnsubscription,
   type LegionRoleClaim,
   type LegionRoleClaimInstance,
   legionRoleClaimBridge,
@@ -5053,9 +5054,35 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
   };
 
+  // Closes one subscription `subscribeNotice` opened for the role this session holds, as the role's
+  // end closes them all (`closeSubjects` above): its subjects leave the role's marks and what the
+  // session follows, each exactly, so no registration carries them again, and leave the listener's
+  // registry, which a registration only ever adds to. A subject the deployment's role topics also
+  // want stays followed, as theirs. A topic this session holds no such subscription of changes
+  // nothing and says nothing, and so does a call once the stop has begun: the stop deletes the
+  // session's record, every topic with it. The listener's refusal of the removal reaches the caller.
+  const unsubscribeNotice: LegionNoticeUnsubscription = async (targetSessionID, topic) => {
+    if (shuttingDown || targetSessionID !== hostSessionID()) return;
+    const marked = new Set(registrationState.pluginRoleSubjects());
+    const closed = expandSubscriptionTopics([topic]).filter((subject) => marked.has(subject));
+    if (closed.length === 0) return;
+    registrationState.unmarkRoleBoundSubjects(closed);
+    const dropped = closed.filter(
+      (subject) => !roleTopicFollows.has(subject) && followed.delete(subject)
+    );
+    const held = registrationState.holdSessionID() ?? "";
+    const id = held === "" ? sessionID : held;
+    if (dropped.length === 0 || id === "") return;
+    await requireEnvoy().client.unsubscribe({ sessionID: id, topics: dropped });
+    // A base the session still follows leaves the row with a closed `X.>` (`takesFollowedBase`),
+    // so the session registers again, as the role's end does.
+    if (takesFollowedBase(dropped) && id === sessionID) await registerSession();
+  };
+
   const claimInstance: LegionRoleClaimInstance = {
     claim,
     subscribe: subscribeNotice,
+    unsubscribe: unsubscribeNotice,
     // The host's id, already moved by the time any session event is dispatched; the module
     // `sessionID` follows only once this instance's own rebind has run.
     sessionID: hostSessionID,

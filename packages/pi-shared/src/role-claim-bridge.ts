@@ -24,7 +24,8 @@ export type LegionRoleClaim = (
  * session holds that role and closes when it stops holding it: another live session takes it, a
  * `new` or `resume` switch leaves it behind, a `/fork`, `/branch`, `/handoff` or tree navigation
  * reclaims the role its transcript records when that is another one, or a claim through this
- * bridge moves the session to another role. The model's `envoy_role_set`
+ * bridge moves the session to another role; the plugin that opened it can also close it alone
+ * (`LegionNoticeUnsubscription`). The model's `envoy_role_set`
  * refuses to move the session off such a role, and its `envoy_unsubscribe` keeps such a
  * subscription open and reports it kept. It is never registered with the listener, so a resumed
  * process gets it back only by claiming the role again.
@@ -34,6 +35,18 @@ export type LegionNoticeSubscription = (
   topic: string,
   context?: SessionContext,
   whileHolding?: string
+) => Promise<void>;
+
+/**
+ * Closes `topic`, a subscription `LegionNoticeSubscription` opened for as long as the session holds
+ * a role (`whileHolding`), as the role's end closes them all: the session follows it no more, no
+ * registration carries it again, and the listener's row loses it. A topic the session does not
+ * follow as such changes nothing and says nothing; the role and every other topic stay.
+ */
+export type LegionNoticeUnsubscription = (
+  sessionID: string,
+  topic: string,
+  context?: SessionContext
 ) => Promise<void>;
 
 /**
@@ -64,6 +77,7 @@ type LegionRoleRegained = (role: string, reason: RoleRegainReason) => Promise<vo
 export type LegionRoleClaimInstance = {
   readonly claim: LegionRoleClaim;
   readonly subscribe: LegionNoticeSubscription;
+  readonly unsubscribe: LegionNoticeUnsubscription;
   readonly sessionID: () => string;
 };
 
@@ -190,6 +204,24 @@ export async function subscribeLegionNotice(
   if (instance === undefined)
     throw new Error("Envoy has no bound instance for a notice subscription");
   await instance.subscribe(sessionID, topic, context, whileHolding);
+}
+
+/**
+ * Closes a subscription `subscribeLegionNotice` opened while this session holds a role, through the
+ * Envoy adapter serving that session (`LegionNoticeUnsubscription`).
+ */
+export async function unsubscribeLegionNotice(
+  sessionID: string,
+  topic: string,
+  context?: SessionContext
+): Promise<void> {
+  const bridge = legionRoleClaimBridge();
+  const instance =
+    bridge.instances.findLast((candidate) => candidate.sessionID() === sessionID) ??
+    bridge.instances.at(-1);
+  if (instance === undefined)
+    throw new Error("Envoy has no bound instance for a notice unsubscription");
+  await instance.unsubscribe(sessionID, topic, context);
 }
 
 /**
