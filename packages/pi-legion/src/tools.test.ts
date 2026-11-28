@@ -2216,36 +2216,42 @@ const TESTER_GRANT = {
 
 // c-tool (dispatch://INFRA-3518): the real handoff_complete operation sends the report's
 // check_opened_at as checkOpenedAt and its look_id as lookId, through the real client, to a
-// daemon that answers with its goldens. The report asks the daemon for the grant and the
-// completion alone, and reads no record and no state, so what it sends does not depend on the
-// issue's phase: it is the same on a done issue and on an issue that runs again, as a child's
-// re-entry leaves it with its check open.
+// daemon that answers with its goldens. That daemon serves LEGION-208's record done, and then
+// running again in implementing with its check still open, as a child's re-entry keeps it. The
+// report asks the daemon for the grant and the completion alone, and reads no record and no
+// state, so the body is the same in both.
 test("a look's report sends check_opened_at and look_id as checkOpenedAt and lookId, on a done issue and on an issue that runs again", async () => {
-  const { posted, daemon } = goldenDaemon({
-    "/legion/v1/grants": "grant.json",
-    "/legion/v1/handoff/complete": "handoff-complete.json",
-  });
-  await expect(
-    testerReport(daemon)({
-      summary: "Look 2: pass.",
-      verdict: "pass",
-      check_opened_at: openCheck.openedAt,
-      look_id: LOOK_ID,
-    })
-  ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
-  expect(posted).toEqual([
-    ["/legion/v1/grants", TESTER_GRANT],
-    [
-      "/legion/v1/handoff/complete",
-      {
-        grantId: "grant-for-one-command",
+  for (const phase of ["done", "implementing"] as const) {
+    const { posted, daemon } = goldenDaemon({
+      "/legion/v1/grants": "grant.json",
+      "/legion/v1/issues/LEGION-208/record": {
+        status: 200,
+        body: { key: "LEGION-208", phase, check: { ...openCheck, role: "tester" } },
+      },
+      "/legion/v1/handoff/complete": "handoff-complete.json",
+    });
+    await expect(
+      testerReport(daemon)({
         summary: "Look 2: pass.",
         verdict: "pass",
-        checkOpenedAt: openCheck.openedAt,
-        lookId: LOOK_ID,
-      },
-    ],
-  ]);
+        check_opened_at: openCheck.openedAt,
+        look_id: LOOK_ID,
+      })
+    ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+    expect(posted, phase).toEqual([
+      ["/legion/v1/grants", TESTER_GRANT],
+      [
+        "/legion/v1/handoff/complete",
+        {
+          grantId: "grant-for-one-command",
+          summary: "Look 2: pass.",
+          verdict: "pass",
+          checkOpenedAt: openCheck.openedAt,
+          lookId: LOOK_ID,
+        },
+      ],
+    ]);
+  }
 });
 
 // c-tool (dispatch://INFRA-3518): a report that gives check_opened_at and no look_id is sent as
