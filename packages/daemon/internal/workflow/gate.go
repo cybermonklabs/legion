@@ -960,7 +960,7 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // when a later version's text is that version's, Dispatch's bookkeeping of an earlier approval and
 // not a new act of theirs.
 //
-// The controller's walk of roots out of the workflow
+// The controller's walk of roots in backlog or icebox
 // (skill://legion-controller/references/kept-decisions.md, "The walk", step 3) repeats this
 // decision in prose to skip the approvals it queues: a change to what queues changes that step
 // too.

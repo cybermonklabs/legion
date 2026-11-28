@@ -371,8 +371,8 @@ func testASecondBootQueuesASecondRelease(t *testing.T) {
 }
 
 // The repository recovery applies a listing of its own (recoverRepositories, which passes boot
-// false), and starts no claim release pass: the pass is the boot's one-off, and a move out of the workflow the daemon
-// sees queues its own row.
+// false), and starts no claim release pass: the pass is the boot's one-off, and each departure
+// short of a close that the daemon sees queues its own row.
 func testTheRecoveryStartsNoClaimReleasePass(t *testing.T) {
 	fixtures := bootClaimListing()
 	rig := newBootClaimRig(t, fixtures, nil)

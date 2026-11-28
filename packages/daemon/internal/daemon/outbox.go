@@ -3798,10 +3798,12 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // and the start creates and spawns the claim as every first start of a child's architect does; the
 // child is handed over, adopted into a live tree or taken as a root of its own, each of which moves
 // it to a later generation, and supervise's generation fence finishes the start; or the child
-// leaves the workflow, and the fence on its own status finishes it. Its one cost is a tree out of the workflow
-// that is never re-admitted: the row retries at the backoff's 64-second cap for as long as it
-// stands, two reads each try (the child and its root), and only a child whose tree left the
-// workflow between its first phase start and that start's run ever has such a row.
+// leaves the workflow, and the fence on its own status finishes it. Its one cost is a tree whose
+// root stands in backlog, icebox or triage and is never re-admitted: the row retries at the
+// backoff's 64-second cap for as long as it stands, two reads each try (the child and its root),
+// and only a child whose tree left the workflow between its first phase start and that start's run
+// ever has such a row. A root that stays done hands the child over at its linger's close
+// (workflow's unfinishedHandOvers), which is the second way above.
 func childArchitectFirstStart(issue record.Issue, payload record.SuperviseRequest) bool {
 	return payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == "" && !payload.News
 }

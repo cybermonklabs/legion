@@ -13,7 +13,7 @@ Build the token as `skill://legion-controller/references/operations.md#a-request
 
 ## `tick`
 
-Run the every-turn steps, the walk of roots out of the workflow, the merge holds whose end is past (`skill://legion-controller/references/merge-holds.md`), then the prioritization pass.
+Run the every-turn steps, the walk of roots in backlog or icebox, the merge holds whose end is past (`skill://legion-controller/references/merge-holds.md`), then the prioritization pass.
 Name in your summary each root at `phase: done` that Dispatch still shows at work, found as step 1 of the skill's start procedure finds them.
 Put in your daily report (`skill://legion-controller/references/daily-report.md`), and take nothing for:
 each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line;

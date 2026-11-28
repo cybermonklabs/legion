@@ -441,8 +441,8 @@ func (a DispatchArtifact) PersonApproval() bool {
 }
 
 // MayQueueHandover says whether the review is a person's approval (PersonApproval) of the primary
-// document of a root that Dispatch's view (Issue) shows out of the workflow: no parent, the legion
-// label, status backlog or icebox. Such an approval queues the root as the person's handover
+// document of a root in backlog or icebox, as Dispatch's view (Issue) shows it: no parent, the
+// legion label, status backlog or icebox. Such an approval queues the root as the person's handover
 // unless the root's tree is live or its status changed after the approval (StatusChangedSeq),
 // which the workflow decides. The daemon reads the issue's event log for it when it prepares the
 // fact (NeedsEventLog), and the workflow decides from it, so the read side and the deciding side

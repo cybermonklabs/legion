@@ -10,7 +10,7 @@ Name them in the day's report and take nothing for them.
 | Word | Meaning | What ends it |
 |---|---|---|
 | `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow, or waiting in the line, its design gate open, for the promotion that opens its tree again | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted, the end of the root's linger, a `todo` on the root, or the root's promotion from the waiting line |
-| `tree_in_backlog_or_icebox` | Its tree's root is in `backlog` or `icebox` and the linger ran out | A `todo` on the root; your own hold, the walk of roots out of the workflow decides |
+| `tree_in_backlog_or_icebox` | Its tree's root is in `backlog` or `icebox` and the linger ran out | A `todo` on the root; your own hold, the walk of roots in backlog or icebox decides |
 | `label_off` | A root whose `legion` label is off | A person's label |
 | `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
 | `root_awaiting_person` | Its root waits on a person | The root's resume |

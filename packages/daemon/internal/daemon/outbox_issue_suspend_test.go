@@ -930,14 +930,14 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 }
 
 // An issue that comes back is not stranded by the start fence. record.OutOfWorkflow, the rule the
-// fence is held to, names the statuses out of the workflow as well as done, so the start of an issue in backlog is
-// declined with the rest (TestAStartThatOutlivesItsIssuesDepartureStartsNothing above). What that
-// must never cost is the way back. The way back is the way in: an issue a person brings back is
-// started by the run that brings it and never by the row the fence declined, and there are two
-// doors it comes in through. A child in backlog moved to todo re-enters under its live tree
-// (Engine.ReenterChild), which clears the run the move to backlog left and hands the waiting line its first
-// phase to start again. A tree whose linger expired and whose root a person sets back to todo is
-// re-admitted, and its promotion starts every member where it stood (admit's
+// fence is held to, names triage, icebox and backlog as well as done, so the start of an issue in
+// backlog is declined with the rest (TestAStartThatOutlivesItsIssuesDepartureStartsNothing above).
+// What that must never cost is the way back. The way back is the way in: an issue a person brings
+// back is started by the run that brings it and never by the row the fence declined, and there are
+// two doors it comes in through. A child in backlog moved to todo re-enters under its live tree
+// (Engine.ReenterChild), which clears the run the move to backlog left and hands the waiting line
+// its first phase to start again. A tree whose linger expired and whose root a person sets back to
+// todo is re-admitted, and its promotion starts every member where it stood (admit's
 // startMidPhaseMembers). Each door is read in the lighter rig that can express it: the first over
 // the real Sandbox runtime, because what it must show is the pod built again behind the issue that
 // came back, and the second over the stand-in runtime, because what it must show is which rows the

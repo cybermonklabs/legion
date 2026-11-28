@@ -619,7 +619,7 @@ another agent's session's, or an operator's `legion issue status` (the comment n
 tree runs when a person sets it to `todo`, approves its spec when it has no parent, or asks the
 controller to start it). It stays there too when the decision is older than the move, when the root
 is `done` or `triage`, or when the decision only questions the work. When the controller was down,
-its next start walks the roots out of the workflow. That walk reads only the last 10 events of
+its next start walks the roots in backlog or icebox. That walk reads only the last 10 events of
 each issue. The walk runs at each start and on each `tick`, and its `todo` on the controller's own
 hold comes with a comment that cites the mark.
 

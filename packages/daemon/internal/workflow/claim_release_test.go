@@ -18,11 +18,11 @@ import (
 )
 
 // Dispatch releases an issue's claim when the issue closes and at no other departure, so a move
-// out of the workflow — a root's tree lingering for backlog, icebox or triage, a root released for
-// want of a slot, a child moved out of the workflow alone — leaves the claim of the session the
-// daemon just stopped standing on the board. The one claim_release row each such move queues is
-// what clears it, and a close queues none: the close released it already. The row carries nothing
-// of the holder, which it reads with the issue's own record when it runs.
+// short of a close — a root's tree lingering for backlog, icebox or triage, a root released for
+// want of a slot, a child moved to backlog, icebox or triage alone — leaves the claim of the
+// session the daemon just stopped standing on the board. The one claim_release row each such move
+// queues is what clears it, and a close queues none: the close released it already. The row
+// carries nothing of the holder, which it reads with the issue's own record when it runs.
 //
 // Each row of such a move asserts the whole set of rows the departure queued, not the release
 // alone: the move suspends every role of what it moves, and queues the suspension and, for a root,
@@ -167,7 +167,8 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 	}
 }
 
-// withRelease is the rows a move out of the workflow queues with the one claim_release row of its own.
+// withRelease is the rows a move short of a close queues: left's, with the one claim_release row
+// of its own.
 func withRelease(left map[string]int) map[string]int {
 	kinds := map[string]int{"claim_release": 1}
 	for kind, count := range left {

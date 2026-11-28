@@ -769,7 +769,7 @@ EOF
 cat >"$work/controller-instructions.md" <<EOF
 This is a throwaway proof on the disposable $project project. Hand Legion no issue from the \`todo\`
 walk, file no issue, and post no daily report. Handle each \`kept-decision\` notice and run the
-walk of roots out of the workflow as \`skill://legion-controller\` says, without waiting for any
+walk of roots in backlog or icebox as \`skill://legion-controller\` says, without waiting for any
 message, for this run's roots alone, whose titles end \`($work)\`; leave every other root as it is.
 EOF
 note "project $project, profile $profile, plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest"), NATS/Postgres ports $port_nats/$port_pg, listener $port_listener, Dispatch $port_dispatch"

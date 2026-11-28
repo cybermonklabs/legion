@@ -1,6 +1,6 @@
-# Decisions kept for a tree out of the workflow
+# Decisions kept for a tree in backlog or icebox
 
-Read this on a `kept-decision` wake, and for the walk of roots out of the workflow at every start and on each `tick`. Such a root is a labelled root in `backlog` or `icebox` whose `issues.<KEY>.phase` is `done`. Its architect is gone, so nobody in it hears a person's decision. The daemon sends you each one as `kept-decision` (`decision`, `root`, `ref`, `actor`, and a spec decision's `version` and `reason`); the walk finds those sent while no controller ran.
+Read this on a `kept-decision` wake, and for the walk of roots in backlog or icebox at every start and on each `tick`. Such a root is a labelled root in `backlog` or `icebox` whose `issues.<KEY>.phase` is `done`. Its architect is gone, so nobody in it hears a person's decision. The daemon sends you each one as `kept-decision` (`decision`, `root`, `ref`, `actor`, and a spec decision's `version` and `reason`); the walk finds those sent while no controller ran.
 
 A person's own approval of such a root's primary document while no tree is live is no decision for you: the daemon sets the root `todo` itself, or sends a `kept-decision` whose `reason` says the root's status changed after the approval: decide it below. A carried approval, or one on a root that keeps a Dispatch parent, is a decision. A session's reply on such a tree is none.
 
@@ -34,7 +34,7 @@ A held root is not out of the workflow: `todo` on a root at `phase: held` releas
 
 ## The walk
 
-1. List the roots out of the workflow: `dispatch issues --project <PROJECT> --status backlog --label legion --all`, then with `--status icebox`. Keep those `read_state` records at `phase: done`.
+1. List the roots in backlog or icebox: `dispatch issues --project <PROJECT> --status backlog --label legion --all`, then with `--status icebox`. Keep those `read_state` records at `phase: done`.
 2. Read each root, then each issue under it, level by level (`dispatch issues --project <PROJECT> --parent <KEY> --all`).
 3. A decision is an event by a `user`, newer than the root's move and every decision-read comment on its issue ([Deciding](#deciding) step 3), of type `artifact.approved`, `artifact.changes_requested`, `ask.answered`, `ask.resolved` or `comment.created`. Skip an `artifact.approved` that is the person's own handover: the root's `parent` is `null`, the event's `payload.artifact_id` is the root's `primary_artifact_id` (the same `dispatch api` of `/api/v1/issues/<root>`), and its `payload.reason` does not begin `Carried forward from the approval of version`. When that read fails, judge it. Find an ask or comment's id under `Open asks:` or with `dispatch search`; `dispatch read --ref dispatch://<KEY>/ask/<id>` prints its `Ask id:`.
 4. Decide each tree's decisions as [Deciding](#deciding) says.

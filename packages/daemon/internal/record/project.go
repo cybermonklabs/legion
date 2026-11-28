@@ -1901,9 +1901,9 @@ func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps 
 // lifecycle row is no tree the operator holds, which is the read's own answer for it.
 //
 // It is the one statement of that rule, and every reader that must agree calls it: the move out
-// of the workflow of such a root (workflow.Engine.leave), the claim release row every other move out of the workflow queues
-// (outbox.releaseClaim), and the boot's answer to whether a run no start counted is open
-// (workflow.Engine.uncountedRunOpen).
+// of the workflow of such a root (workflow.Engine.leave), the claim release row every other
+// departure short of a close queues (outbox.releaseClaim), and the boot's answer to whether a run
+// no start counted is open (workflow.Engine.uncountedRunOpen).
 func OperatorHoldsTree(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bool, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
