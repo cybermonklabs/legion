@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+    A rename pair whose new name is no repository GitHub can hold is dropped at boot, not applied.
+    No route writes a pair, so such a pair comes only from SQL by hand, in the `renamed_to` of a
+    `repo_projects` row. The boot logs one ERROR line, `dispatch: dropped a rename pair whose new
+    name GitHub cannot hold`, with the old name, the new name and why, and applies the other pairs.
+    The rename pass writes nothing for the dropped pair, and the old name reads as its own, so a
+    pull request event or a link of that repository is owed its read under a name a read can reach.
+    A result's record reads a linked pull request of the old name under that name too, so
+    `400 RESULT_COMMIT_UNKNOWN` no longer names a repository whose links Dispatch set aside for
+    GitHub's naming rule: only such a pair made one.
+    Before, the pass wrote the bad name into every field of the old name, and a read owed under it
+    stayed owed for as long as the row stood. Correct the row by SQL and restart: each process
+    reads the pairs at its start.
+time: 2026-11-17T08:30:09.000000000Z
+custom:
+    Issue: pr4209

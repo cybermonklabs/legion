@@ -134,7 +134,9 @@ func Open(t *testing.T, databaseURL string) *Runner {
 	if databaseURL == "" {
 		t.Skip(DatabaseURLEnv + " must name the seeded measurement database (cmd/dispatch-seed); CI leaves it unset")
 	}
-	config, err := pgx.ParseConfig(databaseURL)
+	// With the session settings every Dispatch connection carries (store.ConnConfig), so a
+	// statement is measured as Dispatch runs it.
+	config, err := store.ConnConfig(databaseURL)
 	if err != nil {
 		t.Fatalf("read %s: %v", DatabaseURLEnv, err)
 	}

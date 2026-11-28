@@ -87,12 +87,16 @@ func tuningFor(t testing.TB) *intakeTuning {
 // atomics cannot be copied with it.
 func copyTuning(from *intakeTuning) *intakeTuning {
 	to := &intakeTuning{
-		messageTimeout:         from.messageTimeout,
-		maxAckPending:          from.maxAckPending,
-		stopBudget:             from.stopBudget,
-		headWriteMaxDeliveries: from.headWriteMaxDeliveries,
-		createDurable:          from.createDurable,
-		log:                    from.log,
+		messageTimeout: from.messageTimeout,
+		maxAckPending:  from.maxAckPending,
+		stopBudget:     from.stopBudget,
+		redeliverAfter: from.redeliverAfter,
+		bindInterval:   from.bindInterval,
+		holdTTL:        from.holdTTL,
+		holdRenew:      from.holdRenew,
+		holdMargin:     from.holdMargin,
+		createDurable:  from.createDurable,
+		log:            from.log,
 	}
 	to.callWait.Store(from.callWait.Load())
 	to.drainWait.Store(from.drainWait.Load())
@@ -122,9 +126,16 @@ func TestMain(m *testing.M) {
 // and on a shared machine that database is the server's postgres, where every other package's
 // harness creates and drops its databases, so another package's create database could hold the
 // build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
+//
+// The readers of a pull request's issue run a statement PrepareAttribution builds, as main
+// builds it after the migrations, so the pool comes with it.
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
-	return storetest.Open(t).Pool, t.Context()
+	pool := storetest.Open(t).Pool
+	if err := PrepareAttribution(t.Context(), pool); err != nil {
+		t.Fatalf("prepare the attribution statement: %v", err)
+	}
+	return pool, t.Context()
 }
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of
@@ -133,6 +144,45 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 // here and in step with it by hand: Migrate skips every version schema_migrations already
 // records, so forgetting the version makes the table exactly as the migration does.
 const branchCommitsMigration = 20261107234701
+
+// refuseOwedReads makes every write of pull_request_reads_owed fail at once, as a database that
+// takes no write of the owed record does, until restore: a trigger that raises SQLSTATE 55P03
+// (lock_not_available), a failure no value causes, so the intake hands the envelope back. A lock
+// of the table would do the same in owedReadWriteTimeout; this fails in milliseconds, so a
+// handler held to a stop's budget still answers through deliver's own path.
+func refuseOwedReads(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
+	t.Helper()
+	return refuseOwedReadsWith(t, ctx, pool, "55P03")
+}
+
+// refuseOwedReadsWith is refuseOwedReads with the SQLSTATE the trigger raises: whatever the code,
+// the intake hands the envelope back (recordRefused, TestAnOwedRecordRefusedForAnyCauseLosesNoHead).
+func refuseOwedReadsWith(t *testing.T, ctx context.Context, pool *store.Pool, sqlstate string) (restore func()) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+		create function delivery_test_refuse_owed() returns trigger language plpgsql as $$
+		begin
+		  raise exception 'the test refuses writes of pull_request_reads_owed' using errcode = '%s';
+		end $$;
+		create trigger delivery_test_refuse_owed before insert or update on pull_request_reads_owed
+		  for each row execute function delivery_test_refuse_owed();
+	`, sqlstate)); err != nil {
+		t.Fatalf("make pull_request_reads_owed refuse writes with SQLSTATE %s: %v", sqlstate, err)
+	}
+	restore = sync.OnceFunc(func() {
+		if _, err := pool.Exec(context.WithoutCancel(ctx), refuseOwedReadsUndo); err != nil {
+			t.Errorf("let pull_request_reads_owed take writes again: %v", err)
+		}
+	})
+	t.Cleanup(restore)
+	return restore
+}
+
+// refuseOwedReadsUndo drops what refuseOwedReads made, and nothing where it made nothing.
+const refuseOwedReadsUndo = `
+	drop trigger if exists delivery_test_refuse_owed on pull_request_reads_owed;
+	drop function if exists delivery_test_refuse_owed();
+`
 
 // deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
 // (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
@@ -275,6 +325,30 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	})
 }
 
+// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
+// answers the records written so far: the default logger's, and the logger of every intake the
+// test builds (tuningFor) and every intake StartIntakes builds, which log to the default. Intake
+// logs from NATS's delivery goroutine, so the buffer is locked. Call it before startIntake, so the
+// default logger is restored only once intake stops. It is for a test that reads a line of
+// something that does not take the intake's logger -- the bus client, the store, a
+// duty.Exclusive called with a nil logger -- or that requires no component at all to have written
+// some line; such a test is serial. A test that reads its intakes' lines alone calls
+// captureIntakeLogs.
+func captureLogs(t *testing.T) func() []map[string]any {
+	t.Helper()
+	return captureLogsAt(t, slog.LevelInfo)
+}
+
+// captureLogsAt is captureLogs of every record at level and above, for a test that reads the
+// DEBUG lines too.
+func captureLogsAt(t *testing.T, level slog.Level) func() []map[string]any {
+	t.Helper()
+	var buffer lockedBuffer
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: level}))
+	tuningFor(t).log = slog.Default()
+	return func() []map[string]any { return loggedRecords(&buffer) }
+}
+
 // captureIntakeLogs points the logger of every intake the test builds after it (tuningFor), and
 // of the settings caches it builds for them (loadedSettingsCache), at a buffer of the test's own,
 // as JSON, and answers the records written so far. The duty leases and holds those intakes take
@@ -335,14 +409,24 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	tuningFor(t).messageTimeout = 5 * time.Second
 }
 
-// capHeadWriteDeliveriesAt lowers the headWriteMaxDeliveries of the intakes this test builds after
-// it to deliveries, the way shrinkIntakeFlowControl shrinks their message timeout: the shipped cap
-// of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a
-// test of the cap measures is that there is one at all, which two deliveries show as well as
-// thirty.
-func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
+// testRedeliverAfter is the hand-back delay a test sets on the intakes it builds
+// (tuningFor(t).redeliverAfter) where it waits for a delivery after a hand-back: the envelope
+// comes back a fifth of a second after it was handed back, rather than headWriteRedeliverAfter,
+// 10 s, later. What the test holds is that it comes back, and in which order; no such test reads
+// the length of the delay.
+const testRedeliverAfter = 200 * time.Millisecond
+
+// shrinkOwedReadWriteTimeout sets owedReadWriteTimeout to a second for the test, and puts the
+// production value back at its end: a test that holds pull_request_reads_owed locked waits out
+// that bound at each statement the lock holds, and holds the statement to the bound by its name,
+// so its checks keep their meaning at the shorter bound. A statement no lock holds answers in
+// milliseconds, far inside a second. Call it before startIntake: the cleanups run in reverse, so
+// the bound is put back only once the intake has stopped.
+func shrinkOwedReadWriteTimeout(t *testing.T) {
 	t.Helper()
-	tuningFor(t).headWriteMaxDeliveries = deliveries
+	bound := owedReadWriteTimeout
+	owedReadWriteTimeout = time.Second
+	t.Cleanup(func() { owedReadWriteTimeout = bound })
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and

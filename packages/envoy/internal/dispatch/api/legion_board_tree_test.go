@@ -23,7 +23,7 @@ import (
 // the child in its tree rather than making the child a root of its own.
 func TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -46,7 +46,7 @@ func TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree(t *testing.T) {
 	if tree := legionCard(t, board, "INFRA-7").Tree; tree != "INFRA-6" {
 		t.Errorf("the board puts INFRA-7 in tree %q, want INFRA-6: Dispatch observed a phase of its parent", tree)
 	}
-	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree(t *testing.T) {
 // holds and the daemon never reported.
 func TestTheBoardAndTheMetricsPutAnIssueInTheSameTree(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -78,7 +78,7 @@ func TestTheBoardAndTheMetricsPutAnIssueInTheSameTree(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -115,7 +115,7 @@ func seedLegionHandoff(t *testing.T, database *store.Store, issue, phase string,
 // gets no card, and the board names no issue it did not name before.
 func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -146,7 +146,7 @@ func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 // Both readers answer the bottom its own root, and the top roots nothing below the gap.
 func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -221,7 +221,7 @@ func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) 
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestAnUnstartedChildIsCountedOnTheNearestCardAndNeverLosesItsOwn(t *testing
 // ancestor's tree in the facts' read as on the board.
 func TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -338,7 +338,7 @@ func TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed(t *testing.T) {
 // issue below in the same tree as the metrics do.
 func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
@@ -399,7 +399,7 @@ func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 	seedLegionRoleEvent(t, database, "INFRA-861", "s-860", "implementer", "INFRA-861", hourAgo)
 	seedLegionRoleEvent(t, database, "INFRA-862", "s-860", "implementer", "INFRA-862", now.Add(-30*time.Minute))
 
-	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}

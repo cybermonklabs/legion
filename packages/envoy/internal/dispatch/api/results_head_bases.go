@@ -17,40 +17,109 @@ import (
 // is results_comparison.go's.
 
 // headBases is the heads a `before_merge` check compares its results with, and among them its
-// subjects (passStandsOf). The bases are the head of each pull request of the check's issue, open
-// or merged, newest learned first (pullRequestBases). Where an open pull request is, the subjects
-// are the head of each open one alone: a pull request under review is the change a gate judges, so
-// no other head speaks for it while it is open, and a merged head stays a basis that is no
-// subject. Where none is open, the subject is the final head of the merged one that merged last
-// (mergedInOrder). Where Dispatch cannot tell which of them merged last, it names no subject and
-// marks the comparison unordered, and each merged head stays a basis. An issue with no pull
-// request compares with nothing, and nothingReason says which of the three kinds of nothing it is.
+// subjects (passStandsOf). The bases are the head of each pull request of the check's issue that
+// Dispatch has read, open or merged, newest learned first (pullRequestBases). Where an open pull
+// request is, the subjects are the head of each open one alone: a pull request under review is the
+// change a gate judges, so no other head speaks for it while it is open, and a merged head stays a
+// basis that is no subject. Where none is open, the subject is the final head of the merged one
+// that merged last (mergedInOrder). Where Dispatch cannot tell which of them merged last, it names
+// no subject and marks the comparison unordered, and each merged head stays a basis. An issue with
+// no pull request compares with nothing, and nothingReason says which of the three kinds of
+// nothing it is.
 //
 // The pull request heads answer whether or not Dispatch can read the repository. A head
 // Dispatch holds is a fact about the work whatever the App can see today, so a result at one
 // stands at it, and only a result at no head of the list needs the repository read at all
 // (commitStands).
+//
+// A pull request whose head Dispatch has not read is no basis: it has no results row yet, or a
+// read of GitHub is owed for it (delivery.Attributor.HeadsAttributedTo). It goes to headsNotRead,
+// and no pass stands by it. The subjects are still chosen over every stored head, read or not: an
+// open pull request owed a read is open, and the merge that merged last is the last whether or
+// not its read is owed. A subject whose head is not read is counted (subjectsNotRead), and no pass
+// stands at the check while one is (passStandsOf): a pass at the other subjects is not known, not
+// yes. Where Dispatch can read the repository (decides), such a head can be the head a result
+// stands at: a result at no basis is then not known, never another commit, and a check with no
+// basis names model.ReasonHeadNotRead (rule 1 of the shape of the answer).
+//
+// An issue with no pull request at all, in a repository that holds an open or merged pull
+// request whose answer is not known, names model.ReasonIssueNotKnown and lists each of them
+// (decision D2): one of them can be the issue's own, so "no pull request" says more than Dispatch
+// knows. A failed read of those pull requests is model.ReasonReadFailed.
+//
+// A read-only caller's read passes the writes its own read-throughs would have made (answers),
+// and the statement reads the stored rows after them, which is what a writer's read reads once
+// its read-throughs have stored them; a writer's read passes none and reads the stored heads
+// alone.
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
 	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
 	}
+	known := make([]delivery.AttributedHead, 0, len(heads))
+	var headsNotRead []model.HeadNotRead
+	for _, head := range heads {
+		if head.HeadKnown {
+			known = append(known, head)
+			continue
+		}
+		headsNotRead = append(headsNotRead, model.HeadNotRead{
+			Number: head.Number, RefusedAs: head.RefusedAs, RefusedSince: head.RefusedSince,
+		})
+	}
 	var issueRepo *string
-	if len(heads) > 0 {
+	if len(known) > 0 {
 		issueRepo, _ = c.repositoryOf(ctx, issueKey)
 	}
 	open := slices.ContainsFunc(heads, func(head delivery.AttributedHead) bool { return head.Open })
-	ordered := open || c.mergedInOrder(ctx, heads)
-	bases, subjects := pullRequestBases(heads, issueRepo, open, ordered)
-	unread := ""
-	switch {
-	case len(bases) > 0:
-		return comparison{bases: bases, unread: unread, subjects: subjects, unordered: !ordered}
-	case unread != "":
-		return noBases(unread)
+	ordered := open || c.mergedInOrder(ctx, storedMerged(heads))
+	bases, subjects := pullRequestBases(known, issueRepo, open, ordered)
+	compared := comparison{bases: bases, subjects: subjects, headsNotRead: headsNotRead,
+		subjectsNotRead: subjectsNotRead(heads, open, ordered)}
+	if len(headsNotRead) > 0 {
+		compared.headNotRead = c.decides(ctx, issueKey)
 	}
-	return noBases(c.nothingReason(ctx, issueKey))
+	if len(bases) > 0 {
+		compared.unordered = !ordered
+		return compared
+	}
+	compared.reason = c.nothingReason(ctx, issueKey)
+	switch {
+	case compared.reason != model.ReasonNoPullRequestOrBranch:
+	case compared.headNotRead:
+		compared.reason = model.ReasonHeadNotRead
+	case len(heads) == 0 && c.decides(ctx, issueKey):
+		pulls, read := c.notKnownOf(ctx, issueKey)
+		if !read {
+			compared.reason = model.ReasonReadFailed
+			break
+		}
+		for _, pull := range pulls {
+			compared.issuesNotKnown = append(compared.issuesNotKnown, model.IssueNotKnown{Number: pull.Number})
+		}
+		if len(compared.issuesNotKnown) > 0 {
+			compared.reason = model.ReasonIssueNotKnown
+		}
+	}
+	return compared
+}
+
+// subjectsNotRead is how many of heads, every stored head of the issue, are subjects
+// (pullRequestBases' rule, taken over the heads read or not) whose head Dispatch has not read:
+// where open, each open pull request owed a read; otherwise, where ordered, the merge that merged
+// last (delivery.AttributedHead.NewestMerged) where its read is owed.
+func subjectsNotRead(heads []delivery.AttributedHead, open, ordered bool) int {
+	count := 0
+	for _, head := range heads {
+		if head.HeadKnown {
+			continue
+		}
+		if (open && head.Open) || (!open && ordered && head.NewestMerged) {
+			count++
+		}
+	}
+	return count
 }
 
 // mergedInOrder reports whether heads, the merged pull request heads of an issue none of whose
@@ -67,6 +136,21 @@ func (c *comparisonReader) mergedInOrder(ctx context.Context, heads []delivery.A
 		heads[index].MergedAt = rows[index].MergedAt
 	}
 	return ordered
+}
+
+// storedMerged is each of heads that is a merged pull request row Dispatch stores, its head read
+// or a read of GitHub owed for it: the rows the statement orders by when each merged
+// (delivery.AttributedHead.NewestMerged), which a read orders the same way (fillMergeTimes). A pull
+// request with a timeline row alone has no head (its HeadSHA is "") and no merge to order, and an
+// open row merged nothing.
+func storedMerged(heads []delivery.AttributedHead) []delivery.AttributedHead {
+	merged := make([]delivery.AttributedHead, 0, len(heads))
+	for _, head := range heads {
+		if head.HeadSHA != "" && !head.Open {
+			merged = append(merged, head)
+		}
+	}
+	return merged
 }
 
 // pullRequestBases is the basis of each of heads, the pull request heads of one issue in the order

@@ -259,6 +259,13 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// KeyRemakeInterval is how often the key remake loop checks the reading of the stored keys,
+	// zero for delivery.KeyRemakeEvery's 30 s; only DISPATCH_TEST_KEY_REMAKE_INTERVAL, under the
+	// test hooks, sets it.
+	KeyRemakeInterval time.Duration
+	// KeyRemakeOff starts no key remake loop, for a test that must see stored keys stay on another
+	// reading; only DISPATCH_TEST_KEY_REMAKE_OFF=1, under the test hooks, sets it.
+	KeyRemakeOff bool
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -511,6 +518,20 @@ func main() {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
 	}
+	// Every reader of a pull request's issue runs one statement, built here once for the schema
+	// the migrations wrote. It asks the migrations' guard first: a database a logical restore put
+	// in an encoding or a collation the reading cannot use brings its schema_migrations with it,
+	// so no migration refuses it, and this stops the process before it listens.
+	if err := delivery.PrepareAttribution(ctx, database.Pool); err != nil {
+		slog.Error("dispatch: prepare the statement of a pull request's issue", "error", err)
+		os.Exit(1)
+	}
+	// Each process remakes the stored keys of another reading from its start, before it listens:
+	// a change of the reading by a migration, a version of Postgres or any other cause reaches
+	// every row within one interval and one remake, with no App key, no lease and no restart.
+	if !boot.KeyRemakeOff {
+		go delivery.KeyRemakeLoop(ctx, database.Pool, boot.KeyRemakeInterval)
+	}
 
 	// A test process told to creates the elements its manifest stages for the next version. The
 	// switch is set before the first install and is apart from the manifest, so no reinstall
@@ -536,14 +557,9 @@ func main() {
 	// here (delivery.NewAttributor), and the API builds its own of the same pairs (api.NewDeps).
 	// A read that fails does not stop the boot: it is logged, it is one failure in the rename
 	// pass's summary below (renameRepositories), and the process serves with no pairs, so an old
-	// name reads as a repository of its own until a later boot reads the pairs.
-	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
-	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
-	cancelRenames()
-	if renamesErr != nil {
-		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", renamesErr)
-	}
-	renames := refs.NewRenames(renamePairs)
+	// name reads as a repository of its own until a later boot reads the pairs. A pair whose new
+	// name GitHub cannot hold is dropped, not applied (readRenames).
+	renames, renamesErr := readRenames(ctx, database.Pool, repoRenamesReadTimeout)
 	attributor := delivery.NewAttributor(renames)
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
@@ -665,7 +681,7 @@ func main() {
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
-	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
+	renameRepositories(ctx, database.Pool, renames.Pairs(), renamesErr, repoRenamePassTimeout)
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
@@ -1895,6 +1911,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_KEY_REMAKE_INTERVAL", &boot.KeyRemakeInterval},
 		{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT", &boot.CoverageFillTimeout},
 		{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", &boot.CoverageStatementTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
@@ -1934,6 +1951,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_CREATE_STAGED", &boot.CreateStaged},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		{"DISPATCH_TEST_KEY_REMAKE_OFF", &boot.KeyRemakeOff},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
@@ -2331,6 +2349,33 @@ const decidedWordingRestoreTimeout = 30 * time.Second
 // The read is of a table of tens of rows, so the bound is reached only when another session
 // holds a lock on that table, and a boot that waited for it would not serve.
 const repoRenamesReadTimeout = 30 * time.Second
+
+// readRenames is the boot's one read of the rename pairs (store.ReadRepoRenames), bounded by
+// timeout, as the Renames every reader is given (refs.NewRenames). A read that fails is logged at
+// ERROR, and answers no pairs and the error, which the rename pass counts (renameRepositories).
+// A pair whose new name is no repository GitHub can hold is dropped, not applied: one ERROR line
+// names it and why, the pass is given the pairs the Renames holds (refs.Renames.Pairs) and so
+// rewrites no field for it, no reader calls its old name by its new one, and so no read is owed
+// under a name no read can reach. The other pairs apply. Such a pair is written only by SQL by
+// hand, since no route, event or migration writes one; it stays dropped, with its line at every
+// start, until its renamed_to in repo_projects is corrected. This refuses the one pair rather
+// than the start, so a bad row costs its rename alone and no process stops serving for it.
+func readRenames(ctx context.Context, pool *store.Pool, timeout time.Duration) (refs.Renames, error) {
+	readCtx, cancel := context.WithTimeout(ctx, timeout)
+	pairs, err := store.ReadRepoRenames(readCtx, pool)
+	cancel()
+	if err != nil {
+		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", err)
+	}
+	renames := refs.NewRenames(pairs)
+	for _, dropped := range renames.Dropped() {
+		// The new name is cut at 140 characters, the longest name GitHub can hold, since a pair
+		// written by hand can hold any text.
+		slog.Error("dispatch: dropped a rename pair whose new name GitHub cannot hold; its old name reads as its own until the pair is corrected",
+			"from", dropped.From, "to", fmt.Sprintf("%.140s", dropped.To), "error", dropped.Err)
+	}
+	return renames, err
+}
 
 // restoreDecidedWordings is the boot's restoration of the wording each decided ask was decided on,
 // where a task of an earlier release reworded it, and its marking owed of each such block ask's own

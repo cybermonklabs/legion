@@ -155,7 +155,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	keys, otherTree := fixture.Keys[:perTree], fixture.Keys[perTree:]
 
 	startedProject := time.Now()
-	project, err := ReadProject(t.Context(), database.Pool, fixture.Project, now)
+	project, err := ReadProject(t.Context(), database.Pool, unrenamed(), fixture.Project, now)
 	projectRead := time.Since(startedProject)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
@@ -163,7 +163,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	// The tree's keys name its filed issues too: ReadIssues keeps the ones a Legion session of the
 	// project filed.
 	startedIssues := time.Now()
-	named, err := ReadIssues(t.Context(), database.Pool, fixture.Project, keys, keys, now)
+	named, err := ReadIssues(t.Context(), database.Pool, unrenamed(), fixture.Project, keys, keys, now)
 	issuesRead := time.Since(startedIssues)
 	if err != nil {
 		t.Fatalf("read the named issues: %v", err)
@@ -171,7 +171,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	// The same filed issues and no key asked for: the scope then holds the tree only through the
 	// filers ReadIssues adds to it, and each filing's class and filer's phase read the filer's
 	// timeline.
-	filedAlone, err := ReadIssues(t.Context(), database.Pool, fixture.Project, nil, keys, now)
+	filedAlone, err := ReadIssues(t.Context(), database.Pool, unrenamed(), fixture.Project, nil, keys, now)
 	if err != nil {
 		t.Fatalf("read the named filed issues alone: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 func TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue(t *testing.T) {
 	database := storetest.Open(t)
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2})
-	population, err := ReadProject(t.Context(), database.Pool, fixture.Project, fixture.To)
+	population, err := ReadProject(t.Context(), database.Pool, unrenamed(), fixture.Project, fixture.To)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}

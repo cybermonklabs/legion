@@ -2578,6 +2578,25 @@ CLAIM_MODEL_SCRIPT = (f"{gotestsum_prefix('claim-model', verbose=True)} -count=1
                       f"'^({'|'.join(sorted(name for names in CLAIM_MODEL_TESTS.values() for name in names))})$' "
                       f"{CLAIM_MODEL_PACKAGE}")
 
+# The PostgreSQL 16 job: three tests of internal/dispatch/delivery whose subject differs between
+# PostgreSQL 16 and the 18 every other job runs, by name, against a PostgreSQL 16 service
+# (.github/ci-notes/ci.md#the-postgresql-16-job-three-delivery-tests-on-the-version-an-envoy-infra-stack-can-run
+# says which and why). The job envoy-go-postgres16 is a job of envoy-go's file beside its legs,
+# run under ci.yaml's envoy-go call and gated by its filter, so its step is an Exact entry of the
+# envoy_go gate (.github/ci-gates/envoy-go.py), and the job envoy-go waits for it. The three tests
+# stay in envoy-go-race's run of the package as well, in the race leg .github/go-legs.yaml gives
+# it: that is their run on 18.
+# -run and -v are outside the simple form, so the step is pinned whole, and a -run moves no
+# closure: the step compiles every test file of the package.
+POSTGRES16_JOB = "envoy-go-postgres16"
+POSTGRES16_PACKAGE = "./internal/dispatch/delivery"
+POSTGRES16_STEP = "Test the attribution's database guard and the reading's identity on PostgreSQL 16"
+POSTGRES16_TESTS = ("TestPrepareAttributionRefusesADatabaseItCannotRead",
+                    "TestTheReadingIdentityIsTheStoredBodyAndTheMajorVersion",
+                    "TestTheReadingIdentitySurvivesARestoreOfItsText")
+POSTGRES16_SCRIPT = (f"{gotestsum_prefix('postgres16-internal-dispatch-delivery', verbose=True)} -count=1 -v -run "
+                     f"'^({'|'.join(POSTGRES16_TESTS)})$' {POSTGRES16_PACKAGE}")
+
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"

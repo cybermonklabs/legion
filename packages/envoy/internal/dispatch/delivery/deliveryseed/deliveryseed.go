@@ -141,14 +141,14 @@ const smokeTimeout = 30 * time.Minute
 // it covers, and the seed of every random draw. A zero field takes its default: DefaultProject,
 // DefaultNow, DefaultDays; a zero Seed is a seed like any other.
 //
-// OneProject, off by default, names an issue of the project on every pull request (issue_key,
-// Title and Attribution.TitleKeys): a new issue wherever the history would name one of the second
-// project, and a new plain issue (plainIssue) wherever it would name none. Because Write sets
-// default_repo only on Project (to DeployRepo) and leaves the other two repositories unowned,
-// callers that want issue_key alone to attribute every repository's pull requests to Project
-// clear the stored attribution inputs themselves. OneProject takes the same random draws, so the
-// history is the default one with those issues moved to the project and added to it (and the
-// project's issues numbered to match).
+// OneProject, off by default, names an issue of the project on every pull request (issue_key and
+// Title): a new issue wherever the history would name one of the second project, and a new plain
+// issue (plainIssue) wherever it would name none. Every pull request Write writes has a timeline
+// row and no results row, so the statement of a pull request's issue answers its issue_key
+// (delivery's attributedIssues), whatever its repository: under OneProject every repository's
+// pull requests are Project's. OneProject takes the same random draws, so the history is the
+// default one with those issues moved to the project and added to it (and the project's issues
+// numbered to match).
 //
 // IssueOffset, zero by default, is how many of the project's issue numbers another history took
 // already: the project's issues are numbered from IssueOffset+1, so this history can be written
@@ -201,8 +201,8 @@ type Fixture struct {
 	Issues    map[string][]string
 	UnownedP0 []string
 	// PullRequests is every pull request written, oldest merge first and those merged in one
-	// instant by id, as delivery.ListPullRequestsInWindow lists them. UpdatedAt is left zero: the
-	// database stamps it.
+	// instant by id, as delivery.Attributor.ListPullRequestsInWindow lists them. UpdatedAt is left
+	// zero: the database stamps it.
 	PullRequests []delivery.DeliveryPullRequest
 	// Runs is every run written, by run id, and Jobs every job of each, by run id in
 	// delivery.ListRunJobs' order. A run or job still going at To carries no completion and no
@@ -433,13 +433,11 @@ func (s *seeding) nameIssues() {
 		}
 		short := pr.Repo[strings.LastIndex(pr.Repo, "/")+1:]
 		pr.Title = fmt.Sprintf("Change %d to %s", pr.Number, short)
-		pr.Attribution = &delivery.AttributionInputs{TitleKeys: []string{}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}}
 		if key == "" {
 			continue
 		}
 		pr.IssueKey = new(key)
 		pr.Title = key + ": " + pr.Title
-		pr.Attribution.TitleKeys = []string{key}
 		named := &s.issues[s.issueAt[key]]
 		named.lastMerged = maxTime(named.lastMerged, *pr.MergedAt)
 	}

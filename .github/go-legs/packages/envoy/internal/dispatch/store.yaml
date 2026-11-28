@@ -7,13 +7,18 @@
 # .github/scripts/go_legs_groups.py, from a run of the package on the runner the legs run on.
 # Times: throwaway runs 46045787549 (main 45c293ad, ubuntu-24.04-arm, job 140664593832: `go test -json -race` of the package beside delivery, 630 s) and 46045787166 (the package in two groups, each a leg of its own, jobs 140664592757 and 140664592533).
 # Modelled leg time, serial tests' sum plus parallel tests' sum over 8: group 1 295 s, group 2 295 s.
+# The eleven tests no group named on 2026-11-28 are placed by a local run of the package (amd64,
+# #4209 at 13d5b1f4a4, not the runner), 14.4 s to group 1 and 15.1 s to group 2; their comments give
+# those local times.
 1:
   - TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool  # 0.1 s
+  - TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded  # 0.1 s here
   - TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow  # 4.4 s
   - TestAConcurrentWorkerKeepsAMarkOfItsOwn  # 0.0 s
   - TestADeletedProjectTakesItsSessionRowsWithIt  # 4.5 s
   - TestAFailedBuildEndsThePartAtItsStatement  # 0.0 s
   - TestAMultiVersionInsertReVectorsItsIssueOnce  # 4.7 s
+  - TestARefusalStampLogsNoDeliveryChange  # 1.7 s here
   - TestARowInsertedAsTheReleaseBeforeThisOneInsertsItCarriesItsProject  # 10.9 s
   - TestASecondRenamePassOnAWrittenDatabaseRunsNoLine  # 4.5 s
   - TestATextCutToFitIsIndexedByWholeWords  # 0.7 s
@@ -48,6 +53,7 @@
   - TestEmbeddingsMigrationsLockOneTableAtATime  # 36.8 s
   - TestEveryMigrationFromTheCensusRuleOnDeclaresACensus  # 0.5 s
   - TestEveryMigrationLeavesANewDatabaseHoldingBtreeGin  # 0.4 s
+  - TestEverySessionDispatchOpensRunsWithJITOff  # 0.2 s here
   - TestGraphEdgesCarryBlockMentionsAndPartOf  # 0.3 s
   - TestGraphEdgesUnionsMentionsWithEveryStructuralRelation  # 0.5 s
   - TestHealthyAnswersWhileCloseWaitsForAConnectionInUse  # 1.6 s
@@ -137,6 +143,7 @@
   - TestTheLeasePoolRefusesACallerNameTwice  # 0.0 s
   - TestTheLockAuditAcceptsWhatTheCensusReads  # 1.4 s
   - TestTheLockAuditRefusesAMissedTableAndAMisreadOne  # 0.4 s
+  - TestTheMigrationRefusesADatabaseItCannotRead  # 10.8 s here
   - TestTheMigrationsKeepTheVersionOfABtreeGinCreatedBeforeThem  # 11.7 s
   - TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving  # 45.7 s
   - TestTheOwnerLockModesRaceEachOtherAndTheEarlierBuildsWriter  # 50.9 s
@@ -151,6 +158,7 @@
   - TestTheSearchTermQueueTriggersLockTheirTablesInOneOrder  # 0.0 s
   - TestTheShippedSetMatchesADatabaseAnEarlierRunnerMigrated  # 25.6 s
   - TestTheStorePrintsNoPartOfTheDatabasePassword  # 8.7 s
+  - TestTheTextsGoWithTheirResultsRow  # 1.6 s here
   - TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle  # 12.9 s
   - TestTouchedTablesOfEveryMigrationAreTheTablesItLocks  # 6.2 s
   - TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused  # 10.8 s
@@ -169,11 +177,13 @@
   - TestARecordOfAMachineLoginRevocationTakesThePersonsApprovalLock  # 4.6 s
   - TestAReleasedConnectionKeepsNoLargeArguments  # 0.4 s
   - TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim  # 4.6 s
+  - TestARenameMovesTheTexts  # 1.5 s here
   - TestARenamePassLineThatFailsLeavesTheOthersWritten  # 4.4 s
   - TestARenamePassOutOfTimeStillCountsWhatItLeft  # 11.6 s
   - TestARenamePassWhoseCountFailsSaysTheRowsLeftAreUnknown  # 11.6 s
   - TestARowWhoseOwnerIsGoneIsInsertedWithNoProject  # 10.5 s
   - TestARunWrittenAfterTheMigrationStartsIncomplete  # 2.9 s
+  - TestAWriteOfTheIssueAloneOwesNoReadAndKeepsTheMark  # 4.6 s here
   - TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild  # 9.8 s
   - TestAnInsertWithNoOwnerTakesTheDefaultAssignee  # 4.5 s
   - TestAnOlderBuildsWriteLeavesTheAskBlocksOwed  # 0.2 s
@@ -247,7 +257,11 @@
   - TestMigrationDropsTheProductionJobName  # 1.8 s
   - TestMigrationGivesApprovalAsksTheirDocumentList  # 3.7 s
   - TestMigrationIndexesAProjectsUnlinkedDocuments  # 1.8 s
+  - TestMigrationKeepsTheAnswerOfItsSecondWhoseReadBeganLater  # 3.0 s here
   - TestMigrationLetsAnIssueNameAnyRepository  # 4.2 s
+  - TestMigrationMarksNoStoredHeadAndAWriteOfTheReleaseBeforeTakesTheMarkAway  # 1.5 s here
+  - TestMigrationOrdersTheAnswersOfASecondByThePlaceOfTheirReads  # 3.0 s here
+  - TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow  # 1.5 s here
   - TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot  # 3.5 s
   - TestMigrationSetTakesNumbersThenTimestamps  # 0.5 s
   - TestMigrationTurnsTheProductionJobIntoAList  # 2.5 s

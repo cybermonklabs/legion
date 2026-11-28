@@ -8,8 +8,9 @@
 #   refuses each of the four writes that break a rule, 400 INVALID_CI_CHECK naming the block and
 #   the rule, and stores nothing of them; a `ci_check` on a fresh block id is stored, and the old
 #   id used again by a new block is refused again; a check carrying neither `ci_check` nor `run`
-#   is stored as it is today; a document socket that declares the old schema version (3) is
-#   admitted read-only, and one that declares the new one (4) read-write. The live editor's half
+#   is stored as it is today; a document socket that declares the schema version before
+#   `ci_check` (3) is admitted read-only, and one that declares the version the server serves (4,
+#   the first with `ci_check`, or a later one) read-write. The live editor's half
 #   of k1, a person pasting the four blocks, is the browser row of e2e/verification.e2e.ts.
 # - k2: `dispatch results` derives the result of the check from the named run at the issue's open
 #   pull request head: the run's name, conclusion, output and URL, and the pull-request body line,
@@ -33,12 +34,13 @@
 #
 # The harness runs with NATS disabled, so no `pull_request` event ever stores a pull request
 # head, and the results read derives a check CI proves only at a head Dispatch holds. So each
-# head is staged with psql as such an event would have stored it: one pull_request_heads row
-# attributed to the issue, read just now, so the delivery reconcile has no reason to read it
-# again. The fake GitHub is given one repository holding the same pull requests and each head's
-# check runs, replacing every repository it served. That repository is PROJECT's default where
-# PROJECT has one, since every issue then resolves to it and a recorded result's commit must be
-# one it holds, and otherwise one of this run's own, which is no project's default.
+# head is staged with psql (stage_head): one pull_request_heads row attributed to the issue, with
+# no texts. Each reader takes the issue that row stores until a read of GitHub stores its texts,
+# and that read asks the fake, which answers the same pull request. The fake GitHub is given one
+# repository holding the same pull requests and each head's check runs, replacing every
+# repository it served. That repository is PROJECT's default where PROJECT has one, since every
+# issue then resolves to it and a recorded result's commit must be one it holds, and otherwise
+# one of this run's own, which is no project's default.
 #
 # It writes nine issues in PROJECT and closes every one of them, also when a check fails; on exit
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes
@@ -280,19 +282,20 @@ fake_pull() {
 }
 
 # stage_head SECTION ISSUE NUMBER SHA STATE: pull request NUMBER of ISSUE is STATE (open or
-# merged) at SHA, in the fake and in Dispatch's own head record, as a `pull_request` event would
-# have stored it. attribution_rule is delivery.AttributionRuleVersion, so the reconcile has no
-# merged row to judge again either; were it to, it reads the same pull request from the fake.
+# merged) at SHA, in the fake and in Dispatch's own head record. The row holds no texts, as a row
+# of the release before holds none, so each reader takes the issue that the row stores until a
+# read of GitHub stores its texts. That read asks the fake, which answers the same pull request,
+# and its title names ISSUE.
 stage_head() {
   fake_pull "$@"
   sql "$1" "stage pull request $3 of $2" -v repo="$driven_repo" -v number="$3" -v sha="$4" \
     -v state="$5" -v issue="$2" -v title="$2 the ci-check acceptance run" <<'SQL'
 insert into pull_request_heads
-  (repo, number, head_sha, state, issue_key, attribution_source, title, attribution_rule, checked_at)
-values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 2, now())
+  (repo, number, head_sha, state, issue_key, attribution_source, title, checked_at)
+values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', now())
 on conflict (repo, number) do update set
   head_sha = excluded.head_sha, state = excluded.state, issue_key = excluded.issue_key,
-  title = excluded.title, attribution_rule = excluded.attribution_rule, checked_at = excluded.checked_at;
+  title = excluded.title, checked_at = excluded.checked_at;
 SQL
   pass "$1" "staged pull request $3 of $2, $5 at $4"
 }
@@ -554,7 +557,11 @@ refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
 get "/api/v1/schema/blocks"
 want_status 200 k1 "the block schema answers"
-expect k1 "the block schema is version 4" 4 '.version'
+# The schema the server serves: version 4 added ci_check, so a page of 3 cannot write k1's document
+# and a page of the version the server serves can, whichever version that is (5 since #4611).
+expect k1 "the block schema is version 4 or later, the first with ci_check" true '.version >= 4'
+schema_version="$(jq -r '.version' "$work/body")"
+readonly schema_version
 curl -sS -o /dev/null -D "$work/signin" "$base/auth/_dev/signin?login=$(q "$dev_login")" \
   2>"$work/curl" || fail k1 "sign $dev_login in" "$(<"$work/curl")"
 sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\).*/\1/p' "$work/signin" | paste -sd ';' >"$work/cookie"
@@ -573,9 +580,10 @@ socket_scope() {
 socket_scope 3
 [[ "$scope" == readonly ]] || fail k1 "the socket on schema version 3 is read-only" "its scope is $scope"
 pass k1 "the socket on schema version 3 is admitted with scope readonly"
-socket_scope 4
-[[ "$scope" == read-write ]] || fail k1 "the socket on schema version 4 writes" "its scope is $scope"
-pass k1 "the socket on schema version 4 is admitted with scope read-write"
+socket_scope "$schema_version"
+[[ "$scope" == read-write ]] ||
+  fail k1 "the socket on the server's schema version $schema_version writes" "its scope is $scope"
+pass k1 "the socket on the server's schema version $schema_version is admitted with scope read-write"
 
 # --- k2: the derived result, the merge, one read for three checks, the newest head --------------
 
@@ -588,10 +596,12 @@ stage_head k2 "$k2_open" 101 "$open_sha" open
 results k2 "$k2_open"
 derived k2 "c-ci prints the pass of CI run contracts at the open head" c-ci pass "$open_sha" \
   success 101 "$ci_words"
+# The reading's first line follows `Reading: ` at the result's two spaces; `dispatch results`
+# indents each later line of a quoted text four spaces, so none of them reads as a check line.
 line k2 "the result's reading opens with the run's conclusion" "  Reading: conclusion: success"
-line k2 "the reading carries the run's output title" "contracts success"
-line k2 "the reading carries the run's output summary" "The contracts job concluded success."
-line k2 "the reading carries the run's URL" "https://github.com/$driven_repo/actions/runs/40/job/9001"
+line k2 "the reading carries the run's output title" "    contracts success"
+line k2 "the reading carries the run's output summary" "    The contracts job concluded success."
+line k2 "the reading carries the run's URL" "    https://github.com/$driven_repo/actions/runs/40/job/9001"
 get "/api/v1/issues/$k2_open/results"
 want_status 200 k2 "GET /results answers"
 expect k2 "the one result is the derived one: its id, role, producer, run and commit" \

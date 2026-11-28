@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -23,20 +22,21 @@ import (
 // tab listing twenty results against a handful of commits costs a handful of round trips.
 //
 // A read-only caller's read (model.Credential.ReadOnly) asks GitHub what a writer's read made at
-// the same moment asks and answers what it answers, and stores nothing: no pull_request_heads or
-// branch_commits row and no event, and no claim, hold, seen mark or default branch in this
-// process's caches, so it keeps nothing it learned after its request (plan D32). Two things of the
-// process change as they do for any read, since neither changes an answer or a GitHub call: the
-// GitHub client's token cache fills as its calls mint installation tokens
-// (githubapp.Client.RepositoryToken), and a lapsed hold it reads is deleted, as a writer's read
-// deletes it (delivery.Branches' unseenHeld and isDefaultBranch). It reads the writer's claims and
-// settles of a commit (server.commitPulls.Refuses) without taking one, and what GitHub answered
-// its own read-throughs it passes to the rest of its own request: each read of the stored heads
-// runs the writer's own statement over the stored rows with that request's answers laid on
-// (comparisonReader.answers), and its branch reads carry the default branch and the pairs refused
-// as unseen that its own reads found (comparisonReader.carried), at each place a writer's read
-// reads a row or an entry its own read stored, in the writer's order and before the same exits,
-// so the two make the same GitHub calls and give the same answer.
+// the same moment asks and answers what it answers, and stores nothing: no pull_request_heads,
+// pull_request_texts or branch_commits row, no settle of an owed read and no event, and no claim,
+// hold, seen mark or default branch in this process's caches or in commit_pull_reads, so it keeps
+// nothing it learned after its request (plan D32). Two things of the process change as they do
+// for any read, since neither changes an answer or a GitHub call: the GitHub client's token cache
+// fills as its calls mint installation tokens (githubapp.Client.RepositoryToken), and a lapsed
+// hold it reads is deleted, as a writer's read deletes it (delivery.Branches' unseenHeld and
+// isDefaultBranch). It reads the writer's claims and settles of a commit
+// (server.commitPulls.RefusesAcrossProcesses) without taking one. Each write a writer's
+// read-through would make, its own read-through makes with the writer's own code in a
+// transaction that it rolls back, and keeps for the rest of its own request (answers): each later
+// read of the stored rows runs in such a transaction after those writes, so it reads the rows a
+// writer's read would read at that place, and its branch reads carry the default branch and the
+// pairs refused as unseen that its own reads found (carried), in the writer's order and before
+// the same exits, so the two make the same GitHub calls and give the same answer.
 
 // resultsNow is the moment a results read takes each of its moments from: server.resultsClock's,
 // or time.Now's where that is nil, as it is on every server the deployment builds.
@@ -73,9 +73,9 @@ func (s *server) resultsNow() time.Time {
 //
 // The merge's own commit goes on standing at the base branch after the branch is gone, because
 // Dispatch recorded it as on that branch when it recorded the merge
-// (delivery.UpsertPullRequestHead) and a yes is kept for good. In a repository that merges by
-// squash that commit never lands on the default branch at all, so without that record a result
-// at the merge commit would stand at no basis for ever once the base branch was deleted.
+// (delivery.Attributor.UpsertPullRequestHead) and a yes is kept for good. In a repository that
+// merges by squash that commit never lands on the default branch at all, so without that record a
+// result at the merge commit would stand at no basis for ever once the base branch was deleted.
 //
 // A `default_branch` check is compared with the default branch of the check's issue's resolved
 // repository alone, whatever branch the pull request merged into, at the merge of the work there.
@@ -112,6 +112,14 @@ func (s *server) resultsNow() time.Time {
 // issue names at all (repositoryOf), among them. A database hiccup must not make a reviewer
 // refuse an approval.
 //
+// Two more answers say what Dispatch does not know yet. model.ReasonHeadNotRead names a pull
+// request of the issue whose head Dispatch has not read: it has no results row, or a read of
+// GitHub is owed for it (headBases). model.ReasonIssueNotKnown names a pull request of the
+// repository whose answer is not known: its facts name no held issue, and its commit messages
+// are not read (notKnownOf). Either can be the head a pass must stand at, so a result it can
+// decide is unknown and never another commit. Both change an answer only where Dispatch holds
+// the repository and can read it (decides), so a deployment with no App key answers as before.
+//
 // Where the reader was given a commit (?at=), that one commit is the only basis of every check
 // of the issue and the comparison makes no read of GitHub at all: the reader asked what the
 // results say about one commit, and nothing about that question turns on what GitHub holds now.
@@ -119,21 +127,19 @@ func (s *server) resultsNow() time.Time {
 //
 // The repository each issue resolves to, its default branch, the merged pull requests of each
 // issue in each repository and the merge of its work on each branch, the pull request heads of
-// each issue, the stored heads of each repository-and-commit pair and GitHub's answer about each
-// repository, branch and commit, and about each commit holding each merge, are each read once per
-// read of the results, and so are the canonical name of each linked repository a result's row
-// takes its commit to be of, one GitHub said holds that commit when the result was recorded, and
-// the repositories each issue links a merged pull request in. The branch is in the key of
-// GitHub's answer about a commit, and not the repository and the commit alone, because one
-// issue's Verification document may hold an `after_merge` check and a `default_branch` check
-// with a result at the same commit: two questions, with two answers, that one key for both would
-// collapse into whichever was asked first. Across reads, a repository's default branch, a commit's
-// place on a branch, whether a commit holds a merge and the last read-through of a commit's pull
-// requests are held by delivery (server.branches, branch_commits, commit_holds and
-// server.commitPulls).
-// A read-only caller's read writes none of those: it reads them as a
-// writer's read does, and carries what a writer's read would write for the rest of its own
-// request alone (answers, carried).
+// each issue and GitHub's answer about each repository, branch and commit, and about each commit
+// holding each merge, are each read once per read of the results, and so are the canonical name
+// of each linked repository a result's row takes its commit to be of, one GitHub said holds that
+// commit when the result was recorded, and the repositories each issue links a merged pull
+// request in. The branch is in the key of GitHub's answer about a commit, and not the repository
+// and the commit alone, because one issue's Verification document may hold an `after_merge`
+// check and a `default_branch` check with a result at the same commit: two questions, with two
+// answers, that one key for both would collapse into whichever was asked first. Across reads, a
+// repository's default branch, a commit's place on a branch, whether a commit holds a merge and
+// the last read-through of a commit's pull requests are held by delivery (server.branches,
+// branch_commits, commit_holds, server.commitPulls and commit_pull_reads). A read-only caller's
+// read writes none of those: it reads them as a writer's read does, and carries what a writer's
+// read would write for the rest of its own request alone (answers, carried).
 type comparisonReader struct {
 	server *server
 	// readOnly is whether the request the reader reads for was made with a read-only credential
@@ -155,8 +161,19 @@ type comparisonReader struct {
 	merges         map[[3]string]mergeAnswer
 	holdAnswers    map[[3]string]delivery.HoldAnswer
 	readThroughs   map[[2]string]struct{}
-	storedHeads    map[[2]string]bool
-	commits        map[[3]string]delivery.BranchAnswer
+	// readFailed is each repository and commit whose read-through this read could not make whole
+	// (readThroughHeads): GitHub failed it in this read, or the read stopped before it, or the
+	// claim that refused this read has no answer of GitHub's behind it — that read is under way,
+	// failed or stopped (delivery.CommitPullReads.HeldAcrossProcesses) — or Dispatch's own
+	// database could not claim the commit, read its claim or store GitHub's answer. A
+	// `before_merge` result there that the stored rows alone leave at another commit is not known
+	// instead (commitStands). The repository is the one readThroughRepository names.
+	readFailed map[[2]string]bool
+	commits    map[[3]string]delivery.BranchAnswer
+	// notKnown is the open and merged pull requests of each repository whose answer is not known
+	// (notKnownOf), by canonical name. Only answer fills it, after learn, so a pull request that
+	// the same read learns is in it.
+	notKnown map[string]notKnownAnswer
 	// headCI is the read of each check CI proves at each head it was read at, by the check's block
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.
@@ -166,25 +183,22 @@ type comparisonReader struct {
 	// no row twice.
 	fills   *mergeTimeFills
 	deploys map[string]currentDeploysAnswer
-	// answers is what GitHub answered this read's own read-throughs, for a read-only caller's
-	// read, which stores none of it (answerCommitPulls): every read of the stored heads, of the
-	// merged branch, in the issue's own repository and in a linked one, and of the newest head a
-	// check CI proves is derived at, runs the writer's statement over the stored rows with these
-	// laid on (delivery.Attributor.HeadsAttributedTo and the reads beside it), and a commit's
-	// branch answer reads a merge among them as its yes (delivery.Branches.ReadCommitOnBranch),
-	// which is what a writer's read reads once its read-throughs have stored them. A writer's read
-	// stores what it finds and passes this empty, which reads the stored rows alone. It is dropped
-	// with the read.
+	// answers is, for a read-only caller's read, each write its own read-throughs would have made
+	// had a writer made them, in order, and stored nowhere (delivery.HeadAnswers): every read of
+	// the stored heads, of the merges of an issue, in the issue's own repository and in a linked
+	// one, of the landings of a branch, of a refreshed merged pull request, of the heads a check
+	// CI proves is derived at, of the pull requests whose answer is not known, and of a commit's
+	// stored branch answer (delivery.Branches.ReadCommitOnBranch) runs in a transaction that makes
+	// those writes with the writer's own code and is rolled back after the read
+	// (delivery.HeadAnswers.Read), which is what a writer's read reads once its read-throughs have
+	// stored them. A writer's read stores what it finds and passes this empty, which reads the
+	// stored rows alone. It is dropped with the read.
 	answers delivery.HeadAnswers
 	// carried is what a read-only caller's branch reads carry for this read alone in place of what
 	// a writer's read writes on server.branches: the default branch its own read of a repository
 	// found, and the pairs a compare read of its own was refused as unseen
 	// (delivery.BranchCarry). It is dropped with the read.
 	carried delivery.BranchCarry
-	// askedPulls is each repository-and-commit pair a read-only caller's read has asked GitHub
-	// for in this read: a second result at the same commit is answered as a writer's read
-	// answers it, whose claim of that pair this read already holds (answerCommitPulls).
-	askedPulls map[[2]string]struct{}
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -211,23 +225,36 @@ const noCommitNamed = ""
 // none of whose pull requests is open where Dispatch cannot tell which merged one merged last
 // (headBases): it names no subject, and passStandsOf answers unknown.
 //
+// headsNotRead is each pull request of a `before_merge` check's issue whose head Dispatch has
+// not read (headBases), whatever the reason: no basis and no subject. headNotRead says whether
+// they leave a result at no basis unknown: Dispatch holds the repository and can read it (rule
+// 2), so a head it has not read can be the head that a result stands at. subjectsNotRead is how
+// many of them are a subject all the same (headBases): an open pull request owed a read where one
+// is open, or the merge that merged last; no pass stands while one is (passStandsOf).
+// issuesNotKnown is each pull request of the repository whose answer is not known, where the
+// issue holds no pull request at all (decision D2).
+//
 // ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
 // the head's repository and commit, which the subject of that repository at that commit carries
 // (subjectState).
 type comparison struct {
-	bases        []model.CheckBasis
-	merges       []mergeAnswer
-	linked       []model.CheckBasis
-	reason       string
-	unread       string
-	subjects     []headSubject
-	unordered    bool
-	ci           map[ciHeadKey]*model.CheckCI
-	live         bool
-	program      string
-	deploy       *model.CheckDeploy
-	deployHolds  model.ResultCommitStands
-	deployReason string
+	bases           []model.CheckBasis
+	merges          []mergeAnswer
+	linked          []model.CheckBasis
+	reason          string
+	unread          string
+	subjects        []headSubject
+	unordered       bool
+	headsNotRead    []model.HeadNotRead
+	headNotRead     bool
+	subjectsNotRead int
+	issuesNotKnown  []model.IssueNotKnown
+	ci              map[ciHeadKey]*model.CheckCI
+	live            bool
+	program         string
+	deploy          *model.CheckDeploy
+	deployHolds     model.ResultCommitStands
+	deployReason    string
 }
 
 // served is what the check names as its bases (model.CheckBlock.ComparedWith): the bases of the
@@ -287,10 +314,11 @@ func newComparisonReader(ctx context.Context, s *server, at string) *comparisonR
 		mergeSets:    map[[2]string]mergeSet{},
 		merges:       map[[3]string]mergeAnswer{},
 		holdAnswers:  map[[3]string]delivery.HoldAnswer{},
-		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
-		commits:    map[[3]string]delivery.BranchAnswer{},
-		fills:      &mergeTimeFills{},
-		askedPulls: map[[2]string]struct{}{},
+		readThroughs: map[[2]string]struct{}{},
+		readFailed:   map[[2]string]bool{},
+		commits:      map[[3]string]delivery.BranchAnswer{},
+		notKnown:     map[string]notKnownAnswer{},
+		fills:        &mergeTimeFills{},
 	}
 	reader.fills.readOnly, reader.fills.answers = reader.readOnly, &reader.answers
 	return reader
@@ -326,17 +354,37 @@ const noDefaultBranchNamed = ""
 // recorded at that version another renderer version spelled and which reads as its text now, the
 // same words in a new spelling. A result at the compared commit under an older wording is both,
 // and one word for both would hide which of the two a reader is looking at.
+//
+// The check names each head it has not read (model.CheckBlock.HeadsNotRead), and each pull
+// request whose answer is not known that its answer turns on (model.CheckBlock.IssuesNotKnown):
+// those of an issue with no pull request (decision D2), the possible head of each result, and the
+// merges into another branch that leave an `after_merge` result unknown (mergedElsewhere).
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
 	compared.ci = c.headCI[check.BlockID]
 	check.ComparedWith = compared.served()
 	check.ComparedNothing = compared.reason
+	check.HeadsNotRead = compared.headsNotRead
+	check.IssuesNotKnown = nil
+	for _, notKnown := range compared.issuesNotKnown {
+		check.IssuesNotKnown = appendIssueNotKnown(check.IssuesNotKnown, notKnown.Number)
+	}
 	for index := range check.Results {
 		result := &check.Results[index]
 		moved := checkWordsMoved(check, result)
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands
+		if stands.Reason != model.ReasonIssueNotKnown {
+			continue
+		}
+		if stands.PossibleHead != nil {
+			check.IssuesNotKnown = appendIssueNotKnown(check.IssuesNotKnown, stands.PossibleHead.PullRequest)
+			continue
+		}
+		for _, number := range c.mergedElsewhere(ctx, *check) {
+			check.IssuesNotKnown = appendIssueNotKnown(check.IssuesNotKnown, number)
+		}
 	}
 	markNotCounted(check, compared)
 	check.PassStands = passStandsOf(*check, compared)
@@ -352,8 +400,8 @@ func checkWordsMoved(check *model.CheckBlock, result *model.CheckResult) bool {
 
 // comparedWith is the bases of one check, read once per issue and `when`: two `before_merge`
 // checks of one issue compare with the same heads, and two `default_branch` checks with the
-// same branch. Every head GitHub had to be asked for is in that memo before the first check
-// is answered (learn), so the two checks name one list and not two.
+// same branch. Every head GitHub had to be asked for is stored before the first check is
+// answered (learn), which reads no bases, so the two checks name one list and not two.
 //
 // A reader that named a commit is answered that commit and nothing else, for every check of
 // the issue and whatever its `when`, and no read of GitHub is made for it.
@@ -386,13 +434,15 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 	}
 }
 
-// clearHeadComparisons keeps every head-derived memo on the same learned head generation.
+// clearHeadComparisons keeps every head-derived memo on the same learned head generation: the
+// pull requests whose answer is not known among them, since a refresh can change attribution.
 func (c *comparisonReader) clearHeadComparisons() {
 	clear(c.bases)
 	clear(c.linkedBases)
 	clear(c.linkedMerges)
 	clear(c.mergeSets)
 	clear(c.merges)
+	clear(c.notKnown)
 	c.headGeneration = c.fills.generation
 }
 
@@ -501,64 +551,130 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 }
 
 // learn teaches Dispatch the pull requests GitHub names for every result commit of the
-// document that heads none of the pull requests it already holds, and, where any read-through
-// stored or learned a head, reads the bases of every check again: such a head is now a row, and so
-// a basis, and a merge is now the branch an `after_merge` check compares with. A read-only
-// caller's read stores no pull request head: it reads the bases again as they would stand had it
-// stored what GitHub named (answerCommitPulls, answers), so the same heads are its bases too. So every check of
-// one answer is answered on the heads as they stand after this read's read-throughs, both
-// callers alike (plan D32).
+// document, before any check is answered: a pull request that GitHub named can be a basis now,
+// at that commit or at another result's commit, and the same read compares with it (R5). It reads
+// a commit that a basis of the check already is, too: GitHub can name a second pull request at
+// the same head, whose own event never arrived (R6 of the results lookup). A read-only caller's
+// read stores no pull request head: it keeps the writes a writer's read-through would have made
+// (delivery.Attributor.AnswerCommitsPulls, answers), and every read after it reads the rows as
+// they would stand had it made them, so the same heads are its bases too. So every check of one
+// answer is answered on the heads as they stand after this read's read-throughs, both callers
+// alike (plan D32).
 //
 // It is what stops a result recorded at a commit before any pull request carried it from
 // standing at no basis for ever (dispatch://INFRA-1240). It runs over the whole document
 // before any check is answered, so every `before_merge` check of one issue names the same
 // list of heads: a head one check's result taught Dispatch is a basis the sibling check is
 // read against too, whichever came first in the document. It runs before any check CI proves
-// is derived, too (deriveCIResults), which reads the issue's newest pull request head after it
-// (delivery.NewestPullRequestHead): a head learned here is the head such a check is derived at, as it
-// is another check's basis. The checks' results it reads are the recorded ones, since a derived
-// result is at that newest head and has nothing left to learn.
+// is derived, too (deriveCIResults), which reads the issue's pull request heads after it
+// (ciHeadsOf): a head learned here is a head such a check is derived at, as it is another
+// check's basis. The checks' results it reads are the recorded ones, since a derived result is
+// at such a head and has nothing left to learn.
 //
 // A reader that named a commit asks GitHub nothing at all, and learns nothing here.
 //
 // Only a `before_merge` check reaches GitHub this way, since a check compared with branches
 // is compared with no head. The memo is the pair of the issue and the commit: a pair read
 // through once in this read is never read through again, whichever check holds the result
-// and whenever it was recorded, since the stored rows can have changed only by this read's
-// own read-through. A result at a head an earlier read-through of this read learned is held off
-// GitHub by that head (headStoredAt).
+// and whenever it was recorded.
+//
+// learn reads no bases and no pull requests whose answer is not known. answer reads both after
+// learn (comparedWith, notKnownOf), so each holds every row that this read's read-throughs wrote,
+// and the same answer names a pull request it learned (review 18, note 3).
+//
+// It asks GitHub one question for each delivery.CommitPullsBatch commits of a repository, not one
+// for each commit: every result commit of the repository that this read has not read through
+// yet, and that no claim or settle holds off, a commit a stored head names among them
+// (readThroughHeads), is read through together (delivery.Attributor.ReadThroughCommitsPulls, and
+// AnswerCommitsPulls for a read-only caller), so an issue whose results stand at scores of commits
+// costs one question rather than one for each. Before the batched read this read spent one GitHub
+// round trip per commit in turn, and a production read of an issue with many such results took
+// longer than two minutes, where the same read with ?at=, which reads nothing through, took 8.3 s.
+// A bound on how many commits one read may learn was built for that and dropped: a read that
+// stopped short answered a check's pass_stands `no` where a read that reached the pass answered
+// `yes` (A/results_read_through_bound_test.go), which is a false verdict and not a slower one.
+//
+// The bound is in time instead, and a commit it leaves unasked is not known rather than placed:
+// the read-through of one results read starts no question to GitHub once
+// delivery.ReadThroughTimeout has passed since it began (server.readThroughBudget), over every
+// repository, and each question already started runs to its own ReadThroughTimeout, the REST
+// reads of its commits included. So the read-through of one results read takes at most two
+// minutes, however many commits and repositories it reads. A commit no question asked is given
+// back, so the next read asks it, and a result there is not known for model.ReasonReadFailed.
+//
+// Each commit is claimed before the question and settled after it (readThroughHeads): a commit
+// another process or an earlier read of this process claimed is left out of the question, and a
+// commit whose answer named a pull request headed elsewhere is settled. A commit whose answer was
+// not stored gives its claim back, and so does a commit no question of the read named, since the
+// read stops at the first failure and asks nothing after it: no answer of GitHub's is behind
+// either claim, so the next read asks again at once. A commit a question named that GitHub failed
+// keeps its claim, which no answer stands behind. None of these is an answer about the commit: a
+// result at it that no basis names is not known for model.ReasonReadFailed (commitStands), on
+// this read and, while a claim no answer stands behind holds it, on every read the claim refuses.
 func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock) {
 	if c.at != noCommitNamed {
 		return
 	}
-	learned := false
+	byRepository := map[string][]model.CheckResult{}
+	var repositories []string
 	for _, check := range checks {
 		if check.When != docs.CheckWhenBeforeMerge {
 			continue
 		}
-		compared := c.comparedWith(ctx, check)
 		for _, result := range check.Results {
-			if c.resultBasisAt(ctx, check.IssueKey, compared.bases, result) != nil {
-				continue
-			}
 			key := [2]string{result.CheckIssueKey, result.CommitSHA}
 			if _, asked := c.readThroughs[key]; asked {
 				continue
 			}
 			c.readThroughs[key] = struct{}{}
-			if c.readThroughHead(ctx, result) {
-				learned = true
+			repo, readable := c.readThroughRepository(ctx, result)
+			if !readable {
+				continue
 			}
+			if _, held := byRepository[repo]; !held {
+				repositories = append(repositories, repo)
+			}
+			byRepository[repo] = append(byRepository[repo], result)
 		}
 	}
-	if learned {
-		c.clearHeadComparisons()
+	budget := c.server.readThroughBudget
+	if budget == 0 {
+		budget = delivery.ReadThroughTimeout
+	}
+	bounded, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	for _, repo := range repositories {
+		c.readThroughHeads(bounded, repo, byRepository[repo])
 	}
 }
 
-// commitStands is where one result's commit stands: at one of the bases its check named, at
-// another commit, or not known with the reason. It says nothing about the check's words, which
-// answer carries beside it.
+// commitStands is where one result's commit stands (placeCommit), under one rule over every
+// answer that places it: a `before_merge` result whose commit this read could not read through
+// (readFailed, readThroughHeads) is not known for model.ReasonReadFailed where the stored rows
+// alone leave it at another commit. The read-through is what teaches Dispatch a pull request at
+// the commit, so a read of it that did not answer is no evidence that the work moved on: on
+// 2026-11-27 the reads of commits whose pull requests passed GitHub's cap on a response answered
+// `other_commit` for every result at them, for the five minutes each failed read's claim held,
+// and a check whose issue held no pull request answered pass_stands `no` for a pass GitHub would
+// have placed. The answer keeps the linked repository the rules named
+// (model.ResultCommitStands.Repo). The rule reads placeCommit's answer rather than sitting in
+// each of its arms, so no arm that answers `other_commit` can leave it out.
+func (c *comparisonReader) commitStands(
+	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
+) model.ResultCommitStands {
+	stands := c.placeCommit(ctx, check, compared, result)
+	if stands.Answer != model.CommitOtherCommit || check.When != docs.CheckWhenBeforeMerge || len(c.readFailed) == 0 {
+		return stands
+	}
+	if repo, readable := c.readThroughRepository(ctx, result); readable && c.readFailed[[2]string{repo, result.CommitSHA}] {
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed, Repo: stands.Repo}
+	}
+	return stands
+}
+
+// placeCommit is where the stored rows and this read's answers place one result's commit: at one
+// of the bases its check named, at another commit, or not known with the reason. It says nothing
+// about the check's words, which answer carries beside it.
 //
 // A commit one of the bases names is the whole answer, whatever Dispatch can read now. A result a
 // head's check run derived stands at that head's basis (derivedAt), so where two repositories are
@@ -568,7 +684,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // Where the check named bases and none is this commit, a `before_merge` result turns on
 // whether the repository the commit is taken to be of can be read at all, and a branch check
 // walks the branches of that repository (onNamedBranch). Those two, beside learn's read-through
-// of a `before_merge` result's pull requests (readThroughHead), are the only places here the
+// of a `before_merge` result's pull requests (readThroughHeads), are the only places here the
 // repository a result's row takes its commit to be of is read, each through the one resolver
 // (commitRepositoryOf): a check that named no basis of its own leaves such a result where its
 // reason leaves every other, as passStandsOf leaves the check. An `other_commit` or `unknown`
@@ -577,12 +693,14 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 //
 // A `before_merge` result whose commit is taken to be of a linked repository
 // (commitRepositoryOf) is decided by that repository, as its record and its read-through are:
-// unknown with model.ReasonRepositoryUnreadable where the App cannot read it, and another commit
-// otherwise, since a read-through of that repository would have taught Dispatch a pull request
-// headed at the commit (commitRepository.readable, the answer readThroughRepository reads for
-// readThroughHead too). The issue's own repository has nothing to say about a commit of another
-// repository: read through it, a result there would stand unknown for good wherever the App
-// cannot read the issue's own.
+// unknown with model.ReasonRepositoryUnreadable where the App cannot read it, unknown with
+// model.ReasonHeadNotRead where a pull request of the issue's is owed a read, since its head can
+// be the one the result stands at, as atNoBasis answers for the issue's own repository, and another
+// commit otherwise, since a read-through of that repository would have taught Dispatch a pull
+// request headed at the commit (commitRepository.readable, the answer readThroughRepository reads
+// for readThroughHeads too). The issue's own repository has nothing to say about a commit of
+// another repository: read through it, a result there would stand unknown for good wherever the
+// App cannot read the issue's own.
 //
 // An issue that resolves to no repository is never unknown, whatever the check's `when`, but
 // for a `before_merge` result whose row names a linked repository, which that repository decides
@@ -596,7 +714,12 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // reason: Dispatch cannot say whether there is a repository to read a head from, so a commit
 // no head names is no evidence that the work moved on. Both nils were one answer here before
 // dispatch://INFRA-1522, and a failed resolve read as the fact about the work.
-func (c *comparisonReader) commitStands(
+//
+// A `before_merge` result at no basis that the rules above leave at another commit can still be
+// at a head Dispatch does not know of (atNoBasis), or at a commit whose read-through did not
+// answer (commitStands). An `after_merge` result can stand at a branch that another merge did not
+// reach (mergedElsewhere).
+func (c *comparisonReader) placeCommit(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
 	if basis := compared.derivedAt(result); basis != nil {
@@ -631,14 +754,51 @@ func (c *comparisonReader) commitStands(
 			if !owner.readable {
 				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable, Repo: owner.linked}
 			}
+			if len(compared.headsNotRead) > 0 {
+				// A pull request of the issue's whose head Dispatch has not read can be headed at
+				// this commit, as in the issue's own repository (atNoBasis).
+				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonHeadNotRead, Repo: owner.linked}
+			}
 			return model.ResultCommitStands{Answer: model.CommitOtherCommit, Repo: owner.linked}
 		}
 		if reason := c.nothingReason(ctx, check.IssueKey); reason != model.ReasonNoPullRequestOrBranch {
 			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason}
 		}
-		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
+		return c.atNoBasis(ctx, check, compared, result)
 	}
-	return c.onNamedBranch(ctx, check, compared, result)
+	stands := c.onNamedBranch(ctx, check, compared, result)
+	if len(c.mergedElsewhere(ctx, check)) == 0 {
+		return stands
+	}
+	// A merge whose answer is not known reached another branch than the issue's. It can be the
+	// issue's own, so only the default branch, which every merge reaches in the end, decides.
+	if defaultBranch, _ := c.defaultBranchOf(ctx, check.IssueKey); stands.Answer == model.CommitAtBasis &&
+		stands.Basis != nil && stands.Basis.Branch == defaultBranch {
+		return stands
+	}
+	return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonIssueNotKnown}
+}
+
+// atNoBasis is where a `before_merge` result's commit stands where no basis names it and the base
+// answers another commit. Dispatch can read the repository there, and two pull requests it has
+// not placed can still be the one at that commit. A pull request whose answer is not known and
+// whose head is the commit makes it unknown with model.ReasonIssueNotKnown, and names it as the
+// possible head (decision D4). Else a head of the issue that Dispatch has not read makes it
+// unknown with model.ReasonHeadNotRead. Else it is another commit. A failed read of the pull
+// requests whose answer is not known is model.ReasonReadFailed.
+func (c *comparisonReader) atNoBasis(
+	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
+) model.ResultCommitStands {
+	possible, read := c.possibleHeadAt(ctx, check.IssueKey, result.CommitSHA)
+	switch {
+	case !read:
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed}
+	case possible != nil:
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonIssueNotKnown, PossibleHead: possible}
+	case compared.headNotRead:
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonHeadNotRead}
+	}
+	return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 }
 
 // derivedAt is the basis of the subject whose read of a check CI proves derived result, the head
@@ -754,170 +914,6 @@ func (c *comparisonReader) onNamedBranch(
 		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason, Repo: named}
 	}
 	return model.ResultCommitStands{Answer: model.CommitOtherCommit, Repo: named}
-}
-
-// readThroughHead teaches Dispatch the pull requests GitHub names for a result's commit and
-// reports whether the read stored or learned any head, which is what makes learn read the bases
-// again. A writer's read stores what GitHub named, under server.commitPulls' claim
-// (storeCommitPulls). A read-only caller's read stores nothing and takes no claim, and passes
-// GitHub's answer to the rest of its own request (answerCommitPulls, answers). Either way the read
-// error, where there is one, is logged here once.
-//
-// It asks GitHub only where GitHub's answer can repair the result, since listCheckResults
-// places every result of every check and the Verification tab reads them all again on every
-// result.recorded. Two conditions rule out the commits no answer of GitHub's can repair, and
-// each is a fact about the repository and the commit, never about the result that is being
-// answered:
-//
-//   - The commit heads an open or merged pull request Dispatch holds (headStoredAt), whatever
-//     issue that row is attributed to and whether it is attributed at all. Such a commit is one
-//     Dispatch's own passes keep reading — the reconcile re-reads an open row at every pass of
-//     one process, each starting at most five minutes after the one before it ended
-//     (delivery.PullRequestHeadStaleAfter), and offers a merged one once per attribution rule
-//     (delivery.ListStalePullRequestHeads) —
-//     so a read from here repairs nothing. This is a child's result on its parent's tab: the row
-//     is the child's own pull request, attributed to the child, and no answer of GitHub's puts
-//     that commit among the parent's heads, since the issue a result was recorded on counts for
-//     nothing here. A closed-unmerged row is counted for nothing, because the reconcile keeps
-//     none and a pull request closed at a commit does not stop another opening from the same
-//     head.
-//   - Or a read within the last delivery.CommitPullSettledFor has asked GitHub about that
-//     repository and commit and been told of a pull request whose head is another commit
-//     (delivery.CommitPullReads.Settle, which that read records and Claim refuses from). GitHub
-//     has answered about this commit for now — its answer put the pull request's head past it —
-//     so the answer is believed for that span and nothing a read inside it can learn repairs the
-//     result. It is a span and not for ever because a pull request opened later can have its
-//     head at that commit, which the next read after the span sees. GitHub naming no pull
-//     request at all is settled for no span at all, since one may open at the commit a moment
-//     later.
-//
-// Three tests cost nothing and bound the rest. A deployment holding no App key can ask nothing.
-// A repository Dispatch cannot see is the unknown answer whatever GitHub would say, and the
-// read of its default branch is the test (readThroughRepository), made once per repository per
-// read of the results (defaultBranchIn's memo): for the issue's own repository it is the test
-// commitStands makes next, so it decides here first and costs nothing twice. It also answers
-// false for an issue resolving to no repository and for a resolve that did not answer, which is
-// why the repository read there has one. And one commit is read through at most once every
-// delivery.CommitPullReadStaleAfter, however many reads ask: server.commitPulls.Claim tests
-// that bound and records the read together, so two reads that ask at once spend one call.
-//
-// The read is against the repository the result's commit is taken to be of (commitRepositoryOf):
-// a linked repository the result's row names, under its canonical name, and else the canonical
-// repository the check's issue resolves to (repositoryOf), the same issue headBases asks the
-// stored rows about. Asked of the issue's own repository, a commit only a linked repository
-// holds answers 422 on every read, and a linked pull request whose head reaches that commit
-// after the record would never be learned. The readable test is that repository's own. A read
-// that fails leaves the bases exactly as the stored rows say, which is what a result reads with
-// no read-through at all: a GitHub call that did not land is no evidence either way. A read that
-// fails after it attributed some of the pull requests GitHub named stores that part, or passes it
-// on, as a head it learned (delivery.Attributor.ReadThroughCommitPulls).
-func (c *comparisonReader) readThroughHead(ctx context.Context, result model.CheckResult) bool {
-	if c.server.deps.GitHub == nil {
-		return false
-	}
-	repo, readable := c.readThroughRepository(ctx, result)
-	if !readable {
-		return false
-	}
-	if c.headStoredAt(ctx, repo, result.CommitSHA) {
-		return false
-	}
-	now := c.server.resultsNow()
-	var learned bool
-	var err error
-	if c.readOnly {
-		learned, err = c.answerCommitPulls(ctx, repo, result.CommitSHA, now)
-	} else {
-		learned, err = c.storeCommitPulls(ctx, repo, result.CommitSHA, now)
-	}
-	if err != nil {
-		slog.Info("dispatch: GitHub named no pull request for a result's commit",
-			"repo", repo, "commit", result.CommitSHA, "error", err)
-	}
-	return learned
-}
-
-// storeCommitPulls is readThroughHead's read-through for a writer: under server.commitPulls'
-// claim it asks GitHub and stores what GitHub named (delivery.Attributor.ReadThroughCommitPulls),
-// and settles the commit where GitHub named pull requests none of which heads it. It answers
-// whether it stored any head, and the read's error.
-func (c *comparisonReader) storeCommitPulls(ctx context.Context, repo, sha string, now time.Time) (bool, error) {
-	if !c.server.commitPulls.Claim(repo, sha, now) {
-		return false, nil
-	}
-	written, atHead, err := c.server.deps.Attributor.ReadThroughCommitPulls(
-		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, c.server.deps.Events, repo, sha, now)
-	if err == nil && written > 0 && !atHead {
-		c.server.commitPulls.Settle(repo, sha, now)
-	}
-	return written > 0, err
-}
-
-// answerCommitPulls is readThroughHead's read-through for a read-only caller, which stores
-// nothing and keeps nothing after its request (plan D32). Where a writer's claim or settle of the
-// commit stands (server.commitPulls.Refuses), it asks GitHub nothing, as a writer's read whose
-// claim is refused asks nothing, and the stored rows answer. Otherwise it asks GitHub what a
-// writer's read asks (delivery.Attributor.ReadCommitPulls), takes no claim, and adds the answer
-// to the read's own answers, which every later read of this request reads as the stored rows a
-// writer's read-through would have written by then. A read that failed after it attributed some
-// of the pull requests GitHub named adds that part, as a writer's read stores it. It answers
-// whether it learned any head, and the read's error.
-//
-// A pair this read has already asked GitHub for is answered false, as a writer's read is
-// answered by the claim it took for that pair earlier in the same read.
-func (c *comparisonReader) answerCommitPulls(ctx context.Context, repo, sha string, now time.Time) (bool, error) {
-	pair := [2]string{repo, sha}
-	if _, asked := c.askedPulls[pair]; asked {
-		return false, nil
-	}
-	c.askedPulls[pair] = struct{}{}
-	if c.server.commitPulls.Refuses(repo, sha, now) {
-		return false, nil
-	}
-	pulls, err := c.server.deps.Attributor.ReadCommitPulls(ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, sha, now)
-	c.answers.Add(pulls)
-	return len(pulls.Heads) > 0, err
-}
-
-// readThroughRepository is the repository readThroughHead reads a result's commit through, and
-// whether that read can be made at all, by whose the commit is taken to be (commitRepositoryOf):
-// a linked repository, where the App can read it (commitRepository.readable, the one answer
-// commitStands decides a `before_merge` result by as well); and else the repository the check's
-// issue resolves to, where the App answered that repository's default branch, which also answers
-// false for an issue resolving to no repository and for a resolve that did not answer, the memo
-// commitStands reads next.
-func (c *comparisonReader) readThroughRepository(ctx context.Context, result model.CheckResult) (string, bool) {
-	if owner := c.commitRepositoryOf(ctx, result.CheckIssueKey, result.CommitRepo); owner.linked != "" {
-		return owner.linked, owner.readable
-	}
-	if _, readable := c.defaultBranchOf(ctx, result.CheckIssueKey); !readable {
-		return "", false
-	}
-	repo, _ := c.repositoryOf(ctx, result.CheckIssueKey)
-	return *repo, true
-}
-
-// headStoredAt is whether Dispatch holds an open or merged pull request whose head is that
-// commit of that repository (delivery.HeadStoredAt), read once per read of the results. A read
-// that failed answers that it may hold one, so a database hiccup spends no GitHub call and the
-// bases stand exactly as the stored rows leave them, as they do after any failed read here.
-//
-// It reads the caller's request's answers as headBases does: a head a read-only caller's own
-// read-through of another commit learned a moment ago holds it off this commit, as the row that
-// writer's read-through stored holds the writer's off.
-func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) bool {
-	memo := [2]string{repo, sha}
-	if stored, memoized := c.storedHeads[memo]; memoized {
-		return stored
-	}
-	stored, err := delivery.HeadStoredAt(ctx, c.server.deps.Store.Pool, repo, sha, c.answers)
-	if err != nil {
-		slog.Warn("dispatch: read the stored pull request heads of a commit",
-			"repo", repo, "commit", sha, "error", err)
-		stored = true
-	}
-	c.storedHeads[memo] = stored
-	return stored
 }
 
 // repositoryOf is checkIssueRepository read once per read of the results: the repository the

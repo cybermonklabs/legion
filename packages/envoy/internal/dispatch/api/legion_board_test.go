@@ -629,7 +629,7 @@ func TestTheLegionBoardHeaderGivesTheDaemonsP0Holders(t *testing.T) {
 // daemon's state after Dispatch observed it in `testing` and so is still Legion's.
 func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
 	seedLegionIssue(t, database, "INFRA", 1, "The root", "a", nil, "")
@@ -673,7 +673,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		t.Errorf("the board puts INFRA-3 in tree %q, want INFRA-1: the middle issue left the daemon's state and is still Legion's", tree)
 	}
 	now := time.Now().UTC()
-	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -941,7 +941,7 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 // count its own issue, its own sessions' filings and its own daemon's observations.
 func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	infra := newFakeLegionDaemon(t, handler, "INFRA")
 	linux := newFakeLegionDaemon(t, handler, "LINUX")
@@ -992,7 +992,7 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		{"INFRA", "INFRA-1", nil},
 		{"LINUX", "LINUX-1", []string{"INFRA-2 by implementer of LINUX-1, " + metrics.ClassOutOfTree}},
 	} {
-		population, err := metrics.ReadProject(t.Context(), database.Pool, one.project, now)
+		population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, one.project, now)
 		if err != nil {
 			t.Fatalf("read %s's metrics population: %v", one.project, err)
 		}

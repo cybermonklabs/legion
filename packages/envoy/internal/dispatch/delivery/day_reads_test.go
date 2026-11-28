@@ -58,7 +58,7 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 				}
 				continue
 			}
-			want, err := ListPullRequestsInWindow(ctx, pool, day, to)
+			want, err := unrenamed().ListPullRequestsInWindow(ctx, pool, day, to)
 			if err != nil {
 				t.Fatalf("%s: ListPullRequestsInWindow: %v", day, err)
 			}
@@ -86,14 +86,14 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 			}
 			for i, day := range days {
 				to := day.AddDate(0, 0, 1)
-				want, err := ReadDeploys(ctx, pool, settings, day, to)
+				want, err := unrenamed().ReadDeploys(ctx, pool, settings, day, to)
 				if err != nil {
 					t.Fatalf("%s: ReadDeploys: %v", day, err)
 				}
 				if got.Refused[i] != nil || !reflect.DeepEqual(got.Deploys[i], want) {
 					t.Errorf("%s: deploys = %+v, refusal = %+v, want the window's deploys %+v and no refusal", day, got.Deploys[i], got.Refused[i], want)
 				}
-				merged, err := ReadMergedRows(ctx, pool, settings, day, to)
+				merged, err := unrenamed().ReadMergedRows(ctx, pool, settings, day, to)
 				if err != nil {
 					t.Fatalf("%s: ReadMergedRows: %v", day, err)
 				}
@@ -213,7 +213,7 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 			if !reflect.DeepEqual(got, history.PullRequests) {
 				t.Errorf("pull requests merged before %s differ from ReadHistoryRows (%d rows versus %d)", to, len(got), len(history.PullRequests))
 			}
-			want, err := ListPullRequestsInWindow(ctx, pool, time.Time{}, to)
+			want, err := unrenamed().ListPullRequestsInWindow(ctx, pool, time.Time{}, to)
 			if err != nil {
 				t.Fatalf("ListPullRequestsInWindow before %s: %v", to, err)
 			}
@@ -225,7 +225,7 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 		{"ListPullRequestsOnDays past the bound", func(t *testing.T) {
 			const overfull = 1
 			day := days[overfull]
-			prs, err := ListPullRequestsInWindow(ctx, pool, day, day.AddDate(0, 0, 1))
+			prs, err := unrenamed().ListPullRequestsInWindow(ctx, pool, day, day.AddDate(0, 0, 1))
 			if err != nil {
 				t.Fatalf("read the day before adding pull requests: %v", err)
 			}

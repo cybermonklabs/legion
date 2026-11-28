@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -27,7 +29,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
 	seeded := time.Since(started)
 
-	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, delivery.NewAttributor(refs.Renames{}), fixture.Project, now)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}

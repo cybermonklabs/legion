@@ -709,6 +709,14 @@ jobs:
       - name: Typecheck the e2e scripts and their tests
         run: bunx tsc --noEmit -p scripts/e2e/lib
 
+      # scripts/e2e's drivers, the *.ts beside its shell proofs, run under Bun, which strips types
+      # without checking them, and no other program typechecks them, so a call of the wrong type
+      # runs: verification-results.ts's after-merge-answer case called awaitCommitStands with no
+      # deadline (TS2554), and its wait read once. scripts/e2e/tsconfig.json holds every *.ts of
+      # the directory; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the e2e drivers
+        run: bunx tsc --noEmit -p scripts/e2e
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

@@ -2611,28 +2611,17 @@ export const dispatchToolSpecs = [
       "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
-      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. If " +
-      "GitHub does not say that it does, Dispatch reads the external links of the check's issue: " +
-      "a link to a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open " +
-      "or merged, in a repository that Dispatch's GitHub App is installed on and can read, adds " +
-      "the repository of that pull request. One record reads at most 10 linked pull requests. A " +
-      "commit that none of these repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and each owner/repo that Dispatch asked. It also names, with its reason " +
-      "(owner/repo#n (repository_unreadable)), each linked pull request that Dispatch could not " +
-      "read, at most 10 and a count of the rest, and every linked pull request in whose " +
-      "repository it could not read the commit, since each of those spent one of the record's 10 " +
-      "reads, and says to grant Dispatch's GitHub App that repository or to link a readable pull " +
-      "request. It says how many linked pull requests it left unread past that bound. Record the " +
-      "result after the commit is pushed. A linked repository that the App is not installed on " +
-      "or cannot read does " +
-      "not count. Where a read of " +
-      "a linked pull request or of a linked repository does not answer, and no repository is shown " +
-      "to hold the commit, the record is 502 GITHUB_UNREADABLE and nothing is recorded: record the " +
-      "result again, after the wait the refusal names for a rate limit. Where the issue has no " +
-      "repository, the result is recorded as before. Where Dispatch cannot read the repository " +
-      "of the check's issue, the result is recorded as before only when every linked read " +
-      "answers and no linked repository holds the commit: a linked read that does not answer " +
-      "is 502 GITHUB_UNREADABLE and nothing is recorded. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit, then " +
+      "the repository of each other open or merged pull request of that issue, which for a pull " +
+      "request the issue links may be another repository, and then the repository of each open " +
+      "or merged pull request that an external link of the check's issue names " +
+      "(https://github.com/<owner>/<repo>/pull/<n>), in a repository that Dispatch's GitHub App " +
+      "is installed on and can read. One record reads at most 10 linked pull requests. A result " +
+      "at the head of a pull request of the issue needs no question. A commit that none of these " +
+      "repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the commit and each owner/repo " +
+      "that Dispatch asked, and says how many linked pull requests it left unread past that " +
+      "bound. Record the result after the commit is pushed. A repository Dispatch cannot read, " +
+      "and a read of GitHub that does not answer, records the result as before. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
@@ -2803,28 +2792,47 @@ export const dispatchToolSpecs = [
       "none is open. An after_merge result counts only at a commit that holds the work's merge " +
       "on the compared branch. A default_branch check names the default branch alone. " +
       "With no known merge, an after_merge check compares with nothing and says so. " +
+      "Where a check compared with nothing for another reason, it says which of five things " +
+      "happened: the issue has no pull request and no branch to compare with, Dispatch cannot " +
+      "read the repository, a read Dispatch made did not answer, Dispatch has not read the head " +
+      "of a pull request of the issue, or Dispatch does not know yet whether a pull request it " +
+      "read is this issue's. " +
       "A read that failed is not known, never a pass or a fail. The newest branch result decides " +
       "and names its id and commit. A pass and fail at that commit are not known until retraction. " +
       "Production and graph checks count only results recorded for the current deploy of the " +
       "program they read. The output names that deploy and says why an excluded result counts " +
       "for nothing. The check's words must be unchanged and the result unretracted. " +
+      "After whether a pass stands, a recorded check's head line names the newest result of each " +
+      "role at what the check compared with, pass and fail alike, oldest first, each with the " +
+      "first eight characters of its id (`A pass stands: not known. Newest at that commit: " +
+      "implementer: pass (2120a467); tester: fail (9f5fd8c4, newer).`); a retracted result and " +
+      "one that counts for nothing are left out. " +
+      "Under its head line, a check names each pull request whose head Dispatch has not read " +
+      "(`Not read yet:`), and why and since when GitHub refuses that read where it does " +
+      "(`Not read:`), then each pull request Dispatch does not know yet is the issue's " +
+      "(`Not known yet:`). " +
       "The check's own words print once, under the check. Each result then prints its verdict, " +
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
-      "the reason and the caller that retracted it. A check with no result says so. " +
+      "the reason and the caller that retracted it. A check with no result says so. Each line of " +
+      "a reading, a retraction's reason or a check's words after its first is indented, so none " +
+      "starts as a check line (`- `) or a result line (`  - `) does. " +
       `${CHECK_PROVED_BY_CI}: ` +
       "no role records its result. Dispatch reads GitHub at every open head, or the final head " +
       "of the last pull request to merge when none is open. Its result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
-      "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
+      "words>`, then `A pass stands: yes, from ci.`, `A pass stands: no.` or `A pass stands: " +
+      "not known.`, then `Pull request line:` " +
       "and the line to write into the pull-request body unchanged, then the reading: the " +
       "conclusion, the run's output title and summary, and its URL. A run that proves nothing " +
       "prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's " +
       "words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> " +
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
-      "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
+      "issue with no pull request head, a head whose read of GitHub is owed, a pull request " +
+      "that Dispatch does not know yet is the issue's and that can come before the head, or " +
+      "GitHub not read, with what GitHub answered. " +
       "A pull-request line writes `CI run <name>` only when it keeps every word of the name, " +
       "and `the CI run the check names` in its place where it drops one: a word the line drops, " +
       "such as an issue key or a word holding `_`. " +
@@ -3401,6 +3409,23 @@ export const dispatchToolSpecs = [
     example: {},
     description:
       "The bounds this Dispatch server holds a write to, read from the server itself: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long an ask's question and options are together, how long a body an event carries whole may be, and how many bytes a request, a document and a handoff body may hold. Dispatch refuses a text over a bound and names the block or the field it passed; no tool and no command cuts or refuses your text before the server reads it, so these numbers are what decides whether a write is taken.",
+    arguments: () => ({}),
+    strict: true,
+  },
+  {
+    name: "dispatch_attribution",
+    example: {},
+    description:
+      "What the attribution of stored pull requests to issues still waits for, counted by this Dispatch server at the call. " +
+      "The server reads no GitHub for it and needs no delivery settings. " +
+      "It prints the pull requests that wait for their facts from GitHub: the head, branch, title, body and commit messages. " +
+      "It prints the pull requests that a reconcile pass still reads from GitHub, and how many of them GitHub refused. " +
+      "It prints the pull requests whose keys come from another key reading and wait to be read again. " +
+      "It prints the changes of attribution whose events wait. " +
+      "It names the key reading that runs now. " +
+      "It counts the links that more than one issue holds in other letter cases, or a pull request in its other form. " +
+      "It prints the pull requests whose head is not read while a read of GitHub is owed: those GitHub did not answer and those GitHub refuses, each with the oldest time of its kind. " +
+      "After a deploy, run it after each reconcile pass until the counts on its first three lines are 0.",
     arguments: () => ({}),
     strict: true,
   },

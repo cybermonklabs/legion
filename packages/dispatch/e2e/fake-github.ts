@@ -1,3 +1,15 @@
+import {
+  callOf,
+  countCheckRunRead,
+  countPullRead,
+  type FakePull,
+  type FakeRepo,
+  fixtureResponse,
+  logCall,
+  outage,
+  pullReadOf,
+  repos,
+} from "./fake-github-fixture";
 import { harnessPorts } from "./harness-ports";
 
 // Minimal GitHub App API for the architecture-source access check, the
@@ -6,60 +18,25 @@ import { harnessPorts } from "./harness-ports";
 // proves the minted token works, the exact branch read a source's save makes, the
 // commit/tree/blob reads a sync walks, the commits read whose 422 says a repository
 // holds no such commit, empty delivery listings, and a seeded pull request with its
-// head's check runs and workflow runs. Tests seed per-repository state through
-// /__fixture/repos and read how many times the server asked for each commit's check runs
-// through /__fixture/requests; the server reaches this via DISPATCH_GITHUB_API_BASE.
+// commits, its head's check runs and workflow runs. The GraphQL route answers the
+// aliased pull request queries of the reconcile's facts reads from the seeded pull
+// requests, and the aliased `object(oid:)` query of many commits' pull requests from
+// `commit_pulls`, as the REST read of one commit's pull requests answers. It answers the
+// merged search of the reconcile from the merged pull requests that a seed marks
+// `searched`. It answers an empty search to every other query. The seed
+// fields of the search and the completion are `searched`, `author`, `created_at`,
+// `merged_at` and `labels`. A pull request with one of them also answers what the
+// completion of a partial row reads. A repository seeded as rate_limited answers as GitHub
+// does once its installation's budget is spent, and one seeded with refused_pulls refuses
+// the read of those pull requests with the status GitHub gives.
+// Tests seed per-repository state through /__fixture/repos and read it back there,
+// and read how many times the server asked for each commit's check runs and for each
+// repository's pull requests, and each call it made, through /__fixture/requests. PUT
+// /__fixture/outage takes GitHub down, every call answering one status until DELETE
+// /__fixture/outage. Those routes, the seed's shapes and the counts are
+// e2e/fake-github-fixture.ts's. The server reaches this via DISPATCH_GITHUB_API_BASE.
 
 const ARCHITECTURE_DIR = ".dispatch/architecture";
-
-/** A pull request the GitHub link reads: its title, state and head commit, and the branch,
- *  base and body Dispatch's pull-request head tracking attributes it by. */
-interface FakePull {
-  readonly head_sha: string;
-  readonly merged?: boolean;
-  readonly state: string;
-  readonly title: string;
-  readonly body?: string;
-  readonly head_ref?: string;
-  /** The repository the head branch lives in, as GitHub's `head.repo.full_name`; the pull
-   *  request's own repository when unset. Dispatch compares a check's results with a pull
-   *  request's head only when the two are the same, so a fork's name here is how a fixture
-   *  describes a pull request that attributes nobody. */
-  readonly head_repo?: string;
-  readonly base_ref?: string;
-  readonly updated_at?: string;
-  readonly merge_commit_sha?: string;
-  readonly merged_at?: string;
-}
-
-/** One check run of a commit, in the check suite `check_suite_id` names. GitHub always answers
- *  `completed_at`, `html_url` and `output`, so the fake does too: a run that leaves
- *  `completed_at` unset answers null, as a run not yet completed does, one that leaves
- *  `html_url` unset answers the run's page on github.com, and one that leaves `output` unset
- *  answers a null title and summary, as a GitHub Actions job does. */
-interface FakeCheckRun {
-  readonly app_id?: number;
-  readonly check_suite_id: number;
-  readonly completed_at?: string | null;
-  readonly conclusion: string | null;
-  readonly html_url?: string;
-  readonly id: number;
-  readonly name: string;
-  readonly output?: { readonly title: string | null; readonly summary: string | null };
-  readonly status: string;
-}
-
-/** What the check-runs read of one commit does in place of answering at once: answers `status`
- *  with GitHub's error body, or waits `hold_ms` milliseconds and then answers as it would have. */
-type FakeCheckRunFault = { readonly status: number } | { readonly hold_ms: number };
-
-/** One workflow run of a commit: its workflow's name, its triggering event and its check suite. */
-interface FakeWorkflowRun {
-  readonly check_suite_id: number;
-  readonly event: string;
-  readonly id: number;
-  readonly name: string;
-}
 
 /** GitHub's page of a list: `per_page` (default 30, at most 100) items from page `page`. */
 function pageOf<T>(items: readonly T[], url: URL): T[] {
@@ -68,45 +45,23 @@ function pageOf<T>(items: readonly T[], url: URL): T[] {
   return items.slice((page - 1) * perPage, page * perPage);
 }
 
-interface FakeRepo {
-  /** Contents permission the installation reports: "read", "write", "none". */
-  readonly contents: string;
-  /** Actions and Pull-requests permissions a delivery reconcile needs. */
-  readonly actions?: string;
-  readonly pull_requests?: string;
-  readonly installation_id: number;
-  /** Markdown files inside .dispatch/architecture/, keyed by file name. The
-   *  branch commit is derived from their content, so a re-seed with different
-   *  files moves the commit exactly like a push would. */
-  readonly files?: Record<string, string>;
-  /** The repository's branches, every one at the commit `files` derives; `["main"]` when
-   *  unset, GitHub's default branch. The exact branch read answers 404 for any other name. */
-  readonly branches?: readonly string[];
-  /** Pull requests keyed by number; a number not here answers a server error, as before. */
-  readonly pulls?: Record<string, FakePull>;
-  /** Check runs keyed by commit sha, in any order. The read pages them as GitHub does
-   *  (`pageOf`), so a commit of 101 runs answers 100 on page 1 and one on page 2. */
-  readonly check_runs?: Record<string, readonly FakeCheckRun[]>;
-  /** What the check-runs read of a commit does instead of answering at once, keyed by commit
-   *  sha; a commit not here answers at once. */
-  readonly check_run_faults?: Record<string, FakeCheckRunFault>;
-  /** Workflow runs keyed by head sha. */
-  readonly workflow_runs?: Record<string, readonly FakeWorkflowRun[]>;
-  /** The repository's default branch; "main" when unset. */
-  readonly default_branch?: string;
-  /** The pull request numbers GitHub names for a commit, keyed by commit sha: what
-   *  `GET /repos/{o}/{r}/commits/{sha}/pulls` answers, read from `pulls`. */
-  readonly commit_pulls?: Record<string, readonly number[]>;
-  /** The commits each branch holds, keyed by branch name: what the compare read answers
-   *  `behind` (or `identical`, for the last of them) about, and `diverged` about any other. */
-  readonly branch_commits?: Record<string, readonly string[]>;
-  /** Commits the repository holds with nothing else attached to them: what the commits read
-   *  answers 200 for beside the commits the fields above imply. A fixture that wants a commit
-   *  refused simply leaves it out of every one of them. */
-  readonly commits?: readonly string[];
-  /** A repository Dispatch's App is not installed on: every read of it answers, but the
-   *  installation lookup is GitHub's 404, so the server can reach no token for it. */
-  readonly installation_missing?: boolean;
+/** GitHub's error answer for `status`, in its words for it: 404 `Not Found`, 403 `Resource not
+ *  accessible by integration` (a read the App's token may not make), and `Server Error` else. */
+function githubError(status: number): Response {
+  const message =
+    status === 404
+      ? "Not Found"
+      : status === 403
+        ? "Resource not accessible by integration"
+        : "Server Error";
+  return Response.json({ message }, { status });
+}
+
+/** GitHub's refusal of a read of pull request `number` of `fullName`, or of its commits, where the
+ *  seed lists it in `refused_pulls`; undefined for any other. */
+function refusedPullRead(fullName: string, number: string): Response | undefined {
+  const refused = repos.get(fullName)?.refused_pulls?.[number];
+  return refused === undefined ? undefined : githubError(refused);
 }
 
 /** Deterministic commit sha for a repository's current files. */
@@ -137,20 +92,291 @@ function permissionsOf(repo: FakeRepo): Record<string, string | undefined> {
   return { actions: repo.actions, contents: repo.contents, pull_requests: repo.pull_requests };
 }
 
-// "owner/repo" → its installation; a missing repository answers 404 (App not
-// installed).
-let repos = new Map<string, FakeRepo>();
-
-// "owner/repo" → commit sha → how many check-runs reads (one a page) the fake has answered for
-// that commit since the last seed, faulted ones included. GET /__fixture/requests answers it as
-// `{check_runs: {"owner/repo": {"<sha>": <count>}}}`, and every PUT /__fixture/repos empties it.
-let checkRunReads = new Map<string, Map<string, number>>();
-
-function countCheckRunRead(repo: string, sha: string): void {
-  const commits = checkRunReads.get(repo) ?? new Map<string, number>();
-  commits.set(sha, (commits.get(sha) ?? 0) + 1);
-  checkRunReads.set(repo, commits);
+/** The messages of a pull request's commits, oldest first: one empty message where the fixture
+ *  names none, since every pull request holds at least one commit. */
+function messagesOf(pull: FakePull): readonly string[] {
+  return pull.commit_messages ?? [""];
 }
+
+/** The sha of the commit at `index` of a pull request's commits: the head for the last one, and a
+ *  sha derived from the repository, the number and the index for each one before it. */
+function commitShaOf(fullName: string, number: string, pull: FakePull, index: number): string {
+  if (index === messagesOf(pull).length - 1) return pull.head_sha;
+  const hasher = new Bun.CryptoHasher("sha1");
+  hasher.update(`${fullName}#${number}/${index}`);
+  return hasher.digest("hex");
+}
+
+/** Whether a seed sets a field of the merged search or the completion. Only such a pull request
+ *  answers the fields of the completion, so that the answer to an older seed does not change. */
+function completes(pull: FakePull): boolean {
+  return (
+    pull.searched !== undefined ||
+    pull.author !== undefined ||
+    pull.created_at !== undefined ||
+    pull.merged_at !== undefined ||
+    pull.labels !== undefined
+  );
+}
+
+/** The time `hours` hours before `at`, in GitHub's form. It is undefined when `at` is unset or
+ *  is not a time. */
+function hoursBefore(at: string | undefined, hours: number): string | undefined {
+  const time = at === undefined ? Number.NaN : Date.parse(at);
+  if (Number.isNaN(time)) return undefined;
+  return new Date(time - hours * 3_600_000).toISOString().replace(".000Z", "Z");
+}
+
+/** The login of the author, in the REST form. */
+function authorOf(pull: FakePull): string {
+  return pull.author ?? "octocat";
+}
+
+/** The time of creation, or undefined when the seed gives no time to make it from. */
+function createdAtOf(pull: FakePull): string | undefined {
+  return pull.created_at ?? hoursBefore(pull.updated_at, 24);
+}
+
+/** The time of the merge of a merged pull request. It is undefined for a pull request that is
+ *  not merged. */
+function mergedAtOf(pull: FakePull): string | undefined {
+  return pull.merged === true ? (pull.merged_at ?? pull.updated_at) : undefined;
+}
+
+/** When the pull request last changed, as every route of this fake answers it: the seed's
+ *  `updated_at`, or one fixed time where the seed gives none. Its REST routes and its GraphQL
+ *  nodes answered two different times for such a seed, and Dispatch, which stores a pull
+ *  request's texts as describing its head only while both carry the head's time
+ *  (texts_current), took the pull request a GraphQL read stored after a REST one to be of
+ *  nobody. */
+function updatedOf(pull: FakePull): string {
+  return pull.updated_at ?? "2026-01-01T00:00:00Z";
+}
+
+/** The author date and the committer date of each commit of a pull request that `completes`
+ *  selects: 2 hours before `updated_at`. Without `updated_at`, a commit has no date, and the
+ *  completion of the pull request fails. */
+function commitDatesOf(pull: FakePull): Record<string, unknown> {
+  const date = completes(pull) ? hoursBefore(pull.updated_at, 2) : undefined;
+  return date === undefined ? {} : { author: { date }, committer: { date } };
+}
+
+/** The GraphQL `author` of a login in the REST form. GraphQL gives a bot its login without
+ *  "[bot]" and the type Bot. */
+function actorOf(login: string): { __typename: string; login: string } {
+  const bot = login.match(/^(.+)\[bot\]$/)?.[1];
+  return bot === undefined ? { __typename: "User", login } : { __typename: "Bot", login: bot };
+}
+
+/** The nodes that the merged search `q` finds, in the order of the `repo:` qualifiers of `q`,
+ *  and by number in each repository. The search reads only the repositories of installation
+ *  `installationId`. A node is a merged pull request that the seed marks `searched`. Its merge
+ *  time must be in `merged:<from>..<to>`, and GitHub includes both ends. When `q` has `author:`
+ *  qualifiers, the author must be one of them. */
+function searchNodes(q: string, installationId: number | undefined): unknown[] {
+  const names = new Set<string>();
+  const authors: string[] = [];
+  let from = Number.NEGATIVE_INFINITY;
+  let to = Number.POSITIVE_INFINITY;
+  for (const term of q.split(/\s+/)) {
+    const at = term.indexOf(":");
+    if (at === -1) continue;
+    const qualifier = term.slice(0, at);
+    const value = term.slice(at + 1);
+    if (qualifier === "repo") names.add(value);
+    if (qualifier === "author") authors.push(value);
+    if (qualifier === "merged") {
+      const [start = "", end = ""] = value.split("..");
+      from = Date.parse(start);
+      to = Date.parse(end);
+    }
+  }
+  return [...names].flatMap((fullName) => {
+    const repo = repos.get(fullName);
+    if (
+      repo === undefined ||
+      repo.installation_missing === true ||
+      repo.installation_id !== installationId
+    ) {
+      return [];
+    }
+    return Object.entries(repo.pulls ?? {}).flatMap(([number, pull]) => {
+      const mergedAt = mergedAtOf(pull);
+      if (pull.searched !== true || mergedAt === undefined) return [];
+      const merged = Date.parse(mergedAt);
+      if (!(merged >= from && merged <= to)) return [];
+      if (authors.length > 0 && !authors.includes(authorOf(pull))) return [];
+      return [
+        {
+          author: actorOf(authorOf(pull)),
+          createdAt: createdAtOf(pull) ?? null,
+          labels: { nodes: (pull.labels ?? []).map((name) => ({ name })) },
+          mergedAt,
+          number: Number(number),
+          title: pull.title,
+          url: `https://github.com/${fullName}/pull/${number}`,
+        },
+      ];
+    });
+  });
+}
+
+/** A pull request as GitHub's GraphQL API answers `pullRequest(number:)`, with every field the
+ *  facts query of the reconcile reads, and the first `first` messages of its commits. */
+function pullNode(fullName: string, number: number, pull: FakePull, first: number): unknown {
+  const messages = messagesOf(pull);
+  return {
+    baseRefName: pull.base_ref ?? "main",
+    body: pull.body ?? "",
+    commits: {
+      nodes: messages.slice(0, first).map((message) => ({ commit: { message } })),
+      totalCount: messages.length,
+    },
+    headRefName: pull.head_ref ?? `branch-${number}`,
+    headRefOid: pull.head_sha,
+    headRepository: { nameWithOwner: pull.head_repo ?? fullName },
+    mergeCommit: pull.merge_commit_sha === undefined ? null : { oid: pull.merge_commit_sha },
+    merged: pull.merged ?? false,
+    mergedAt: mergedAtOf(pull) ?? null,
+    number,
+    state: pull.merged === true ? "MERGED" : pull.state === "open" ? "OPEN" : "CLOSED",
+    title: pull.title,
+    updatedAt: updatedOf(pull),
+    url: `https://github.com/${fullName}/pull/${number}`,
+  };
+}
+
+/** One `repository(owner:, name:)` field of a GraphQL query that asks for pull requests by
+ *  number: the name its answer goes under (its alias, or `repository`), the repository, whether
+ *  it asks for `pullRequests { totalCount }`, and each `pullRequest(number:)` field in it. */
+interface AskedRepository {
+  readonly alias: string;
+  readonly counted: boolean;
+  readonly fullName: string;
+  readonly pulls: readonly { readonly alias: string; readonly number: number }[];
+}
+
+/** The arguments of one field, by name, from the text between its parentheses: each value is a
+ *  variable (`$o0`), which `variables` gives, or a string or a number written in the query. */
+function argumentsOf(text: string, variables: Record<string, unknown>): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const [, name = "", value = ""] of text.matchAll(
+    /(\w+)\s*:\s*(\$\w+|"(?:[^"\\]|\\.)*"|-?\d+)/g
+  )) {
+    values[name] = value.startsWith("$") ? variables[value.slice(1)] : JSON.parse(value);
+  }
+  return values;
+}
+
+/** The text inside the braces that open at `open`, the index of a `{`. */
+function selectionAt(query: string, open: number): string {
+  let depth = 0;
+  for (let at = open; at < query.length; at++) {
+    if (query[at] === "{") depth++;
+    if (query[at] === "}" && --depth === 0) return query.slice(open + 1, at);
+  }
+  return query.slice(open + 1);
+}
+
+/** Each repository field of `query` that holds a `pullRequest(number:)` field, in the order the
+ *  query names them. A query with none, such as a search, answers an empty list. */
+function askedRepositories(query: string, variables: Record<string, unknown>): AskedRepository[] {
+  const asked: AskedRepository[] = [];
+  for (const field of query.matchAll(/(?:(\w+)\s*:\s*)?\brepository\s*\(([^)]*)\)\s*\{/g)) {
+    const selection = selectionAt(query, (field.index ?? 0) + field[0].length - 1);
+    const pulls = [...selection.matchAll(/(?:(\w+)\s*:\s*)?\bpullRequest\s*\(([^)]*)\)/g)].map(
+      (pull) => ({
+        alias: pull[1] ?? "pullRequest",
+        number: Number(argumentsOf(pull[2] ?? "", variables).number),
+      })
+    );
+    if (pulls.length === 0) continue;
+    const { name, owner } = argumentsOf(field[2] ?? "", variables);
+    asked.push({
+      alias: field[1] ?? "repository",
+      counted: /\bpullRequests\s*\{/.test(selection),
+      fullName: `${String(owner)}/${String(name)}`,
+      pulls,
+    });
+  }
+  return asked;
+}
+
+/** One `repository(owner:, name:)` field of a GraphQL query that asks for the pull requests of
+ *  commits, the results read's batched read-through (delivery's commitPullsQuery): the name its
+ *  answer goes under, the repository, and each `<alias>: object(oid:)` field in it, with how many
+ *  pull requests its `associatedPullRequests(first:)` reads. */
+interface AskedCommits {
+  readonly alias: string;
+  readonly fullName: string;
+  readonly commits: readonly {
+    readonly alias: string;
+    readonly sha: string;
+    readonly first: number;
+  }[];
+}
+
+/** Each repository field of `query` that holds an `object(oid:)` field, in the order the query
+ *  names them. A query with none answers an empty list. */
+function askedCommits(query: string, variables: Record<string, unknown>): AskedCommits[] {
+  const asked: AskedCommits[] = [];
+  for (const field of query.matchAll(/(?:(\w+)\s*:\s*)?\brepository\s*\(([^)]*)\)\s*\{/g)) {
+    const selection = selectionAt(query, (field.index ?? 0) + field[0].length - 1);
+    const commits = [...selection.matchAll(/(\w+)\s*:\s*object\s*\(([^)]*)\)\s*\{/g)].map(
+      (object) => {
+        const inner = selectionAt(selection, (object.index ?? 0) + object[0].length - 1);
+        return {
+          alias: object[1] ?? "object",
+          first: Number(
+            inner.match(/\bassociatedPullRequests\s*\(\s*first\s*:\s*(\d+)/)?.[1] ?? 30
+          ),
+          sha: String(argumentsOf(object[2] ?? "", variables).oid),
+        };
+      }
+    );
+    if (commits.length === 0) continue;
+    const { name, owner } = argumentsOf(field[2] ?? "", variables);
+    asked.push({
+      alias: field[1] ?? "repository",
+      commits,
+      fullName: `${String(owner)}/${String(name)}`,
+    });
+  }
+  return asked;
+}
+/** Whether the installation `id` has spent its rate limit: a repository of it is rate_limited. */
+function installationLimited(id: number): boolean {
+  return [...repos.values()].some(
+    (repo) => repo.installation_id === id && repo.rate_limited === true
+  );
+}
+
+/** The installation an installation token of this fake was minted for (`ghs_fake_<id>_<n>`, the
+ *  `n`th mint), or undefined for any other credential. */
+function tokenInstallation(request: Request): number | undefined {
+  const token = request.headers.get("Authorization")?.match(/^Bearer ghs_fake_(\d+)_\d+$/);
+  return token === null || token === undefined ? undefined : Number(token[1]);
+}
+
+/** The installation token a call carries, as this fake minted it, or undefined for any other
+ *  credential (the App's JWT, none). */
+function tokenOf(request: Request): string | undefined {
+  return request.headers.get("Authorization")?.match(/^Bearer (ghs_fake_\d+_\d+)$/)?.[1];
+}
+
+/** The headers GitHub answers a call of a spent budget with: no requests remain, and the budget
+ *  comes back in one minute, so a limit Dispatch records ends within the run. */
+function spentBudgetHeaders(resource: string): Record<string, string> {
+  return {
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": String(Math.ceil(Date.now() / 1000) + 60),
+    "x-ratelimit-resource": resource,
+  };
+}
+
+// The mints the fake answered since it started, which numbers each token it mints.
+let mints = 0;
 
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
@@ -159,19 +385,22 @@ const server = Bun.serve({
   port: harnessPorts().fakeGithub.port,
   async fetch(request, server) {
     const url = new URL(request.url);
-    if (request.method === "PUT" && url.pathname === "/__fixture/repos") {
-      const seeded = (await request.json()) as Record<string, FakeRepo>;
-      repos = new Map(Object.entries(seeded));
-      checkRunReads = new Map();
-      return Response.json({ ok: true });
-    }
+    const fixture = await fixtureResponse(request, url);
+    if (fixture !== undefined) return fixture;
 
-    if (request.method === "GET" && url.pathname === "/__fixture/requests") {
-      return Response.json({
-        check_runs: Object.fromEntries(
-          [...checkRunReads].map(([repo, commits]) => [repo, Object.fromEntries(commits)])
-        ),
-      });
+    if (url.pathname === "/healthz") return Response.json({ ok: true });
+    // While GitHub is down every call, a mint among them, is logged here and answered the outage's
+    // status, and nothing else is read or counted.
+    if (outage !== undefined) {
+      logCall(callOf(request.method, url.pathname, url.searchParams, tokenOf(request)));
+      return githubError(outage);
+    }
+    // A GraphQL query is logged where its body is read, below, with what it asks for, and a mint
+    // where it is answered, with the token it answers.
+    const minting =
+      request.method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname);
+    if (!(request.method === "POST" && url.pathname === "/graphql") && !minting) {
+      logCall(callOf(request.method, url.pathname, url.searchParams, tokenOf(request)));
     }
 
     const installation = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/installation$/);
@@ -189,15 +418,17 @@ const server = Bun.serve({
       });
     }
 
-    if (
-      request.method === "POST" &&
-      /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)
-    ) {
+    if (minting) {
+      const installationId = Number(url.pathname.split("/")[3]);
+      mints++;
+      const token = `ghs_fake_${installationId}_${mints}`;
+      logCall({
+        installation: installationId,
+        minted: token,
+        route: "POST /app/installations/{n}/access_tokens",
+      });
       return Response.json(
-        {
-          expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-          token: `ghs_fake_${url.pathname.split("/")[3]}`,
-        },
+        { expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), token },
         { status: 201 }
       );
     }
@@ -216,9 +447,7 @@ const server = Bun.serve({
     }
 
     if (request.method === "GET" && url.pathname === "/installation/repositories") {
-      const installationId = Number(
-        request.headers.get("Authorization")?.replace("Bearer ghs_fake_", "")
-      );
+      const installationId = tokenInstallation(request);
       return Response.json({
         repositories: [...repos]
           .filter(([, repo]) => repo.installation_id === installationId)
@@ -226,12 +455,188 @@ const server = Bun.serve({
       });
     }
 
+    // A read of pull requests counts before it is answered, whatever the answer is. A REST call of
+    // a repository whose installation has spent its rate limit is GitHub's 403 with no requests
+    // remaining, which the Go client reads as a rate limit (githubapp.RateLimit). The installation
+    // lookup above is the App's own call, and answers as before.
+    const pullRead = request.method === "GET" ? pullReadOf(url.pathname) : undefined;
+    if (pullRead !== undefined) countPullRead(...pullRead);
+    const repositoryCall = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(?:\/|$)/);
+    const calledRepo =
+      repositoryCall === null ? undefined : repos.get(`${repositoryCall[1]}/${repositoryCall[2]}`);
+    if (calledRepo !== undefined && installationLimited(calledRepo.installation_id)) {
+      return Response.json(
+        { message: `API rate limit exceeded for installation ID ${calledRepo.installation_id}.` },
+        { headers: spentBudgetHeaders("core"), status: 403 }
+      );
+    }
+
+    // GitHub's GraphQL API. A query of pull requests by number (the reconcile's facts query, and
+    // its proof of absence) answers from the seeded pull requests. A search answers the nodes of
+    // `searchNodes`, in pages of the size that its `first` argument gives. Every other query
+    // answers an empty search. A repository the token's installation does not hold
+    // answers null with NOT_FOUND on its own path, and a number the repository does not hold
+    // answers null with NOT_FOUND on the path of its alias, as GitHub answers both. A query made
+    // with the token of an installation that has spent its rate limit answers RATE_LIMITED and
+    // no data.
     if (request.method === "POST" && url.pathname === "/graphql") {
-      return Response.json({
-        data: {
-          search: { issueCount: 0, nodes: [], pageInfo: { endCursor: "", hasNextPage: false } },
-        },
+      const { query = "", variables = {} } = (await request.json()) as {
+        query?: string;
+        variables?: Record<string, unknown>;
+      };
+      const asked = askedRepositories(query, variables);
+      for (const repository of asked) {
+        countPullRead(repository.fullName, "graphql_pulls", repository.pulls.length);
+      }
+      // A commit the batched query names counts as one read of that commit's pull requests, the
+      // read of one commit over REST that it stands for.
+      const commitsAsked = askedCommits(query, variables);
+      for (const repository of commitsAsked) {
+        countPullRead(repository.fullName, "commit_pulls", repository.commits.length);
+      }
+      const token = tokenOf(request);
+      logCall({
+        asks:
+          commitsAsked.length > 0
+            ? commitsAsked
+                .flatMap((repository) =>
+                  repository.commits.map(
+                    (commit) => `${repository.fullName}@${commit.sha.slice(0, 12)}`
+                  )
+                )
+                .join(", ")
+            : asked.length === 0
+              ? "search"
+              : asked
+                  .flatMap((repository) =>
+                    repository.pulls.map(
+                      (pull) =>
+                        `${repository.fullName}#${pull.number}${repository.counted ? " (absence)" : ""}`
+                    )
+                  )
+                  .join(", "),
+        route: "POST /graphql",
+        ...(token === undefined ? {} : { token }),
       });
+      const installationId = tokenInstallation(request);
+      if (installationId !== undefined && installationLimited(installationId)) {
+        return Response.json(
+          {
+            data: null,
+            errors: [
+              {
+                message: `API rate limit already exceeded for installation ID ${installationId}.`,
+                type: "RATE_LIMITED",
+              },
+            ],
+          },
+          { headers: spentBudgetHeaders("graphql") }
+        );
+      }
+      // The batched read of commits' pull requests: each commit the repository holds
+      // (`heldCommits`) answers what `GET …/commits/{sha}/pulls` answers for it (`commit_pulls`),
+      // its first `first` pull requests with their count, so a held commit that names none answers
+      // an empty list, as REST does. A commit the repository does not hold answers null with no
+      // error, as GitHub answered such a commit on 2026-11-28. A repository the token's
+      // installation does not hold answers null with NOT_FOUND.
+      if (commitsAsked.length > 0) {
+        const data: Record<string, unknown> = {};
+        const errors: { message: string; path: string[]; type: string }[] = [];
+        for (const repository of commitsAsked) {
+          const seeded = repos.get(repository.fullName);
+          if (
+            seeded === undefined ||
+            seeded.installation_missing === true ||
+            seeded.installation_id !== installationId
+          ) {
+            data[repository.alias] = null;
+            errors.push({
+              message: `Could not resolve to a Repository with the name '${repository.fullName}'.`,
+              path: [repository.alias],
+              type: "NOT_FOUND",
+            });
+            continue;
+          }
+          const answer: Record<string, unknown> = {};
+          const held = heldCommits(seeded);
+          for (const commit of repository.commits) {
+            if (!held.has(commit.sha)) {
+              answer[commit.alias] = null;
+              continue;
+            }
+            const named = (seeded.commit_pulls?.[commit.sha] ?? []).filter(
+              (number) => seeded.pulls?.[String(number)] !== undefined
+            );
+            answer[commit.alias] = {
+              associatedPullRequests: {
+                nodes: named.slice(0, commit.first).map((number) => {
+                  const pull = seeded.pulls?.[String(number)] as FakePull;
+                  return pullNode(repository.fullName, number, pull, 0);
+                }),
+                totalCount: named.length,
+              },
+            };
+          }
+          data[repository.alias] = answer;
+        }
+        return Response.json(errors.length === 0 ? { data } : { data, errors });
+      }
+      if (asked.length === 0) {
+        const search = query.match(/\bsearch\s*\(([^)]*)\)/)?.[1] ?? "";
+        const { after, first, query: q } = argumentsOf(search, variables);
+        const found = typeof q === "string" ? searchNodes(q, installationId) : [];
+        const offset = typeof after === "string" ? Number(after.replace(/^cursor:/, "")) : 0;
+        const nodes = found.slice(offset, offset + (typeof first === "number" ? first : 100));
+        return Response.json({
+          data: {
+            search: {
+              issueCount: found.length,
+              nodes,
+              pageInfo: {
+                endCursor: nodes.length === 0 ? "" : `cursor:${offset + nodes.length}`,
+                hasNextPage: offset + nodes.length < found.length,
+              },
+            },
+          },
+        });
+      }
+      const first = Number(query.match(/\bcommits\s*\(\s*first\s*:\s*(\d+)/)?.[1] ?? 100);
+      const data: Record<string, unknown> = {};
+      const errors: { message: string; path: string[]; type: string }[] = [];
+      for (const repository of asked) {
+        const seeded = repos.get(repository.fullName);
+        if (
+          seeded === undefined ||
+          seeded.installation_missing === true ||
+          seeded.installation_id !== installationId
+        ) {
+          data[repository.alias] = null;
+          errors.push({
+            message: `Could not resolve to a Repository with the name '${repository.fullName}'.`,
+            path: [repository.alias],
+            type: "NOT_FOUND",
+          });
+          continue;
+        }
+        const answer: Record<string, unknown> = {};
+        if (repository.counted) {
+          answer.pullRequests = { totalCount: Object.keys(seeded.pulls ?? {}).length };
+        }
+        for (const pull of repository.pulls) {
+          const found = seeded.pulls?.[String(pull.number)];
+          answer[pull.alias] =
+            found === undefined ? null : pullNode(repository.fullName, pull.number, found, first);
+          if (found === undefined) {
+            errors.push({
+              message: `Could not resolve to a PullRequest with the number of ${pull.number}.`,
+              path: [repository.alias, pull.alias],
+              type: "NOT_FOUND",
+            });
+          }
+        }
+        data[repository.alias] = answer;
+      }
+      return Response.json(errors.length === 0 ? { data } : { data, errors });
     }
 
     const workflowRuns = url.pathname.match(
@@ -262,14 +667,28 @@ const server = Bun.serve({
 
     // A seeded pull request answers as GitHub does. A stored pull request's attribution read is
     // skipped on a server error, leaving the row as seeded, so an unseeded one answers 500: a 404
-    // would mark it unfetchable and change the delivery data under the test.
+    // would mark it unfetchable and change the delivery data under the test. A number the seed
+    // lists in `refused_pulls` answers that status, as GitHub refuses it. A pull request that
+    // `completes` selects also answers the fields that the completion of a partial row reads. Its
+    // line counts are always 3 added lines and 1 deleted line.
     const pull = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/);
     if (request.method === "GET" && pull !== null) {
+      const refused = refusedPullRead(`${pull[1]}/${pull[2]}`, pull[3] ?? "");
+      if (refused !== undefined) return refused;
       const seeded = repos.get(`${pull[1]}/${pull[2]}`)?.pulls?.[pull[3] ?? ""];
       if (seeded === undefined) {
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
       }
       return Response.json({
+        ...(completes(seeded)
+          ? {
+              additions: 3,
+              created_at: createdAtOf(seeded) ?? null,
+              deletions: 1,
+              labels: (seeded.labels ?? []).map((name) => ({ name })),
+              user: { login: authorOf(seeded) },
+            }
+          : {}),
         base: { ref: seeded.base_ref ?? "main" },
         body: seeded.body ?? "",
         head: {
@@ -277,14 +696,42 @@ const server = Bun.serve({
           repo: { full_name: seeded.head_repo ?? `${pull[1]}/${pull[2]}` },
           sha: seeded.head_sha,
         },
-        merged: seeded.merged ?? false,
+        html_url: `https://github.com/${pull[1]}/${pull[2]}/pull/${pull[3]}`,
         merge_commit_sha: seeded.merge_commit_sha ?? null,
-        merged_at: seeded.merged_at ?? null,
+        merged: seeded.merged ?? false,
+        merged_at: (completes(seeded) ? mergedAtOf(seeded) : seeded.merged_at) ?? null,
         number: Number(pull[3]),
         state: seeded.state,
         title: seeded.title,
-        updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
+        updated_at: updatedOf(seeded),
       });
+    }
+
+    // A seeded pull request's commits, paged as GitHub pages them (`pageOf`): each one's sha and
+    // message, oldest first, the last at the head. `commits_status` answers that status instead,
+    // with GitHub's error body. A refused number answers as its own read does (`refused_pulls`),
+    // and an unseeded pull request answers 500, as its own read does. Each commit of a pull request
+    // that `completes` selects also has the dates of `commitDatesOf`.
+    const pullCommits = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/commits$/);
+    if (request.method === "GET" && pullCommits !== null) {
+      const fullName = `${pullCommits[1]}/${pullCommits[2]}`;
+      const number = pullCommits[3] ?? "";
+      const refused = refusedPullRead(fullName, number);
+      if (refused !== undefined) return refused;
+      const seeded = repos.get(fullName)?.pulls?.[number];
+      if (seeded === undefined) {
+        return Response.json({ message: "fixture has no pull request" }, { status: 500 });
+      }
+      if (seeded.commits_status !== undefined) return githubError(seeded.commits_status);
+      return Response.json(
+        pageOf(
+          messagesOf(seeded).map((message, index) => ({
+            commit: { message, ...commitDatesOf(seeded) },
+            sha: commitShaOf(fullName, number, seeded, index),
+          })),
+          url
+        )
+      );
     }
 
     const checkRuns = url.pathname.match(
@@ -300,7 +747,7 @@ const server = Bun.serve({
       countCheckRunRead(fullName, sha);
       const fault = repo.check_run_faults?.[sha];
       if (fault !== undefined && "status" in fault) {
-        return Response.json({ message: "Server Error" }, { status: fault.status });
+        return githubError(fault.status);
       }
       if (fault !== undefined) {
         // Bun.serve closes a connection idle for 10 s, as long as Dispatch's own read deadline:
@@ -326,16 +773,24 @@ const server = Bun.serve({
 
     // The pull requests GitHub names for a commit, which Dispatch reads through when a result
     // names a commit that is the head of no pull request it has an event for. It must match
-    // before the bare `commits/{ref}` route below.
+    // before the bare `commits/{ref}` route below. GitHub lists them oldest first in its pages
+    // (`per_page`, default 30, at most 100, and `page`), as every list route here answers, and
+    // answers `422 No commit found for SHA` for a commit the repository does not hold, as the bare
+    // route does.
     const commitPulls = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)\/pulls$/);
     if (request.method === "GET" && commitPulls !== null) {
       const repo = repos.get(`${commitPulls[1]}/${commitPulls[2]}`);
       if (repo === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
+      const sha = commitPulls[3] ?? "";
+      if (!heldCommits(repo).has(sha)) {
+        return Response.json({ message: `No commit found for SHA: ${sha}` }, { status: 422 });
+      }
       const numbers = repo.commit_pulls?.[commitPulls[3] ?? ""] ?? [];
+      const listed = numbers.filter((number) => repo.pulls?.[String(number)] !== undefined);
       return Response.json(
-        numbers.flatMap((number) => {
+        pageOf(listed, url).flatMap((number) => {
           const seeded = repo.pulls?.[String(number)];
           if (seeded === undefined) return [];
           return [
@@ -354,7 +809,7 @@ const server = Bun.serve({
               number,
               state: seeded.state,
               title: seeded.title,
-              updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
+              updated_at: updatedOf(seeded),
             },
           ];
         })
@@ -467,7 +922,6 @@ const server = Bun.serve({
       });
     }
 
-    if (url.pathname === "/healthz") return Response.json({ ok: true });
     return new Response("not found", { status: 404 });
   },
 });

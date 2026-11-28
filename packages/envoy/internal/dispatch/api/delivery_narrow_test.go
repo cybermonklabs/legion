@@ -27,8 +27,9 @@ const narrowWindow = 7 * 24 * time.Hour
 // three hours in by run 302, #6 of another repository and never tracked, #7 four days in and never
 // shipped), a run that failed, and run 304, which ships nothing new. #5 and #6 name issues and
 // sessions, so their titles
-// leave with them.
-func seedNarrowingFixture(t *testing.T, database *store.Store) delivery.DeliverySettings {
+// leave with them. attributor is the server's (Deps.Attributor), which writes and reads the issue
+// of #5 and #6.
+func seedNarrowingFixture(t *testing.T, attributor *delivery.Attributor, database *store.Store) delivery.DeliverySettings {
 	t.Helper()
 	ctx := t.Context()
 	pool := database.Pool
@@ -45,14 +46,14 @@ func seedNarrowingFixture(t *testing.T, database *store.Store) delivery.Delivery
 
 	at := func(d time.Duration) *time.Time { v := narrowFrom.Add(d); return &v }
 	day := 24 * time.Hour
-	acme1, acme3 := "ACME-1", "ACME-3"
+	issues := map[int]string{5: "ACME-1", 6: "ACME-3"}
 	for _, pr := range []delivery.DeliveryPullRequest{
 		{Repo: "acme/widgets", Number: 1, Title: "feat: shipped before", Author: "octocat", MergedAt: at(-3 * day)},
 		{Repo: "acme/widgets", Number: 2, Title: "feat: ships an hour after from", Author: "octocat", MergedAt: at(-2 * day)},
 		{Repo: "acme/widgets", Number: 3, Title: "feat: ships after from", Author: "hubot", MergedAt: at(-1 * day)},
 		{Repo: "acme/widgets", Number: 4, Title: "feat: ships in two days", Author: "octocat", MergedAt: at(30 * time.Minute)},
-		{Repo: "acme/widgets", Number: 5, Title: "feat: ships at once", Author: "octocat", MergedAt: at(time.Hour), IssueKey: &acme1, Sessions: []string{"s1"}},
-		{Repo: "acme/other", Number: 6, Title: "feat: elsewhere", Author: "hubot", MergedAt: at(10 * time.Minute), IssueKey: &acme3, Sessions: []string{"s2"}},
+		{Repo: "acme/widgets", Number: 5, Title: "feat: ships at once", Author: "octocat", MergedAt: at(time.Hour), Sessions: []string{"s1"}},
+		{Repo: "acme/other", Number: 6, Title: "feat: elsewhere", Author: "hubot", MergedAt: at(10 * time.Minute), Sessions: []string{"s2"}},
 		{Repo: "acme/widgets", Number: 7, Title: "fix: later", Author: "octocat", MergedAt: at(4 * day)},
 	} {
 		pr.URL = "https://github.com/" + pr.Repo + "/pull/" + strconv.Itoa(pr.Number)
@@ -63,6 +64,9 @@ func seedNarrowingFixture(t *testing.T, database *store.Store) delivery.Delivery
 		}
 		if err := delivery.UpsertPullRequest(ctx, pool, pr); err != nil {
 			t.Fatalf("seed PR %s#%d: %v", pr.Repo, pr.Number, err)
+		}
+		if issue, named := issues[pr.Number]; named {
+			seedAttributedHead(t, attributor, pool, pr.Repo, pr.Number, issue)
 		}
 	}
 	success, failure := delivery.DeliveryRunConclusionSuccess, delivery.DeliveryRunConclusionFailure
@@ -166,7 +170,7 @@ func assertSameTree(t *testing.T, what string, got, want map[string]any) {
 func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	settings := seedNarrowingFixture(t, database)
+	settings := seedNarrowingFixture(t, deps.Attributor, database)
 	s := directServer(deps)
 	ctx := t.Context()
 	from, to := narrowFrom, narrowFrom.Add(narrowWindow)

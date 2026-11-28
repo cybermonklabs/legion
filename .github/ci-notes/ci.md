@@ -498,10 +498,11 @@ makes one of those gates true. The engine adds each step gate's reads to its job
 ## tooling_checks: The tooling-checks job: the Claude Code plugin build, the changelog
 
 The tooling-checks job: the Claude Code plugin build, check and pack, the plugin's build-input
-list check, the changelog fragments' render check, the guides' layout step, and the lints and
+list check, the changelog fragments' render check, the guides' layout step, the lints and
 typechecks of scripts/dispatch, scripts/github-apps, scripts/sessions, scripts/approval-eval
-and scripts/e2e/lib. They were steps of the test job, beside its harnesses; this filter names
-what they read and none of the harness groups, which stay on the `test` filter.
+and scripts/e2e/lib, and the typecheck of scripts/e2e's drivers. They were steps of the test
+job, beside its harnesses; this filter names what they read and none of the harness groups,
+which stay on the `test` filter.
 
 ## tooling_checks: The guides' layout step's own gate, named here so the job runs
 
@@ -1117,7 +1118,9 @@ left is the closure of `go test -race ./internal/dispatch/api/` (`go list -deps
 -test -race` in packages/envoy), one pattern per directory, with what those
 packages embed and the testdata of the package whose tests this job runs: a
 dependency's testdata is read by that package's own tests, which run in a job of
-their own.
+their own. The filter holds packages/envoy/internal/testnats/*, because
+internal/dispatch/api/results_pull_request_event_test.go runs the delivery intake on an
+in-process NATS server.
 
 ## envoy_go_race_api: The API's CI-reconcile passes route reads cireconcile's
 
@@ -2706,7 +2709,8 @@ build reads, the render check of every changelog fragment with the changie it in
 guides' layout step behind its own guide_layout filter, read out of the same list of matched
 filters (#one-list-for-the-test-jobs-step-gates), and the lints and typechecks of
 scripts/dispatch, scripts/github-apps, scripts/sessions and scripts/approval-eval, with the
-typecheck of scripts/e2e/lib's scripts, fixtures and tests. They are builds, lints and typechecks,
+typecheck of scripts/e2e/lib's scripts, fixtures and tests and of scripts/e2e's drivers, which Bun
+runs with no check of their types. They are builds, lints and typechecks,
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
 percentile (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 The job shares ci-job-test.yaml with the test job
@@ -3337,6 +3341,48 @@ The mention sender's claim model alone, on a runner of its own: its search takes
 the runner has for as long as it runs, which beside envoy-go's other steps would put its
 minutes on theirs and theirs on its deadline. Its rules' test opens the store, so the job
 carries a Postgres service.
+
+## The PostgreSQL 16 job: three delivery tests on the version an envoy-infra stack can run
+
+`envoy-go-postgres16` runs three tests of the Dispatch delivery package against PostgreSQL 16, on a
+runner of its own: every other job runs PostgreSQL 18, where a read of a catalog column that 16
+lacks and the places 16 keeps in a function's stored body both pass unseen.
+
+The three tests are POSTGRES16_TESTS of .github/scripts/ci_job_reads.py, the ones whose subject
+differs between PostgreSQL 16 and 18. The attribution's database guard (migration
+20261117111040's attribution_database_refusal) reads pg_database's locale fields, and `datlocale`
+is a column of 17 and later: read as a column, it fails on 16 with `record "db" has no field
+"datlocale"` before the guard can refuse, which TestPrepareAttributionRefusesADatabaseItCannotRead
+fails, and which 18 cannot show. The reading's identity digests the stored body of
+attribution_keys, where 16 keeps each node's place in the source text and 17 and later write -1,
+so a restore changes the stored body on 16 alone; the two identity tests hold the identity to
+that. Every other test of the package runs on 18 under the race detector, in envoy-go-race's leg
+4 (.github/go-legs.yaml), and in no leg of envoy-go. The step runs them with -v, so the log
+prints each test's verdict. Each opens the store or a database of its own from
+DISPATCH_TEST_DATABASE_URL (internal/dispatch/store/storetest/storetest.go, delivery's
+attribution_locale_test.go) and skips without it, and a skip is a pass, so without the service
+the step would be green and test nothing on 16. The job's limit of 20 minutes is go test's default
+-timeout of 10, which must fire before the runner cancels the job so that a hung test prints the
+dump that names it, and ten minutes of checkout, setup, cache restore and the package's test
+build. It restores go-envoy-test, which .github/workflows/ci-caches.yaml fills with the test
+binary of every package of the envoy module, and saves none.
+
+It is a job of ci-job-envoy-go.yaml beside envoy-go's legs, and it has no caller, no file and no
+filter of its own: ci.yaml already calls as many reusable workflows as check-workflow-files.sh
+allows it. So the call `.github/workflows/ci.yaml#envoy-go` runs it beside envoy-go's legs and the
+jobs beside them, under that call's `if:` and envoy-go's filter, `envoy_go`, which already holds
+the closure of the delivery package's test build, since envoy-go-alone runs that package's xid
+window rows; .github/ci-gates/envoy-go.py holds the job's step to that gate as an Exact entry. The
+job envoy-go waits for it as it waits for the legs, and GitHub marks a call job failed when any job
+of the file it calls fails, so a red PG16 job fails `envoy-go / envoy-go` and ci-ok reads it as
+envoy-go's failure; the job's ci-ok report names `envoy-go`, as every job of a called file does.
+
+Its service is the PostgreSQL 16 row of .github/ci-images.yaml, and it does not wait for
+ci-images: envoy-go's call has no `needs: ci-images`, which would hold envoy-go's own steps behind
+the copy. So the job pulls a row the package must already hold. That holds for the row it names,
+which an earlier run of ci-images copied, and it is why a change of the job's image is safe only
+once a run of ci-images has copied the new row: a new row and the job's move to it in one push
+would pull a digest no copy has made yet.
 
 ## Why the document service runs alone under the race detector
 

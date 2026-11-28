@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+    A pull request whose body names another pull request by number, such as "#53 renamed the
+    helper", stays the issue its own branch names. The attribution read every bare `#N` as GitHub
+    issue N, and GitHub numbers issues and pull requests in one sequence, so where another issue
+    linked pull request #53 (Dispatch stores the reference as both `.../issues/53` and
+    `.../pull/53`), the citation took the pull request to that issue, above its branch. A cited
+    number is now a GitHub issue only where Dispatch holds no pull request of that number in that
+    repository, under any of its names.
+
+    The intake's read of a pull request settles the read a link by hand owed for it whatever the
+    letters of the two names: a link's owe written as `acme/widgets` is settled by the read of
+    GitHub's event of `Acme/Widgets`, where it stayed owed and the reconcile read the pull request
+    once more.
+time: 2026-11-22T08:52:58.000000000Z
+custom:
+    Issue: pr4209

@@ -96,7 +96,7 @@ func TestADayPastTheRunBoundIsRefusedByNameAndTheNextDayAnswered(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantDeploys, err := ReadDeploys(ctx, pool, settings, days[0], days[1])
+		wantDeploys, err := unrenamed().ReadDeploys(ctx, pool, settings, days[0], days[1])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,7 +147,7 @@ func TestADayPastTheRunBoundIsRefusedByNameAndTheNextDayAnswered(t *testing.T) {
 			t.Errorf("ReadCIDays did not match the second day's ReadCIRows (refusal: %v)", ci[1].Refused)
 		}
 
-		wantDeploys, err := ReadDeploys(ctx, pool, settings, days[1], end)
+		wantDeploys, err := unrenamed().ReadDeploys(ctx, pool, settings, days[1], end)
 		if err != nil {
 			t.Fatal(err)
 		}

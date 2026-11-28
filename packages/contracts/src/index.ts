@@ -17,6 +17,7 @@ export * from "./envoy-session";
 export * from "./going";
 export * from "./legion-handoff";
 export * from "./legion-roles";
+export * from "./newest-results";
 export * from "./reference-spans";
 export * from "./related-forms";
 export * from "./repo";

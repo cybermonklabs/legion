@@ -74,6 +74,10 @@ const (
 	// H, for a result of a check that reads the program's deploy: the plan's list predates the
 	// deploys (api/results_deploys.go), and this is a read now as a GitHub read is.
 	reasonCurrentDeploy = "This field compares the result with the program's current deploy now. A past-time answer reads no current deploy."
+	// E, for the links of an issue whose read GitHub refuses: pull_request_reads_owed keeps the
+	// refusal, and a later installation of the App clears it, with no event.
+	reasonUnreadableLink = "Dispatch records with no event that GitHub refuses the read of a link, and that the GitHub App now covers it. " +
+		"So no record gives at the cut which links Dispatch read no more."
 	// S
 	reasonBroadened = "Broadening reads search_term_stats, which counts only the present text. A past-time search does not broaden."
 )
@@ -92,13 +96,17 @@ const (
 // latest review and its source where the fill at boot pinned the review with no event
 // (documentFields), the place of an anchored block, and of the blocks that the text route gives,
 // the anchored counts and the ids of a table's rows and cells, which the block routes leave out
-// too (blockFields), and whether a result of a check that reads the program's current deploy
-// counts (not_counted, reasonCurrentDeploy). The list's snippet tree of a search result is here
-// for an ask hit alone, whose wording at the cut no record may give (searchFields): a past-time
-// search draws every other snippet tree from the headline of the text at the cut. A route that
-// the plan lists with no field has an empty list. A past-time answer names a member in the
-// Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
-// this table holds for its route (WriteHeaders, which tests check with ValidAbsent).
+// too (blockFields), whether a result of a check that reads the program's current deploy counts
+// (not_counted, reasonCurrentDeploy), the pull requests of a check whose head Dispatch has not
+// read and those it does not know are the issue's (heads_not_read and issues_not_known, which the
+// comparison gives with what the check compared with, reasonGitHub), and the links of an issue
+// that Dispatch reads no more (unreadable_links, reasonUnreadableLink). The list's snippet tree of
+// a search result is here for an ask hit alone, whose wording at the cut no record may give
+// (searchFields): a past-time search draws every other snippet tree from the headline of the text
+// at the cut. A route that the plan lists with no field has an empty list. A past-time answer
+// names a member in the Dispatch-As-Of-Absent header only when it leaves that member out, and it
+// names only members this table holds for its route (WriteHeaders, which tests check with
+// ValidAbsent).
 //
 // The comment beside a route whose entry names no member of an ask's wording says why the route
 // gives none that can be unknown at the cut.
@@ -192,6 +200,9 @@ var AbsentFields = map[string][]AbsentField{
 		{"/checks/*/results/*/commit_stands", reasonGitHub},
 		{"/checks/*/results/*/currency", reasonGitHub},
 		{"/checks/*/results/*/not_counted", reasonCurrentDeploy},
+		{"/checks/*/heads_not_read", reasonGitHub},
+		{"/checks/*/issues_not_known", reasonGitHub},
+		{"/unreadable_links", reasonUnreadableLink},
 		{"/checks/*/version", reasonUndatedBlockIndex},
 		{"/checks/*/sha256", reasonUndatedBlockIndex},
 		{"/checks/*/results/*/check_words_moved", reasonUndatedBlockIndex},

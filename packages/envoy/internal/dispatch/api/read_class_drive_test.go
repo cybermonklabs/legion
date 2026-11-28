@@ -123,6 +123,8 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{{"computed_at", readTime}}},
 	"GET /api/v1/delivery/runs/{id}": {target: "/api/v1/delivery/runs/$pipelineRun",
 		statement: statementOf(`\bfrom\s+delivery_run_jobs\s+where\s+repo\s*=\s*\$1\s+and\s+run_id\s*=\s*\$2\b`)},
+	"GET /api/v1/delivery/attribution": {target: "/api/v1/delivery/attribution",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+attributed\s+a\s+where\s+not\s+a\.has_facts\b`)},
 	"GET /api/v1/ci-reconcile/passes": {target: "/api/v1/ci-reconcile/passes", statement: statementOf(`\bci_reconcile_passes\b`)},
 	"GET /api/v1/me/agent-tokens":     {target: "/api/v1/me/agent-tokens", statement: statementOf(`\bfrom\s+agent_read_tokens\s+where\s+owner\s*=\s*\$1\b`)},
 	"GET /api/v1/users":               {target: "/api/v1/users", statement: statementOf(`\bselect\s+email\s+from\s+people\s+order\s+by\s+email\b`)},
@@ -589,7 +591,7 @@ func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing
 					})
 				}
 				tail := world.tracer.window(t, "after the world's last row", driveCalibrationWindow, func() {})
-				requireReadsWrites(t, "after the world's last row", nonOracleStatements(tail))
+				requireReadsWrites(t, "after the world's last row", "", nonOracleStatements(tail))
 				writes := make([]string, 0, len(tally.writes))
 				for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
 					writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
@@ -643,7 +645,7 @@ func (w *driveWorld) precheck(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: GET %s answered %d %s", what, target, response.Code, response.Body.String())
 		}
-		requireReadsWrites(t, what, statements)
+		requireReadsWrites(t, what, "", statements)
 		return statements
 	}
 	count := func(statements []drivenStatement, pattern *regexp.Regexp) (all, unmarked int) {
@@ -706,7 +708,7 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 		statements := w.tracer.window(t, what, 0, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++
 		tally.statements += len(statements)
-		for _, write := range requireReadsWrites(t, what, statements) {
+		for _, write := range requireReadsWrites(t, what, name, statements) {
 			tally.writes[write]++
 			if write == "insert text_trees" && !slices.Contains(tally.treesStored, name) {
 				tally.treesStored = append(tally.treesStored, name)

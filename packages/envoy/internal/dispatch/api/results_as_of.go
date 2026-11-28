@@ -15,8 +15,9 @@ import (
 // (checkBlocksAtTheCut). Where a result's commit stands, what a check compared its results with
 // and what CI's run said are GitHub reads now. So the read at a cut makes no read of GitHub and
 // reads no pull request head and no branch commit. It also writes none of what the present read
-// writes (pull_request_heads, branch_commits and the event issue.pull_request_attribution_changed).
-// It leaves those fields out (checksAtTheCut).
+// writes (pull_request_heads and branch_commits). It leaves those fields out (checksAtTheCut), and
+// so it does the links of the issue that Dispatch reads no more, which pull_request_reads_owed
+// keeps with no event (listCheckResults).
 
 // refuseResultsCommitAtCut refuses a read of the results at a cut that names a commit (?at=,
 // refuseParameterAtCut): the read compares a result with the commit through GitHub now, and a
@@ -55,10 +56,12 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 // checksAtTheCut completes checks, the checks of a read of the results at the cut ctx carries,
 // each at /checks/<index> of the answer with the results that the read loaded. A read at a cut
 // makes no GitHub read, so the answer leaves out what the present read takes from GitHub (reason
-// H): of each check, what it compared its results with, why it compared them with nothing, and
-// whether a pass of it stands; of a check that CI proves, what CI's run said (ci), and the result
-// that the present read derives from that run, which the read at a cut does not make; and of each
-// result, where its commit stands and the currency that older clients print. Of each result of a
+// H): of each check, what it compared its results with, why it compared them with nothing, the
+// pull requests whose head Dispatch has not read and those it does not know are the issue's,
+// which the comparison gives beside them (comparisonReader.answer), and whether a pass of it
+// stands; of a check that CI proves, what CI's run said (ci), and the result that the present
+// read derives from that run, which the read at a cut does not make; and of each result, where
+// its commit stands and the currency that older clients print. Of each result of a
 // check that the present read compares with the program's current deploy (readsTheLiveDeploy), it
 // leaves out not_counted, which the present read writes from that deploy now (markNotCounted).
 // It also leaves out, for reason E, each check's version and digest, which no record gives at
@@ -71,6 +74,7 @@ func checksAtTheCut(ctx context.Context, checks []model.CheckBlock) {
 		place := at(index)
 		leaveOut(ctx, place+"/version", place+"/sha256")
 		leaveOut(ctx, place+"/compared_with", place+"/compared_nothing", place+"/pass_stands")
+		leaveOut(ctx, place+"/heads_not_read", place+"/issues_not_known")
 		if validCICheck(*check, len(check.Results) > 0) {
 			leaveOut(ctx, place+"/ci")
 		}

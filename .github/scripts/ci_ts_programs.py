@@ -18,7 +18,7 @@ The pairs are hand-kept and few; the files of each program are derived, which is
 job that typechecks a second project is a second entry (dispatch_ui's two programs, the
 dashboard's, which dispatch-ui-harness typechecks, and the proof editor's, which dispatch-ui
 typechecks, both jobs of the file ci.yaml's dispatch-ui calls; and the tooling-checks job's five
-script directories that are no workspace).
+script directories that are no workspace and the e2e drivers).
 """
 
 
@@ -64,6 +64,8 @@ PROGRAMS = [
      at("tooling-checks", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)", "test")),
     ("tooling_checks", "scripts/e2e/lib",
      at("tooling-checks", "Typecheck the e2e scripts and their tests (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
+    ("tooling_checks", "scripts/e2e",
+     at("tooling-checks", "Typecheck the e2e drivers (bunx tsc --noEmit -p scripts/e2e)", "test")),
 ]
 
 # The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's

@@ -475,8 +475,9 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 // unreachable in a graph this small. The check's server here runs with sequential scans and sorts
 // made costly, as a corpus large enough for the planner to choose the index does on its own (a
 // handful of test rows is otherwise read whole and sorted exactly,
-// TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan), and without JIT, which the disabled
-// plans' inflated costs would otherwise spend seconds compiling.
+// TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan); the pool copies the shared pool's
+// configuration, so it runs without JIT, which the disabled plans' inflated costs would otherwise
+// spend seconds compiling (store's sessionSettings).
 func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t *testing.T) {
 	t.Parallel()
 	const text = "Find what this is about"
@@ -499,7 +500,6 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 	config := deps.Store.Pool.Config()
 	config.ConnConfig.RuntimeParams["enable_seqscan"] = "off"
 	config.ConnConfig.RuntimeParams["enable_sort"] = "off"
-	config.ConnConfig.RuntimeParams["jit"] = "off"
 	opened, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open the index-preferring pool: %v", err)

@@ -3,7 +3,7 @@
 import type { DeliveryPR, DeliverySessionGroup } from "../../../api/types";
 import {
   DEPLOYED_LABELS,
-  NO_ISSUE,
+  issuePlaceholder,
   NO_PRIORITY,
   NO_SESSION,
   PLACEHOLDER_LABELS,
@@ -30,8 +30,8 @@ export interface PRListRow {
   mergedMs: number | undefined;
   /** Short repo label plus number, e.g. "widgets#123" (see shortRepoLabel). */
   prLabel: string;
-  /** "ACME-100 · P1", "ACME-100 · P0 · from ACME-1", "ACME-100 · No priority", or "No issue"
-   *  (`issuePriorityLabel`). */
+  /** "ACME-100 · P1", "ACME-100 · P0 · from ACME-1", "ACME-100 · No priority", "No issue", or
+   *  "Not known yet" (the issue placeholder's label, see issuePlaceholder; `issuePriorityLabel`). */
   issueLabel: string;
   /** undefined for a PR with no issue, so it sorts last in either direction. */
   issueSort: IssueSortKey | undefined;
@@ -63,12 +63,14 @@ export function formatMinutes(minutes: number): string {
 
 /** A PR's issue with the priority it works at, as the list's Issue cell and the drill-down's
  *  Priority row say it: "ACME-100 · P1", "ACME-100 · P0 · from ACME-1" where the issue inherits
- *  it (`priority_from`), "ACME-100 · No priority", or "No issue". `priority` is already the
- *  priority the issue resolves to, as Dispatch labels it; a Dispatch of the release before
- *  `priority_from` sends none, and its row names no source. The source is text, not a link, so
- *  a row and the drill-down hold one link to the issue each. */
+ *  it (`priority_from`), "ACME-100 · No priority", or, with no issue, the placeholder's label:
+ *  "No issue", or "Not known yet" where the server marks the issue not known yet
+ *  (issuePlaceholder). `priority` is already the priority the issue resolves to, as Dispatch
+ *  labels it; a Dispatch of the release before `priority_from` sends none, and its row names no
+ *  source. The source is text, not a link, so a row and the drill-down hold one link to the issue
+ *  each. */
 export function issuePriorityLabel(pr: DeliveryPR): string {
-  if (pr.issue === null) return PLACEHOLDER_LABELS[NO_ISSUE];
+  if (pr.issue === null) return PLACEHOLDER_LABELS[issuePlaceholder(pr)];
   const from = pr.priority === null ? null : (pr.priority_from ?? null);
   const source = from === null ? "" : ` \u00b7 from ${from}`;
   return `${pr.issue} \u00b7 ${pr.priority ?? PLACEHOLDER_LABELS[NO_PRIORITY]}${source}`;

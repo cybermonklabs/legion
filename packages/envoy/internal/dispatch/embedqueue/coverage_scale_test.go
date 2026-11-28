@@ -602,7 +602,11 @@ func rebuildWindowIndexes(t *testing.T, database *store.Store, stage string) []w
 func loadCoverageCorpus(t *testing.T, databaseURL string, scale coverageScale, prose [][]any, script string) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, databaseURL)
+	config, err := store.ConnConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the measurement database's URL: %v", err)
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("connect to load the corpus: %v", err)
 	}

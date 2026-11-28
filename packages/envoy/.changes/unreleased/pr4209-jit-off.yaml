@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    Every connection Dispatch opens on its database runs with `jit = off`, sent in its startup
+    message: the shared pool and every pool and connection made from it, and the connections of
+    `dispatch census` and `dispatch versions`. A server built with LLVM JIT, as the official
+    postgres image and the pgdg packages are, compiled each statement whose estimated cost passes
+    `jit_above_cost` again at every execution. The pull request attribution statement is priced
+    far above the few rows it reads, so each pass spent 0.13 to 5 seconds compiling it on such a
+    server, where the statement itself runs in milliseconds. A `jit` in `DATABASE_URL` is
+    overwritten.
+time: 2026-11-22T00:32:04.000000000Z
+custom:
+    Issue: pr4209

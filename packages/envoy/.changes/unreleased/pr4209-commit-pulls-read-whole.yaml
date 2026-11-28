@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+    A results read whose commit's pull requests pass GitHub's cap on a response (1 MiB) reads
+    them whole, and a read that GitHub fails no longer reads as "no pull request". The REST list
+    of a commit's pull requests is read page by page, 32 at a time, and a page past the cap is
+    asked again at half its size. A list Dispatch still cannot read whole, and every other read
+    of a commit that GitHub fails or that stops before the commit, leaves a `before_merge` result
+    there `unknown` with the reason `read_failed`, never `other_commit`, so a pass there makes
+    the check's pass_stands `unknown` rather than `no`. A read refused by another read's claim, in
+    any process, reads the stored rows only where that claim is marked as standing on GitHub's
+    stored answer (`commit_pull_reads.answered`); a claim whose read is under way, failed or
+    stopped with its process reads `unknown` the same way, and a claim another process gave back
+    is claimed again at once rather than left to the moment the first claim held. A query whose
+    `errors` name one commit fails that commit alone. One results read's read-through starts no
+    query to GitHub a minute after it began, so it takes at most two minutes; a commit it did not
+    reach is `unknown` and is read by the next read. Before, a commit whose list passed the cap
+    failed every read, and each read answered `other_commit` and pass_stands `no` for passes
+    GitHub would have placed, and behind two replicas a pass could read `other_commit` for five
+    minutes in the process that had not made the read. A `before_merge` result at a commit of a
+    linked repository is likewise `unknown`, with the reason `head_not_read`, while a pull request
+    of its issue is owed a read (as after a push inside the second of GitHub's answer before it),
+    as a result in the issue's own repository already was.
+time: 2026-11-27T22:41:18.000000000Z
+custom:
+    Issue: pr4209

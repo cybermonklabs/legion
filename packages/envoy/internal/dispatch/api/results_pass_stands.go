@@ -50,6 +50,12 @@ func standingCommit(result model.CheckResult) string {
 // pass that stands. A check that compared with nothing because there is no pull request and no
 // branch answers no: there is nothing for a pass to stand at, and that is a fact about the work
 // rather than a failed read.
+//
+// A check that compared with nothing because Dispatch has not read a head of its issue, or does
+// not know whether a pull request of its repository is the issue's, answers unknown: that head
+// can be the one a pass must stand at. So does a check with no subject and a head that Dispatch
+// has not read and that can decide (comparison.headNotRead), where no pass stands at a basis. No
+// answer says more than Dispatch knows: unknown, never no.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
 	if compared.live {
 		return liveResultStands(check, compared)
@@ -57,7 +63,8 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
 		return newestResultStands(check, compared)
 	}
-	if compared.reason == model.ReasonRepositoryUnreadable {
+	switch compared.reason {
+	case model.ReasonRepositoryUnreadable, model.ReasonHeadNotRead, model.ReasonIssueNotKnown:
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	if (len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread) || compared.unordered {
@@ -67,8 +74,13 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	if check.When == docs.CheckWhenBeforeMerge && len(compared.subjects) > 0 {
 		return eachSubjectStands(check, compared, conflicted)
 	}
+	if check.When == docs.CheckWhenBeforeMerge && compared.subjectsNotRead > 0 {
+		// Every subject is a head Dispatch has not read: a pass at a basis that is no subject is no
+		// pass at the subject, so nothing is known (headBases' subjectsNotRead).
+		return model.CheckPassStands{Answer: model.PassStandsUnknown}
+	}
 	var roles []string
-	unknown, conflict := false, false
+	unknown, conflict := compared.headNotRead, false
 	for _, result := range check.Results {
 		if result.Verdict != "pass" {
 			continue
@@ -127,10 +139,12 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 		return result.Verdict == "pass" && standingCommit(result) == model.CommitUnknown
 	})
 	// A head Dispatch could not read is a subject whose state is unknown, so every subject it
-	// read passing is not yet a yes; and a pass held up only by a commit Dispatch could not place
-	// may stand at that head, so a no for want of a pass is not yet a no.
+	// read passing is not yet a yes, whether it is a branch head GitHub did not answer (unread) or
+	// a pull request's head whose read is owed (subjectsNotRead); and a pass held up only by a
+	// commit Dispatch could not place may stand at that head, so a no for want of a pass is not
+	// yet a no.
 	switch {
-	case stands.Answer == model.PassStandsYes && compared.unread != "",
+	case stands.Answer == model.PassStandsYes && (compared.unread != "" || compared.subjectsNotRead > 0),
 		stands.Answer == model.PassStandsNo && placedNowhere:
 		stands.Answer, stands.Reason = model.PassStandsUnknown, ""
 	}

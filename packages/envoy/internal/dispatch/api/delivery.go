@@ -40,13 +40,18 @@ var deliveryFacets = []string{"repo", "parent_agent", "session", "issue", "prior
 var deliveryColorFacets = []string{"repo", "author", "priority", "component", "parent_agent"}
 
 // Placeholder facet values, split by cause as the page labels them (features/delivery/lib/facets.ts
-// holds the same four): a pull request naming no issue, an issue with no priority or no component,
-// and a pull request whose commits name no session.
+// holds the same five): a pull request naming no issue, a pull request whose issue is not known
+// yet, an issue with no priority or no component, and a pull request whose commits name no session.
 const (
-	deliveryNoIssue     = "__no_issue__"
-	deliveryNoPriority  = "__no_priority__"
-	deliveryNoComponent = "__no_component__"
-	deliveryNoSession   = "__no_session__"
+	deliveryNoIssue = "__no_issue__"
+	// deliveryIssueNotKnown is the priority and the component of a pull request whose issue is not
+	// known yet (DeliveryPRView.IssueNotKnown). Five places show it, each with the label "Not known
+	// yet": newDeliveryRow, lib/facets.ts, lib/colorScale.ts, lib/lanes.ts with FacetPanel.tsx, and
+	// lib/prList.ts with DrillDown.tsx.
+	deliveryIssueNotKnown = "__issue_not_known__"
+	deliveryNoPriority    = "__no_priority__"
+	deliveryNoComponent   = "__no_component__"
+	deliveryNoSession     = "__no_session__"
 )
 
 // The rework facet's two values, as the page names them (features/delivery/lib/facets.ts's
@@ -235,7 +240,8 @@ func deliveryTimelineCompute(settings delivery.DeliverySettings, pop deliveryPop
 		})
 	}
 	// Listed by head commit time, then id, which the page's live merge mirrors
-	// (applyDelta.ts's ORDERS); applyRuns itself is in delivery.ReadWindowRows' creation order.
+	// (applyDelta.ts's ORDERS); applyRuns itself is in delivery.Attributor.ReadWindowRows' creation
+	// order.
 	slices.SortFunc(runViews, func(a, b delivery.DeliveryRunView) int {
 		return cmp.Or(a.HeadAt.Compare(b.HeadAt), cmp.Compare(a.ID, b.ID))
 	})
@@ -287,10 +293,11 @@ type deliveryPopulation struct {
 	withWaiting bool
 	waiting     []delivery.WaitingPullRequest
 	// applyRuns is every deploy run on main GitHub created from the window's start up to the bound
-	// past which no run ships a pull request merged before its end first (delivery.ReadWindowRows;
-	// no bound for a window ending at the present), oldest creation first, and jobsByRun their
-	// jobs: the production jobs of each, and in the timeline's read (withWaiting), which lists the
-	// runs with their failed jobs, each of their jobs that failed too (readDeliveryRows).
+	// past which no run ships a pull request merged before its end first
+	// (delivery.Attributor.ReadWindowRows; no bound for a window ending at the present), oldest
+	// creation first, and jobsByRun their jobs: the production jobs of each, and in the timeline's
+	// read (withWaiting), which lists the runs with their failed jobs, each of their jobs that
+	// failed too (readDeliveryRows).
 	applyRuns []delivery.DeliveryRun
 	jobsByRun map[int64][]delivery.DeliveryRunJob
 	// windowRuns is every deploy run on main started in the window, oldest start first, and
@@ -398,7 +405,8 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		// `from` up to the bound past which no run ships a pull request merged before `to` first
 		// (delivery.MergedRows says why not cut at `to`; no bound for a window ending at the
 		// present) and, for the measures, the window's deploys with the rows before the window
-		// their shipped sets read.
+		// their shipped sets read. Each pull request's issue is the statement's answer
+		// (delivery.Attributor.ListPullRequestsInWindow).
 		// Containment and the measures judge a run by its production jobs alone
 		// (delivery.Production.JudgedJobNames says why that judges every run as its every job
 		// would); the timeline lists each deploy run it shows with its failed jobs and the job
@@ -407,7 +415,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		// they answer from these what they answer from every job). The timeline's runs[] list is
 		// filtered to [from, to) separately.
 		func(ctx context.Context) error {
-			merged, window, err := delivery.ReadWindowRows(ctx, pool, settings, from, to, withWaiting, withMeasures)
+			merged, window, err := s.deps.Attributor.ReadWindowRows(ctx, pool, settings, from, to, withWaiting, withMeasures)
 			pop.prs, pop.applyRuns, pop.jobsByRun, deploys = merged.PullRequests, merged.ApplyRuns, merged.ApplyJobs, window
 			return err
 		},
@@ -431,7 +439,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		// The deploy repository's pull requests still waiting at `from`, so the waiting line
 		// starts the window at their count rather than at zero.
 		independent = append(independent, func(ctx context.Context) (err error) {
-			pop.waiting, err = delivery.ListPullRequestsWaitingAt(ctx, pool, settings.DeployRepo, settings.Production(), from)
+			pop.waiting, err = s.deps.Attributor.ListPullRequestsWaitingAt(ctx, pool, settings.DeployRepo, settings.Production(), from)
 			return err
 		})
 	}
@@ -541,7 +549,7 @@ func (p deliveryPopulation) derive(settings delivery.DeliverySettings) deliveryD
 			ID: pr.Repo + "#" + strconv.Itoa(pr.Number), Repo: pr.Repo, Number: pr.Number, Title: pr.Title, URL: pr.URL,
 			Author: pr.Author, CreatedAt: pr.CreatedAt, MergedAt: pr.MergedAt, FirstCommitAt: pr.FirstCommitAt,
 			Additions: pr.Additions, Deletions: pr.Deletions, Partial: pr.Partial, Rework: pr.Rework,
-			Issue: pr.IssueKey, Components: []string{}, Sessions: pr.Sessions,
+			Issue: pr.IssueKey, IssueNotKnown: pr.IssueNotKnown, Components: []string{}, Sessions: pr.Sessions,
 			DeployRun: deployRun, DeployedAt: deployedAt, DeployedStatus: status,
 			UnfetchableReason: pr.UnfetchableReason,
 		}
@@ -616,9 +624,10 @@ func (p deliveryPopulation) derive(settings delivery.DeliverySettings) deliveryD
 // (derive reads them by those keys). This is ListPullRequestsWaitingAt's rule: a pull request
 // shipped by from' exactly when its ship time (the earliest successful production job of a run
 // created after its merge) is before from'. A leaving row's ship is read from the runs read here,
-// which hold every run created after its merge that can ship it first (delivery.ReadWindowRows),
-// since it merged at or after the start they were read from. The window's end moves with from',
-// past the read's end: a preset's read ends at the present, so nothing stored lies past it.
+// which hold every run created after its merge that can ship it first
+// (delivery.Attributor.ReadWindowRows), since it merged at or after the start they were read from.
+// The window's end moves with from', past the read's end: a preset's read ends at the present, so
+// nothing stored lies past it.
 func (p deliveryPopulation) narrowedTo(settings delivery.DeliverySettings, from time.Time) deliveryPopulation {
 	narrowed := p
 	narrowed.prs = make([]delivery.DeliveryPullRequest, 0, len(p.prs))
@@ -678,10 +687,10 @@ func runsWhere(runs []delivery.DeliveryRun, jobs map[int64][]delivery.DeliveryRu
 // nextExpiry is the first moment after now at which a preset window of length n, ending at the
 // present, loses something the population holds or its daily series moves: just past the oldest
 // row's merge + n, the oldest run start (each list that filters on starts) + n, the oldest creation
-// among the apply runs delivery.ReadWindowRows read + n, and each waiting entry's ship time + n;
-// and the next UTC midnight (measures.DailySeries's days, which measures' windowDays lays out),
-// where a whole-day window's first and last days move together. Nothing else in the timeline or
-// the measures reads the present (the LEGION-690 PR's Task 0 checks, Step 17).
+// among the apply runs delivery.Attributor.ReadWindowRows read + n, and each waiting entry's ship
+// time + n; and the next UTC midnight (measures.DailySeries's days, which measures' windowDays
+// lays out), where a whole-day window's first and last days move together. Nothing else in the
+// timeline or the measures reads the present (the LEGION-690 PR's Task 0 checks, Step 17).
 func nextExpiry(pop deliveryPopulation, n time.Duration, now time.Time) time.Time {
 	next := nextUTCMidnight(now)
 	consider := func(leaves time.Time) {
@@ -950,8 +959,9 @@ type deliveryRow struct {
 
 // newDeliveryRow reads a view's facet values. Every colour-by facet (deliveryColorFacets) gets at
 // least one value, a placeholder when the pull request has none, since deliveryColorCounts colours
-// a row by its first. session gets no placeholder: parent_agent's __no_session__ already filters
-// the pull requests no session wrote.
+// a row by its first. A pull request with no issue gets __issue_not_known__ for priority and
+// component where its issue is not known yet, and __no_issue__ otherwise. session gets no
+// placeholder: parent_agent's __no_session__ already filters the pull requests no session wrote.
 func newDeliveryRow(view delivery.DeliveryPRView) deliveryRow {
 	values := map[string][]string{
 		"repo":     {view.Repo},
@@ -970,6 +980,9 @@ func newDeliveryRow(view delivery.DeliveryPRView) deliveryRow {
 		values["rework"] = []string{deliveryReworkRework}
 	}
 	switch {
+	case view.Issue == nil && view.IssueNotKnown:
+		values["priority"] = []string{deliveryIssueNotKnown}
+		values["component"] = []string{deliveryIssueNotKnown}
 	case view.Issue == nil:
 		values["priority"] = []string{deliveryNoIssue}
 		values["component"] = []string{deliveryNoIssue}

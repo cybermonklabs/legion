@@ -445,12 +445,46 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
+		// pull_request_texts names its pull request by a foreign key on (repo, number) with
+		// on update cascade and on delete cascade (20261117111040_pull_request_texts), so each
+		// texts row follows its head row's new name, and goes with a head row this line deletes.
 		fields: "pull_request_heads.repo, .url",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				collisions(r, "pull_request_heads", "number"),
 				nameWrite(r, "pull_request_heads", "repo"),
 				urlWrite(r, "pull_request_heads", "url"),
+			}
+		},
+	},
+	{
+		// A read owed under an old name is owed under the new one, which the reconcile reads
+		// GitHub under; the migration that owes the reads of the links stored before this table
+		// (20261120171308_pull_request_reads_owed_link_backfill) owes them under the names the
+		// links spell, and this line writes those too.
+		fields: "pull_request_reads_owed.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "pull_request_reads_owed", "number"),
+				nameWrite(r, "pull_request_reads_owed", "repo"),
+			}
+		},
+	},
+	{
+		fields: "pull_request_attribution_moves.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "pull_request_attribution_moves", "number"),
+				nameWrite(r, "pull_request_attribution_moves", "repo"),
+			}
+		},
+	},
+	{
+		fields: "commit_pull_reads.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "commit_pull_reads", "sha"),
+				nameWrite(r, "commit_pull_reads", "repo"),
 			}
 		},
 	},

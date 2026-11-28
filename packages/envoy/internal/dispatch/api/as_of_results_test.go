@@ -88,6 +88,7 @@ func newPastResultsRig(t *testing.T, statements *markedStatements) (http.Handler
 		}
 		fmt.Fprint(w, answer(r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("sha")))
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
@@ -123,11 +124,12 @@ const pastResultsChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\" ne
 // heads answer, a check its default branch answers and a check CI proves. A result of the first
 // stands at the head of a pull request that no row holds, and a result of the second at a commit
 // the default branch carries, which no row records. So the present read asks GitHub for the
-// commit's pull requests, for a compare and for check runs, and stores a pull request head, a
-// branch answer and the head's attribution event. The read at the cut is a writer's read, made
-// with GitHub shut: it answers each check and result of the cut, leaves out every field of the
-// comparison and of CI's run, each check's version and digest and whether the words of each
-// result moved, and names each in Dispatch-As-Of-Absent. The tracer finds no write of it to
+// commit's pull requests, for a compare and for check runs, and stores a pull request head and a
+// branch answer; the head row records no event, since the statement gives the row its issue at
+// each read. The read at the cut is a writer's read, made with GitHub shut: it answers each check
+// and result of the cut, leaves out every field of the comparison and of CI's run, each check's
+// version and digest, whether the words of each result moved and the links Dispatch reads no
+// more, and names each in Dispatch-As-Of-Absent. The tracer finds no write of it to
 // pull_request_heads, branch_commits or events, and the counts of those rows do not move. ?at=
 // with a cut is refused 400 AS_OF_NOT_SERVED naming at, and asks GitHub nothing either.
 func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
@@ -175,9 +177,9 @@ func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 		t.Fatalf("the read at the cut: status=%d %s=%q body=%s", response.Code, contracts.DispatchAsOfHeader,
 			response.Header().Get(contracts.DispatchAsOfHeader), response.Body.String())
 	}
-	const absent = "/checks/*/ci,/checks/*/compared_nothing,/checks/*/compared_with,/checks/*/pass_stands," +
-		"/checks/*/results/*/check_words_moved,/checks/*/results/*/commit_stands,/checks/*/results/*/currency," +
-		"/checks/*/sha256,/checks/*/version"
+	const absent = "/checks/*/ci,/checks/*/compared_nothing,/checks/*/compared_with,/checks/*/heads_not_read," +
+		"/checks/*/issues_not_known,/checks/*/pass_stands,/checks/*/results/*/check_words_moved," +
+		"/checks/*/results/*/commit_stands,/checks/*/results/*/currency,/checks/*/sha256,/checks/*/version,/unreadable_links"
 	if named := response.Header().Get(contracts.DispatchAsOfAbsentHeader); named != absent {
 		t.Errorf("the read at the cut names %s %q, want %q", contracts.DispatchAsOfAbsentHeader, named, absent)
 	}
@@ -235,8 +237,8 @@ func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 		t.Fatalf("the present read: status=%d body=%s", present.Code, present.Body.String())
 	}
 	stored := countStoredRows(t, database)
-	if github.asked.Load() == asked || stored.heads <= before.heads || stored.branches <= before.branches || stored.events <= before.events {
-		t.Errorf("the present read asked GitHub %d times and moved the stored rows from %+v to %+v, want GitHub asked and a head, a branch answer and an event stored",
+	if github.asked.Load() == asked || stored.heads <= before.heads || stored.branches <= before.branches {
+		t.Errorf("the present read asked GitHub %d times and moved the stored rows from %+v to %+v, want GitHub asked and a head and a branch answer stored",
 			github.asked.Load()-asked, before, stored)
 	}
 }

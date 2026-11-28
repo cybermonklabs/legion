@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The description of `GET /api/v1/issues/{key}/results` says what a basis''s `learned_at` of kind `updated_at` is: the pull request''s own update time on GitHub, as the read that wrote the head answered it. It said the newest webhook event carried that time, which the intake no longer takes from an event.'
+time: 2026-11-16T16:58:09.129448078Z
+custom:
+    Issue: pr4209

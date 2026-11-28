@@ -478,7 +478,6 @@ packages/envoy:
       - internal/dispatch/store/storetest       # 110 s
       - internal/oidc                           # 44 s
       - internal/dispatch/delivery/measures     # 6 s
-      - internal/dispatch/delivery/citebody     # 1 s
       - internal/dispatch/delivery/deliveryseed
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections

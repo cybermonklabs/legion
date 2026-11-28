@@ -62,21 +62,22 @@ type MergedRows struct {
 }
 
 // ReadMergedRows reads MergedRows for [from, to) in q: the pull requests, and every apply run
-// followed by their production jobs, side by side on the pool (readAll).
-func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
-	return readMergedRows(ctx, q, settings, from, to, "", nil)
+// followed by their production jobs, side by side on the pool (readAll). Each pull request's issue
+// is the statement's answer (Attributor.ListPullRequestsInWindow).
+func (a *Attributor) ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
+	return a.readMergedRows(ctx, q, settings, from, to, "", nil)
 }
 
 // readMergedRows is ReadMergedRows, narrowed to repo's pull requests when repo is non-empty and,
 // with createdBefore set, to only the apply runs GitHub created before it.
-func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, repo string, createdBefore *time.Time) (MergedRows, error) {
+func (a *Attributor) readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, repo string, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
 	err := readAll(ctx, q,
 		func(ctx context.Context) (err error) {
 			if repo != "" {
-				rows.PullRequests, err = listRepoPullRequestsInWindow(ctx, q, repo, from, to)
+				rows.PullRequests, err = a.listRepoPullRequestsInWindow(ctx, q, repo, from, to)
 			} else {
-				rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
+				rows.PullRequests, err = a.ListPullRequestsInWindow(ctx, q, from, to)
 			}
 			return err
 		},
@@ -141,12 +142,12 @@ func readApplyRows(ctx context.Context, q Querier, settings DeliverySettings, fr
 // Deploys.Earlier (windowApplyRunsCreated), so every pull request's deploy is the one
 // ReadMergedRows' runs give it. The pull requests are read side by side with the runs and their
 // jobs.
-func ReadWindowRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (MergedRows, Deploys, error) {
+func (a *Attributor) ReadWindowRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (MergedRows, Deploys, error) {
 	var rows MergedRows
 	var window Deploys
 	err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			rows.PullRequests, err = ListPullRequestsInWindow(ctx, pool, from, to)
+			rows.PullRequests, err = a.ListPullRequestsInWindow(ctx, pool, from, to)
 			return err
 		},
 		func(ctx context.Context) error {
@@ -155,7 +156,7 @@ func ReadWindowRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 			if err != nil || !deploys {
 				return err
 			}
-			window, err = deploysOf(ctx, pool, settings, from, started)
+			window, err = a.deploysOf(ctx, pool, settings, from, started)
 			return err
 		})
 	if err != nil {
@@ -421,17 +422,17 @@ type Deploys struct {
 // it had shipped by then and so ships with none of Applies; or the creation of one of Applies,
 // where one was created earlier still, so that run is among the apply runs. Nothing earlier is
 // read where the window holds no deploy, or since is not before from.
-func ReadDeploys(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (Deploys, error) {
+func (a *Attributor) ReadDeploys(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (Deploys, error) {
 	started, err := listRunsWithJobsStartedIn(ctx, q, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, settings.Production().JudgedJobNames())
 	if err != nil {
 		return Deploys{}, err
 	}
-	return deploysOf(ctx, q, settings, from, started)
+	return a.deploysOf(ctx, q, settings, from, started)
 }
 
 // deploysOf is the Deploys of a window from from whose deploy runs, with the jobs each is judged by,
 // are started: the deploys among them, and the earlier rows ReadDeploys reads, in q.
-func deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, started RunsWithJobs) (Deploys, error) {
+func (a *Attributor) deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, started RunsWithJobs) (Deploys, error) {
 	production := settings.Production()
 	deploys := Deploys{Started: started, Applies: ProductionApplies(started.Runs, started.Jobs, production).Applies}
 	if len(deploys.Applies) == 0 {
@@ -449,7 +450,7 @@ func deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from t
 	if !since.Before(from) {
 		return deploys, nil
 	}
-	if deploys.Earlier, err = readMergedRows(ctx, q, settings, since, from, settings.DeployRepo, &from); err != nil {
+	if deploys.Earlier, err = a.readMergedRows(ctx, q, settings, since, from, settings.DeployRepo, &from); err != nil {
 		return Deploys{}, err
 	}
 	return deploys, nil

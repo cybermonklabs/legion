@@ -44,7 +44,7 @@ func TestTheDeployRecorderWaitsForTheIssuesOwnerLockHoldingNoTransactionID(t *te
 	}
 	passes := make(chan outcome, 1)
 	go func() {
-		written, err := RecordDeployedEvents(context.Background(), pool, settings, events.NewBroker())
+		written, err := unrenamed().RecordDeployedEvents(context.Background(), pool, settings, events.NewBroker())
 		passes <- outcome{written, err}
 	}()
 	early, answeredEarly, holdingXid := storetest.AwaitOwnerLockWaiter(t, &store.Store{Pool: pool}, "the deploy recorder", passes)

@@ -14,6 +14,9 @@ A documented procedure is passed only by running it. Reading the document is not
 
 The issue's own checks are the whole of its evidence, read at its own head. A result a child recorded against one of this issue's checks proves nothing here, and a child that carries part of this issue's requirement proves it with a check of its own whose `serves` names that requirement. An issue with no Verification document, or with one that holds no `before_merge` check, is a gap you name, never a reason of its own to send the issue back: say which of the two it is in your report, let the phase stand on the checks that do exist, and tell the architect, which writes the checks.
 
+Treat `head_not_read` and `issue_not_known` as a run still going.
+Wait for the head read or attribution; neither is a test failure or a result to record.
+
 When the PR carries a `## Contract change census`, every entry a person invokes is a check: drive it through its real surface, meaning the client that builds the input, run through the new check, and record it like any other. An entry you could not drive is a finding.
 
 On a new head, read what changed since the head you last tested (`git diff <that head> <new head>`), and size your round to that change: test again only what it can affect, and confirm the rest by naming the earlier head. For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in. A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.

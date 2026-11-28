@@ -176,8 +176,9 @@ type Population struct {
 // issue a Legion session of the project ever filed (ProjectFilings), whose filers are issues of
 // the project and so inside that scope. Its phase work is the whole log's (legion.PhaseWorkKeys):
 // it is the read a build makes once per project, and its walks may ask about any issue.
-func ReadProject(ctx context.Context, pool *store.Pool, project string, now time.Time) (*Population, error) {
-	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
+// attributor reads each issue's pull requests by the rename pairs the boot read (readMergeTimes).
+func ReadProject(ctx context.Context, pool *store.Pool, attributor *delivery.Attributor, project string, now time.Time) (*Population, error) {
+	return read(ctx, pool, attributor, project, now, func(ctx context.Context, p *Population) error {
 		return p.readFiled(ctx, pool, project, now)
 	}, func(p *Population) []string {
 		return p.Keys
@@ -204,9 +205,10 @@ func ReadProject(ctx context.Context, pool *store.Pool, project string, now time
 // about 730 ms a call at ten times INFRA's rate (dispatch://INFRA-2916, round 15's cost design).
 // Each issue it reads carries the answer the whole log gives it (legion.PhaseWorkOf), and every
 // question the computation asks of an issue it did not read has the same answer either way
-// (placedKeys), so the facts and the filings are the ones ReadProject computes.
-func ReadIssues(ctx context.Context, pool *store.Pool, project string, keys, filed []string, now time.Time) (*Population, error) {
-	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
+// (placedKeys), so the facts and the filings are the ones ReadProject computes. attributor is
+// ReadProject's.
+func ReadIssues(ctx context.Context, pool *store.Pool, attributor *delivery.Attributor, project string, keys, filed []string, now time.Time) (*Population, error) {
+	return read(ctx, pool, attributor, project, now, func(ctx context.Context, p *Population) error {
 		return p.readFiledIssues(ctx, pool, project, filed)
 	}, func(p *Population) []string {
 		return p.treeScopeKeys(slices.Concat(keys, p.filerKeys()))
@@ -218,8 +220,9 @@ func ReadIssues(ctx context.Context, pool *store.Pool, project string, keys, fil
 // read is the body the two readers share, from the beginning to `to`. filed reads the
 // population's filings, before the scope is chosen because the scope holds each filer's issue,
 // scope names which issues the six detail reads cover, and phaseWork reads which issues carry
-// Legion phase work, given that scope, for the tree walks (TreeNode).
-func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
+// Legion phase work, given that scope, for the tree walks (TreeNode). attributor reads the
+// scope's pull requests (readMergeTimes).
+func read(ctx context.Context, pool *store.Pool, attributor *delivery.Attributor, project string, to time.Time,
 	filed func(ctx context.Context, p *Population) error,
 	scope func(*Population) []string,
 	phaseWork func(ctx context.Context, p *Population, scope []string) (map[string]struct{}, error),
@@ -272,7 +275,7 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readPlans(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readSampled(ctx, tx, project, keys) },
-		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, keys) },
+		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, attributor, keys) },
 		func(ctx context.Context) (err error) {
 			population.phaseWork, err = phaseWork(ctx, population, keys)
 			return err
@@ -904,34 +907,27 @@ func (p *Population) fillReportedTrees() {
 }
 
 // readMergeTimes reads the merge time of each issue's pull request from the delivery population:
-// the earliest of those that merged, where it holds one.
-func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, keys []string) error {
-	rows, err := pool.Query(ctx, `
-		select issue_key, merged_at
-		from delivery_pull_requests
-		where issue_key = any($1) and unfetchable_at is null
-		order by issue_key, number
-	`, keys)
+// the earliest of those that merged, where it holds one. A pull request is the issue's when the
+// one statement of a pull request's issue gives it to the issue
+// (delivery.Attributor.ListPullRequestsOfIssues), as the delivery timeline reads it, never by the
+// issue a reconcile pass last stored on its row. A row GitHub proved absent (unfetchable_at)
+// counts for nothing.
+func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, attributor *delivery.Attributor, keys []string) error {
+	prs, err := attributor.ListPullRequestsOfIssues(ctx, pool, keys)
 	if err != nil {
 		return fmt.Errorf("read the pull requests of the finished issues: %w", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var key string
-		var mergedAt *time.Time
-		if err := rows.Scan(&key, &mergedAt); err != nil {
-			return fmt.Errorf("scan a pull request: %w", err)
-		}
-		issue := p.Issues[key]
-		if issue == nil || mergedAt == nil {
+	for _, pr := range prs {
+		if pr.UnfetchableAt != nil || pr.MergedAt == nil {
 			continue
 		}
-		if issue.MergedAt == nil || mergedAt.Before(*issue.MergedAt) {
-			issue.MergedAt = mergedAt
+		issue := p.Issues[*pr.IssueKey]
+		if issue == nil {
+			continue
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the pull requests of the finished issues: %w", err)
+		if issue.MergedAt == nil || pr.MergedAt.Before(*issue.MergedAt) {
+			issue.MergedAt = pr.MergedAt
+		}
 	}
 	return nil
 }

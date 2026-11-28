@@ -28,14 +28,16 @@ import (
 
 // drivenStatement is one statement the traced pool ran: its SQL, the writes it makes as
 // driveWritesOf reads them when it is recorded (writes, and whether every write word in it was
-// read, readable), and whether it ran on a context the test marked (countedRead), which is a
+// read, readable), whether it ran on a context the test marked (countedRead), which is a
 // request's own context and the work that request detached from it, and never the server's own
-// context.
+// context, and the backend it ran on (conn, its process id), which places it in a transaction
+// (unrolled).
 type drivenStatement struct {
 	sql      string
 	writes   []string
 	readable bool
 	marked   bool
+	conn     uint32
 	oracle   bool
 }
 
@@ -58,15 +60,22 @@ type poolStatements struct {
 	checkGaps bool
 }
 
-func (p *poolStatements) record(ctx context.Context, sql string) {
+func (p *poolStatements) record(ctx context.Context, conn *pgx.Conn, sql string) {
 	writes, readable := driveWritesOf(sql)
+	var backend uint32
+	if conn != nil {
+		backend = conn.PgConn().PID()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.statements = append(p.statements, drivenStatement{sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil, oracle: ctx.Value(writingOracle{}) != nil})
+	p.statements = append(p.statements, drivenStatement{
+		sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil, conn: backend,
+		oracle: ctx.Value(writingOracle{}) != nil,
+	})
 }
 
-func (p *poolStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	p.record(ctx, data.SQL)
+func (p *poolStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	p.record(ctx, conn, data.SQL)
 	return ctx
 }
 
@@ -76,14 +85,14 @@ func (p *poolStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx
 	return ctx
 }
 
-func (p *poolStatements) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	p.record(ctx, data.SQL)
+func (p *poolStatements) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	p.record(ctx, conn, data.SQL)
 }
 
 func (p *poolStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-func (p *poolStatements) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
-	p.record(ctx, "insert into "+data.TableName.Sanitize()+" (copy from)")
+func (p *poolStatements) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
+	p.record(ctx, conn, "insert into "+data.TableName.Sanitize()+" (copy from)")
 	return ctx
 }
 
@@ -112,7 +121,10 @@ func (p *poolStatements) auditGap(t *testing.T, what string) {
 	}
 	statements := p.since(p.checked)
 	p.checked += len(statements)
-	requireReadsWrites(t, "between windows "+what, nonOracleStatements(statements))
+	// Only the writer comparison runs between windows (driveRead), and its statements are dropped
+	// as the oracle's (writingOracle, nonOracleStatements), so no rolled-back write left is a
+	// route's (readMayRollBack).
+	requireReadsWrites(t, "between windows "+what, "", nonOracleStatements(statements))
 }
 
 // nonOracleStatements filters a snapshot in place, never the tracer's recorded statements.
@@ -246,12 +258,126 @@ func TestTheDriveReadsOnlyACompactionsUpdateColumnAsNoVerb(t *testing.T) {
 	}
 }
 
+// The drive judges a write by whether a rollback undid it (unrolled), each backend's
+// transactions apart: a write a rollback undid stores nothing, one a commit kept is the read's,
+// and one in a transaction the window holds no end of is the read's too, since nothing showed it
+// undone. The rows with a commit are the red: a walk that called every write in a transaction
+// undone would pass a read that commits a write.
+func TestTheDriveJudgesOnlyTheWritesNoRollbackUndid(t *testing.T) {
+	t.Parallel()
+	statement := func(conn uint32, sql string) drivenStatement {
+		writes, _ := driveWritesOf(sql)
+		return drivenStatement{sql: sql, writes: writes, readable: true, conn: conn}
+	}
+	const (
+		heads = "insert into pull_request_heads (repo, number) values ($1, $2)"
+		texts = "insert into pull_request_texts (repo, number) values ($1, $2)"
+	)
+	for _, row := range []struct {
+		name         string
+		statements   []drivenStatement
+		kept, undone []string
+	}{
+		{"a write a rollback undid", []drivenStatement{
+			statement(1, "begin"), statement(1, heads), statement(1, "rollback"),
+		}, nil, []string{heads}},
+		{"a write a commit kept", []drivenStatement{
+			statement(1, "begin"), statement(1, heads), statement(1, "commit"),
+		}, []string{heads}, nil},
+		{"a savepoint rolled back to inside a commit", []drivenStatement{
+			statement(1, "begin"), statement(1, "savepoint sp_1"), statement(1, heads),
+			statement(1, "rollback to savepoint sp_1"), statement(1, texts), statement(1, "commit"),
+		}, []string{texts}, []string{heads}},
+		{"a released savepoint inside a rollback", []drivenStatement{
+			statement(1, "begin"), statement(1, "savepoint sp_1"), statement(1, heads),
+			statement(1, "release savepoint sp_1"), statement(1, "rollback"),
+		}, nil, []string{heads}},
+		{"another backend's write beside a rollback", []drivenStatement{
+			statement(1, "begin"), statement(1, heads), statement(2, texts), statement(1, "rollback"),
+		}, []string{texts}, []string{heads}},
+		{"a transaction the window holds no end of", []drivenStatement{
+			statement(1, "begin"), statement(1, heads),
+		}, []string{heads}, nil},
+	} {
+		kept, undone := unrolled(row.statements)
+		sqlOf := func(statements []drivenStatement) []string {
+			var sql []string
+			for _, statement := range statements {
+				sql = append(sql, statement.sql)
+			}
+			return sql
+		}
+		if got := sqlOf(kept); !slices.Equal(got, row.kept) {
+			t.Errorf("%s: unrolled kept %q, want %q", row.name, got, row.kept)
+		}
+		if got := sqlOf(undone); !slices.Equal(got, row.undone) {
+			t.Errorf("%s: unrolled undid %q, want %q", row.name, got, row.undone)
+		}
+	}
+}
+
+// The drive accepts a write a rollback undid only on the results route and only to the tables its
+// writer writes (readMayRollBack); a simple-protocol string that opens, writes and commits is
+// judged by its write. The rows that must fail are the control: a rolled-back write on another
+// route, a rolled-back write of another table on the results route, and a commit hidden after a
+// write in one string.
+func TestTheDriveAcceptsARolledBackWriteOnlyOnTheResultsRouteAndItsTables(t *testing.T) {
+	t.Parallel()
+	statement := func(sql string) drivenStatement {
+		writes, readable := driveWritesOf(sql)
+		return drivenStatement{sql: sql, writes: writes, readable: readable, conn: 1}
+	}
+	rolledBack := func(write string) []drivenStatement {
+		return []drivenStatement{statement("begin"), statement(write), statement("rollback")}
+	}
+	const heads = "insert into pull_request_heads (repo, number) values ($1, $2)"
+	for _, row := range []struct {
+		name       string
+		route      string
+		statements []drivenStatement
+		fails      bool
+	}{
+		{"a rolled-back write of the results writer's table on the results route", rolledBackRoute, rolledBack(heads), false},
+		{"a rolled-back write of each of its tables", rolledBackRoute, slices.Concat(
+			rolledBack("insert into pull_request_texts (repo, number) values ($1, $2)"),
+			rolledBack("delete from pull_request_reads_owed where repo = $1"),
+			rolledBack("insert into branch_commits (repo, branch, sha) values ($1, $2, $3)")), false},
+		{"a rolled-back write of the same table on another route", http.MethodGet + " /api/v1/issues/{key}", rolledBack(heads), true},
+		{"a rolled-back write of another table on the results route", rolledBackRoute,
+			rolledBack("update issues set title = $2 where key = $1"), true},
+		// The string begins with the bare word begin, so a reading of control words alone takes it
+		// for the start of a transaction and hides its write; the guard at the top of
+		// transactionControl judges it by that write.
+		{"a write and its commit in one string on the results route", rolledBackRoute,
+			[]drivenStatement{statement("begin\n" + heads + ";\ncommit")}, true},
+	} {
+		recorder := &errorRecorder{TB: t}
+		requireReadsWrites(recorder, row.name, row.route, row.statements)
+		if failed := len(recorder.errors) > 0; failed != row.fails {
+			t.Errorf("%s: the drive failed=%t (%q), want failed=%t", row.name, failed, recorder.errors, row.fails)
+		}
+	}
+}
+
+// errorRecorder is a testing.TB whose Errorf records the failure instead of failing the test, so
+// a test can hold a judgment's failure as its control.
+type errorRecorder struct {
+	testing.TB
+	errors []string
+}
+
+func (r *errorRecorder) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+func (r *errorRecorder) Helper() {}
+
 // readMayWrite is whether a read may write table with verb, statement being the whole statement.
 // A read writes nothing but the spec's closed list, wherever the write runs: the insert that
 // spends a broker token's proof, a personal token's last use, the inserts of the display trees,
 // the route roster and the event horizon (writesOf reads an upsert as the insert it is), a
 // project's term statistics, GitHub's rate limits, and a compaction's rewrite and delete of a
-// document's updates.
+// document's updates. A write a rollback undid is held to readMayRollBack.
 func readMayWrite(verb, table, statement string) bool {
 	switch table {
 	case "dpop_proofs", "text_trees", "route_roster", "event_horizon":
@@ -280,13 +406,48 @@ func writesIn(statements []drivenStatement) []string {
 	return written
 }
 
-// requireReadsWrites fails what for every write of statements a read may not make (readMayWrite),
-// and for every statement holding a write this test cannot read a table for. It answers every
-// write it saw, as "<verb> <table>".
-func requireReadsWrites(t *testing.T, what string, statements []drivenStatement) []string {
+// rolledBackRoute is the one route whose read may make writes a rollback undoes: a read-only
+// caller's results read makes the writes of its read-throughs with the writer's own code in a
+// transaction it rolls back (delivery.HeadAnswers), and rolledBackTables is every table that
+// writer's code writes.
+const rolledBackRoute = http.MethodGet + " /api/v1/issues/{key}/results"
+
+var rolledBackTables = []string{"pull_request_heads", "pull_request_texts", "pull_request_reads_owed", "branch_commits"}
+
+// readMayRollBack is whether a read of route may make a write of table that a rollback undid:
+// only the results read, only to its writer's tables (rolledBackRoute, rolledBackTables), and
+// otherwise only a write the read may make anyway (readMayWrite). A rolled-back write still takes
+// row locks, fires triggers and draws sequence values, so no other route is given it.
+func readMayRollBack(route, verb, table, statement string) bool {
+	if route == rolledBackRoute && slices.Contains(rolledBackTables, table) {
+		return true
+	}
+	return readMayWrite(verb, table, statement)
+}
+
+// requireReadsWrites fails what, a read of route, for every write of statements a read may not
+// make (readMayWrite), every write a rollback undid that the route may not make
+// (readMayRollBack), and every statement holding a write this test cannot read a table for. It
+// answers every write it saw, as "<verb> <table>", each undone one as
+// "rolled back <verb> <table>".
+func requireReadsWrites(t testing.TB, what, route string, statements []drivenStatement) []string {
 	t.Helper()
+	kept, undone := unrolled(statements)
 	var written []string
-	for _, statement := range statements {
+	for _, statement := range undone {
+		if !statement.readable {
+			t.Errorf("%s: the window holds a write this test cannot read a table for, rolled back: %s", what, oneLine(statement.sql))
+		}
+		for _, write := range statement.writes {
+			written = append(written, "rolled back "+write)
+			verb, table, _ := strings.Cut(write, " ")
+			if !readMayRollBack(route, verb, table, statement.sql) {
+				t.Errorf("%s: the window holds %s %s, rolled back, which a read of %s may not make: only %s may, and only to %v: %s",
+					what, verb, table, cmp.Or(route, "this route"), rolledBackRoute, rolledBackTables, oneLine(statement.sql))
+			}
+		}
+	}
+	for _, statement := range kept {
 		if !statement.readable {
 			t.Errorf("%s: the window holds a write this test cannot read a table for: %s", what, oneLine(statement.sql))
 		}
@@ -299,6 +460,91 @@ func requireReadsWrites(t *testing.T, what string, statements []drivenStatement)
 		}
 	}
 	return written
+}
+
+// transactionControl is the word a statement controls its backend's transaction with: begin,
+// savepoint, release, commit, rollback, or rollback to (a savepoint), and "" for any other
+// statement, and for one holding a write or one this test cannot read: a simple-protocol string
+// such as `begin; insert ...; commit` is judged by its writes, and none is hidden as control.
+func transactionControl(statement string) string {
+	if writes, readable := driveWritesOf(statement); len(writes) > 0 || !readable {
+		return ""
+	}
+	words := strings.Fields(strings.ToLower(statement))
+	switch {
+	case len(words) == 0:
+		return ""
+	case words[0] == "begin" || len(words) > 1 && words[0] == "start" && words[1] == "transaction":
+		return "begin"
+	case words[0] == "savepoint":
+		return "savepoint"
+	case words[0] == "release":
+		return "release"
+	case words[0] == "commit" || words[0] == "end":
+		return "commit"
+	case words[0] == "rollback" && len(words) > 1 && words[1] == "to":
+		return "rollback to"
+	case words[0] == "rollback" || words[0] == "abort":
+		return "rollback"
+	}
+	return ""
+}
+
+// unrolled parts statements into those that stand (kept) and those a rollback undid (undone), by
+// each backend's transactions in the order its statements ran: a statement in a transaction, or
+// in a savepoint of one, stands once the transaction commits, and is undone where the transaction
+// rolls back or the savepoint is rolled back to. A statement of a transaction the window holds no
+// end of stands, since nothing showed it undone, and so does one that ran on no backend the
+// tracer could name. The control statements themselves are left out of both.
+func unrolled(statements []drivenStatement) (kept, undone []drivenStatement) {
+	open := map[uint32][][]drivenStatement{}
+	hold := func(statement drivenStatement) {
+		frames := open[statement.conn]
+		if statement.conn == 0 || len(frames) == 0 {
+			kept = append(kept, statement)
+			return
+		}
+		frames[len(frames)-1] = append(frames[len(frames)-1], statement)
+	}
+	for _, statement := range statements {
+		frames := open[statement.conn]
+		switch control := transactionControl(statement.sql); {
+		case statement.conn == 0 || control == "":
+			hold(statement)
+		case control == "begin":
+			open[statement.conn] = [][]drivenStatement{nil}
+		case control == "savepoint":
+			open[statement.conn] = append(frames, nil)
+		case len(frames) == 0:
+		case control == "release" && len(frames) > 1:
+			top := frames[len(frames)-1]
+			frames = frames[:len(frames)-1]
+			frames[len(frames)-1] = append(frames[len(frames)-1], top...)
+			open[statement.conn] = frames
+		case control == "rollback to":
+			undone = append(undone, frames[len(frames)-1]...)
+			open[statement.conn] = frames[:len(frames)-1]
+			if len(frames) == 1 {
+				open[statement.conn] = [][]drivenStatement{nil}
+			}
+		case control == "commit":
+			for _, frame := range frames {
+				kept = append(kept, frame...)
+			}
+			delete(open, statement.conn)
+		case control == "rollback":
+			for _, frame := range frames {
+				undone = append(undone, frame...)
+			}
+			delete(open, statement.conn)
+		}
+	}
+	for _, frames := range open {
+		for _, frame := range frames {
+			kept = append(kept, frame...)
+		}
+	}
+	return kept, undone
 }
 
 // holdsStatement reports whether one of statements matches pattern.
@@ -569,6 +815,7 @@ func (g *driveGitHub) serve(t *testing.T) string {
 		}
 		fmt.Fprintf(w, `{"status":%q}`, answer)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	return githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 }
 

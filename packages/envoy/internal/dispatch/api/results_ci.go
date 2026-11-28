@@ -23,10 +23,10 @@ import (
 // role records a result for such a check (refuseCheckProvedByCI), and nothing is stored for it
 // either: each read takes the head of each open pull request of the issue
 // (delivery.Attributor.HeadsAttributedTo), or where none is open the merged one that merged last
-// (delivery.NewestPullRequestHead), reads each such commit's check runs from GitHub once, in the
-// repository of that pull request's own row, and derives a result at each from the run its
-// `ci_check` names. The derived results go through the same comparisonReader a recorded result
-// does, so one rule judges where both kinds stand.
+// (delivery.Attributor.NewestPullRequestHead), reads each such commit's check runs from GitHub
+// once, in the repository of that pull request's own row, and derives a result at each from the
+// run its `ci_check` names. The derived results go through the same comparisonReader a recorded
+// result does, so one rule judges where both kinds stand.
 
 // ciReadDeadline bounds the whole read of the check runs of every head of one results read, the
 // token mints and every page together: the route is read inside a role's turn and inside the
@@ -85,6 +85,11 @@ const (
 	ciCaseAbsent          = "absent"
 	ciCaseNoHead          = "no_head"
 	ciCaseUnreadable      = "github_unreadable"
+	// ciCaseHeadNotRead is a newest head that a read of GitHub is owed for, and
+	// ciCaseIssueNotKnown a pull request whose answer is not known that can come before the newest
+	// head. Each has the word of its reason (model.ReasonHeadNotRead, model.ReasonIssueNotKnown).
+	ciCaseHeadNotRead   = model.ReasonHeadNotRead
+	ciCaseIssueNotKnown = model.ReasonIssueNotKnown
 	// ciCaseJobRecorded is a run that passed or failed at a head where the check's CI job
 	// recorded a result of its own for the check (jobAtHeadRecorded): no_result, since the run's
 	// conclusion is the whole job's.
@@ -132,9 +137,20 @@ type ciRun struct {
 // jobs is nil and every head reads jobAtHeadNone. A head whose read did not end within the one
 // ciReadDeadline of the whole read is unread there alone (readCIHeads). An issue holding no check
 // CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
-// Verification document holds the checks and whose pull request heads they are read at. Only a
-// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
-// answer.
+// Verification document holds the checks and whose pull request heads they are read at. It runs
+// after reader has learned the heads GitHub names (comparisonReader.learn) and reads the heads
+// with reader's answers, so a head this read's read-through learned is a head a check CI proves
+// is derived at. Only a failed read of Dispatch's own database is an error; whatever GitHub
+// answers is a case of the answer.
+//
+// Two heads Dispatch does not know stop the read of the check runs, where Dispatch can read the
+// repository (comparisonReader.decides, rule 2; ciHeadNotKnown). A pull request of the repository
+// whose answer is not known, and which comes before the newest head in the order of
+// delivery.Attributor.NewestPullRequestHead, or any one where no head is found, can be the issue's
+// newest head: each check answers unread with ciCaseIssueNotKnown (decision D1). Else a head the
+// runs would be read at that a read of GitHub is owed for may not be the head: each check answers
+// unread with ciCaseHeadNotRead. Either way no check run is read, the read at each head is that
+// unread answer, and passStandsOf answers unknown.
 func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) (map[string]map[ciHeadKey]*model.CheckCI, error) {
 	var proved []provedCI
 	names := map[string]struct{}{}
@@ -154,6 +170,11 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 	if err != nil {
 		return nil, err
 	}
+	// The heads are read after learn, so a writer's read finds the row its own read-through
+	// stored, and a read-only caller's read finds the head its own read-through learned, through
+	// the request's answers it passes as every other read of the heads does. A reader that named a
+	// commit learns nothing, so its answers are empty and it reads the stored rows alone, whoever
+	// reads.
 	heads, ordered, err := s.ciHeadsOf(ctx, issueKey, reader)
 	if err != nil {
 		return nil, err
@@ -164,6 +185,22 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 				fmt.Sprintf("Dispatch holds no time of merge for a merged pull request of %s, so it cannot tell which of them merged last, and read no head.", issueKey), words)
 		}
 		return nil, nil
+	}
+	unread, err := s.ciHeadNotKnown(ctx, reader, issueKey, heads)
+	if err != nil {
+		return nil, err
+	}
+	if unread != nil {
+		answers := make(map[string]map[ciHeadKey]*model.CheckCI, len(proved))
+		for _, p := range proved {
+			p.check.CI = ciUnconcluded(*p.check, p.name, nil, model.CIStateUnread, unread.ciCase, unread.detail, words)
+			atHead := make(map[ciHeadKey]*model.CheckCI, len(heads))
+			for _, head := range heads {
+				atHead[ciHeadKeyOf(head.Repo, head.HeadSHA)] = p.check.CI
+			}
+			answers[p.check.BlockID] = atHead
+		}
+		return answers, nil
 	}
 	if len(heads) == 0 {
 		for _, p := range proved {
@@ -237,12 +274,14 @@ const (
 // ciHeadsOf is the heads a check CI proves is read at: the head of each open pull request of
 // issueKey (delivery.Attributor.HeadsAttributedTo), each in its own row's repository and each
 // commit of a repository once, the open pull request of the highest number first, whose read is
-// the check's `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the
-// final head of the merged pull request that merged last; and none where Dispatch holds neither.
-// Where none is open, the merged pull requests are taken in the order they merged only once the
-// read's fill (fillMergeTimes, over fills) says they can be: where it says they cannot, ordered is
-// false and no head is read, since the head of the highest number, or of a merge with no time
-// ordered last, may be an older merge's than the newest.
+// the check's `ci`; where none is open, the one head delivery.Attributor.NewestPullRequestHead
+// answers, the final head of the merged pull request that merged last; and none where Dispatch
+// holds neither. Where none is open, the merged pull requests are taken in the order they merged
+// only once the read's fill (fillMergeTimes, over fills) says they can be: where it says they
+// cannot, ordered is false and no head is read, since the head of the highest number, or of a
+// merge with no time ordered last, may be an older merge's than the newest. An open head that a
+// read of GitHub is owed for is answered with ReadOwed, as NewestPullRequestHead answers one
+// (ciHeadNotKnown).
 func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *comparisonReader) ([]delivery.NewestHead, bool, error) {
 	for {
 		generation := reader.fills.generation
@@ -252,7 +291,7 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *compari
 		}
 		var heads []delivery.NewestHead
 		for _, head := range attributed {
-			read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
+			read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA, State: "open", ReadOwed: !head.HeadKnown}
 			if head.Open && !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
 				return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA
 			}) {
@@ -263,8 +302,9 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *compari
 			slices.SortStableFunc(heads, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
 			return heads, true, nil
 		}
-		merged := make([]delivery.MergeTime, len(attributed))
-		for index, head := range attributed {
+		stored := storedMerged(attributed)
+		merged := make([]delivery.MergeTime, len(stored))
+		for index, head := range stored {
 			merged[index] = head.MergeTime()
 		}
 		ordered := s.fillMergeTimes(ctx, reader.fills, merged)
@@ -274,7 +314,7 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *compari
 		if !ordered {
 			return nil, false, nil
 		}
-		head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
+		head, found, err := s.deps.Attributor.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 		if err != nil || !found {
 			return nil, true, err
 		}
@@ -326,6 +366,74 @@ func newerResultFirst(a, b model.CheckResult) int {
 		return order
 	}
 	return strings.Compare(b.ID, a.ID)
+}
+
+// ciUnreadHead is why a check CI proves reads no check run: its case and the sentence that names
+// the pull request.
+type ciUnreadHead struct {
+	ciCase, detail string
+}
+
+// ciHeadNotKnown is why the heads of issueKey (ciHeadsOf), the first of them the newest, cannot be
+// the heads that the check runs are read at (deriveCIResults), and nil where they can, or where
+// Dispatch cannot read the repository: a deployment with no App key and a repository the App
+// cannot read answer as before (rule 2). A pull request whose answer is not known that comes
+// before the newest head (newestBefore), or any one where no head is found, can be the issue's
+// newest head (ciCaseIssueNotKnown). Else a head that a read of GitHub is owed for may not be the
+// head, and no check run is read at it (delivery.NewestHead.ReadOwed, ciCaseHeadNotRead). The
+// pull requests whose answer is not known are read from the database only where the issue
+// resolves to a repository. A failed read of them is an error, as a failed read of the heads is.
+func (s *server) ciHeadNotKnown(
+	ctx context.Context, reader *comparisonReader, issueKey string, heads []delivery.NewestHead,
+) (*ciUnreadHead, error) {
+	repo, answered := reader.repositoryOf(ctx, issueKey)
+	if !answered || repo == nil || s.deps.GitHub == nil {
+		return nil, nil
+	}
+	pulls, err := s.deps.Attributor.PullRequestsNotKnown(ctx, s.deps.Store.Pool, *repo, reader.answers)
+	if err != nil {
+		return nil, err
+	}
+	found := len(heads) > 0
+	var head delivery.NewestHead
+	if found {
+		head = heads[0]
+	}
+	var before *delivery.NotKnownPullRequest
+	for index := range pulls {
+		pull := &pulls[index]
+		if found && !newestBefore(pull.State, pull.Number, head.State, head.Number) {
+			continue
+		}
+		if before == nil || newestBefore(pull.State, pull.Number, before.State, before.Number) {
+			before = pull
+		}
+	}
+	owed := slices.IndexFunc(heads, func(read delivery.NewestHead) bool { return read.ReadOwed })
+	if before == nil && owed < 0 {
+		return nil, nil
+	}
+	if !reader.decides(ctx, issueKey) {
+		return nil, nil
+	}
+	if before != nil {
+		return &ciUnreadHead{ciCase: ciCaseIssueNotKnown, detail: fmt.Sprintf(
+			"Dispatch does not know yet whether pull request #%d is %s's: its commit messages are not read.",
+			before.Number, issueKey)}, nil
+	}
+	return &ciUnreadHead{ciCase: ciCaseHeadNotRead, detail: fmt.Sprintf(
+		"Dispatch has not read the head of pull request #%d of %s yet: a read of GitHub is owed for it.",
+		heads[owed].Number, heads[owed].Repo)}, nil
+}
+
+// newestBefore is whether a pull request in state with number comes before one in otherState with
+// otherNumber in the order of delivery.Attributor.NewestPullRequestHead: open before merged, then
+// the higher number.
+func newestBefore(state string, number int, otherState string, otherNumber int) bool {
+	if (state == "open") != (otherState == "open") {
+		return state == "open"
+	}
+	return number > otherNumber
 }
 
 // provedCI is a check CI proves and name, the run its `ci_check` names as the rules read it,
@@ -418,11 +526,11 @@ func gitHubErrorText(err error) string {
 
 // gitHubReason is err's text as a refusal sentence carries it: gitHubErrorText, cut to its first
 // gitHubReasonBytes at a whole character (text.HeadBytes) where it is longer, saying so. The cut
-// is the one bound of every 502 GITHUB_UNREADABLE that names GitHub's error (linkedReadRefusal,
-// getAppInstallation) on the whole reason: an error GitHub answered with a page that is no JSON
-// carries the page as githubapp.ShownBody shows it, its first 512 characters, which may take
-// 2,048 bytes, and its size, after the request's own text, and an error of any other package
-// carries whatever text it holds.
+// is the one bound of every 502 GITHUB_UNREADABLE that names GitHub's error (getAppInstallation)
+// on the whole reason: an error GitHub answered with a page that is no JSON carries the page as
+// githubapp.ShownBody shows it, its first 512 characters, which may take 2,048 bytes, and its
+// size, after the request's own text, and an error of any other package carries whatever text it
+// holds.
 func gitHubReason(err error) string {
 	reason := gitHubErrorText(err)
 	head, cut := text.HeadBytes(reason, gitHubReasonBytes)

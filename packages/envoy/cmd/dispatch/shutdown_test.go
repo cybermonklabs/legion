@@ -899,7 +899,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		t.Fatal("the shutdown did not end within stopGrace")
 	}
 
-	reader, err := pgx.Connect(context.Background(), database.Pool.Config().ConnString())
+	reader, err := pgx.ConnectConfig(context.Background(), database.Pool.Config().ConnConfig)
 	if err != nil {
 		t.Fatalf("connect to read the delivery settings: %v", err)
 	}
@@ -1178,7 +1178,10 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
-	config, err := testpool.ParseConfig(relay.url)
+	config, err := store.PoolConfig(relay.url)
+	if err == nil {
+		err = testpool.Size(config)
+	}
 	if err != nil {
 		t.Fatalf("parse the relay's URL: %v", err)
 	}

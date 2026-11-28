@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    A read of an issue's results whose caller hangs up while Dispatch reads a commit's pull
+    requests through from GitHub still stores their heads. The read-through runs on a context
+    the caller's end does not cancel, bounded at one minute (`delivery.ReadThroughTimeout`), and
+    the settle of its claim runs the same way. Before, the caller's end cut the head write short,
+    and the read's five-minute claim then held the commit off with nothing stored, so the check
+    compared with no head for those five minutes. A read-through that Dispatch's own database
+    could not store now gives its claim back, in the process and in `commit_pull_reads`, so the
+    next read asks GitHub at once; a read GitHub itself failed keeps the claim, and so does a
+    read whose commit messages GitHub answered with its rate limit after the head was stored.
+time: 2026-11-19T20:34:55.000000000Z
+custom:
+    Issue: pr4209

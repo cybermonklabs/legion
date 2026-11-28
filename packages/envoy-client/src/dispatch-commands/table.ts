@@ -56,7 +56,13 @@ import {
 } from "./projects";
 import { readCommand } from "./read";
 import { reviewCommand } from "./reviews";
-import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
+import {
+  answersCommand,
+  attributionCommand,
+  inboxCommand,
+  limitsCommand,
+  whoamiCommand,
+} from "./session";
 import { specFormCommand } from "./spec-form";
 import { stepsCommand } from "./steps";
 
@@ -206,6 +212,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_answers: readingOnSession(answersCommand),
   dispatch_whoami: onSession(whoamiCommand),
   dispatch_limits: onSession(limitsCommand),
+  dispatch_attribution: onSession(attributionCommand),
   dispatch_api: onSession(apiCommand),
   dispatch_inbox: readingOnSession(inboxCommand),
 };

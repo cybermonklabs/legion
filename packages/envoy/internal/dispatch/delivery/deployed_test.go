@@ -27,39 +27,41 @@ const (
 	deployedOtherIssue = "DEPL-2"
 )
 
-// seedDeployedIssues writes the two deployed issues in the project that owns acme/widgets
-// (seedDeliveryProject), since an attribution holds an issue to the repository the pull request
-// is in.
+// seedDeployedIssues writes the two deployed issues. An attribution holds an issue to the
+// repository the pull request is in. So deployedIssue is an issue of the project that owns
+// acme/widgets (seedDeliveryProject), and deployedOtherIssue an issue of the project that owns
+// acme/other.
 func seedDeployedIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
-	for _, key := range []string{deployedIssue, deployedOtherIssue} {
-		number, err := strconv.Atoi(strings.TrimPrefix(key, "DEPL-"))
+	seedProjectRepository(t, ctx, pool, "OTHR", "Other", "acme/other")
+	for _, issue := range []struct{ key, project string }{{deployedIssue, deliveryProject}, {deployedOtherIssue, "OTHR"}} {
+		number, err := strconv.Atoi(strings.TrimPrefix(issue.key, "DEPL-"))
 		if err != nil {
-			t.Fatalf("issue key %q is not DEPL-<n>", key)
+			t.Fatalf("issue key %q is not DEPL-<n>", issue.key)
 		}
 		if _, err := pool.Exec(ctx, `
 			insert into issues (key, project_key, number, title, status, created_by, rank)
 			values ($1, $2, $3, $1, 'done', '{"kind":"system","id":"delivery-test"}', $1)
-			on conflict do nothing`, key, deliveryProject, deployedIssueBand+number); err != nil {
-			t.Fatalf("seed issue %s: %v", key, err)
+			on conflict do nothing`, issue.key, issue.project, deployedIssueBand+number); err != nil {
+			t.Fatalf("seed issue %s: %v", issue.key, err)
 		}
 	}
 }
 
-// seedMergedPullRequest stores a complete, attributed pull request of repo merged at merged, its
-// attribution inputs read and naming issue, so the reconcile's own re-attribution resolves the
-// same issue and its inputs backfill leaves the row alone.
+// seedMergedPullRequest stores a complete pull request of repo merged at merged, with no issue
+// on its timeline row. Its results row and its texts give it issue (seedAttributedHead), so each
+// reader of the timeline answers issue from the statement.
 func seedMergedPullRequest(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int, merged time.Time, issue string) {
 	t.Helper()
 	created := merged.Add(-time.Hour)
 	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
 		Repo: repo, Number: number, Title: fmt.Sprintf("%s: a widget", issue), URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number),
-		Author: "octocat", CreatedAt: &created, MergedAt: &merged, IssueKey: &issue,
-		Attribution: &AttributionInputs{TitleKeys: []string{issue}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}},
+		Author: "octocat", CreatedAt: &created, MergedAt: &merged,
 	}); err != nil {
 		t.Fatalf("seed %s#%d: %v", repo, number, err)
 	}
+	seedAttributedHead(t, pool, repo, number, issue)
 }
 
 // seedDeployRun stores a deploy run of acme/widgets on main, created at created, whose one
@@ -167,7 +169,7 @@ func TestDeployedEventWaitsForAShippingRun(t *testing.T) {
 
 	pass := func(what string) {
 		t.Helper()
-		written, err := RecordDeployedEvents(ctx, pool, settings, broker)
+		written, err := unrenamed().RecordDeployedEvents(ctx, pool, settings, broker)
 		if err != nil {
 			t.Fatalf("%s: RecordDeployedEvents: %v", what, err)
 		}
@@ -205,7 +207,7 @@ func TestDeployedEventIsWrittenOncePerPullRequest(t *testing.T) {
 	seedDeployRun(t, ctx, pool, 900, merged.Add(time.Hour), merged.Add(70*time.Minute), DeliveryJobConclusionSuccess)
 	broker := events.NewBroker()
 
-	written, err := RecordDeployedEvents(ctx, pool, settings, broker)
+	written, err := unrenamed().RecordDeployedEvents(ctx, pool, settings, broker)
 	if err != nil {
 		t.Fatalf("RecordDeployedEvents: %v", err)
 	}
@@ -225,7 +227,7 @@ func TestDeployedEventIsWrittenOncePerPullRequest(t *testing.T) {
 		t.Fatalf("the marker of acme/other#77 is set at %v, want unset", at)
 	}
 
-	written, err = RecordDeployedEvents(ctx, pool, settings, broker)
+	written, err = unrenamed().RecordDeployedEvents(ctx, pool, settings, broker)
 	if err != nil {
 		t.Fatalf("second RecordDeployedEvents: %v", err)
 	}

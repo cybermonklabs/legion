@@ -288,7 +288,7 @@ func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
 	}) {
 		t.Errorf("after 0002 set standard_conforming_strings off for the session, the census answered 0003 with exemption %q and refusals %v; want no exemption and a refusal on the size of things", entry.TableSizeExemption, entry.Refusals)
 	}
-	config, err := pgxpool.ParseConfig(url)
+	config, err := PoolConfig(url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *
 			// runner is a store on a pool of one connection to url.
 			runner := func(url string) *Store {
 				t.Helper()
-				config, err := pgxpool.ParseConfig(url)
+				config, err := PoolConfig(url)
 				if err != nil {
 					t.Fatal(err)
 				}

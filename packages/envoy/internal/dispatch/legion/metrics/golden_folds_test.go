@@ -136,7 +136,7 @@ func TestTheLegionFoldsAnswerTheBaseHeadsReports(t *testing.T) {
 	spec := windows[0].Spec
 	database := storetest.Open(t)
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
-	population, err := ReadProject(t.Context(), database.Pool, fixture.Project, spec.Now)
+	population, err := ReadProject(t.Context(), database.Pool, unrenamed(), fixture.Project, spec.Now)
 	if err != nil {
 		t.Fatalf("read %s: %v", fixture.Project, err)
 	}

@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -21,6 +23,12 @@ func after(hours float64) time.Time {
 	return day.Add(time.Duration(hours * float64(time.Hour)))
 }
 
+// unrenamed is the Attributor of no rename pairs, which Read attributes each merged pull request
+// with: no fixture of this package renames a repository.
+func unrenamed() *delivery.Attributor {
+	return delivery.NewAttributor(refs.Renames{})
+}
+
 // corpus writes the event log, handoffs and observations of one finished child of one root, the
 // shapes the reads gather: a session titled by its role and issue, status snapshots, a handoff,
 // the observations Dispatch records, a merged pull request, and an issue the implementer filed in
@@ -29,6 +37,11 @@ func corpus(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
 	ctx := context.Background()
+	// The merge times read a pull request's issue through the statement that main builds after the
+	// migrations (delivery.PrepareAttribution), so the corpus builds it too.
+	if err := delivery.PrepareAttribution(ctx, database.Pool); err != nil {
+		t.Fatalf("prepare the statement of a pull request's issue: %v", err)
+	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
@@ -89,7 +102,7 @@ func corpus(t *testing.T) *store.Store {
 // filing, and the facts and the folds of the evals over it are the ones the rules describe.
 func TestReadProjectGathersEveryFactTheRulesRead(t *testing.T) {
 	database := corpus(t)
-	population, err := ReadProject(t.Context(), database.Pool, "INFRA", after(24))
+	population, err := ReadProject(t.Context(), database.Pool, unrenamed(), "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -169,7 +182,7 @@ func TestReadIgnoresTheLegionDaemonsOwnEvents(t *testing.T) {
 	seedTitledEvent(t, database, "INFRA-2", 100, "legion-daemon:INFRA", "Legion reviewer · INFRA-2", after(3))
 	seedTitledEvent(t, database, "INFRA-2", 101, "s-plain", "Legion tester · INFRA-2", after(3))
 
-	population, err := ReadProject(t.Context(), database.Pool, "INFRA", after(24))
+	population, err := ReadProject(t.Context(), database.Pool, unrenamed(), "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -204,7 +217,7 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 	`, after(-1)); err != nil {
 		t.Fatalf("seed the other root: %v", err)
 	}
-	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
+	population, err := ReadProject(ctx, database.Pool, unrenamed(), "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -246,7 +259,7 @@ func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheReadDoesNotReach(t *testing.T)
 	exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ('INFRA', 'INFRA-7', $1, '"INFRA-8"'::jsonb, $2)`, legion.FieldTree, after(2))
 
-	population, err := ReadIssues(ctx, database.Pool, "INFRA", []string{"INFRA-2"}, nil, after(24))
+	population, err := ReadIssues(ctx, database.Pool, unrenamed(), "INFRA", []string{"INFRA-2"}, nil, after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -301,7 +314,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	event("INFRA-2", 10, "ask.opened", session("Legion implementer · INFRA-9"), `{"id":"ask-3"}`, after(8))
 	event("INFRA-2", 11, "ask.answered", `{"kind":"user","id":"alice"}`, `{"id":"ask-3"}`, after(9))
 
-	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
+	population, err := ReadProject(ctx, database.Pool, unrenamed(), "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -361,7 +374,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 			t.Errorf("commit INFRA-2's new tree during the read: %v", err)
 		}
 	})
-	population, err := ReadProject(ctx, traced, "INFRA", after(24))
+	population, err := ReadProject(ctx, traced, unrenamed(), "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -372,7 +385,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 		t.Errorf("the read the commit landed in has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-1 for both, from before the commit", observed, tree)
 	}
 
-	population, err = ReadProject(ctx, traced, "INFRA", after(24))
+	population, err = ReadProject(ctx, traced, unrenamed(), "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population again: %v", err)
 	}
@@ -395,6 +408,9 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 func TestAWholeReadThatDropsAnIssueIsReadAsADrop(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
+	if err := delivery.PrepareAttribution(ctx, database.Pool); err != nil {
+		t.Fatalf("prepare the statement of a pull request's issue: %v", err)
+	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
@@ -424,7 +440,7 @@ func TestAWholeReadThatDropsAnIssueIsReadAsADrop(t *testing.T) {
 	observe(legion.FieldPhase, `null`, moment)
 	observe(legion.FieldSlot, `null`, moment)
 
-	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
+	population, err := ReadProject(ctx, database.Pool, unrenamed(), "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}

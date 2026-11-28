@@ -52,7 +52,7 @@ func seedHubDelivery(t *testing.T, rig *hubRig) hubDeliverySeed {
 	seed.m0c = file(map[string]any{"title": "Roll back the index build", "parent": seed.m0})
 	now := rig.clock.Now()
 	for n, child := range []string{seed.c1, seed.m2c, seed.m0c} {
-		upsertPR(t, rig.database, prNaming(n+1, now.Add(-time.Duration(3-n)*time.Hour), child))
+		upsertPRNaming(t, rig, n+1, now.Add(-time.Duration(3-n)*time.Hour), child)
 	}
 	seed.names = issueNames{
 		seed.r2: "R2", seed.c1: "C1", seed.r0: "R0", seed.m2: "M2", seed.m2c: "M2c",

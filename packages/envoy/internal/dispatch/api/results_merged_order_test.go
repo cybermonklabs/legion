@@ -86,25 +86,36 @@ func mergedPull(issue string, number int, head, merge, mergedAt string) map[stri
 }
 
 // writeMergeWithNoTime stores pull request number of acme/widgets as merged at its final head
-// head and attributed to issueKey, through delivery.UpsertPullRequestHead with no time of merge,
-// and then judged by the rule before this build's, with the one update its doc asks of a test that
-// needs a row of an older rule: a row the release before this one wrote, which a read that orders
-// it must ask GitHub for its time once.
+// head, through delivery.Attributor.UpsertPullRequestHead with no time of merge, attributed to
+// issueKey and judged by the rule before this build's, with the one update its doc asks of a test
+// that needs a row of an older rule: a row the release before this one wrote, which a read that
+// orders it must ask GitHub for its time once. The row has no texts, so its issue is the one it
+// stores, as a row of an older release stores it (storeMergeIssue).
 func writeMergeWithNoTime(t *testing.T, database *store.Store, number int, head, issueKey string) {
 	t.Helper()
-	attributed := issueKey
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: number, HeadSHA: head, HeadRef: "legion/" + issueKey,
-		BaseRef: "main", State: "merged", IssueKey: &attributed, AttributionSource: "title",
-		AttributionComplete: true, Title: issueKey + ": a change",
+		BaseRef: "main", State: "merged", Title: issueKey + ": a change",
 		URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 	}); err != nil {
 		t.Fatalf("store the merge of acme/widgets#%d: %v", number, err)
 	}
+	storeMergeIssue(t, database, number, issueKey)
 	if _, err := database.Pool.Exec(context.Background(),
 		`update pull_request_heads set attribution_rule = $3 where repo = $1 and number = $2`,
 		"acme/widgets", number, delivery.AttributionRuleVersion-1); err != nil {
 		t.Fatalf("judge acme/widgets#%d by the rule before this build's: %v", number, err)
+	}
+}
+
+// storeMergeIssue stores issueKey as the issue of acme/widgets#number, a row with no texts, from
+// its title, as recordMerge stores the issue of its row.
+func storeMergeIssue(t *testing.T, database *store.Store, number int, issueKey string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update pull_request_heads set issue_key = $3, attribution_source = 'title' where repo = $1 and number = $2
+	`, "acme/widgets", number, issueKey); err != nil {
+		t.Fatalf("store the issue of acme/widgets#%d: %v", number, err)
 	}
 }
 
@@ -338,15 +349,14 @@ func TestAFilledMergeAndAnUnfilledOneAreReadInTheOrderTheyMerged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read #6's time of merge: %v", err)
 	}
-	attributed := issue
-	if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(context.Background(), rig.database.Pool, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: 6, HeadSHA: mergeOrderF6, HeadRef: "legion/" + issue, BaseRef: "main",
-		State: "merged", IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
-		Title: issue + ": the work", URL: "https://github.com/acme/widgets/pull/6",
+		State: "merged", Title: issue + ": the work", URL: "https://github.com/acme/widgets/pull/6",
 		MergeCommitSHA: mergeOrderM6, MergedAt: &sixMerged,
 	}); err != nil {
 		t.Fatalf("store the merge of acme/widgets#6: %v", err)
 	}
+	storeMergeIssue(t, rig.database, 6, issue)
 	wantBases(t, "a filled merge and an unfilled one", rig.read(t, issue)["a1"], branchBasis("main", mergeOrderM5))
 }
 

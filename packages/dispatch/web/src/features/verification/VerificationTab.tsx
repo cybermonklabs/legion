@@ -1,3 +1,4 @@
+import { newestResultsText } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -49,7 +50,7 @@ const PASS_STANDS_TEXT: Record<CheckBlock["pass_stands"]["answer"], string> = {
 };
 
 /** Why a check compared its results with nothing at all, and why one result's commit could not
- *  be placed. A check takes all three and a result all but no_pull_request_or_branch, so the
+ *  be placed. A check takes all five and a result all but no_pull_request_or_branch, so the
  *  check's set types this map and answers both. Each takes the repository the answer is about
  *  where the server names one (`repo`): a result whose commit is taken to be of a repository the
  *  issue links a pull request in is decided by that repository, and "the repository" would read
@@ -61,6 +62,9 @@ const REASON_WORDS: Record<
   NonNullable<CheckBlock["compared_nothing"]>,
   (repo: string | undefined) => string
 > = {
+  head_not_read: () => "Dispatch has not read the head of a pull request of this issue yet.",
+  issue_not_known: () =>
+    "Dispatch does not know yet whether a pull request it read is this issue's.",
   no_pull_request_or_branch: () => "This issue holds no pull request and no branch.",
   not_merged: () => "The work has no merge that Dispatch knows.",
   read_failed: (repo) =>
@@ -302,13 +306,23 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
 }
 
 /** One check of the Verification document. Its head line's groups, in this order: its standing
- *  (whether its pass stands, and from which roles), then its words; when the line is too narrow
+ *  (whether its pass stands, then the newest result of each role for a recorded check, or the
+ *  roles its pass stands from for a check CI proves), then its words; when the line is too narrow
  *  the words move under the standing whole and wrap inside themselves. Its facts follow as a list
  *  of names and values, then its results. */
 function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
   const roles = check.pass_stands.roles ?? [];
+  // A recorded check names the newest result of each role at what it compared with, in the words
+  // `dispatch results` prints, since the roles of the passes that stand, alone, read as a verdict
+  // and hide a newer fail beside a pass. A check CI proves has one derived result, drawn below,
+  // and keeps the role its pass stands from.
+  const newest = check.ci === undefined ? newestResultsText(check) : undefined;
   const results = check.results ?? [];
+  // The pull requests whose head Dispatch has not read, and those it does not know are this
+  // issue's. The server omits each list where it is empty, and so does the tab.
+  const headsNotRead = check.heads_not_read ?? [];
+  const issuesNotKnown = check.issues_not_known ?? [];
   return (
     <li
       className={`space-y-3 rounded-lg p-3 ${card}`}
@@ -323,12 +337,20 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
           >
             {PASS_STANDS_LABELS[stands]}
           </span>
-          {roles.length === 0 ? null : (
+          {check.ci !== undefined && roles.length > 0 ? (
             <span
               className={`text-sm ${textMutedOnSurface}`}
               data-testid="verification-check-roles"
             >
               from {roles.join(", ")}
+            </span>
+          ) : null}
+          {newest === undefined ? null : (
+            <span
+              className={`text-sm ${textMutedOnSurface}`}
+              data-testid="verification-check-newest"
+            >
+              {newest}
             </span>
           )}
         </span>
@@ -359,6 +381,16 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
         <Fact label="Compared with" testId="verification-check-compared-with">
           <ComparedWith check={check} />
         </Fact>
+        {headsNotRead.length === 0 ? null : (
+          <Fact label="Heads not read" testId="verification-check-heads-not-read">
+            {headsNotRead.map((head) => `pull request ${head.number}`).join(", ")}
+          </Fact>
+        )}
+        {issuesNotKnown.length === 0 ? null : (
+          <Fact label="Issues not known" testId="verification-check-issues-not-known">
+            {issuesNotKnown.map((entry) => `pull request ${entry.number}`).join(", ")}
+          </Fact>
+        )}
       </dl>
       <BlockReferences reference={check.ref} />
       <CheckResults check={check} results={results} />

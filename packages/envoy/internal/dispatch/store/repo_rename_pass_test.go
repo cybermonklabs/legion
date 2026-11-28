@@ -14,8 +14,9 @@ import (
 // renamedRepositoriesSeed writes a row under the old name sjawhar/legion in every field of the
 // pass, in mixed case where a field takes it, and beside each a row of sjawhar/legion-smoke or
 // sjawhar/dotfiles, which only begin like the old name or share its owner. updated_at is a fixed
-// time on every table that has one, so a test can tell the pass left it alone. The rename pair is
-// a repo_projects row, as production holds it, and one stored event names the old name.
+// time on every table that has one, and so are the times of an owed read, an attribution move and
+// a commit's read, so a test can tell the pass left them alone. The rename pair is a repo_projects
+// row, as production holds it, and one stored event names the old name.
 const renamedRepositoriesSeed = `
 	insert into projects (key, name, default_assignee, default_repo) values
 		('INFRA', 'Infra', 'alice', 'sjawhar/legion'),
@@ -49,6 +50,15 @@ const renamedRepositoriesSeed = `
 	insert into branch_commits (repo, branch, sha, on_branch) values
 		('SJawhar/Legion', 'main', 'c1', true),
 		('sjawhar/dotfiles', 'main', 'c1', true);
+	insert into pull_request_reads_owed (repo, number, reason, owed_at) values
+		('SJawhar/Legion', 7, 'failure', '2026-01-01T00:00:00Z'),
+		('sjawhar/legion-smoke', 8, 'failure', '2026-01-01T00:00:00Z');
+	insert into pull_request_attribution_moves (repo, number, from_key, to_key, source, queued_at) values
+		('sjawhar/legion', 11, null, 'INFRA-1', 'title', '2026-01-01T00:00:00Z'),
+		('sjawhar/dotfiles', 3, null, 'INFRA-4', 'title', '2026-01-01T00:00:00Z');
+	insert into commit_pull_reads (repo, sha, not_before) values
+		('SJawhar/Legion', 'c1', '2026-01-01T00:00:00Z'),
+		('sjawhar/legion-smoke', 'c1', '2026-01-01T00:00:00Z');
 	insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at) values
 		('sjawhar/legion', 'c2', 'm1', true, '2026-01-01T00:00:00Z'),
 		('sjawhar/dotfiles', 'c2', 'm1', true, '2026-01-01T00:00:00Z');
@@ -106,8 +116,11 @@ var renamedRepositoriesAfter = map[string]string{
 		"https://github.com/sjawhar/legion-smoke/issues/599 https://github.com/sjawhar/dotfiles/pull/3",
 	`select string_agg(repo || '#' || number || ' ' || url, ' ' order by number) from pull_request_heads`: "cybermonklabs/legion#7 https://github.com/cybermonklabs/legion/pull/7 " +
 		"sjawhar/legion-smoke#8 https://github.com/sjawhar/legion-smoke/pull/8",
-	`select string_agg(repo, ' ' order by repo) from branch_commits`: "cybermonklabs/legion sjawhar/dotfiles",
-	`select string_agg(repo, ' ' order by repo) from commit_holds`:   "cybermonklabs/legion sjawhar/dotfiles",
+	`select string_agg(repo, ' ' order by repo) from branch_commits`:                                  "cybermonklabs/legion sjawhar/dotfiles",
+	`select string_agg(repo || '#' || number, ' ' order by repo) from pull_request_reads_owed`:        "cybermonklabs/legion#7 sjawhar/legion-smoke#8",
+	`select string_agg(repo || '#' || number, ' ' order by repo) from pull_request_attribution_moves`: "cybermonklabs/legion#11 sjawhar/dotfiles#3",
+	`select string_agg(repo || ' ' || sha, ' ' order by repo) from commit_pull_reads`:                 "cybermonklabs/legion c1 sjawhar/legion-smoke c1",
+	`select string_agg(repo, ' ' order by repo) from commit_holds`:                                    "cybermonklabs/legion sjawhar/dotfiles",
 	`select string_agg(repo || ' ' || commit_sha, ' ' order by repo) from deploys`: "cybermonklabs/legion " + strings.Repeat("d", 40) +
 		" sjawhar/legion-smoke " + strings.Repeat("e", 40),
 	`select string_agg(repo || '#' || number || ' ' || url || ' ' || coalesce(attribution_cited_issues::text, 'null'), ' ' order by number) from delivery_pull_requests`: "cybermonklabs/legion#11 https://github.com/cybermonklabs/legion/pull/11 " +
@@ -127,7 +140,8 @@ var renamedRepositoriesAfter = map[string]string{
 }
 
 // untouchedByThePass reads what the pass must leave as it found it: the mapping, the event log,
-// and updated_at on every table the seed wrote it on.
+// updated_at on every table the seed wrote it on, and the times of the owed reads, the
+// attribution moves and the commits' reads.
 const untouchedByThePass = `
 	select jsonb_build_object(
 		'repo_projects', (select jsonb_agg(to_jsonb(r) order by r.repo) from repo_projects r),
@@ -136,7 +150,11 @@ const untouchedByThePass = `
 			(select array_agg(updated_at order by key) from issues),
 			(select array_agg(updated_at order by number) from delivery_pull_requests),
 			(select array_agg(updated_at) from delivery_settings),
-			(select array_agg(updated_at order by step) from delivery_reconcile_progress)))::text`
+			(select array_agg(updated_at order by step) from delivery_reconcile_progress)),
+		'times', jsonb_build_array(
+			(select array_agg(owed_at order by number) from pull_request_reads_owed),
+			(select array_agg(queued_at order by number) from pull_request_attribution_moves),
+			(select array_agg(not_before order by repo collate "C") from commit_pull_reads)))::text`
 
 // passLog is one record the pass or its test logged, decoded from slog's JSON handler.
 type passLog map[string]any
@@ -252,7 +270,9 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 	}
 	for field, want := range map[string]float64{
 		"issues.repo": 2, "projects.default_repo": 1, "check_results.commit_repo": 1, "issue_external_links.url": 2,
-		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1, "commit_holds.repo": 1, "deploys.repo": 1,
+		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "pull_request_reads_owed.repo": 1,
+		"pull_request_attribution_moves.repo": 1, "commit_pull_reads.repo": 1, "branch_commits.repo": 1,
+		"commit_holds.repo": 1, "deploys.repo": 1,
 		"delivery_pull_requests.repo": 1, "delivery_pull_requests.url": 1, "delivery_pull_requests.attribution_cited_issues": 1,
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,
 		"delivery_settings.deploy_repo": 1, "delivery_settings.excluded_repos": 1, "delivery_reconcile_progress.scope": 2,
@@ -355,6 +375,15 @@ const renameCollisionsSeed = `
 	insert into branch_commits (repo, branch, sha, on_branch) values
 		('sjawhar/legion', 'main', 'c1', false),
 		('cybermonklabs/legion', 'main', 'c1', true);
+	insert into pull_request_reads_owed (repo, number, reason, reads) values
+		('sjawhar/legion', 7, 'failure', 1),
+		('cybermonklabs/legion', 7, 'failure', 2);
+	insert into pull_request_attribution_moves (repo, number, to_key, source) values
+		('sjawhar/legion', 7, 'INFRA-1', 'old'),
+		('cybermonklabs/legion', 7, 'INFRA-2', 'new');
+	insert into commit_pull_reads (repo, sha, not_before) values
+		('sjawhar/legion', 'c1', '2026-01-01T12:00:00Z'),
+		('cybermonklabs/legion', 'c1', '2026-01-02T12:00:00Z');
 	insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at) values
 		('sjawhar/legion', 'c1', 'm1', false, now()),
 		('cybermonklabs/legion', 'c1', 'm1', true, now());
@@ -397,8 +426,8 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 
 	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
 
-	if pass.Deleted != 10 || pass.Failures != 0 || pass.Left != noneLeft {
-		t.Fatalf("the pass = %+v, want 10 rows deleted, no failure and nothing left", pass)
+	if pass.Deleted != 13 || pass.Failures != 0 || pass.Left != noneLeft {
+		t.Fatalf("the pass = %+v, want 13 rows deleted, no failure and nothing left", pass)
 	}
 	for query, want := range map[string]string{
 		`select string_agg(issue_key || ' ' || url, ' | ' order by url) from issue_external_links where url like '%/issues/5'`: "INFRA-2 https://github.com/cybermonklabs/legion/issues/5",
@@ -406,6 +435,9 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 		`select string_agg(repo || ' ' || head_sha, ' | ' order by number) from pull_request_heads where number = 7`:           "cybermonklabs/legion new",
 		`select string_agg(repo, ' | ') from pull_request_heads where number = 9`:                                              "cybermonklabs/legion",
 		`select string_agg(repo || ' ' || on_branch, ' | ') from branch_commits`:                                               "cybermonklabs/legion true",
+		`select string_agg(repo || ' ' || reads, ' | ') from pull_request_reads_owed`:                                          "cybermonklabs/legion 2",
+		`select string_agg(repo || ' ' || source, ' | ') from pull_request_attribution_moves`:                                  "cybermonklabs/legion new",
+		`select string_agg(repo || ' ' || to_char(not_before at time zone 'UTC', 'YYYY-MM-DD'), ' | ') from commit_pull_reads`: "cybermonklabs/legion 2026-01-02",
 		`select string_agg(repo || ' ' || holds, ' | ') from commit_holds`:                                                     "cybermonklabs/legion true",
 		`select string_agg(repo || ' ' || title, ' | ') from delivery_pull_requests`:                                           "CybermonkLabs/Legion New",
 		`select string_agg(repo || '#' || run_id || ' ' || head_sha, ' | ' order by run_id) from delivery_runs`:                "cybermonklabs/legion#100 new | cybermonklabs/legion#101 moved",
@@ -430,8 +462,9 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 		deleted[record["table"].(string)]++
 	}
 	want := map[string]int{
-		"issue_external_links": 2, "pull_request_heads": 2, "branch_commits": 1, "commit_holds": 1, "delivery_pull_requests": 1,
-		"delivery_runs": 1, "delivery_run_warnings": 1, "architecture_sources": 1,
+		"issue_external_links": 2, "pull_request_heads": 2, "pull_request_reads_owed": 1, "pull_request_attribution_moves": 1,
+		"commit_pull_reads": 1, "branch_commits": 1, "commit_holds": 1, "delivery_pull_requests": 1, "delivery_runs": 1,
+		"delivery_run_warnings": 1, "architecture_sources": 1,
 	}
 	if len(deleted) != len(want) {
 		t.Errorf("logged deletions %v, want %v", deleted, want)

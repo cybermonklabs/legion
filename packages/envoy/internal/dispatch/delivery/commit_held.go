@@ -24,11 +24,11 @@ import (
 // 422, a name GitHub's names do not allow (refs.SplitGitHubRepo), a deployment with no App key, a
 // repository the App cannot read (RepositoryUnreadable), a rate limit, a 5xx, a transport
 // failure. The results route reads the unreadable repository by its kind. The issue's own leaves
-// the answer to the linked reads (api/results_linked.go, refuseUnknownCommit): the result is
-// stored under a linked repository GitHub says holds the commit, and where none does, stored as
-// before where every linked read answered, and refused 502 GITHUB_UNREADABLE beside a linked read
-// that did not answer. A linked one counts for nothing, as it does where its pull request cannot
-// be read (linkedRepositoryHolds).
+// the answer to the other repositories (api/results_linked.go, refuseUnknownCommit): the result
+// is stored under another repository GitHub says holds the commit, and where none does, stored as
+// before, beside any read that did not answer too (R17 of the spec of several open pull
+// requests). A linked one counts for nothing, as it does where its pull request cannot be read
+// (linkedRepositoryHolds).
 func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFull, sha string) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {

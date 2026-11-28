@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -38,19 +36,21 @@ func mergeTestTime(t *testing.T, value string) time.Time {
 }
 
 // storedMerge is what a row holds of its merge, as a test reads it: the title too, so a test can
-// tell that a later write applied at all.
+// tell that a later write applied at all, and the rule the row carries (attribution_rule).
 type storedMerge struct {
 	title          string
 	mergeCommitSHA string
 	mergedAt       *time.Time
+	rule           int
 }
 
 func readMerge(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) storedMerge {
 	t.Helper()
 	var merge storedMerge
 	if err := pool.QueryRow(ctx, `
-		select title, merge_commit_sha, merged_at from pull_request_heads where repo = $1 and number = $2
-	`, repo, number).Scan(&merge.title, &merge.mergeCommitSHA, &merge.mergedAt); err != nil {
+		select title, merge_commit_sha, merged_at, attribution_rule
+		from pull_request_heads where repo = $1 and number = $2
+	`, repo, number).Scan(&merge.title, &merge.mergeCommitSHA, &merge.mergedAt, &merge.rule); err != nil {
 		t.Fatalf("read the merge of %s#%d: %v", repo, number, err)
 	}
 	return merge
@@ -65,6 +65,21 @@ func numbersOf(merged []MergedPullRequest) []int {
 	return numbers
 }
 
+// mergeHead is one pull request row a test stores, with the texts of a read of GitHub that read
+// every source: the statement credits it to the issue its head branch names (attributedTerms), as
+// a writer's read leaves it. An empty issue is a row the statement credits to nobody.
+func mergeHead(repo string, number int, issue, head, headRef, base, state string) PullRequestHead {
+	title := "Change " + headRef
+	if issue != "" {
+		title = issue + " the work"
+	}
+	return PullRequestHead{
+		Repo: repo, Number: number, HeadSHA: head, HeadRef: headRef, BaseRef: base, State: state,
+		Title: title, URL: "https://github.com/" + repo + "/pull/" + strconv.Itoa(number),
+		Texts: &PullRequestTexts{HeadRepo: repo, BaseRef: base, Title: title, CommitMessages: []string{}, MessagesRead: true},
+	}
+}
+
 // A merged head keeps the commit GitHub merged it as and the time it merged, and a later write
 // of the same pull request that carries neither, such as an edit delivered by a listener of the
 // release before this one, keeps both. An open pull request's answer names a test merge commit,
@@ -72,13 +87,11 @@ func numbersOf(merged []MergedPullRequest) []int {
 func TestAMergedHeadRowKeepsItsMergeCommitAndItsTime(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 54)
 	mergedAt := mergeTestTime(t, "2026-03-01T10:00:00Z")
-	merged := PullRequestHead{
-		Repo: "acme/widgets", Number: 5, HeadSHA: headOfFive, HeadRef: "legion/HEAD-5", BaseRef: "main",
-		State: "merged", Title: "HEAD-5 the work", EventAt: &mergedAt,
-		MergeCommitSHA: mergeOfFive, MergedAt: &mergedAt,
-	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, merged); err != nil {
+	merged := mergeHead("acme/widgets", 5, issue, headOfFive, "legion/"+issue, "main", "merged")
+	merged.EventAt, merged.MergeCommitSHA, merged.MergedAt = &mergedAt, mergeOfFive, &mergedAt
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, merged); err != nil {
 		t.Fatalf("store the merged head: %v", err)
 	}
 	if got := readMerge(t, ctx, pool, "acme/widgets", 5); got.mergeCommitSHA != mergeOfFive || !sameTime(got.mergedAt, mergedAt) {
@@ -87,8 +100,8 @@ func TestAMergedHeadRowKeepsItsMergeCommitAndItsTime(t *testing.T) {
 
 	edited := mergeTestTime(t, "2026-03-02T10:00:00Z")
 	later := merged
-	later.Title, later.EventAt, later.MergeCommitSHA, later.MergedAt = "HEAD-5 the work, renamed", &edited, "", nil
-	if err := UpsertPullRequestHead(ctx, pool, nil, later); err != nil {
+	later.Title, later.EventAt, later.MergeCommitSHA, later.MergedAt = "HEAD-54 the work, renamed", &edited, "", nil
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, later); err != nil {
 		t.Fatalf("store the later write: %v", err)
 	}
 	got := readMerge(t, ctx, pool, "acme/widgets", 5)
@@ -99,11 +112,9 @@ func TestAMergedHeadRowKeepsItsMergeCommitAndItsTime(t *testing.T) {
 		t.Fatalf("#5 after a write that carries no merge = %+v, want merge commit %s merged at %s kept", got, mergeOfFive, mergedAt)
 	}
 
-	open := PullRequestHead{
-		Repo: "acme/widgets", Number: 6, HeadSHA: headOfSix, HeadRef: "legion/HEAD-6", BaseRef: "main",
-		State: "open", EventAt: &mergedAt, MergeCommitSHA: mergeOfSix,
-	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
+	open := mergeHead("acme/widgets", 6, issue, headOfSix, "legion/"+issue, "main", "open")
+	open.EventAt, open.MergeCommitSHA = &mergedAt, mergeOfSix
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, open); err != nil {
 		t.Fatalf("store the open head: %v", err)
 	}
 	if got := readMerge(t, ctx, pool, "acme/widgets", 6); got.mergeCommitSHA != "" || got.mergedAt != nil {
@@ -111,45 +122,12 @@ func TestAMergedHeadRowKeepsItsMergeCommitAndItsTime(t *testing.T) {
 	}
 }
 
-// pullRequestWebhook is the body GitHub posts for one `pull_request` event of acme/widgets: a
-// merged pull request of issue's branch, carrying its merge commit and the time it merged.
-func pullRequestWebhook(issue, action string, number int, head, base, mergeCommit, mergedAt, updatedAt string) map[string]any {
-	return map[string]any{
-		"action":     action,
-		"repository": map[string]any{"full_name": "acme/widgets"},
-		"pull_request": map[string]any{
-			"number": number, "title": issue + " the work", "body": "",
-			"html_url": "https://github.com/acme/widgets/pull/" + strconv.Itoa(number),
-			"user":     map[string]any{"login": "author"},
-			"state":    "closed", "merged": true, "merged_at": mergedAt, "merge_commit_sha": mergeCommit,
-			"updated_at": updatedAt,
-			"head": map[string]any{
-				"sha": head, "ref": "legion/" + issue, "repo": map[string]any{"full_name": "acme/widgets"},
-			},
-			"base": map[string]any{"ref": base},
-		},
-	}
-}
-
-// envelopePayload is the payload the listener's normalizer makes of a GitHub webhook body, as
-// the intake decodes it from the envelope it publishes.
-func envelopePayload(t *testing.T, body map[string]any) map[string]string {
-	t.Helper()
-	envelope := contracts.GithubEnvelope(contracts.GithubEnvelopeInput{
-		Event: "pull_request", Delivery: "delivery", EventID: "event", TraceID: "trace", Body: body,
-	})
-	var payload map[string]string
-	if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
-		t.Fatalf("decode the envelope's payload: %v", err)
-	}
-	return payload
-}
-
 // The newest merge of an issue is the pull request that merged last, not the one whose newest
 // event came last: an edit of a pull request merged earlier moves its event_at past a later
 // merge. #6 merges first, #5 after it, and #6 is then edited, so the order by event_at and the
 // order by number both answer #6, and only the time of each merge answers #5. Both writers carry
-// that time: a head GitHub answered, and the envelope the listener makes of a webhook.
+// that time: a head a reader of GitHub stores, and the intake's own read of the pull request an
+// envelope names, which is where this build's intake takes every fact from.
 func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 	t.Parallel()
 	first, second, edited := "2026-03-01T10:00:00Z", "2026-03-02T10:00:00Z", "2026-03-03T10:00:00Z"
@@ -175,11 +153,9 @@ func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 		write := func(number int, head, base, mergeCommit, mergedAt, eventAt string) {
 			t.Helper()
 			merged, event := mergeTestTime(t, mergedAt), mergeTestTime(t, eventAt)
-			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
-				Repo: "acme/widgets", Number: number, HeadSHA: head, HeadRef: "legion/" + issue, BaseRef: base,
-				State: "merged", IssueKey: &issue, AttributionSource: "branch", AttributionComplete: true,
-				EventAt: &event, MergeCommitSHA: mergeCommit, MergedAt: &merged,
-			}); err != nil {
+			row := mergeHead("acme/widgets", number, issue, head, "legion/"+issue, base, "merged")
+			row.EventAt, row.MergeCommitSHA, row.MergedAt = &event, mergeCommit, &merged
+			if err := unrenamed().UpsertPullRequestHead(ctx, pool, row); err != nil {
 				t.Fatalf("store #%d: %v", number, err)
 			}
 		}
@@ -193,39 +169,54 @@ func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 		t.Parallel()
 		pool, ctx := deliveryTestPool(t)
 		issue := seedHeadIssue(t, ctx, pool, 51)
-		intake := newIntake(tuningFor(t), nil, pool, nil, newFakeGitHub(t).newTestClient(), nil, nil, unrenamed())
-		deliver := func(number int, body map[string]any) {
+		fake := newFakeGitHub(t)
+		github := serveGitHubPulls(t, fake, "acme/widgets")
+		intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+		deliver := func(number int, head, base, mergeCommit, mergedAt, updatedAt string) {
 			t.Helper()
-			payload := envelopePayload(t, body)
-			if payload["number"] != strconv.Itoa(number) {
-				t.Fatalf("the envelope of #%d names number %q", number, payload["number"])
+			moment := mergeTestTime(t, updatedAt)
+			github.set("acme/widgets", number, "closed", head, "legion/"+issue, "", moment)
+			github.mu.Lock()
+			github.pulls[number]["merged"] = true
+			github.pulls[number]["merged_at"] = mergedAt
+			github.pulls[number]["merge_commit_sha"] = mergeCommit
+			github.pulls[number]["base"] = map[string]any{"ref": base}
+			github.pulls[number]["title"] = issue + " the work"
+			github.mu.Unlock()
+			payload := map[string]string{
+				"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
+				"number": strconv.Itoa(number), "title": issue + " the work", "body": "",
+				"head_ref": "legion/" + issue, "head_repo": "acme/widgets", "head_sha": head,
+				"base_ref": base, "url": "https://github.com/acme/widgets/pull/" + strconv.Itoa(number),
+				"updated_at": updatedAt,
 			}
 			if _, err := intake.recordPullRequestHead(ctx, payload, number); err != nil {
 				t.Fatalf("record #%d from its envelope: %v", number, err)
 			}
 		}
-		deliver(6, pullRequestWebhook(issue, "closed", 6, headOfSix, "main", mergeOfSix, first, first))
-		deliver(5, pullRequestWebhook(issue, "closed", 5, headOfFive, "release", mergeOfFive, second, second))
-		deliver(6, pullRequestWebhook(issue, "edited", 6, headOfSix, "main", mergeOfSix, first, edited))
+		deliver(6, headOfSix, "main", mergeOfSix, first, first)
+		deliver(5, headOfFive, "release", mergeOfFive, second, second)
+		deliver(6, headOfSix, "main", mergeOfSix, first, edited)
 		check(t, ctx, pool, issue)
 	})
 }
 
-// The rule this build judges by is above the rule every merged row stored before it was judged
-// by, so the reconcile's rule arm offers each such row once, and its refresh stores the merge
-// commit and the time GitHub answers for it. A row whose pull request GitHub no longer answers
-// is stamped at the current rule and keeps no time, and neither row is offered again.
-func TestTheReconcileOffersEachMergedRowOnceForItsTime(t *testing.T) {
+// A merged row stored with no merge time is read again by the results read that must order it
+// (RefreshMergedPullRequest), not by the reconcile: this build's reconcile offers no merged row
+// at all (ListStalePullRequestHeads), since the facts line reads every row whose texts are not
+// current and a merged row's facts never change again. The refresh stores the merge commit and
+// the time GitHub answers; a row whose pull request GitHub no longer answers is stamped read and
+// keeps no time.
+func TestAMergedRowWithNoMergeTimeIsRefreshedByTheResultsReadNotTheReconcile(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 52)
 	mergedAt := mergeTestTime(t, "2026-03-01T10:00:00Z")
 	stored := mergeTestTime(t, "2026-03-01T09:00:00Z")
 	for _, number := range []int{31, 32} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
-			Repo: "acme/widgets", Number: number, HeadSHA: headOfFive, HeadRef: "legion/" + issue, BaseRef: "main",
-			State: "merged", EventAt: &stored, CheckedAt: &stored,
-		}); err != nil {
+		row := mergeHead("acme/widgets", number, issue, headOfFive, "legion/"+issue, "main", "merged")
+		row.EventAt, row.CheckedAt = &stored, &stored
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, row); err != nil {
 			t.Fatalf("store #%d: %v", number, err)
 		}
 		// The rule the release before this one stamped every row it read with.
@@ -236,21 +227,14 @@ func TestTheReconcileOffersEachMergedRowOnceForItsTime(t *testing.T) {
 		}
 	}
 
-	offered := func() map[int]bool {
-		t.Helper()
-		batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
-		if err != nil {
-			t.Fatalf("list the stale heads: %v", err)
-		}
-		numbers := map[int]bool{}
-		for _, head := range batch {
-			numbers[head.Number] = true
-		}
-		return numbers
+	stale, err := unrenamed().ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	if err != nil {
+		t.Fatalf("list the stale heads: %v", err)
 	}
-	if got := offered(); !got[31] || !got[32] {
-		t.Fatalf("the reconcile offers %v, want #31 and #32: each is a merged row of rule 2, below this build's %d",
-			got, AttributionRuleVersion)
+	for _, ref := range stale {
+		if ref.Number == 31 || ref.Number == 32 {
+			t.Fatalf("the reconcile offers %+v, want no merged row: its pass reads the open rows and the facts line", stale)
+		}
 	}
 
 	fake := newFakeGitHub(t)
@@ -273,7 +257,7 @@ func TestTheReconcileOffersEachMergedRowOnceForItsTime(t *testing.T) {
 	client := fake.newTestClient()
 	now := time.Now()
 	for _, number := range []int{31, 32} {
-		if err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", number, now); err != nil {
+		if err := unrenamed().RefreshMergedPullRequest(ctx, pool, client, nil, "acme/widgets", number, now); err != nil {
 			t.Fatalf("refresh #%d: %v", number, err)
 		}
 	}
@@ -284,13 +268,8 @@ func TestTheReconcileOffersEachMergedRowOnceForItsTime(t *testing.T) {
 	if got := readMerge(t, ctx, pool, "acme/widgets", 32); got.mergedAt != nil {
 		t.Fatalf("#32, which GitHub answers 404 for, = %+v, want no merge time", got)
 	}
-	for _, number := range []int{31, 32} {
-		if rule := readHead(t, ctx, pool, "acme/widgets", number).attributionRule; rule != AttributionRuleVersion {
-			t.Fatalf("#%d's rule = %d, want %d, the rule this build judges by", number, rule, AttributionRuleVersion)
-		}
-	}
-	if got := offered(); got[31] || got[32] {
-		t.Fatalf("the reconcile offers %v again, want neither #31 nor #32: each was offered to this rule once", got)
+	if got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 32); got.CheckedAt == nil || !got.CheckedAt.After(stored) {
+		t.Fatalf("#32 after a refusal = %+v, want stamped read at the refresh's own moment", got)
 	}
 }
 
@@ -390,15 +369,13 @@ func TestTheLandingOfABranchIsItsNewestMergedPullRequestWhoseFinalHeadHoldsTheMe
 	write := func(repo string, number int, head, headRef, state, mergeCommit, mergedAt, eventAt string) {
 		t.Helper()
 		event := mergeTestTime(t, eventAt)
-		row := PullRequestHead{
-			Repo: repo, Number: number, HeadSHA: head, HeadRef: headRef, BaseRef: "main", State: state,
-			EventAt: &event, MergeCommitSHA: mergeCommit,
-		}
+		row := mergeHead(repo, number, "", head, headRef, "main", state)
+		row.EventAt, row.MergeCommitSHA = &event, mergeCommit
 		if mergedAt != "" {
 			merged := mergeTestTime(t, mergedAt)
 			row.MergedAt = &merged
 		}
-		if err := UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, row); err != nil {
 			t.Fatalf("store %s#%d: %v", repo, number, err)
 		}
 	}
@@ -440,10 +417,9 @@ func TestTheLinkedMergeIsTheNewestLinkedPullRequestsMerge(t *testing.T) {
 	write := func(number int, head, base, mergeCommit, mergedAt, eventAt string) {
 		t.Helper()
 		merged, event := mergeTestTime(t, mergedAt), mergeTestTime(t, eventAt)
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
-			Repo: "acme/tools", Number: number, HeadSHA: head, HeadRef: "legion/" + issue, BaseRef: base,
-			State: "merged", EventAt: &event, MergeCommitSHA: mergeCommit, MergedAt: &merged,
-		}); err != nil {
+		row := mergeHead("acme/tools", number, "", head, "legion/"+issue, base, "merged")
+		row.EventAt, row.MergeCommitSHA, row.MergedAt = &event, mergeCommit, &merged
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, row); err != nil {
 			t.Fatalf("store acme/tools#%d: %v", number, err)
 		}
 	}
@@ -476,15 +452,14 @@ func TestAMergedPullRequestIsReadByItsRepositoryAndNumber(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	mergedAt := mergeTestTime(t, "2026-03-01T10:00:00Z")
-	for _, row := range []PullRequestHead{
-		{Repo: "acme/widgets", Number: 5, HeadSHA: headOfFive, HeadRef: "legion/HEAD-5", BaseRef: "release", State: "merged",
-			EventAt: &mergedAt, MergeCommitSHA: mergeOfFive, MergedAt: &mergedAt},
-		{Repo: "acme/widgets", Number: 6, HeadSHA: headOfSix, HeadRef: "legion/HEAD-6", BaseRef: "main", State: "open",
-			EventAt: &mergedAt},
-		{Repo: "acme/tools", Number: 7, HeadSHA: headOfSeven, HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged",
-			EventAt: &mergedAt, MergeCommitSHA: mergeOfSeven, MergedAt: &mergedAt},
-	} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
+	merged := mergeHead("acme/widgets", 5, "", headOfFive, "legion/HEAD-5", "release", "merged")
+	merged.EventAt, merged.MergeCommitSHA, merged.MergedAt = &mergedAt, mergeOfFive, &mergedAt
+	open := mergeHead("acme/widgets", 6, "", headOfSix, "legion/HEAD-6", "main", "open")
+	open.EventAt = &mergedAt
+	other := mergeHead("acme/tools", 7, "", headOfSeven, "legion/HEAD-7", "main", "merged")
+	other.EventAt, other.MergeCommitSHA, other.MergedAt = &mergedAt, mergeOfSeven, &mergedAt
+	for _, row := range []PullRequestHead{merged, open, other} {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, row); err != nil {
 			t.Fatalf("store %s#%d: %v", row.Repo, row.Number, err)
 		}
 	}
@@ -493,8 +468,8 @@ func TestAMergedPullRequestIsReadByItsRepositoryAndNumber(t *testing.T) {
 		t.Fatalf("MergedPullRequestOf(Acme/Widgets, 5) = %+v, %v, %v; want acme/widgets#5", pull, found, err)
 	}
 	if pull.Repo != "acme/widgets" || pull.Number != 5 || pull.BaseRef != "release" || pull.HeadSHA != headOfFive ||
-		pull.MergeCommitSHA != mergeOfFive || !sameTime(pull.MergedAt, mergedAt) || pull.AttributionRule != AttributionRuleVersion {
-		t.Fatalf("MergedPullRequestOf(Acme/Widgets, 5) = %+v, want #5's base, final head, merge commit, time and rule", pull)
+		pull.MergeCommitSHA != mergeOfFive || !sameTime(pull.MergedAt, mergedAt) {
+		t.Fatalf("MergedPullRequestOf(Acme/Widgets, 5) = %+v, want #5's base, final head, merge commit and time", pull)
 	}
 	for _, none := range []struct {
 		repo   string

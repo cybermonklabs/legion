@@ -5,10 +5,10 @@ import "time"
 // counts is what one pass did, as its one log line reports it.
 type counts struct {
 	// queries counts the GraphQL queries the pass asked, points what GitHub charged them
-	// against the App's GraphQL budget (the answers' own rateLimit.cost), and restRequests the
-	// REST reads: a line's three numbers say how much of the pass GraphQL answered and how much
-	// it could not, and the two of them together are every request the pass sent, which is what
-	// the line reports as requests (report).
+	// against the GraphQL budgets of their installations (the answers' own rateLimit.cost), and
+	// restRequests the REST reads: a line's three numbers say how much of the pass GraphQL
+	// answered and how much it could not, and the two of them together are every request the
+	// pass sent, which is what the line reports as requests (report).
 	queries      int
 	points       int
 	restRequests int

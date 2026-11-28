@@ -170,6 +170,7 @@ const validCalls = {
   dispatch_answers: {},
   dispatch_whoami: {},
   dispatch_limits: {},
+  dispatch_attribution: {},
   dispatch_api: specFor("dispatch_api").example,
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
@@ -296,6 +297,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_answers",
       "dispatch_whoami",
       "dispatch_limits",
+      "dispatch_attribution",
       "dispatch_api",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
@@ -768,6 +770,13 @@ describe("dispatchToolSpecs", () => {
 
   test("dispatch_limits accepts no arguments and rejects any key", () => {
     const schema = schemaFor("dispatch_limits");
+
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+  });
+
+  test("dispatch_attribution accepts no arguments and rejects any key", () => {
+    const schema = schemaFor("dispatch_attribution");
 
     expect(schema.safeParse({}).success).toBe(true);
     expect(schema.safeParse({ project: "CORE" }).success).toBe(false);

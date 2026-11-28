@@ -331,9 +331,9 @@ func (c *Branches) CommitOnBranch(
 // cache and holds or marks no pair:
 //
 //   - answers is what that caller's request learned from GitHub and stored nowhere (HeadAnswers).
-//     A merged pull request among them is its merge commit on its base branch, the yes a writer's
-//     store of it would have written by now (UpsertPullRequestHead), so it answers as that stored
-//     row would.
+//     The stored row is read in a transaction that makes those writes first and is rolled back
+//     (HeadAnswers.Read), so a merged pull request among them is the yes on its base branch that
+//     upsertHead writes in the head's own transaction, read as the row a writer's store would hold.
 //   - carry is what that request carries for itself (BranchCarry): the default branch its own read
 //     of the repository found, read before the cache, and the pairs a compare read of its own was
 //     refused as unseen, read before the holds. Where CommitOnBranch would put a default branch in
@@ -370,9 +370,9 @@ type branchRead struct {
 
 // readCommitOnBranch is the whole of CommitOnBranch but its write, as that doc comment gives it.
 // answers and carry are ReadCommitOnBranch's, and CommitOnBranch passes none, carry nil: a
-// read-only read reads a merge its request learned as that merge's yes at the one place a
-// writer's read reads its row, so both meet the exits after it on the same row, and it reads and
-// writes what it carries where a writer's read reads and writes this process's cache and holds.
+// read-only read reads the stored row after its request's writes, at the one place a writer's
+// read reads it, so both meet the exits after it on the same row, and it reads and writes what it
+// carries where a writer's read reads and writes this process's cache and holds.
 func (c *Branches) readCommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
@@ -399,13 +399,15 @@ func (c *Branches) readCommitOnBranch(
 		// ordinary named branch rather than quietly measuring against another branch.
 		_, readable = c.branchOf(ctx, client, carry, repoFull, now)
 	}
-	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
+	var stored BranchCommit
+	var found bool
+	err := answers.Read(ctx, pool, func(q Querier) error {
+		var err error
+		stored, found, err = readBranchCommit(ctx, q, repoFull, branch, sha)
+		return err
+	})
 	if err != nil {
 		slog.Warn("dispatch: read a commit's branch answer", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
-	} else if mergeLearnedOnBranch(answers, repoFull, branch, sha) {
-		// A merge the request learned and stored nowhere: the row a writer's read would have
-		// stored for it by now holds a yes, written over whatever the row held before.
-		stored, found = BranchCommit{OnBranch: true, CheckedAt: now}, true
 	}
 	if found && (stored.OnBranch || now.Sub(stored.CheckedAt) < BranchCommitStaleAfter) {
 		return branchRead{answer: branchAnswerOf(stored.OnBranch)}
@@ -690,21 +692,21 @@ func cannotSeeRepository(err error) bool {
 // name with capitals at another commit for good — the squash-merged, branch-deleted case the seed
 // exists for above all (UpsertPullRequestHead).
 //
-// It is lowercased on the way in rather than compared with `lower(repo)`, which is how
-// HeadStoredAt meets the same split one table over, because the two tables were in different
-// positions when each was keyed. pull_request_heads already held rows under GitHub's spelling,
-// with an index built on `(lower(repo), head_sha)` to read them by; branch_commits was new and
-// held no row in any deployment, so it could be keyed once instead. One spelling per row is
-// what keeps its primary key (repo, branch, sha) the whole of its identity: two spellings
-// would make two rows the writer's `on conflict` could not fold together, and a
-// case-insensitive read of them would want a functional index — a migration — where this
-// wants none, since `repo = lower($1)` is an exact lookup on the primary key.
+// It is lowercased on the way in rather than compared with `lower(repo)`, which is how the
+// reads of pull_request_heads meet the same split one table over, because the two tables were
+// in different positions when each was keyed. pull_request_heads already held rows under
+// GitHub's spelling, with an index built on `(lower(repo), head_sha)` to read them by;
+// branch_commits was new and held no row in any deployment, so it could be keyed once instead.
+// One spelling per row is what keeps its primary key (repo, branch, sha) the whole of its
+// identity: two spellings would make two rows the writer's `on conflict` could not fold
+// together, and a case-insensitive read of them would want a functional index — a migration —
+// where this wants none, since `repo = lower($1)` is an exact lookup on the primary key.
 //
 // The branch is not lowercased with it. Git's branch names are case-sensitive, so `Release`
 // and `release` are two branches and a compare read of one says nothing about the other.
-func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, sha string) (BranchCommit, bool, error) {
+func readBranchCommit(ctx context.Context, q refs.Queryer, repoFull, branch, sha string) (BranchCommit, bool, error) {
 	var answer BranchCommit
-	err := pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		select on_branch, checked_at from branch_commits
 		where repo = lower($1) and branch = $2 and sha = $3
 	`, repoFull, branch, sha).Scan(&answer.OnBranch, &answer.CheckedAt)
@@ -741,9 +743,9 @@ func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sh
 // into the owner and repo GitHub's paths take and mints that repository's installation token.
 // A name GitHub's names do not allow comes back as refs.SplitGitHubRepo's own error, before any
 // GitHub call, and a refused mint as that error wrapped under ErrTokenMint: cannotSeeRepository
-// and RepositoryUnreadable classify the mint's own error, and the results route reads
-// ErrTokenMint to name the mint as the read that failed (api/results_linked.go,
-// linkedReadRefusal).
+// and RepositoryUnreadable classify the mint's own error, so the results route stores a result
+// whose commit a repository the App cannot read may hold (api/results_linked.go,
+// refuseUnknownCommit).
 func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull string) (owner, repo, token string, err error) {
 	owner, repo, err = refs.SplitGitHubRepo(repoFull)
 	if err != nil {

@@ -1290,11 +1290,19 @@ func patchHubIssue(t *testing.T, handler http.Handler, key string, patch map[str
 	}
 }
 
-// prNaming is pull request n merged at merged, naming issue.
-func prNaming(n int, merged time.Time, issue string) delivery.DeliveryPullRequest {
-	pr := hubPR(n, merged)
-	pr.IssueKey = &issue
-	return pr
+// upsertPRNaming stores pull request n, merged at merged, whose branch names issue. It first sets
+// acme/widgets as the default repository of project HUB (projects.default_repo), so that the issue
+// resolves to the repository of the pull request; createHubIssue has created HUB by then. It
+// stores the results row, through the rig's server's Attributor, before the timeline row, so the
+// change that the timeline row sends finds the issue.
+func upsertPRNaming(t *testing.T, rig *hubRig, n int, merged time.Time, issue string) {
+	t.Helper()
+	if tag, err := rig.database.Pool.Exec(context.Background(), `
+		update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("set acme/widgets as HUB's default repository: %v (%d rows)", err, tag.RowsAffected())
+	}
+	seedAttributedHead(t, rig.deps.Attributor, rig.database.Pool, "acme/widgets", n, issue)
+	upsertPR(t, rig.database, hubPR(n, merged))
 }
 
 // seedHubComponents gives project HUB a component tree, platform > api.
@@ -1320,8 +1328,8 @@ func TestAnIssueTitleChangeReachesPagesThatNameTheIssue(t *testing.T) {
 	named := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
 	other := createHubIssue(t, rig.handler, map[string]any{"title": "Tidy docs"})
 	now := rig.clock.Now()
-	upsertPR(t, rig.database, prNaming(1, now.Add(-3*time.Hour), named))
-	upsertPR(t, rig.database, prNaming(2, time.Date(2024, 6, 3, 12, 0, 0, 0, time.UTC), other))
+	upsertPRNaming(t, rig, 1, now.Add(-3*time.Hour), named)
+	upsertPRNaming(t, rig, 2, time.Date(2024, 6, 3, 12, 0, 0, 0, time.UTC), other)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("names", presetView(deliveryLiveTimeline, 7, "")))
 	rig.hub.Subscribe(conn, subscribeFrame("other", timelineRange(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 6, 8, 0, 0, 0, 0, time.UTC), "")))
@@ -1350,7 +1358,7 @@ func TestAParentsComponentChangeReachesPagesHoldingItsChildren(t *testing.T) {
 	parent := createHubIssue(t, rig.handler, map[string]any{"title": "Platform work"})
 	seedHubComponents(t, rig.database)
 	child := createHubIssue(t, rig.handler, map[string]any{"title": "A child", "parent": parent})
-	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), child))
+	upsertPRNaming(t, rig, 1, rig.clock.Now().Add(-3*time.Hour), child)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	snapshot := conn.snapshot(t, "t")
@@ -1395,7 +1403,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	t.Cleanup(releaseOnce)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
-	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	upsertPRNaming(t, rig, 1, rig.clock.Now().Add(-3*time.Hour), key)
 	// A measures view starts the generation, and settle waits for its feed ("events seeded") and
 	// for the hub to owe nothing, so the retitle below stands above the feed's head.
 	warm := newFakeLiveConn()
@@ -1461,7 +1469,7 @@ func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(
 	t.Cleanup(releaseOnce)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
-	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	upsertPRNaming(t, rig, 1, rig.clock.Now().Add(-3*time.Hour), key)
 	// A measures view starts the generation and holds it open while the timeline view, the one
 	// measured here, subscribes after it: the relay's feed, taken on a goroutine of the
 	// generation's own, marks every view it finds dirty when it arrives (applyFeed), and that
@@ -1668,7 +1676,7 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	for range 299 {
 		appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated", model.Actor{Kind: "user", ID: "alice"}, map[string]any{}))
 	}
-	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	upsertPRNaming(t, rig, 1, rig.clock.Now().Add(-3*time.Hour), key)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	held := conn.snapshot(t, "t").Body
@@ -1940,7 +1948,7 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
-	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	upsertPRNaming(t, rig, 1, rig.clock.Now().Add(-3*time.Hour), key)
 
 	// The event write stands until the row releases it, once the delivery change has reached the
 	// page and the retitle has committed, so both happen while it holds the horizon however long the
@@ -2085,7 +2093,7 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	allDials := func() []*pgx.Conn { return slices.Concat(hubDials.dialed(), relayDials.dialed()) }
 	seedHubSettings(t, database)
 	key := createHubIssue(t, handler, map[string]any{"title": "Ship widgets"})
-	upsertPR(t, database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	upsertPRNaming(t, rig, 1, rig.clock.Now().Add(-3*time.Hour), key)
 	merges := 1
 	idle := func(when string) {
 		t.Helper()
@@ -2148,7 +2156,7 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	rig.hub.Subscribe(second, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	held := second.snapshot(t, "t").Body
 	merges++
-	upsertPR(t, database, prNaming(merges, rig.clock.Now().Add(-time.Hour), key))
+	upsertPRNaming(t, rig, merges, rig.clock.Now().Add(-time.Hour), key)
 	delta := second.delta(t, "t")
 	if got := liveUpsertIDs(t, delta, "prs"); !slices.Equal(got, []string{"acme/widgets#" + strconv.Itoa(merges)}) {
 		t.Fatalf("the new generation's merge delta upserts %v, want acme/widgets#%d", got, merges)
@@ -2254,7 +2262,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
-	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	upsertPRNaming(t, rig, 1, rig.clock.Now().Add(-3*time.Hour), key)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	snapshot := conn.snapshot(t, "t")
@@ -2577,7 +2585,7 @@ func TestAnUnfetchablePullRequestSendsAFreshnessFrame(t *testing.T) {
 	snapshot := conn.snapshot(t, "p")
 	rig.waitConnected(t)
 
-	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/widgets", 1, "the pull request is gone"); err != nil {
+	if err := rig.deps.Attributor.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/widgets", 1, "the pull request is gone"); err != nil {
 		t.Fatalf("mark the pull request unfetchable: %v", err)
 	}
 	delta := conn.delta(t, "p")

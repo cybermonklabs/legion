@@ -155,7 +155,7 @@ func (c *computedAt) at(moment time.Time) map[string]IssueFacts {
 	if facts, held := c.held[moment]; held {
 		return facts
 	}
-	population, err := ReadProject(c.t.Context(), c.pool, c.project, moment)
+	population, err := ReadProject(c.t.Context(), c.pool, unrenamed(), c.project, moment)
 	if err != nil {
 		c.t.Fatalf("read the population at %s: %v", moment.UTC(), err)
 	}
@@ -180,7 +180,7 @@ func (c *computedAt) at(moment time.Time) map[string]IssueFacts {
 func TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment(t *testing.T) {
 	seeded := seedClosingHistory(t)
 	pool, project := seeded.database.Pool, seeded.fixture.Project
-	population, err := ReadProject(t.Context(), pool, project, seeded.now)
+	population, err := ReadProject(t.Context(), pool, unrenamed(), project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}

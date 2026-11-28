@@ -226,6 +226,7 @@ func newAfterMergeRig(t *testing.T) *afterMergeRig {
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},

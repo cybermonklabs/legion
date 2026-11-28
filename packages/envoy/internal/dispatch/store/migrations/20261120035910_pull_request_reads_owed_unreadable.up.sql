@@ -1,0 +1,28 @@
+-- 20261120035910_pull_request_reads_owed_unreadable.up.sql
+--
+-- Which owed read of a link is recorded as unreadable.
+--
+--   pull_request_reads_owed.unreadable_revision  the revision of the row when GitHub refused its
+--                                                read because the App is not installed on the
+--                                                repository and a link by hand alone owed the read
+--                                                (delivery.recordOwedReadOutcome). Null on each
+--                                                other row, and on every row a release before this
+--                                                one wrote.
+--
+-- A link by hand owes a read of the pull request that it links, in any repository (R5 of the
+-- results lookup), and an issue links bug reports of other projects, whose repositories the App is
+-- not installed on. Each pass read such a row again, and GitHub refused it again, for ever. Now
+-- the first refusal records the row as unreadable at its revision, and no pass reads a row whose
+-- unreadable_revision is its revision (delivery.listOwedPullRequestReads). A new link, an event or
+-- a trigger of pull_request_heads gives the row a new revision (20261116163445), and a value of a
+-- sequence never comes back, so the next pass reads it again. A pass sets the column back to null
+-- where the App's installations come to cover the repository (delivery.wakeUnreadableReads), so
+-- the next read is made then. The row stays: the record of which pull request changed is kept
+-- (R4), and the issue's results name the link (GET /api/v1/issues/{key}/results,
+-- unreadable_links).
+--
+-- No stored row can fail the statement: the column is nullable with no default, so the statement
+-- writes the catalog alone, and the census answers 0. The release before names
+-- pull_request_reads_owed in none of its own statements. Rolling back past this migration is an
+-- image rollback alone.
+alter table pull_request_reads_owed add column unreadable_revision bigint;

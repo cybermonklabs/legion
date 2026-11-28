@@ -61,11 +61,12 @@ func TestPullRequestOpenOrMergedReadsTheStateGitHubAnswers(t *testing.T) {
 // refuses it, naming it, before any request, whichever read of the repository asks. `acme/..`
 // and `acme/` are what a repository written as `acme/...git` and `acme/.git` was stored as once
 // the trailing `.git` was trimmed, and `..` in a path asks GitHub about the one above the
-// repository's (`/repos/acme/../installation`). A rename pair's new name stored before the
-// route that wrote the pairs held one to GitHub's names, or by direct SQL, is the same name
-// reached another way: the reconcile's refresh and the read-through canonicalise the repository
-// they are handed under the pairs the boot read (Attributor), and ask GitHub nothing either. The
-// GitHub stand-in counts every request it receives, and answers none.
+// repository's (`/repos/acme/../installation`). A rename pair's new name of that kind, which only
+// SQL by hand writes, is never reached at all: the boot drops the pair (refs.NewRenames), so the
+// reconcile's refresh and the read-through of an Attributor of the pairs a boot reads after it
+// call the old name by itself and ask GitHub about the old name alone, which GitHub answers 404
+// for here, the repository having moved. The GitHub stand-in counts every request it receives,
+// answers that 404 for the old names, and fails the test on any other request.
 func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 	t.Parallel()
 	const sha = "6767676767676767676767676767676767676767"
@@ -73,7 +74,14 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 	var requests atomic.Int32
 	client := newAppClient(t, githubtest.Spec{
 		Record: func(*http.Request) { requests.Add(1) },
-		Handle: func(w http.ResponseWriter, r *http.Request) { githubtest.Unexpected(t, w, r) },
+		Handle: func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/repos/oldco/") {
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprint(w, `{"message":"Not Found"}`)
+				return
+			}
+			githubtest.Unexpected(t, w, r)
+		},
 	})
 
 	refused := func(read, name string, err error) {
@@ -92,9 +100,12 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 		_, err = askGitHubCommitOnBranch(ctx, client, name, "main", sha)
 		refused("askGitHubCommitOnBranch", name, err)
 	}
+	if sent := requests.Load(); sent != 0 {
+		t.Fatalf("the stored names sent GitHub %d requests, want none", sent)
+	}
 
-	// Two repositories renamed to such names, as a pair stored before the rule reads, and the
-	// Attributor of the pairs a boot reads after them.
+	// Two repositories renamed to such names, as only SQL by hand stores a pair, and the
+	// Attributor of the pairs a boot reads after them, which drops both.
 	seedProjectRepository(t, ctx, pool, "TOOL", "Tools", "acme/tools")
 	renamed := map[string]string{"oldco/tools": "acme/..", "oldco/gadgets": "acme/"}
 	for old, renamedTo := range renamed {
@@ -105,15 +116,21 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 			t.Fatalf("record %s as renamed to %s: %v", old, renamedTo, err)
 		}
 	}
-	attributor := NewAttributor(renamesOf(t, ctx, pool))
-	for old, renamedTo := range renamed {
-		err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
-		refused("RefreshPullRequestHead", renamedTo, err)
-		_, _, err = attributor.ReadThroughCommitPulls(ctx, pool, client, nil, old, sha, time.Now())
-		refused("ReadThroughCommitPulls", renamedTo, err)
+	renames := renamesOf(t, ctx, pool)
+	if dropped := renames.Dropped(); len(dropped) != len(renamed) {
+		t.Fatalf("the boot's Renames dropped %v, want both pairs %v", dropped, renamed)
 	}
-
-	if sent := requests.Load(); sent != 0 {
-		t.Fatalf("the stored names sent GitHub %d requests, want none", sent)
+	attributor := NewAttributor(renames)
+	for old, renamedTo := range renamed {
+		_, _, refreshErr := attributor.RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
+		_, _, readErr := attributor.ReadThroughCommitPulls(ctx, pool, client, old, sha, time.Now())
+		for read, err := range map[string]error{"RefreshPullRequestHead": refreshErr, "ReadThroughCommitPulls": readErr} {
+			if err != nil && (errors.Is(err, refs.ErrNotGitHubRepo) || strings.Contains(err.Error(), renamedTo)) {
+				t.Errorf("%s of %s: error %v, want the read made under %s, the name the boot left it, and no word of the dropped %q", read, old, err, old, renamedTo)
+			}
+		}
+	}
+	if sent := requests.Load(); sent == 0 {
+		t.Fatal("the reads of the old names sent GitHub no request: the case did not happen")
 	}
 }

@@ -207,7 +207,11 @@ func laneDatabase(t *testing.T, key, earlier, later string) *store.Store {
 	return storetest.OpenFrom(t, key, func(url string) error {
 		migrateInOrder(t, url, earlier, later)
 		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, url)
+		config, err := store.ConnConfig(url)
+		if err != nil {
+			return err
+		}
+		conn, err := pgx.ConnectConfig(ctx, config)
 		if err != nil {
 			return err
 		}

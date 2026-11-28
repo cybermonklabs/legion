@@ -28,7 +28,9 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -162,7 +164,14 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A pull request","user":{"login":"octocat"},"labels":[],"merged_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1}`, number)
+		// The pull request as GitHub holds it: merged, at the head publishMergedPullRequest names,
+		// with its update time. This tree writes its head row from this answer alone, and a row
+		// written from an answer that names its head and its update time is complete, stamped read
+		// and marked a read of GitHub, so no reconcile pass of either build reads it again. The
+		// read counts no handling: the read of the first commit does (pullRequestFake).
+		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A pull request","user":{"login":"octocat"},"labels":[],"state":"closed","merged":true,`+
+			`"merged_at":"2026-10-27T00:00:00Z","updated_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1,`+
+			`"head":{"ref":"a-branch","sha":"%040d","repo":{"full_name":"acme/deploy"}}}`, number, number)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -228,12 +237,17 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 // the ack floor it found, so the messages it delivers again are exactly those above that floor.
 //
 // The payload names the head -- its repository, its branch and its commit -- as
-// publishMergedPullRequests does in multiprocess_test.go, so that handling it once settles the
-// pull request's head row for good. An envelope naming no head repository attributes nobody, and
-// the reconcile's merged arm then re-reads the row (ListStalePullRequestHeads), as it re-reads
-// every merged row stored under an older rule. That re-read is the reconcile's refresh, which
-// makes no read of the first commit, so pullRequestFake counts no handling for it, and the one
-// repeat the row can see is a NATS redelivery.
+// publishMergedPullRequests does in multiprocess_test.go, and the fake answers the same head, so
+// that handling it once settles the pull request's head row for good in either build: a build
+// before this change writes the row from this envelope, and this tree from the fake's answer. A
+// reconcile pass would still read some of these pull requests again: this tree's head pass reads
+// each pull request owed a read (delivery.Attributor.RefreshPullRequestHead), a write of the
+// previous build that changes a fact of a row this tree read owes one (the trigger
+// pull_request_heads_unread_write), and the reconcile's merged arm re-reads every merged row
+// stored under an older rule (ListStalePullRequestHeads). Each such re-read is the reconcile's
+// refresh, which makes no read of the first commit, so pullRequestFake counts no handling for it,
+// and the one repeat the row can see is a NATS redelivery. The row runs neither build's delivery
+// reconcile inside it all the same (holdTheDeliveryReconcile).
 func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, delivery string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{
@@ -263,6 +277,35 @@ func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number i
 		t.Fatalf("publish %s: %v", envelope.Topic, err)
 	}
 	return ack.Sequence
+}
+
+// holdTheDeliveryReconcile holds the delivery reconcile's lease (delivery.ReconcileLease) on the
+// builds' database from before either build starts until the row ends, so neither build runs a
+// reconcile pass inside the row: every pass of either build takes that lease first
+// (duty.Exclusive) and skips where another session holds it. The lease is taken with no period,
+// as the reconcile's own lease test takes it (delivery/reconcile_lease_test.go). No process of the
+// row runs yet, so a lease held elsewhere fails the row rather than being waited out.
+func holdTheDeliveryReconcile(t *testing.T, builds *twoBuilds) {
+	t.Helper()
+	leases := storetest.Leases(t, builds.database.Pool)
+	taken, release, ran := make(chan struct{}), make(chan struct{}), make(chan bool, 1)
+	go func() {
+		ran <- duty.Exclusive(context.Background(), nil, leases, delivery.ReconcileLease, time.Time{}, 0, func(context.Context) {
+			close(taken)
+			<-release
+		})
+	}()
+	select {
+	case <-taken:
+	case <-ran:
+		t.Fatalf("the %s lease was held elsewhere, or could not be taken, before either build started", delivery.ReconcileLease)
+	case <-time.After(20 * time.Second):
+		t.Fatalf("the %s lease was not taken within 20 s", delivery.ReconcileLease)
+	}
+	t.Cleanup(func() {
+		close(release)
+		<-ran
+	})
 }
 
 // boundLines is how many times p has logged that it bound durable.
@@ -515,6 +558,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	previousEnv, currentEnv := maps.Clone(app), maps.Clone(app)
 	previousEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.previousName())
 	currentEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.currentName())
+	holdTheDeliveryReconcile(t, builds)
 
 	// This tree creates the durables, stamped with its generation, and holds them; the previous
 	// build starts beside it as a standby, which is a rolling release's first moment.

@@ -230,6 +230,20 @@ func keyedRunnerStopped(intake *Intake) bool {
 	return delivering.keys.stopped
 }
 
+// keyedRunnerIdle reports whether intake has stopped the keyed runner of the delivery it is
+// subscribed with and no handler of it is still running: keyedRunner.drain removes a key only
+// once its handler has returned, so a handler the stop let run on has written and published all
+// it was going to.
+func keyedRunnerIdle(intake *Intake) bool {
+	delivering := subscribedDelivery(intake)
+	if delivering == nil {
+		return false
+	}
+	delivering.keys.mu.Lock()
+	defer delivering.keys.mu.Unlock()
+	return delivering.keys.stopped && len(delivering.keys.queued) == 0
+}
+
 // heldListReleased reports whether this process's intake has released the held list of the
 // delivery it is subscribed with.
 func (p *intakeProcess) heldListReleased() bool { return heldListReleased(p.intake) }

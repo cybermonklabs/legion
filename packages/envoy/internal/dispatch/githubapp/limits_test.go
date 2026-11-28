@@ -214,12 +214,13 @@ func requireHeld(t *testing.T, err error, what string) {
 
 // Which scope a rate-limited query is recorded under is which of GitHub's two limits it is.
 //
-// A primary limit is the App's GraphQL points spent, which GitHub budgets apart from the REST
-// calls made with the same token: it holds every process's queries and leaves every process's
-// REST reads going. A secondary limit -- too many points a minute, too many requests at once --
-// GitHub shares between REST and GraphQL, so it holds the installation whose token met it,
-// REST reads and all, and it is recorded with the doubling backoff GitHub asks of a client that
-// keeps meeting one (a strike), where a primary limit ends at GitHub's own reset.
+// A primary limit is the installation's GraphQL points spent, which GitHub budgets apart from the
+// REST calls made with the same token: it holds every process's queries of that installation and
+// leaves every process's REST reads going. A secondary limit -- too many points a minute, too
+// many requests at once -- GitHub shares between REST and GraphQL, so it holds the installation
+// whose token met it, REST reads and all, and it is recorded with the doubling backoff GitHub
+// asks of a client that keeps meeting one (a strike), where a primary limit ends at GitHub's own
+// reset.
 //
 // Each shape here is one GitHub answers a limited query with, at either status. A wait GitHub
 // names is an hour, serverwait.MaxWait, the longest the client records, so the limit is still in
@@ -276,7 +277,7 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 				t.Fatalf("B's token: %v", err)
 			}
 			installation := InstallationScope(7)
-			want := GraphQLScope
+			want := GraphQLInstallationScope(installation)
 			if shape.secondary {
 				want = installation
 			}
@@ -307,7 +308,7 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 				t.Errorf("the limit under %s records %d strikes, want %d: a secondary limit is struck, so the next one doubles its wait, and a primary limit is recorded and ends at GitHub's own reset",
 					want, recorded.Strikes, wantStrikes)
 			}
-			if other := GraphQLScope; shape.secondary {
+			if other := GraphQLInstallationScope(installation); shape.secondary {
 				if _, found, err := limits.Get(ctx, other); err != nil || found {
 					t.Errorf("a secondary limit was recorded under %s as well: %v, %v; GitHub shares it with the installation's REST calls", other, found, err)
 				}
@@ -327,8 +328,8 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 			} else if err != nil || status != http.StatusOK {
 				t.Fatalf("B's REST read inside a primary GraphQL limit: status %d, %v; want GitHub's own answer", status, err)
 			}
-			// Either limit holds the other process's queries: GraphQL's own scope holds them,
-			// and so does the installation's, which every query is sent under.
+			// Either limit holds the other process's queries: the installation's GraphQL scope
+			// holds them, and so does its REST scope, which every query is sent under.
 			_, _, _, err = b.GraphQL(ctx, tokenB, "query { viewer { login } }", nil)
 			requireHeld(t, err, "B's query inside the limit A met")
 		})
@@ -413,12 +414,12 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 	}, {
 		name: "a query a recorded GraphQL limit holds before it is sent",
 		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
-			if err := limits.Record(context.Background(), GraphQLScope, stagedAhead); err != nil {
-				t.Fatalf("record the GraphQL limit: %v", err)
+			if err := limits.Record(context.Background(), GraphQLInstallationScope(InstallationScope(7)), stagedAhead); err != nil {
+				t.Fatalf("record installation 7's GraphQL limit: %v", err)
 			}
 		},
 		request: query,
-		cause:   held(GraphQLScope),
+		cause:   held(GraphQLInstallationScope(InstallationScope(7))),
 	}, {
 		name: "a query GitHub answers 200 with its budget spent",
 		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {

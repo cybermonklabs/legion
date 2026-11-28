@@ -7,19 +7,83 @@
 // server: a bare `-` given to a text flag is refused, on every text flag the command's help
 // lists, and every other value of a text flag is kept byte for byte.
 //
+// The shell script runs the driver again for each one-pass phase (onePassPhases), in up to four
+// halves: `--phase <phase>-prepare` while the server of the step before still runs (step 5 of the
+// section "the tooling of one complete pass" says when it can pass again); `--phase <phase>-fixture`
+// while no server runs; `--phase <phase>-before` through a server that runs no pass, where the shell
+// asks for it; and `--phase <phase>-assert` after it starts the server again with a start pass and
+// an interval of one hour. That is the
+// boundary of one complete pass (prepareOnePass, awaitOnePass). Before its first case the driver
+// checks its counter of pull request reads, and the phase `boundary` checks the boundary of one
+// pass. older-rows has two halves more, which run first, through the release before's build:
+// `--phase older-rows-release-writes` and `--phase older-rows-release-pass` (the section
+// "older-rows").
+//
+// The seven checks of the attribution run as such phases, in the project ATT and its repository
+// acme/attribution-live, in this order (the section "the seven checks"):
+//   older-rows             300 rows that the release before's build wrote hold their stored
+//                          issue before any pass, and one pass reads each of them and leaves none.
+//   rule-reaches-each-row  the rule reaches 5,000 rows with texts at the read, with no read of
+//                          GitHub: after a person's link, a move of an issue to another
+//                          repository and a new issue that a stored branch names, too.
+//   key-reading-changes    a second key reading reaches 5,000 pull requests that the server under
+//                          test stored, with no read of GitHub.
+//   facts-only             no writer takes a fact from the envelope.
+//   read-compares          a results read compares with the pull request that it learns, and says
+//                          what it does not know yet.
+//   stores-agree           the timeline and the results routes name one issue for each pull
+//                          request.
+//   limit-of-one           the rate limit of one installation ends no step for another.
+//
+// first-start-tip, R3 of the results lookup (v-first-start-tip), runs last, in six halves of its
+// own on a NATS of its own and an emptied database (the section "first-start-tip"): the first start
+// after a deploy reads no event the bus held, a push after it writes its head, and a second start
+// reads no event again.
+//
+// Before it, the three head checks run, R1, R2 and R4 of the results lookup, each in two halves of
+// its own on a stack of its own (the section "the head checks on a stack of their own"):
+// head-no-settings (v-head-no-settings-main), with no delivery settings the results route compares
+// a check with the head of an open pull request within 5 seconds of its event; head-from-github
+// (v-head-from-github), a later event of a closed pull request leaves it closed and an envelope
+// GitHub did not send moves no head; github-outage (v-github-outage), after 6 minutes of GitHub
+// answering 500 each head is named within 10 minutes.
+//
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
 //     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
+//     VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<the server's log> \
+//     VERIFICATION_RESULTS_E2E_STATE=<a JSON file> \
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
-//     bun scripts/e2e/verification-results.ts <dispatch-url> <nats-url> <fake-github-url>
+//     [VERIFICATION_RESULTS_E2E_LISTENER_URL=<envoy-listener>] \
+//     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
+//     [VERIFICATION_RESULTS_E2E_TIP_CONTROL=1] \
+//     bun scripts/e2e/verification-results.ts \
+//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass|first-start-tip-<half>|<head check>-fixture|<head check>] \
+//       <dispatch-url> <nats-url> <fake-github-url>
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
 // absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
+// The listener is the envoy-listener head-from-github publishes its forged envelopes through, which
+// the shell starts for that case alone. The log is the file every start of the server writes to,
+// which attributionLines reads. The state file holds what one process of the driver leaves for a
+// later one: the issues a case seeded, and the length of the log at each phase's fixture.
+// VERIFICATION_RESULTS_E2E_ONLY runs one case of the seven checks, a head check or first-start-tip
+// alone, as a check's run or as its negative control's. Only a negative control's command sets the
+// last two variables: VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a server built before the
+// attribution line of a pass, and VERIFICATION_RESULTS_E2E_TIP_CONTROL=1 is first-start-tip's
+// negative control. A head check's negative control is a build of the server alone.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
-// The driver writes SQL for one fixture and reads it for one answer: a stored pull request row of
-// the attribution rule before this build's, which no route of Dispatch can write, since every
-// write stamps the rule this build judges by; and the issue and the source that row holds now,
-// which no route answers either.
+// The driver writes SQL for the fixtures that no route of Dispatch can write: stored pull request
+// rows as the release before writes them, with no texts; texts rows as a read of this build
+// writes them; timeline rows, owed reads and partial rows; a second key reading
+// (fixtures/attribution_reading_b.sql); older-rows' rename pair, a repo_projects row with a
+// renamed_to as the last release whose route wrote pairs left it, since no route writes one now
+// and a server reads the pairs once, at its start; and the delete of the reconcile's records of
+// its passes at each phase's boundary. It writes no pull request row of older-rows and no row of
+// key-reading-changes' own 5,000 pull requests: the servers store those from events, passes and
+// the API. It reads SQL for the answers that no route gives: the issue and the source a row
+// records, its texts and branch keys, the delivery rows of limit-of-one, the records of the
+// passes and whether a process holds the reconcile's lease.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
 // follows, and the exit status is 1 when any case failed. The first case,
@@ -28,8 +92,20 @@
 // which serves no such route, the run stops there, since every later case records a result too.
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
-// seed, the delivery intake's bind, the probe issue) exits 2 naming it.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// seed, the delivery intake's bind, the probe issue, the counter of reads, a phase's fixture, the
+// boundary of one pass) exits 2 naming it. Under VERIFICATION_RESULTS_E2E_ONLY so does a failed
+// case other than the named one: a negative control that stops there never reached its own check
+// (summarise).
+//
+// Until stores-agree, the run writes no delivery settings, as a deployment that never configured
+// the delivery timeline holds none: the intake writes a pull request's head row from its envelope
+// all the same, and every head of the cases before the phases reaches Dispatch that way. Its
+// durable's first bind starts at the stream's next message, so the setup waits for the bind before
+// any case publishes. stores-agree and limit-of-one write the settings their passes need.
+// older-rows writes them through the release before's build, whose timeline rows need them, and
+// whose intake, in a release before main's #5525, takes no event without them, on a database the
+// shell empties before the cases.
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -37,42 +113,75 @@ import type {
   CheckBlock,
   CheckResult,
   CheckResultRecorded,
+  HeadNotRead,
   IssueSummaryPage,
 } from "@legion/contracts";
-import { connect, StringCodec } from "nats";
+import {
+  AckPolicy,
+  type ConsumerInfo,
+  connect,
+  createInbox,
+  DeliverPolicy,
+  StringCodec,
+} from "nats";
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
+import { passStands, passStandsAnswer } from "./lib/pass-stands";
 
-const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
+/** The arguments: `--phase <name>-fixture` or `--phase <name>-assert` where the shell runs one half
+ *  of a one-pass phase, and the three URLs. */
+const args = process.argv.slice(2);
+const phaseAt = args.indexOf("--phase");
+const phaseArg = phaseAt === -1 ? undefined : args.splice(phaseAt, 2)[1];
+const [dispatchUrl, natsUrl, githubUrl] = args;
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
 const databaseUrl = process.env.VERIFICATION_RESULTS_E2E_DATABASE_URL ?? "";
+const dispatchLog = process.env.VERIFICATION_RESULTS_E2E_DISPATCH_LOG ?? "";
+const statePath = process.env.VERIFICATION_RESULTS_E2E_STATE ?? "";
+/** Two settings of a run of one case. VERIFICATION_RESULTS_E2E_ONLY names one case of the seven
+ *  checks: the driver then runs that case alone, with the writes of the case it stands on
+ *  (onePassPhases), and skips every other case; the shell runs a head check or first-start-tip
+ *  alone under its name. VERIFICATION_RESULTS_E2E_OLD_BUILD=1, which only a negative control's
+ *  command gives, says the server is a build before the attribution line of a pass, so the boundary
+ *  of one pass does not count that line (awaitOnePass). */
+const onlyCase = process.env.VERIFICATION_RESULTS_E2E_ONLY ?? "";
+const oldBuild = process.env.VERIFICATION_RESULTS_E2E_OLD_BUILD === "1";
+/** The exit status of a half of a one-pass phase that VERIFICATION_RESULTS_E2E_ONLY skips, which
+ *  the shell's `driver` reads as a skip: 0 is a pass, 1 a failed case, 2 a step outside the cases. */
+const phaseSkipped = 3;
 if (
   dispatchUrl === undefined ||
   natsUrl === undefined ||
   githubUrl === undefined ||
   !agentToken ||
-  !databaseUrl
+  !databaseUrl ||
+  !dispatchLog ||
+  !statePath ||
+  (phaseAt !== -1 && phaseArg === undefined)
 ) {
   process.stderr.write(
-    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n"
+    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> [VERIFICATION_RESULTS_E2E_LISTENER_URL=<envoy-listener>] [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] bun verification-results.ts [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass|first-start-tip-<half>|<head check>-fixture|<head check>] <dispatch-url> <nats-url> <fake-github-url>\n"
   );
   process.exit(2);
 }
 const origin = new URL(dispatchUrl).origin;
 
-/** How long a head a bus event teaches Dispatch may take to settle, and how often the results are
- *  read again. The intake, bound before any case publishes (the setup waits for it), takes the
- *  envelope and writes the pull request's head row; nothing else is waited on, since every other
- *  answer is computed while the results are read. */
-const headWaitMs = 30_000;
+/** How long after a pull request's event, measured from its publish to the route's answer of the
+ *  read that shows it (awaitResults), the results route may take to compare a check with the head
+ *  that event reports: v-head-no-settings says "within 5 seconds of the event". The intake, bound
+ *  before any case publishes (the setup waits for it), takes the envelope, reads the pull request
+ *  from GitHub and writes its head row; nothing else is waited on, since every other answer is
+ *  computed while the results are read. */
+const headAfterEventMs = 5_000;
+/** How long a phase's start pass may take to end: it reads GitHub for each row it takes. */
+const onePassWaitMs = 120_000;
 /** How long the setup waits for the delivery intake to bind its durable after the server answers. */
 const intakeBindWaitMs = 60_000;
 const pollMs = 250;
-
-/** Mirrors delivery.AttributionRuleVersion in packages/envoy/internal/dispatch/delivery/attribution.go.
- *  Raise this version when that constant increases. */
-const attributionRuleVersion = 8;
+/** How long a read waits for the server's log line of a request it made after the command that
+ *  made it ended: the server logs a request once it has answered it (resultsAnsweredAt). */
+const requestLogWaitMs = 1_000;
 
 const person = "alice";
 const session = "verification-results-e2e";
@@ -165,6 +274,267 @@ const commits = {
   unheld: "a".repeat(40),
 };
 
+/** The two rows the phase k-attribution stores as the release before writes them, credited to the
+ *  attribution case's parent with no texts, and the state GitHub answers for each. */
+const storedAttributionRows = [
+  { head: commits.attributionStoredOpen, merged: false, number: 45, state: "open" },
+  { head: commits.attributionStoredMerged, merged: true, number: 46, state: "merged" },
+] as const;
+
+// --- the seven checks: names, repositories and commits -------------------------------------------
+//
+// The seven checks of the attribution (the section "the seven checks" below) run in a project of
+// their own, ATT. Its default repository, acme/attribution-live, is on an installation of its
+// own. So the fake's count of the reads of that repository counts the reads of the cases' pull
+// requests and no other reads (caseReads). Each pass also reads again the open pull requests that
+// the earlier cases left in acme/verification-live, once their last read is five minutes old
+// (delivery.PullRequestHeadStaleAfter).
+
+/** The seven checks, in the order the shell runs them. */
+const sevenChecks = [
+  "older-rows",
+  "rule-reaches-each-row",
+  "key-reading-changes",
+  "facts-only",
+  "read-compares",
+  "stores-agree",
+  "limit-of-one",
+] as const;
+type SevenCheck = (typeof sevenChecks)[number];
+
+/** The project of the seven checks, and the repositories of its cases: its default repository;
+ *  a second one, which an issue of rule-reaches-each-row names as its own; and the name the
+ *  default one had before a rename, which older-rows stores rows under and whose rename pair it
+ *  writes (olderRowsFixture). The fake holds no repository of that old name, so its installation
+ *  lookup answers 404, as GitHub answers for a renamed repository's old name. */
+const attributionProject = "ATT";
+const attributionRepo = "acme/attribution-live";
+const attributionSecondRepo = "acme/attribution-second";
+const attributionOldName = "acme/old-name";
+const attributionInstallation = 259;
+/** The repositories of limit-of-one, on another installation: the one whose pull requests wait,
+ *  and the deploy repository of its delivery settings. */
+const betaRepo = "beta/tools";
+const betaDeployRepo = "beta/deploy";
+const betaInstallation = 258;
+/** The deploy repository of older-rows' delivery settings, on the installation of the seven
+ *  checks: the release before's timeline rows need settings, and its intake, before main's #5525,
+ *  takes no event without them. */
+const olderRowsDeployRepo = "acme/attribution-deploy";
+/** older-rows' probe of the release before's settings, on the installation of the seven checks:
+ *  a repository no check reads, whose merged pull requests #1 to #olderRowsProbes, by the
+ *  settings' population and naming no issue, get a timeline row only where the intake holds the
+ *  delivery settings. */
+const olderRowsProbeRepo = "acme/settings-probe";
+const olderRowsProbes = 60;
+/** The repositories whose reads of pull requests a case of the seven checks counts. */
+const attributionRepos = [attributionRepo, attributionSecondRepo, attributionOldName];
+
+/** GitHub's update time of each pull request of older-rows and rule-reaches-each-row. The rows
+ *  that the release before stored hold an earlier event_at, so a read's answer replaces them
+ *  (upsertHeadRow). */
+const attributionUpdatedAt = "2026-11-10T00:00:00Z";
+const releaseBeforeEventAt = "2026-11-09T00:00:00Z";
+/** The first and the last of key-reading-changes' own pull requests, which the server under test
+ *  stores (the section "key-reading-changes"). */
+const readingFirst = 20001;
+const readingLast = 25000;
+
+/** The head commit of pull request `number` of the seven checks: its number in hex, padded to 40
+ *  characters with `pad`. Another pad gives another head of the same pull request. */
+function attributionSha(number: number, pad = "f"): string {
+  return number.toString(16).padStart(40, pad);
+}
+
+/** The commits a case of the seven checks records a result at. The record route refuses a commit
+ *  that the repository does not hold, so the repository's seed holds each one from the start. */
+const sevenCommits = {
+  /** The head of facts-only's open pull request. */
+  factsOnlyHead: "f1".repeat(20),
+  /** An earlier commit of that pull request, which facts-only records a result at. */
+  factsOnlyEarly: "f2".repeat(20),
+  /** read-compares: the head of R1's pull request, and an earlier commit of it. */
+  compareHead: "b1".repeat(20),
+  compareEarly: "b2".repeat(20),
+  /** read-compares: the head of the pull request whose answer is not known. */
+  notKnownHead: "b3".repeat(20),
+};
+
+// --- first-start-tip: names and commits ------------------------------------------------------------
+//
+// first-start-tip (the section "first-start-tip") runs in a project of its own, TIP, whose default
+// repository is on an installation of its own, so the fake's log of calls names its calls alone.
+
+const tipProject = "TIP";
+const tipRepo = "acme/first-start";
+const tipInstallation = 260;
+/** The heads of first-start-tip's two pull requests: #21 opened at `firstOpened` and pushed to
+ *  `firstPushed`, and #22 opened at `secondOpened`, while no server ran; then #22's push after the
+ *  first start, to `secondPushed`, which a pass of the case's check is recorded at. */
+const tipCommits = {
+  firstOpened: "d0".repeat(20),
+  firstPushed: "d1".repeat(20),
+  secondOpened: "d2".repeat(20),
+  secondPushed: "d3".repeat(20),
+} as const;
+/** Whether #22's texts hold its commit messages: `read`, `not read` (commit_messages null, as a
+ *  read whose higher source named the issue stores them), or `no texts`. */
+const tipMessagesOfTheSecond = `select coalesce((select case when commit_messages is null
+  then 'not read' else 'read' end from pull_request_texts
+  where repo = '${tipRepo}' and number = 22), 'no texts')`;
+/** first-start-tip's negative control (VERIFICATION_RESULTS_E2E_TIP_CONTROL=1): the durable made
+ *  before the first start, to deliver from the stream's first message. */
+const tipControl = process.env.VERIFICATION_RESULTS_E2E_TIP_CONTROL === "1";
+
+// --- the head checks on a stack of their own: names, commits and the table of the three ----------
+//
+// head-no-settings, head-from-github and github-outage (the section "the head checks on a stack of
+// their own") each run on a stack of their own, in the project ACME, whose default repository is
+// acme/default. Each of their commits is a seed written again and again to 40 characters
+// (seededSha). These constants and headChecks stand here, and not in that section, for the reason
+// first-start-tip's do: each half of a head check runs from the setup below (headCaseHalf), before
+// the code after it is evaluated, and a `const` there would not exist yet.
+
+const headProject = "ACME";
+const headRepo = "acme/default";
+const headInstallation = 301;
+/** head-no-settings' two places of a pull request: the project's default repository, and a
+ *  repository an issue of the project names as its own (`own`), which takes no write of its own.
+ *  Each has its commits, `<prefix>1` to `<prefix>3` and `<prefix>9`, and two pull requests. */
+const headKinds = [
+  {
+    installation: headInstallation,
+    name: "the project's default repository",
+    own: undefined,
+    pr: 11,
+    pr3: 13,
+    prefix: "d",
+    repo: headRepo,
+  },
+  {
+    installation: 302,
+    name: "a repository an issue of the project names as its own",
+    own: "acme/tools",
+    pr: 12,
+    pr3: 14,
+    prefix: "e",
+    repo: "acme/tools",
+  },
+] as const;
+/** How long head-no-settings reads the results after an event before it says a head is missing:
+ *  its negative control reads no pull request 45 seconds after the event. A read that finds the
+ *  head is still held to headAfterEventMs. */
+const headReadWaitMs = 45_000;
+/** head-from-github's commits: L's head, and the heads of F1 to F6. */
+const fromGithubCommits = {
+  l1: seededSha("0c"),
+  f1old: seededSha("b0"),
+  f1: seededSha("b1"),
+  f2: seededSha("b2"),
+  f3: seededSha("b3"),
+  f4: seededSha("b4"),
+  f5: seededSha("b5"),
+  f5b: seededSha("b6"),
+  f6a: seededSha("b7"),
+  f6b: seededSha("b8"),
+} as const;
+/** The repositories head-from-github's forged envelopes name beside acme/default: one the App is
+ *  not installed on, and one whose read of #66 the App's token may not make. */
+const hiddenHeadRepo = "acme/hidden";
+const lockedHeadRepo = "acme/locked";
+/** The envoy-listener head-from-github publishes its forged envelopes through, which the shell
+ *  starts for that case alone and names here. */
+const listenerUrl = process.env.VERIFICATION_RESULTS_E2E_LISTENER_URL ?? "";
+/** v-github-outage's two times: GitHub answers 500 for 6 minutes, and each head is named within 10
+ *  minutes after it answers again. */
+const outageMs = 360_000;
+const outageBoundMs = 600_000;
+/** github-outage's heads: #3001 opens at `before` an hour before the outage and is pushed to
+ *  `pushed` during it; #2001 opens at `opened` during it. */
+const outageCommits = {
+  before: seededSha("b001"),
+  opened: seededSha("a001"),
+  pushed: seededSha("c001"),
+} as const;
+
+/** One head check (the section "the head checks on a stack of their own"): the repositories the
+ *  fake holds for it, every other one gone; the projects it makes, each with its default
+ *  repository; whether the delivery intake must bind before it runs (head-no-settings' negative
+ *  control is an intake that binds nothing with no delivery settings, which that check itself must
+ *  fail on); and the case. */
+interface HeadCheck {
+  readonly body: (seed: Record<string, FakeRepository>) => Promise<string | undefined>;
+  readonly intakeMustBind: boolean;
+  readonly projects: readonly (readonly [key: string, defaultRepo: string])[];
+  readonly repositories: Readonly<Record<string, FakeRepository>>;
+}
+
+/** The three head checks, by name, in the order the shell runs them (head_check). */
+const headChecks: Readonly<Record<string, HeadCheck>> = {
+  "head-no-settings": {
+    body: headNoSettings,
+    intakeMustBind: false,
+    projects: [[headProject, headRepo]],
+    repositories: Object.fromEntries(
+      headKinds.map((kind) => [
+        kind.repo,
+        {
+          actions: "read",
+          branch_commits: { main: [seededSha("7")] },
+          commits: headKinds.flatMap((each) =>
+            ["1", "2", "3", "9"].map((n) => seededSha(`${each.prefix}${n}`))
+          ),
+          contents: "read",
+          installation_id: kind.installation,
+          pull_requests: "read",
+        },
+      ])
+    ),
+  },
+  "head-from-github": {
+    body: headFromGithub,
+    intakeMustBind: true,
+    projects: [
+      [headProject, headRepo],
+      ["HIDE", hiddenHeadRepo],
+      ["LOCK", lockedHeadRepo],
+    ],
+    repositories: {
+      [headRepo]: {
+        actions: "read",
+        commits: Object.values(fromGithubCommits),
+        contents: "read",
+        installation_id: headInstallation,
+        pull_requests: "read",
+        refused_pulls: { "64": 404 },
+      },
+      [hiddenHeadRepo]: { contents: "read", installation_id: 307, installation_missing: true },
+      [lockedHeadRepo]: {
+        actions: "read",
+        commits: Object.values(fromGithubCommits),
+        contents: "read",
+        installation_id: 308,
+        pull_requests: "read",
+        refused_pulls: { "66": 403 },
+      },
+    },
+  },
+  "github-outage": {
+    body: githubOutage,
+    intakeMustBind: true,
+    projects: [[headProject, headRepo]],
+    repositories: {
+      [headRepo]: {
+        actions: "read",
+        commits: Object.values(outageCommits),
+        contents: "read",
+        installation_id: headInstallation,
+        pull_requests: "read",
+      },
+    },
+  },
+};
+
 type Json = Record<string, unknown>;
 
 const codec = StringCodec();
@@ -240,15 +610,47 @@ function setupFailed(step: string, error: unknown): never {
   process.exit(2);
 }
 
-const personCookie = await signIn(person).catch((error: unknown) => setupFailed("sign-in", error));
+/** The person's session cookie, signed in at the first request that needs one: a phase's fixture
+ *  runs while no server runs, and a server that starts again signs its cookies with a new key. */
+let personCookie: Promise<string> | undefined;
 
 /** The person's request: the session cookie, and the dashboard origin every cookie write needs. */
-function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
-  return call(method, path, { Cookie: personCookie, Origin: origin }, body);
+async function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
+  personCookie ??= signIn(person).catch((error: unknown) => setupFailed("sign-in", error));
+  return call(method, path, { Cookie: await personCookie, Origin: origin }, body);
 }
 
 function issuePath(key: string, rest = ""): string {
   return `/api/v1/issues/${encodeURIComponent(key)}${rest}`;
+}
+
+/** Makes `repo` the default repository of the project `key` through the route the server this run
+ *  drives serves, and answers which route that was. Main's #4457 added
+ *  PUT /api/v1/projects/{key}/default-repository and removed the repository mappings
+ *  (PUT /api/v1/settings/repo-projects/{owner}/{repo}); a build before it reads a project's default
+ *  as the mapping marked default. Four negative controls drive such a build, 5ea6b2ffb2's, so each
+ *  write reads the server's own route index (GET /api/v1) for the route it serves: the cases'
+ *  server and older-rows' release before are different builds. A server that lists neither route
+ *  fails the write, naming both. */
+async function setDefaultRepository(key: string, repo: string): Promise<"project" | "mapping"> {
+  const index = (await call("GET", "/api/v1", {})) as {
+    readonly routes?: readonly { readonly method?: string; readonly path?: string }[];
+  };
+  const served = new Set((index.routes ?? []).map((route) => `${route.method} ${route.path}`));
+  if (served.has("PUT /api/v1/projects/{key}/default-repository")) {
+    await asSession("PUT", `/api/v1/projects/${key}/default-repository`, { repo });
+    return "project";
+  }
+  if (served.has("PUT /api/v1/settings/repo-projects/{owner}/{repo}")) {
+    await asSession("PUT", `/api/v1/settings/repo-projects/${repo}`, {
+      default: true,
+      project: key,
+    });
+    return "mapping";
+  }
+  throw new Error(
+    "GET /api/v1 lists neither PUT /api/v1/projects/{key}/default-repository nor PUT /api/v1/settings/repo-projects/{owner}/{repo}"
+  );
 }
 
 /** The checks of an issue's Verification document, each with the commits and branches its results
@@ -282,7 +684,9 @@ function standsOf(result: CheckResult): string {
 /** Where the commit of the newest result recorded at `commit` against `blockID` stands, or
  *  "absent" where that check holds no result at that commit. */
 async function commitStandsAt(key: string, blockID: string, commit: string): Promise<string> {
-  const result = (await checkOf(key, blockID)).results.find((row) => row.commit_sha === commit);
+  const result = ((await checkOf(key, blockID)).results ?? []).find(
+    (row) => row.commit_sha === commit
+  );
   return result === undefined ? "absent" : standsOf(result);
 }
 
@@ -294,22 +698,25 @@ async function passStandsOf(key: string, blockID: string): Promise<string> {
   return roles.length === 0 ? pass.answer : `${pass.answer} (${roles.join(", ")})`;
 }
 
-/** Waits, bounded, for the commit of the result at `commit` to stand where `want` says, and
- *  answers what it last read. Where a commit stands is computed while the results are read, so
- *  this writes nothing and polls the read. */
+/** Waits, until the deadline `by` (milliseconds since the epoch), for the commit of the result at
+ *  `commit` to stand where `want` says, and answers what it last read. Where a commit stands is
+ *  computed while the results are read, so this writes nothing and polls the read. The answer it
+ *  accepts is held to the deadline too: a read that answers `want` after `by` answers that it was
+ *  late, so a route that answers right but late meets no bound. */
 async function awaitCommitStands(
   key: string,
   blockID: string,
   commit: string,
-  want: string
+  want: string,
+  by: number
 ): Promise<string> {
-  const deadline = Date.now() + headWaitMs;
   let seen = await commitStandsAt(key, blockID, commit);
-  while (seen !== want && Date.now() < deadline) {
+  while (seen !== want && Date.now() < by) {
     await Bun.sleep(pollMs);
     seen = await commitStandsAt(key, blockID, commit);
   }
-  return seen;
+  const late = Date.now() - by;
+  return seen === want && late > 0 ? `${seen}, read ${late} ms past the deadline` : seen;
 }
 
 /** Records one result through `POST /api/v1/issues/{key}/results`, and answers what Dispatch
@@ -322,31 +729,81 @@ async function record(key: string, input: Json): Promise<CheckResultRecorded> {
   })) as CheckResultRecorded;
 }
 
+/** One envelope the driver published: its subject, and the moment it was published, which the
+ *  5-second bound of v-head-no-settings is measured from (afterEvent). */
+interface Published {
+  subject: string;
+  at: number;
+}
+
+/** The deadline of an answer the event `published` decides: headAfterEventMs after its publish. */
+function afterEvent(published: Published): number {
+  return published.at + headAfterEventMs;
+}
+
 /** Publishes one normalized `pull_request` envelope, the shape Envoy relays and the shape
  *  Dispatch's intake reads: the envelope's `payload` is the flat string map, and its subject is
- *  `notifications.github.<owner>.<repo>.pr.<number>` with each segment's dots written `_`. */
-async function publishPullRequest(payload: Record<string, string>): Promise<string> {
-  const [owner, name] = repo.split("/");
+ *  `notifications.github.<owner>.<repo>.pr.<number>` with each segment's dots written `_`.
+ *  The intake takes from it only which pull request changed and reads that pull request from
+ *  GitHub, so the fake's answer is set first to what GitHub holds after the event. */
+async function publishPullRequest(payload: Record<string, string>): Promise<Published> {
+  await seedRepositories({ [payload.number]: pullAfter(payload) });
+  return publishEnvelope(payload);
+}
+
+/** What GitHub holds of a pull request after the event `payload` reports: the event's fields, the
+ *  time of a merge among them, and a state that is closed after a close and open after any other
+ *  action. */
+function pullAfter(payload: Record<string, string>): FakePullRequest {
+  return {
+    base_ref: payload.base_ref,
+    body: payload.body,
+    head_ref: payload.head_ref,
+    head_repo: payload.head_repo,
+    head_sha: payload.head_sha,
+    merge_commit_sha: payload.merge_commit_sha,
+    merged: payload.merged === "true",
+    merged_at: payload.merged_at,
+    state: payload.action === "closed" ? "closed" : "open",
+    title: payload.title,
+    updated_at: payload.updated_at,
+  };
+}
+
+/** The `pull_request` envelope of `payload`, issued at `at`, and the subject it goes on:
+ *  `notifications.github.<owner>.<repo>.pr.<number>`, with each segment's dots written `_`. */
+function envelopeOf(
+  payload: Record<string, string>,
+  at: number
+): { readonly data: Uint8Array; readonly subject: string } {
+  const [owner, name] = String(payload.repo).split("/");
   const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${payload.number}`;
   const eventID = `verification-results-pr-${payload.number}-${payload.action}-${payload.head_sha.slice(0, 7)}`;
-  nats.publish(
-    subject,
-    codec.encode(
-      JSON.stringify({
-        dedupe_key: eventID,
-        event_id: eventID,
-        issued_at: Date.now(),
-        payload: JSON.stringify(payload),
-        payload_summary: subject,
-        source: "github",
-        source_event_id: eventID,
-        topic: subject,
-        trace_id: eventID,
-      })
-    )
+  const data = codec.encode(
+    JSON.stringify({
+      dedupe_key: eventID,
+      event_id: eventID,
+      issued_at: at,
+      payload: JSON.stringify(payload),
+      payload_summary: subject,
+      source: "github",
+      source_event_id: eventID,
+      topic: subject,
+      trace_id: eventID,
+    })
   );
+  return { data, subject };
+}
+
+/** Publishes the envelope of `payload` on the subject of its repository and number, as
+ *  publishPullRequest does, with no seed of the fake: a case that sends an envelope that differs
+ *  from GitHub's answer seeds that answer itself. */
+async function publishEnvelope(payload: Record<string, string>): Promise<Published> {
+  const at = Date.now();
+  const { data, subject } = envelopeOf(payload, at);
+  nats.publish(subject, data);
   await nats.flush();
-  return subject;
+  return { at, subject };
 }
 
 /** One basis of a check, in the words a case compares with: the kind, the commit or the branch
@@ -361,12 +818,34 @@ function basisOf(basis: CheckBasis): string {
   return `${basis.kind} ${(basis.commit ?? "").slice(0, 12)}${number}${learned}`;
 }
 
+/** One pull request whose head Dispatch has not read, in the words a case compares with: its
+ *  number, and the word and the time of GitHub's refusal of its read where GitHub refuses it. */
+function headNotReadOf(head: HeadNotRead): string {
+  if (head.refused_as === undefined) return `#${head.number}`;
+  const since = head.refused_since === undefined ? "" : ` ${head.refused_since}`;
+  return `#${head.number} (${head.refused_as}${since})`;
+}
+
 /** What one check compares its results with, as a case prints and compares it: every basis in
- *  the order the answer carries them, or the reason the check compared with nothing. */
+ *  the order the answer carries them, or the reason the check compared with nothing. Then each
+ *  pull request whose head Dispatch has not read, and each one whose answer is not known. */
 function comparedOf(check: CheckBlock): string {
   const bases = check.compared_with ?? [];
-  if (bases.length > 0) return bases.map(basisOf).join(", ");
-  return `nothing: ${check.compared_nothing ?? "no reason"}`;
+  const compared =
+    bases.length > 0
+      ? bases.map(basisOf).join(", ")
+      : `nothing: ${check.compared_nothing ?? "no reason"}`;
+  const headsNotRead = check.heads_not_read ?? [];
+  const issuesNotKnown = check.issues_not_known ?? [];
+  return [
+    compared,
+    ...(headsNotRead.length === 0
+      ? []
+      : [`heads_not_read ${headsNotRead.map(headNotReadOf).join(", ")}`]),
+    ...(issuesNotKnown.length === 0
+      ? []
+      : [`issues_not_known ${issuesNotKnown.map((entry) => `#${entry.number}`).join(", ")}`]),
+  ].join("; ");
 }
 
 /** The input that names the `dispatch` command to run, empty when it is unset. The shell script
@@ -498,8 +977,8 @@ function commandHeadLines(printed: string): string[] {
 }
 
 /** Runs one statement against the run's own database and answers what psql printed, rows bare
- *  and columns separated by `|` (`-tA`). The driver reads and writes one table this way,
- *  pull_request_heads, for the one fixture and the one answer no route of Dispatch carries. */
+ *  and columns separated by `|` (`-tA`), for the fixtures and the answers no route of Dispatch
+ *  carries (the header lists them). */
 async function sql(statement: string): Promise<string> {
   const child = Bun.spawn(
     ["psql", databaseUrl, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-tA", "-c", statement],
@@ -514,34 +993,88 @@ async function sql(statement: string): Promise<string> {
   return stdout.trim();
 }
 
-/** One stored pull request row, as pull_request_heads holds it: the issue it credits, the
- *  source that decided that issue, its state, the head commit and the attribution rule that
- *  judged it. "absent" where no row is stored yet. */
-async function storedHead(number: number): Promise<string> {
-  const row = await sql(
-    `select coalesce(issue_key, 'nobody'), attribution_source, state, head_sha, attribution_rule
-     from pull_request_heads where repo = '${repo}' and number = ${number}`
-  );
-  if (row === "") return "absent";
-  const [issue, source, state, head, rule] = row.split("|");
-  return `${issue} by ${source} (${state} at ${String(head).slice(0, 12)}, rule ${rule})`;
+/** Whether the database holds pull_request_texts, the table of the texts a read of GitHub stores:
+ *  the build of a commit before it, which a negative control runs, has none. */
+async function textsTableExists(): Promise<boolean> {
+  return (await sql("select to_regclass('pull_request_texts') is not null")) === "t";
 }
 
-/** Waits, bounded, for the stored row of `number` to read as `want`, and answers what it last
- *  read. The reconcile is the writer here, so this polls and writes nothing. */
-async function awaitStoredHead(number: number, want: string): Promise<string> {
-  const deadline = Date.now() + headWaitMs;
+/** Whether pull_request_heads holds the merge columns, merge_commit_sha and merged_at (main's
+ *  20261125125702_after_merge_states): the build of a commit before them has neither. A read of
+ *  GitHub that writes a merged row writes both, and a results read that orders an issue's merged
+ *  rows reads GitHub again for a merged row holding no time of merge (api's fillMergeTimes), so a
+ *  fixture's merged row that stands for a row a read wrote holds both too. */
+async function mergeColumnsExist(): Promise<boolean> {
+  return (
+    (await sql(
+      `select count(*) from information_schema.columns
+       where table_schema = current_schema() and table_name = 'pull_request_heads'
+         and column_name in ('merge_commit_sha', 'merged_at')`
+    )) === "2"
+  );
+}
+
+/** One stored pull request row, as pull_request_heads holds it: the issue it records and the
+ *  source of that issue, which a pass of the reconcile writes from the statement's answer
+ *  (SyncAttributions), its state and head commit, which a read of GitHub writes, and whether its
+ *  texts are stored. "absent" where no row is stored yet. */
+async function storedHead(number: number): Promise<string> {
+  const texts = (await textsTableExists())
+    ? "exists (select 1 from pull_request_texts t where t.repo = h.repo and t.number = h.number)"
+    : "null";
+  const row = await sql(
+    `select coalesce(h.issue_key, 'nobody'), coalesce(h.attribution_source, 'no source'), h.state,
+       h.head_sha, ${texts}
+     from pull_request_heads h where h.repo = '${repo}' and h.number = ${number}`
+  );
+  if (row === "") return "absent";
+  const [issue, source, state, head, stored] = row.split("|");
+  const shown = { f: "no texts", t: "texts stored" }[stored ?? ""] ?? "no texts table";
+  return `${issue} by ${source} (${state} at ${String(head).slice(0, 12)}, ${shown})`;
+}
+
+/** Waits, until the deadline `by`, for the stored row of `number` to hold the facts `facts` (the
+ *  part of storedHead in parentheses), and answers what it last read. The intake writes the facts
+ *  of an event at once, and a pass writes the issue later, so this waits on the facts alone. It
+ *  polls and writes nothing. The answer it accepts is held to the deadline too, as
+ *  awaitCommitStands holds its own: a row that reads `facts` after `by` answers that it was late,
+ *  so a writer that writes right but late meets no bound. */
+async function awaitStoredHead(number: number, facts: string, by: number): Promise<string> {
+  const holds = (seen: string) => seen.endsWith(`(${facts})`);
   let seen = await storedHead(number);
-  while (seen !== want && Date.now() < deadline) {
+  while (!holds(seen) && Date.now() < by) {
     await Bun.sleep(pollMs);
     seen = await storedHead(number);
   }
-  return seen;
+  const late = Date.now() - by;
+  return holds(seen) && late > 0 ? `${seen}, read ${late} ms past the deadline` : seen;
+}
+
+/** Waits, until the deadline `by`, for the check `blockID` of `key` to compare with `commit`, and
+ *  answers the bases it last read, and whether they hold `commit` by the deadline. The statement
+ *  gives a pull request's issue at the read, so the reader answers before any pass writes that
+ *  issue on the row. */
+async function awaitComparedWith(
+  key: string,
+  blockID: string,
+  commit: string,
+  by: number
+): Promise<{ readonly held: boolean; readonly shown: string }> {
+  const holds = (check: CheckBlock) =>
+    (check.compared_with ?? []).some((basis) => basis.commit === commit);
+  let check = await checkOf(key, blockID);
+  while (!holds(check) && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    check = await checkOf(key, blockID);
+  }
+  const late = Date.now() - by;
+  const shown = late > 0 ? `${comparedOf(check)}, read ${late} ms late` : comparedOf(check);
+  return { held: holds(check) && late <= 0, shown };
 }
 
 /** Every `issue.pull_request_attribution_changed` event on one issue, oldest first, in the
  *  words a case compares with: the pull request, the issue it left, the issue it reached and
- *  the source that decided the new one. */
+ *  the source that decided the new one. A pass of the reconcile appends them. */
 async function attributionMoves(key: string): Promise<string[]> {
   const events = (await asSession("GET", issuePath(key, "/events?limit=200"))) as {
     type: string;
@@ -555,25 +1088,20 @@ async function attributionMoves(key: string): Promise<string[]> {
     );
 }
 
-/** Waits, bounded, for one issue to carry `want` attribution events, and answers what it last
- *  read. */
-async function awaitAttributionMoves(key: string, want: number): Promise<string[]> {
-  const deadline = Date.now() + headWaitMs;
-  let seen = await attributionMoves(key);
-  while (seen.length < want && Date.now() < deadline) {
-    await Bun.sleep(pollMs);
-    seen = await attributionMoves(key);
-  }
-  return seen;
-}
-
 function note(line: string): void {
   console.log(`   ${line}`);
 }
 
 const results: { name: string; ok: boolean }[] = [];
 
+/** Runs one case and prints its `ok` or `FAIL` line. Under VERIFICATION_RESULTS_E2E_ONLY the run
+ *  of the cases before the phases (no --phase) skips each case, since a control of one case of the
+ *  seven checks needs none of them. A phase decides on its own which of its halves run. */
 async function runCase(name: string, body: () => Promise<string | undefined>): Promise<void> {
+  if (onlyCase !== "" && phaseArg === undefined) {
+    console.log(`skip ${name}: VERIFICATION_RESULTS_E2E_ONLY=${onlyCase} runs that case alone`);
+    return;
+  }
   console.log(`== ${name}`);
   let failure: string | undefined;
   try {
@@ -585,6 +1113,10 @@ async function runCase(name: string, body: () => Promise<string | undefined>): P
   console.log(failure === undefined ? `ok ${name}` : `FAIL ${name}: ${failure}`);
 }
 
+/** Prints the summary and exits: 0 when every case passed, 1 when a case failed. Under
+ *  VERIFICATION_RESULTS_E2E_ONLY a failed case other than the named one (the boundary's own
+ *  self-check, one-pass-boundary) exits 2, as a step outside the cases does: that negative control
+ *  stopped before its own check, so its run shows nothing of that check. */
 function summarise(stopped?: string): never {
   const failed = results.filter((result) => !result.ok).map((result) => result.name);
   if (stopped !== undefined) console.log(`   ${stopped}`);
@@ -592,7 +1124,245 @@ function summarise(stopped?: string): never {
     `summary: ${results.length - failed.length} ok, ${failed.length} FAIL${failed.length === 0 ? "" : ` (${failed.join(", ")})`}`
   );
   void nats.close();
-  process.exit(failed.length === 0 ? 0 : 1);
+  const beforeItsCheck = onlyCase !== "" && failed.some((name) => name !== onlyCase);
+  process.exit(failed.length === 0 ? 0 : beforeItsCheck ? 2 : 1);
+}
+
+// --- the tooling of one complete pass ----------------------------------------------------------
+//
+// A check that says "after one pass" reads the answers at this boundary, in five steps:
+//   1. The driver writes the fixture while no server runs (`--phase <phase>-fixture`).
+//   2. It deletes the reconcile's records of its passes, and reads the database's clock
+//      (prepareOnePass).
+//   3. The shell starts the server with a pass at its start and an interval of one hour, so that
+//      start pass is the phase's pass (step 5 says when another can follow it).
+//   4. The pass ends when a record of the lease appears (awaitOnePass). Step 2 deleted every
+//      record, so the first one is the start pass's. duty.Exclusive records a pass after the pass
+//      runs, and gives the lease back after the record.
+//   5. The driver asserts (`--phase <phase>-assert`). The next tick comes at a moment of the first
+//      hour that the start drew (duty.RunJittered), and duty.Exclusive refuses it as served unless
+//      one of the lease's aligned periods (duty.LeasePeriod of the hour, 54 minutes) begins between
+//      the start pass and that tick.
+// A phase that reads before its pass (`--phase <phase>-before`) reads between steps 2 and 3,
+// through a server started with no pass at its start while the shell holds the reconcile's lease
+// (its hold_reconcile_lease): duty.RunJittered draws a start's first wait in [0, interval), so a
+// start with no pass can still tick in its first seconds, and duty.Exclusive skips each tick while
+// another session holds the lease.
+// A record's boundary is the aligned start of its period, not the end of the pass, so the driver
+// does not compare it with the clock that it read in step 2.
+
+/** What one process of the driver leaves for a later one in the state file, by key. */
+function readState(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+/** Every read of pull requests the fake GitHub has answered since resetPullReads, summed over its
+ *  routes: the read of one pull request, the read of its commits, the read of the pull requests of
+ *  a commit, and each pull request that a GraphQL query asks for. It sums every repository, or the
+ *  `repositories` given, by the name each request used. */
+async function pullReads(repositories?: readonly string[]): Promise<number> {
+  const response = await fetch(new URL("/__fixture/requests", githubUrl));
+  if (!response.ok) {
+    throw new Error(`GET /__fixture/requests: ${response.status} ${await response.text()}`);
+  }
+  const { pulls } = (await response.json()) as { pulls: Record<string, Record<string, number>> };
+  return Object.entries(pulls)
+    .filter(([name]) => repositories === undefined || repositories.includes(name))
+    .flatMap(([, routes]) => Object.values(routes))
+    .reduce((sum, reads) => sum + reads, 0);
+}
+
+/** Empties the fake GitHub's counts of reads: the reads of pull requests, and of check runs. */
+async function resetPullReads(): Promise<void> {
+  const response = await fetch(new URL("/__fixture/requests", githubUrl), { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(`DELETE /__fixture/requests: ${response.status} ${await response.text()}`);
+  }
+}
+
+/** The lease of the delivery reconcile (delivery.ReconcileLease), and the rows of duty_passes
+ *  that record its passes: one by the lease's name, which the release before reads, and one for
+ *  each period, `<name>/<period_ns>` (duty.passKey). */
+const reconcileLease = "delivery-reconcile";
+const reconcileRecords = `lease = '${reconcileLease}' or lease like '${reconcileLease}/%'`;
+
+/** Step 2 of one complete pass: deletes every record of the reconcile's passes, and answers the
+ *  database's clock at that moment. */
+async function prepareOnePass(): Promise<string> {
+  return sql(
+    `with gone as (delete from duty_passes where ${reconcileRecords} returning 1)
+     select clock_timestamp()`
+  );
+}
+
+/** Step 4 of one complete pass, and its self-check: waits, bounded by onePassWaitMs, for the
+ *  record of the start pass, and then for the lease to be free. Then it holds the pass to the
+ *  boundary. duty.Exclusive's recordPass writes two records of one pass, by the lease's name and
+ *  by its period: both must be there, at one boundary, each of the period the record keyed by it
+ *  names. That period is the build's, read from its record, never a figure of this driver's: the
+ *  build derives it from the interval the shell gives (duty.LeasePeriod), and a change of that
+ *  rule on main must not stop every phase here. The lease must be free, and the log must hold
+ *  one more attribution line than at the fixture (linesBefore).
+ *  A control of a build before that line (VERIFICATION_RESULTS_E2E_OLD_BUILD=1) writes no such
+ *  line, so for it the boundary rests on the records and the lease alone, and so does the pass
+ *  of the release before's build that older-rows waits for (`countLines` false). A log with no
+ *  such line still fails a run that does not give that setting. Every phase's answer rests on this
+ *  boundary, so any other reading stops the driver (setupFailed). It answers what it read. */
+async function awaitOnePass(linesBefore: number, countLines = !oldBuild): Promise<string> {
+  const deadline = Date.now() + onePassWaitMs;
+  const records = () =>
+    sql(
+      `select lease, period_ns, boundary from duty_passes where ${reconcileRecords}
+       order by lease collate "C"`
+    );
+  let recorded = await records();
+  while (recorded === "" && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    recorded = await records();
+  }
+  // duty.leaseHeld: the lease is a session's two-key advisory lock, the namespace "LOOP"
+  // (duty.leaseNamespace) and the hashtext of the lease's name.
+  const held = async () =>
+    (await sql(
+      `select exists (select 1 from pg_locks
+         where locktype = 'advisory' and granted and objsubid = 2
+           and database = (select oid from pg_database where datname = current_database())
+           and classid = ${0x4c4f4f50}::oid and objid = hashtext('${reconcileLease}')::oid)`
+    )) === "t";
+  let leaseHeld = await held();
+  while (leaseHeld && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    leaseHeld = await held();
+  }
+  const rows = recorded === "" ? [] : recorded.split("\n").map((row) => row.split("|"));
+  const shown =
+    rows.map(([lease, period, at]) => `${lease} (period ${period} ns, at ${at})`).join(", ") ||
+    "no record";
+  const kept = rows.map(([lease, period]) => `${lease} ${period}`).join(", ");
+  // duty.passKey: the record of a period is keyed `<lease>/<period_ns>`, a positive count.
+  const keyed = rows
+    .map(([lease]) => lease)
+    .find((lease) => lease.startsWith(`${reconcileLease}/`));
+  const period = keyed?.slice(reconcileLease.length + 1) ?? "";
+  const wanted = /^[1-9][0-9]*$/.test(period)
+    ? `${reconcileLease} ${period}, ${keyed} ${period}`
+    : undefined;
+  const lines = attributionLines().length - linesBefore;
+  if (
+    kept !== wanted ||
+    new Set(rows.map((row) => row[2])).size !== 1 ||
+    leaseHeld ||
+    (lines !== 1 && countLines)
+  ) {
+    setupFailed(
+      "the boundary of one pass",
+      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/<period_ns> at one boundary, each of the period its key names, a positive count of nanoseconds; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want ${countLines ? "1" : "any (a build before that line)"}`
+    );
+  }
+  return countLines
+    ? `one pass: duty_passes holds ${shown}; the lease is free; the log holds 1 more attribution line`
+    : `one pass: duty_passes holds ${shown}; the lease is free; the log holds ${lines} more attribution line(s), not counted: the server is a build before that line`;
+}
+
+/** Each line `dispatch delivery: pull request attribution` of the server's log, oldest first, as
+ *  its attributes. A pass writes one, with its counts (facts_left_before, facts_left, reads_left,
+ *  facts_refused, changes, events, moves_queued) and the scope of the first rate limit that it met
+ *  (rate_limit_scope). The log holds every start of the server in the run. */
+function attributionLines(): Record<string, string>[] {
+  return readFileSync(dispatchLog, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('msg="dispatch delivery: pull request attribution"'))
+    .map((line) =>
+      Object.fromEntries(
+        [...line.matchAll(/(\w+)=("(?:[^"\\]|\\.)*"|\S*)/g)].map(([, key = "", value = ""]) => [
+          key,
+          value.startsWith('"') ? (JSON.parse(value) as string) : value,
+        ])
+      )
+    );
+}
+
+/** What `dispatch attribution` prints, as numbers where its lines count: each of its seven lines,
+ *  read by its words (attributionCommand, packages/envoy-client/src/dispatch-commands/session.ts). */
+interface AttributionCounts {
+  readonly facts_left: number;
+  readonly facts_refused: number;
+  readonly keys_on_another_reading: number;
+  readonly links_in_two_cases: number;
+  readonly moves_queued: number;
+  readonly owed_failures: number;
+  readonly owed_refusals: number;
+  readonly reading: string;
+  readonly reads_left: number;
+}
+
+/** Runs `dispatch attribution` through the driver's runner of the command (runDispatch), and reads
+ *  its seven lines. A line that it does not print fails the read, naming the line and the output. */
+async function attributionCounts(): Promise<AttributionCounts> {
+  const run = await runDispatch(["attribution"]);
+  if (run.code !== 0) {
+    throw new Error(`dispatch attribution exited ${run.code}: ${run.stderr.trim()}`);
+  }
+  const line = (pattern: RegExp): string[] => {
+    const found = run.stdout.match(pattern);
+    if (found === null) {
+      throw new Error(
+        `dispatch attribution printed no line ${pattern.source}: ${JSON.stringify(run.stdout)}`
+      );
+    }
+    return found.slice(1);
+  };
+  const count = (printed: string | undefined) => Number(printed?.replaceAll(",", ""));
+  const [factsLeft] = line(/^Pull requests that wait for their facts from GitHub: ([\d,]+)\.$/m);
+  const [readsLeft, factsRefused] = line(
+    /^Pull requests that a pass still reads from GitHub: ([\d,]+) \(([\d,]+) of them refused\)\.$/m
+  );
+  const [keysWait] = line(/^Pull requests whose keys wait to be read again: ([\d,]+)\.$/m);
+  const [movesWait] = line(/^Changes of attribution whose events wait: ([\d,]+)\.$/m);
+  const [reading] = line(/^The key reading: (.*)\.$/m);
+  const [links] = line(
+    /^Links that more than one issue holds in other letter cases, or a pull request in its other form: ([\d,]+)\.$/m
+  );
+  const [failures, refusals] = line(
+    /^Pull requests whose head is not read while a read is owed: ([\d,]+) that GitHub did not answer.*, and ([\d,]+) that GitHub refuses/m
+  );
+  return {
+    facts_left: count(factsLeft),
+    facts_refused: count(factsRefused),
+    keys_on_another_reading: count(keysWait),
+    links_in_two_cases: count(links),
+    moves_queued: count(movesWait),
+    owed_failures: count(failures),
+    owed_refusals: count(refusals),
+    reading: reading ?? "",
+    reads_left: count(readsLeft),
+  };
+}
+
+/** One phase that the shell runs around one complete pass (one_pass_phase), in up to four halves:
+ *  `prepare`, the writes that need a server, while the server of the step before still runs (step 5
+ *  of the tooling above says when it can pass again); `fixture`, the writes while no server runs;
+ *  `before`, the reads through a server
+ *  that runs no pass, where the shell asks for them; and `assert`, the case after the
+ *  start pass, given what awaitOnePass read. `prepare`, `before` and `assert` are parts of the case
+ *  `caseName`. `baseOf` names the cases of the seven checks that stand on this phase's writes:
+ *  under VERIFICATION_RESULTS_E2E_ONLY, the phase writes for them and asserts nothing.
+ *  `releaseWrites` and `releasePass` are older-rows' two halves through the release before's build
+ *  (the shell's older_rows_upgrade), which run before every other. */
+interface OnePassPhase {
+  readonly assert: (pass: string) => Promise<string | undefined>;
+  readonly baseOf?: readonly SevenCheck[];
+  readonly before?: () => Promise<string | undefined>;
+  readonly caseName: string;
+  readonly fixture?: () => Promise<void>;
+  readonly prepare?: () => Promise<string | undefined>;
+  readonly releasePass?: () => Promise<string | undefined>;
+  readonly releaseWrites?: () => Promise<string | undefined>;
 }
 
 // --- setup ---------------------------------------------------------------------------------------
@@ -611,95 +1381,459 @@ function summarise(stopped?: string): never {
 // requests name a result's commit, and with no answer there the only thing that can teach
 // Dispatch a head is the envelope the cases publish.
 //
-// `pulls` is what GitHub answers about one pull request, which is read by one reader alone: the
-// reconcile's refresh of a stored head row. The attribution case seeds the two pull requests its
-// own stored rows name, since their titles name an issue this run creates, and the fixture route
-// replaces the whole map, so the seed is written here once and sent again with them.
+// `pulls` is what GitHub answers about one pull request. Two readers read it: the intake, which
+// takes from each envelope only which pull request changed and reads that pull request here,
+// and the reconcile's refresh of a stored head row. So each publish first sets the pull
+// request's answer to what GitHub holds after that event (publishPullRequest), and the
+// attribution case adds the two pull requests its own stored rows name. The fixture route
+// replaces the whole map, so every answer set is kept in `githubPulls` and sent again with the
+// next.
+//
+// The seven checks add the repositories of their cases, acme/attribution-live, the default
+// repository of their project, and acme/attribution-second, which an issue of it names as its
+// own, and limit-of-one adds beta/tools and beta/deploy (attributionRepositories). Each seed
+// sends them again too.
 
 /** One pull request the fake answers for, as its single-pull-request route reads a fixture:
- *  the head commit, the repository the head branch is in, the state and the title. */
+ *  the head commit and branch, the repository the head branch is in, the base branch, the
+ *  state, the title and body, the time GitHub last updated it, and the merge's own commit and
+ *  time; and as its commits read and its GraphQL route read it: the messages of its commits, and
+ *  the status the commits read answers in place of them. limit-of-one sets two more: `searched`,
+ *  so the merged search finds the pull request, and `author`, which also makes the fake answer
+ *  the fields that the completion of a partial pull request reads. */
 interface FakePullRequest {
+  readonly author?: string;
+  readonly base_ref?: string;
+  readonly body?: string;
+  readonly commit_messages?: readonly string[];
+  readonly commits_status?: number;
+  readonly head_ref?: string;
   readonly head_repo: string;
   readonly head_sha: string;
+  readonly merge_commit_sha?: string;
   readonly merged: boolean;
+  readonly merged_at?: string;
+  readonly searched?: boolean;
   readonly state: string;
   readonly title: string;
-  readonly base_ref?: string;
-  readonly head_ref?: string;
-  readonly merge_commit_sha?: string;
-  readonly merged_at?: string;
+  readonly updated_at?: string;
 }
 
-const githubPulls: Record<string, FakePullRequest> = {};
+/** One repository of the seven checks and of the head checks, as the fake's fixture route reads
+ *  it: the installation and its permissions, the default branch and the commits it holds, the
+ *  commits each branch holds (`branch_commits`), the pull requests of each commit
+ *  (`commit_pulls`), its pull requests, whether its installation spent its rate limit, whether
+ *  the App is installed on it at all (`installation_missing`), and the pull requests whose read
+ *  GitHub refuses, with the status it answers (`refused_pulls`). */
+interface FakeRepository {
+  readonly actions?: string;
+  readonly branch_commits?: Record<string, readonly string[]>;
+  readonly commit_pulls?: Record<string, readonly number[]>;
+  readonly commits?: readonly string[];
+  readonly contents: string;
+  readonly default_branch?: string;
+  readonly installation_id: number;
+  readonly installation_missing?: boolean;
+  readonly pull_requests?: string;
+  readonly pulls?: Record<string, FakePullRequest>;
+  readonly rate_limited?: boolean;
+  readonly refused_pulls?: Record<string, number>;
+}
 
-async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise<void> {
-  Object.assign(githubPulls, pulls);
+/** Every pull request answer set so far, keyed by number. */
+const githubPulls: Record<string, FakePullRequest> = {};
+/** Every repository of the seven checks, as a case seeded it last, keyed by its name. */
+const attributionRepositories: Record<string, FakeRepository> = {};
+
+/** Seeds the fake with `repositories`, every other repository gone (PUT /__fixture/repos). */
+async function putFakeRepositories(repositories: Record<string, FakeRepository>): Promise<void> {
   const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
+    body: JSON.stringify(repositories),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!seeded.ok) throw new Error(`the seed answered ${seeded.status} ${await seeded.text()}`);
+}
+
+/** Seeds the fake: the proof's repository with every pull request answer set so far and `pulls`,
+ *  the repository the App is not installed on, and each repository of the seven checks, with
+ *  `repositories` in place of the ones it names. */
+async function seedRepositories(
+  pulls: Record<string, FakePullRequest>,
+  repositories: Record<string, FakeRepository> = {}
+): Promise<void> {
+  Object.assign(githubPulls, pulls);
+  Object.assign(attributionRepositories, repositories);
+  await putFakeRepositories({
+    [repo]: {
+      actions: "read",
+      branch_commits: {
+        main: [
+          commits.behind,
+          commits.comparedOnMain,
+          commits.mainHead,
+          commits.comparedLandingMerge,
+          commits.answerMerge,
+          commits.answerLater,
+        ],
+        [commits.comparedLandingHead]: [commits.comparedMergeCommit],
+        [commits.comparedOnMain]: [commits.comparedLandingMerge],
+        [commits.answerLater]: [commits.answerMerge],
+      },
+      commits: Object.values(heldCommits),
+      contents: "read",
+      default_branch: "main",
+      installation_id: 256,
+      pull_requests: "read",
+      pulls: githubPulls,
+    },
+    [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
+    ...attributionRepositories,
+  }).catch((error: unknown) => setupFailed("fake GitHub seed", error));
+}
+
+/** The repository `name` of `repositories`, as `change` makes it from what it holds. */
+function changedRepository(
+  repositories: Readonly<Record<string, FakeRepository>>,
+  name: string,
+  change: (held: FakeRepository) => FakeRepository
+): FakeRepository {
+  const held = repositories[name];
+  if (held === undefined) throw new Error(`the fake holds no seed of ${name}`);
+  return change(held);
+}
+
+/** Seeds the repository `name` of the seven checks again, as `change` makes it from its last
+ *  seed, and every other repository as it was. */
+async function seedAttribution(
+  name: string,
+  change: (seeded: FakeRepository) => FakeRepository
+): Promise<void> {
+  await seedRepositories({}, { [name]: changedRepository(attributionRepositories, name, change) });
+}
+
+// One half of first-start-tip (the section "first-start-tip"), which the shell runs after every
+// other case and phase, or alone. Each half ends the process.
+if (phaseArg?.startsWith("first-start-tip-")) {
+  await firstStartTipHalf(phaseArg.slice("first-start-tip-".length));
+}
+
+// One half of a head check (headChecks), which the shell runs after the one-pass phases, or alone:
+// `--phase <name>-fixture` while no server runs, then `--phase <name>`. Each half ends the process.
+const headName = phaseArg?.replace(/-fixture$/, "") ?? "";
+const headCheck = Object.hasOwn(headChecks, headName) ? headChecks[headName] : undefined;
+if (headCheck !== undefined) await headCaseHalf(headName, headCheck, phaseArg !== headName);
+
+// One half of a one-pass phase (OnePassPhase). The process first takes the repositories the fake
+// answers for, as an earlier process of the driver seeded them, so a seed of this process keeps
+// them.
+if (phaseArg !== undefined) {
+  const onePassPhases: Record<string, OnePassPhase> = {
+    // The self-check of the boundary: a fixture of nothing, then one start of the server.
+    boundary: {
+      assert: async (pass) => {
+        note(pass);
+        return undefined;
+      },
+      caseName: "one-pass-boundary",
+    },
+    "k-attribution": {
+      assert: kAttributionAfterOnePass,
+      caseName: "k-attribution-after-one-pass",
+      fixture: kAttributionFixture,
+    },
+    // The seven checks (the section "the seven checks"), in the order the shell runs them.
+    "older-rows": {
+      assert: olderRowsAfterOnePass,
+      before: olderRowsBeforeThePass,
+      caseName: "older-rows",
+      fixture: olderRowsFixture,
+      releasePass: olderRowsReleasePass,
+      releaseWrites: olderRowsReleaseWrites,
+    },
+    "older-rows-set-back": {
+      assert: olderRowsAfterTheSetBack,
+      caseName: "older-rows",
+      fixture: olderRowsSetBack,
+    },
+    "rule-reaches-each-row": {
+      assert: (pass) => ruleAtTheBoundary(pass, "the rows of the release before"),
+      baseOf: ["key-reading-changes", "stores-agree"],
+      caseName: "rule-reaches-each-row",
+      fixture: ruleFixture,
+      prepare: ruleIssues,
+    },
+    "rule-reaches-each-row-link": {
+      assert: (pass) => ruleAtTheBoundary(pass, "a person's link"),
+      caseName: "rule-reaches-each-row",
+      fixture: resetPullReads,
+      prepare: ruleLink,
+    },
+    "rule-reaches-each-row-move": {
+      assert: (pass) => ruleAtTheBoundary(pass, "a move to the second repository"),
+      caseName: "rule-reaches-each-row",
+      fixture: resetPullReads,
+      prepare: ruleMove,
+    },
+    "rule-reaches-each-row-new-issue": {
+      assert: ruleNewIssue,
+      caseName: "rule-reaches-each-row",
+      fixture: ruleNewIssuePull,
+      prepare: ruleProbe,
+    },
+    "key-reading-changes": {
+      assert: readingAfterOnePass,
+      caseName: "key-reading-changes",
+      fixture: readingFixture,
+      prepare: readingStored,
+    },
+    "facts-only": {
+      assert: factsOnlyAfterOnePass,
+      caseName: "facts-only",
+      fixture: factsOnlyFixture,
+      prepare: factsOnlyEnvelope,
+    },
+    "read-compares": {
+      assert: readComparesAfterOnePass,
+      caseName: "read-compares",
+      fixture: readComparesFixture,
+      prepare: readComparesFirstReads,
+    },
+    "stores-agree": {
+      assert: (pass) => storesAgreeRead(pass, "after one pass"),
+      before: () => storesAgreeRead(undefined, "before a pass"),
+      caseName: "stores-agree",
+      fixture: storesAgreeFixture,
+      prepare: storesAgreeSettings,
+    },
+    "stores-agree-link": {
+      assert: (pass) => storesAgreeRead(pass, "after a person's link and one more pass"),
+      caseName: "stores-agree",
+      prepare: storesAgreeLink,
+    },
+    "limit-of-one": {
+      assert: limitAfterOnePass,
+      caseName: "limit-of-one",
+      fixture: limitFixture,
+      prepare: limitSettings,
+    },
+  };
+  const [, name = "", half] =
+    /^(.+)-(prepare|fixture|before|assert|release-writes|release-pass)$/.exec(phaseArg) ?? [];
+  const phase = onePassPhases[name];
+  if (phase === undefined || half === undefined) {
+    setupFailed(
+      `phase ${phaseArg}`,
+      `no one-pass phase answers --phase ${phaseArg}; the phases are ${Object.keys(onePassPhases).join(", ")}, each with -prepare, -fixture, -before or -assert, and older-rows with -release-writes and -release-pass too`
+    );
+  }
+  if (onlyCase !== "" && !sevenChecks.some((check) => check === onlyCase)) {
+    setupFailed(
+      "VERIFICATION_RESULTS_E2E_ONLY",
+      `${onlyCase} is no case of the seven checks (${sevenChecks.join(", ")})`
+    );
+  }
+  // Under VERIFICATION_RESULTS_E2E_ONLY, a phase of that case runs whole, and so does the
+  // self-check of the boundary. A phase that the case stands on makes its writes and asserts
+  // nothing. The driver skips every other phase. A skipped half exits with phaseSkipped, so the
+  // shell prints `skip <phase>` for the phase and never `ok`.
+  const runs =
+    onlyCase === "" || phase.caseName === onlyCase || name === "boundary"
+      ? "whole"
+      : phase.baseOf?.some((check) => check === onlyCase)
+        ? "writes"
+        : "none";
+  if (runs === "none" || (runs === "writes" && (half === "before" || half === "assert"))) {
+    console.log(
+      `skip ${phase.caseName} (--phase ${phaseArg}): VERIFICATION_RESULTS_E2E_ONLY=${onlyCase}`
+    );
+    void nats.close();
+    process.exit(phaseSkipped);
+  }
+  const seeded = await fetch(new URL("/__fixture/repos", githubUrl)).catch((error: unknown) =>
+    setupFailed("read of the fake GitHub's seed", error)
+  );
+  if (!seeded.ok)
+    setupFailed("read of the fake GitHub's seed", `${seeded.status} ${await seeded.text()}`);
+  const repositories = (await seeded.json()) as Record<string, FakeRepository>;
+  for (const [fullName, repository] of Object.entries(repositories)) {
+    if (fullName === repo) Object.assign(githubPulls, repository.pulls ?? {});
+    else if (fullName !== hiddenRepo) attributionRepositories[fullName] = repository;
+  }
+  if (half === "prepare") {
+    if (phase.prepare !== undefined && runs === "whole") {
+      await runCase(phase.caseName, phase.prepare);
+      summarise();
+    }
+    if (phase.prepare !== undefined) {
+      const step = `writes of ${phase.caseName}, which VERIFICATION_RESULTS_E2E_ONLY=${onlyCase} stands on`;
+      const failure = await phase.prepare().catch((error: unknown) => setupFailed(step, error));
+      if (failure !== undefined) setupFailed(step, failure);
+    }
+    void nats.close();
+    process.exit(0);
+  }
+  if (half === "release-writes" || half === "release-pass") {
+    const step = half === "release-writes" ? phase.releaseWrites : phase.releasePass;
+    if (step === undefined) {
+      setupFailed(
+        `phase ${phaseArg}`,
+        `the phase ${name} has no half ${half}: only older-rows runs on the release before`
+      );
+    }
+    await runCase(phase.caseName, step);
+    summarise();
+  }
+  const passKey = `${name}/pass`;
+  if (half === "fixture") {
+    try {
+      await phase.fixture?.();
+      const fixtureAt = await prepareOnePass();
+      const linesBefore = attributionLines().length;
+      writeFileSync(
+        statePath,
+        JSON.stringify({ ...readState(), [passKey]: { fixtureAt, linesBefore } })
+      );
+      note(`${phaseArg}: the fixture is written, and no pass is recorded, at ${fixtureAt}`);
+    } catch (error) {
+      setupFailed(`fixture of the phase ${name}`, error);
+    }
+    void nats.close();
+    process.exit(0);
+  }
+  if (half === "before") {
+    const before = phase.before;
+    if (before === undefined) {
+      setupFailed(`phase ${phaseArg}`, `the phase ${name} reads nothing before its pass`);
+    }
+    await runCase(phase.caseName, before);
+    // The read is one before any pass only while no pass has run: the server started with no
+    // pass, and its first tick can still fall within the read.
+    const passes = await sql(`select count(*) from duty_passes where ${reconcileRecords}`);
+    if (passes !== "0") {
+      setupFailed(
+        "the read before the pass",
+        `duty_passes holds ${passes} record(s) of the reconcile: a pass ran before the read ended`
+      );
+    }
+    summarise();
+  }
+  const fixture = readState()[passKey] as { readonly linesBefore?: number } | undefined;
+  if (fixture?.linesBefore === undefined) {
+    setupFailed(
+      `phase ${phaseArg}`,
+      `the state file holds no fixture of ${name}: run --phase ${name}-fixture first`
+    );
+  }
+  const pass = await awaitOnePass(fixture.linesBefore);
+  await runCase(phase.caseName, () => phase.assert(pass));
+  summarise();
+}
+
+// The counter's self-check: one read of a seeded pull request, made here and not by Dispatch,
+// counts as one read. The fake holds that pull request alone until the seed below replaces it.
+// Dispatch holds no row of a pull request yet, so it reads none beside it.
+try {
+  const counterSeed = await fetch(new URL("/__fixture/repos", githubUrl), {
     body: JSON.stringify({
       [repo]: {
-        actions: "read",
-        branch_commits: {
-          main: [
-            commits.behind,
-            commits.comparedOnMain,
-            commits.mainHead,
-            commits.comparedLandingMerge,
-            commits.answerMerge,
-            commits.answerLater,
-          ],
-          [commits.comparedLandingHead]: [commits.comparedMergeCommit],
-          [commits.comparedOnMain]: [commits.comparedLandingMerge],
-          [commits.answerLater]: [commits.answerMerge],
-        },
-        commits: Object.values(heldCommits),
         contents: "read",
-        default_branch: "main",
         installation_id: 256,
-        pull_requests: "read",
-        pulls: githubPulls,
+        pulls: { "1": { head_sha: commits.mainHead, state: "open", title: "The counter's read" } },
       },
-      [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
     }),
     headers: { "Content-Type": "application/json" },
     method: "PUT",
-  }).catch((error: unknown) => setupFailed("fake GitHub seed", error));
-  if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
+  });
+  if (!counterSeed.ok) throw new Error(`the seed answered ${counterSeed.status}`);
+  await resetPullReads();
+  const read = await fetch(new URL(`/repos/${repo}/pulls/1`, githubUrl));
+  const counted = await pullReads();
+  if (!read.ok || counted !== 1) {
+    throw new Error(
+      `one GET /repos/${repo}/pulls/1 answered ${read.status} and counts ${counted} read(s), want 200 and 1`
+    );
+  }
+} catch (error) {
+  setupFailed("the counter of pull request reads", error);
 }
+// The repositories of the seven checks: the project's default one holds the commits a case
+// records at, and the second one holds nothing. stores-agree gives the first the permissions a
+// pass with delivery settings checks.
+await seedRepositories(
+  {},
+  {
+    [attributionRepo]: {
+      commits: Object.values(sevenCommits),
+      contents: "read",
+      default_branch: "main",
+      installation_id: attributionInstallation,
+      pulls: {},
+    },
+    [attributionSecondRepo]: {
+      contents: "read",
+      default_branch: "main",
+      installation_id: attributionInstallation,
+    },
+  }
+);
 
-await seedRepositories({});
-
+let defaultRoute: "project" | "mapping" = "project";
 for (const [key, name, defaultRepo] of [
   ["VRF", "Verification results", repo],
   ["VRH", "Verification results, unreadable repository", hiddenRepo],
+  [attributionProject, "Attribution", attributionRepo],
 ] as const) {
   await asPerson("POST", "/api/v1/projects", { key, name }).catch((error: unknown) =>
     setupFailed(`project ${key}`, error)
   );
-  await asSession("PUT", `/api/v1/projects/${key}/default-repository`, {
-    repo: defaultRepo,
-  }).catch((error: unknown) => setupFailed(`default repository ${defaultRepo} of ${key}`, error));
+  defaultRoute = await setDefaultRepository(key, defaultRepo).catch((error: unknown) =>
+    setupFailed(`default repository ${defaultRepo} of ${key}`, error)
+  );
+}
+// Each project's one default repository is all the setup writes of repositories on a build that
+// serves the project route. The second repository of the seven checks needs no write there: an
+// issue's own repository is any owner/name, so rule-reaches-each-row's move names it on the issue
+// alone (ruleMove). A build that serves the mapping route instead predates main's #4457, and one
+// before main's #3730, as 5ea6b2ffb2 is, takes an issue's own repository only where a mapping maps
+// it to the issue's project; so on such a build the second repository is mapped to ATT as well. No
+// rename pair is written here either: older-rows writes its own, on the database that the shell
+// empties after it (olderRowsFixture), and no case after it reads a row, a link or an event under a
+// renamed name.
+if (defaultRoute === "mapping") {
+  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionSecondRepo}`, {
+    project: attributionProject,
+  }).catch((error: unknown) => setupFailed(`repository mapping ${attributionSecondRepo}`, error));
+  note(
+    `setup: the server serves no PUT /api/v1/projects/{key}/default-repository (a build before #4457), so each project's default repository is its repository mapping marked default, and ${attributionSecondRepo} is mapped to ${attributionProject}`
+  );
 }
 
-// The delivery intake binds its durable at boot, with no delivery settings saved, and its first
-// bind starts at the stream's next message, so an envelope published before that bind is never
-// delivered: the setup waits for the durable to be push-bound before any case publishes one.
-{
+await awaitIntakeBound();
+
+/** The delivery intake binds its durable at boot, with no delivery settings saved, and its first
+ *  bind starts at the stream's next message, so an envelope published before that bind is never
+ *  delivered: the setup, and each head check, waits for the durable to be push-bound before it
+ *  publishes one. Where `required` is false, a durable not bound after the wait is head-no-settings'
+ *  own finding, not a step that stopped: an intake that takes no event without delivery settings
+ *  binds none, which is that check's negative control, so the wait answers what it read and the
+ *  case goes on to fail at its own check. */
+async function awaitIntakeBound(required = true): Promise<string | undefined> {
   const manager = await nats.jetstreamManager();
   const deadline = Date.now() + intakeBindWaitMs;
   let state = "not read";
   for (;;) {
     try {
       const info = await manager.consumers.info("ENVOY_NOTIFICATIONS", "delivery-events");
-      if (info.push_bound) break;
+      if (info.push_bound) return undefined;
       state = "created, not push-bound";
     } catch (error) {
       state = error instanceof Error ? error.message : String(error);
     }
     if (Date.now() >= deadline) {
-      setupFailed(
-        "the delivery intake's bind",
-        `delivery-events is ${state} after ${intakeBindWaitMs} ms`
-      );
+      const read = `delivery-events is ${state} after ${intakeBindWaitMs} ms`;
+      if (!required) return read;
+      setupFailed("the delivery intake's bind", read);
     }
     await Bun.sleep(pollMs);
   }
@@ -710,6 +1844,8 @@ for (const [key, name, defaultRepo] of [
  *  that exists, so the requirement is written with the issue, before any check points at it — and
  *  answers that key. `parent` makes it the child of another issue, which the attribution case
  *  needs: a child's pull request answers for the child's own checks and for no check above it.
+ *  `repo` names the issue's own repository, which head-no-settings needs, in place of the
+ *  project's default.
  *
  *  `force` is what every seed here needs: the run's issues are all about checks and pull
  *  requests, so a create of the next one is answered 409 POSSIBLE_DUPLICATE naming the issues
@@ -718,12 +1854,14 @@ async function seedIssue(
   project: string,
   title: string,
   checks: string,
-  parent?: string
+  parent?: string,
+  repo?: string
 ): Promise<string> {
   const issue = (await asPerson("POST", "/api/v1/issues", {
     force: true,
     parent,
     project,
+    repo,
     spec: `${title}.\n\n:::requirement{#r1}\nThe proof records a result against a check that serves this.\n:::\n`,
     title,
   })) as Json;
@@ -755,7 +1893,7 @@ const probeIssue = String(
 );
 
 console.log(
-  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation); dispatch command ${dispatchCommand} (${dispatchCommandInput === "" ? "this checkout's" : "VERIFICATION_RESULTS_E2E_DISPATCH_CLI"}). Each case seeds the issue it drives.`
+  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation); dispatch command ${dispatchCommand} (${dispatchCommandInput === "" ? "this checkout's" : "VERIFICATION_RESULTS_E2E_DISPATCH_CLI"}); the fake GitHub counts one direct read of a pull request as 1 read. Each case seeds the issue it drives.`
 );
 
 // --- cases ---------------------------------------------------------------------------------------
@@ -773,7 +1911,7 @@ await runCase("the-results-route-is-served", async () => {
   note(`a result naming a check ${probeIssue} does not have answers ${answer}`);
   return answer === "400 UNKNOWN_CHECK" ? undefined : `the record route answers ${answer}`;
 });
-if (!results[0]?.ok) {
+if (results.some((result) => result.name === "the-results-route-is-served" && !result.ok)) {
   summarise("every later case records a result too, so the run stops at the first result write");
 }
 
@@ -799,16 +1937,17 @@ The result read back under this check is the one that was recorded.
   note(`the pull-request body line is ${JSON.stringify(answered.line)}`);
   note(`the record's answer says it was stored at ${answered.result.created_at}`);
   const check = await checkOf(a2Issue, "a2");
+  const results = check.results ?? [];
   note(
-    `${a2Issue} check a2 (${check.when}) holds ${check.results.length} result(s): ${check.results
+    `${a2Issue} check a2 (${check.when}) holds ${results.length} result(s): ${results
       .map(
         (row) =>
           `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${standsOf(row)})`
       )
       .join(", ")}`
   );
-  if (check.results.length !== 1) return `the check holds ${check.results.length} results, want 1`;
-  const [recorded] = check.results;
+  if (results.length !== 1) return `the check holds ${results.length} results, want 1`;
+  const [recorded] = results;
   if (recorded?.commit_sha !== commits.a2 || recorded.verdict !== "pass") {
     return `the result read back is ${JSON.stringify(recorded)}`;
   }
@@ -860,7 +1999,7 @@ A result stands while its commit is the pull request's head.
     updated_at: new Date(Date.now() - 60_000).toISOString(),
     url: `https://github.com/${repo}/pull/7`,
   });
-  note(`published the opened envelope on ${opened}`);
+  note(`published the opened envelope on ${opened.subject}`);
   await record(a4Issue, {
     check: "a4",
     commit: commits.headOne,
@@ -868,7 +2007,13 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFirstHead = await awaitCommitStands(a4Issue, "a4", commits.headOne, "at_basis");
+  const atFirstHead = await awaitCommitStands(
+    a4Issue,
+    "a4",
+    commits.headOne,
+    "at_basis",
+    afterEvent(opened)
+  );
   note(`the commit of the result at ${commits.headOne.slice(0, 12)} stands ${atFirstHead}`);
   if (atFirstHead !== "at_basis") {
     return `the commit of the result at the first head stands ${atFirstHead}`;
@@ -892,8 +2037,14 @@ A result stands while its commit is the pull request's head.
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/7`,
   });
-  note(`published the synchronize envelope on ${pushed}`);
-  const moved = await awaitCommitStands(a4Issue, "a4", commits.headOne, "other_commit");
+  note(`published the synchronize envelope on ${pushed.subject}`);
+  const moved = await awaitCommitStands(
+    a4Issue,
+    "a4",
+    commits.headOne,
+    "other_commit",
+    afterEvent(pushed)
+  );
   note(`after the push the same result stands ${moved}, with no write of Dispatch's`);
   if (moved !== "other_commit") {
     return `the commit of the result at the first head stands ${moved} after the push`;
@@ -909,7 +2060,13 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atNewHead = await awaitCommitStands(a4Issue, "a4", commits.headTwo, "at_basis");
+  const atNewHead = await awaitCommitStands(
+    a4Issue,
+    "a4",
+    commits.headTwo,
+    "at_basis",
+    afterEvent(pushed)
+  );
   note(`the result at the new head ${commits.headTwo.slice(0, 12)} stands ${atNewHead}`);
   if (atNewHead !== "at_basis") return `the result at the new head stands ${atNewHead}`;
   const passAtNewHead = await passStandsOf(a4Issue, "a4");
@@ -947,7 +2104,7 @@ A result stands while its commit is the head of a pull request of this repositor
     updated_at: new Date(Date.now() - 60_000).toISOString(),
     url: `https://github.com/${repo}/pull/9`,
   });
-  note(`published the fork's envelope on ${forked}`);
+  note(`published the fork's envelope on ${forked.subject}`);
   await record(forkIssue, {
     check: "fork",
     commit: commits.fork,
@@ -955,12 +2112,19 @@ A result stands while its commit is the head of a pull request of this repositor
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFork = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
+  const atFork = await awaitCommitStands(
+    forkIssue,
+    "fork",
+    commits.fork,
+    "at_basis",
+    afterEvent(forked)
+  );
   note(`the commit of the result at the fork's head ${commits.fork.slice(0, 12)} stands ${atFork}`);
-  if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
+  if (atFork.startsWith("at_basis"))
+    return `a fork's pull request was taken for a basis (${atFork})`;
   const compared = await checkOf(forkIssue, "fork");
   note(
-    `the check compared with ${compared.compared_with.length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
+    `the check compared with ${(compared.compared_with ?? []).length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
   );
   if (compared.compared_nothing !== "no_pull_request_or_branch") {
     return `the check compared with nothing for ${JSON.stringify(compared.compared_nothing)}`;
@@ -983,8 +2147,14 @@ A result stands while its commit is the head of a pull request of this repositor
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/9`,
   });
-  note(`published the same pull request with its head in ${repo} on ${owned}`);
-  const atOwnHead = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
+  note(`published the same pull request with its head in ${repo} on ${owned.subject}`);
+  const atOwnHead = await awaitCommitStands(
+    forkIssue,
+    "fork",
+    commits.fork,
+    "at_basis",
+    afterEvent(owned)
+  );
   note(`the same result now stands ${atOwnHead}`);
   return atOwnHead === "at_basis"
     ? undefined
@@ -1016,9 +2186,8 @@ The pre-merge check runs before it.
     surface: "api",
   });
   note(`the after-merge result recorded: ${JSON.stringify(afterMerge.line)}`);
-  const check = await checkOf(a5Issue, "after");
-  if (check.results.length !== 1)
-    return `the after-merge check holds ${check.results.length} results, want 1`;
+  const held = (await checkOf(a5Issue, "after")).results ?? [];
+  if (held.length !== 1) return `the after-merge check holds ${held.length} results, want 1`;
 
   const { answer: beforeMerge } = await refusal("POST", issuePath(a5Issue, "/results"), {
     check: "before",
@@ -1107,11 +2276,11 @@ A result is recorded only at a commit the repository holds.
   if (!refused.error.includes(repo)) {
     return `the refusal does not name ${repo}: ${refused.error}`;
   }
-  const check = await checkOf(unheldIssue, "unheld");
-  note(`${unheldIssue} check unheld holds ${check.results.length} result(s)`);
-  return check.results.length === 0
+  const held = (await checkOf(unheldIssue, "unheld")).results ?? [];
+  note(`${unheldIssue} check unheld holds ${held.length} result(s)`);
+  return held.length === 0
     ? undefined
-    : `the refused result left ${check.results.length} row(s) under the check`;
+    : `the refused result left ${held.length} row(s) under the check`;
 });
 
 // The unreadable repository: Dispatch cannot say where the commit stands, so it answers unknown
@@ -1201,8 +2370,9 @@ A default-branch result is compared with the default branch alone.
     { head: commits.comparedHeadA, number: 21, ref: `legion/${basesIssue}` },
     { head: commits.comparedHeadA2, number: 22, ref: `legion/${basesIssue}-follow-up` },
   ];
+  const openedPulls = new Map<number, Published>();
   for (const pull of openPulls) {
-    await publishPullRequest({
+    const published = await publishPullRequest({
       action: "opened",
       base_ref: "main",
       body: `Proves ${basesIssue}.`,
@@ -1217,6 +2387,7 @@ A default-branch result is compared with the default branch alone.
       updated_at: new Date(Date.now() - 60_000).toISOString(),
       url: `https://github.com/${repo}/pull/${pull.number}`,
     });
+    openedPulls.set(pull.number, published);
   }
   // The deleted release branch holds no result commit. Its landing on main must hold the
   // issue's merge, and the result must hold that landing, not merely be a commit of main.
@@ -1277,11 +2448,15 @@ A default-branch result is compared with the default branch alone.
       surface: "api",
     });
   }
+  // A2 is pull request #22's head, so its answer is due 5 s after #22's event.
+  const openedA2 = openedPulls.get(22);
+  if (openedA2 === undefined) return "pull request #22 was not published";
   const atOwnHead = await awaitCommitStands(
     basesIssue,
     "before",
     commits.comparedHeadA2,
-    "at_basis"
+    "at_basis",
+    afterEvent(openedA2)
   );
   if (atOwnHead !== "at_basis") return `the result at A2 stands ${atOwnHead} before any read`;
 
@@ -1361,7 +2536,7 @@ A default-branch result is compared with the default branch alone.
     [commits.comparedHeadA, 21],
     [commits.comparedHeadA2, 22],
   ] as const) {
-    const result = before.results.find((row) => row.commit_sha === commit);
+    const result = (before.results ?? []).find((row) => row.commit_sha === commit);
     const stands = result === undefined ? "absent" : standsOf(result);
     const stood = result?.commit_stands?.basis;
     note(
@@ -1391,7 +2566,7 @@ A default-branch result is compared with the default branch alone.
   ) {
     return `the after_merge check compares with ${comparedOf(after)}`;
   }
-  const merged = after.results.find((row) => row.commit_sha === commits.comparedOnMain);
+  const merged = (after.results ?? []).find((row) => row.commit_sha === commits.comparedOnMain);
   const mergedStands = merged === undefined ? "absent" : standsOf(merged);
   const mergedBasis = merged?.commit_stands?.basis;
   if (mergedStands !== "at_basis" || mergedBasis?.branch !== "main") {
@@ -1422,7 +2597,7 @@ A default-branch result is compared with the default branch alone.
       if (bases.join(", ") !== `named ${named}`) {
         return `?at=${what}: check ${check.block_id} compares with ${comparedOf(check)}`;
       }
-      for (const result of check.results) {
+      for (const result of check.results ?? []) {
         const stands = standsOf(result);
         const wanted = result.commit_sha === named ? "at_basis" : "other_commit";
         if (stands !== wanted) {
@@ -1440,7 +2615,7 @@ A default-branch result is compared with the default branch alone.
   // not a read of Dispatch's. Nothing reads GitHub between the two reads, since the new head is
   // a head Dispatch holds.
   const movedAt = new Date(Date.now() + 60_000).toISOString();
-  await publishPullRequest({
+  const movedEvent = await publishPullRequest({
     action: "synchronize",
     base_ref: "main",
     body: `Proves ${basesIssue}.`,
@@ -1459,7 +2634,8 @@ A default-branch result is compared with the default branch alone.
     basesIssue,
     "before",
     commits.comparedHeadA,
-    "other_commit"
+    "other_commit",
+    afterEvent(movedEvent)
   );
   if (movedTo !== "other_commit") return `after the event the result at A stands ${movedTo}`;
   const afterMove = await checkOf(basesIssue, "before");
@@ -1548,7 +2724,7 @@ await runCase("after-merge-answer", async () => {
       "The build was checked.",
     ]);
     if (run.code !== 0) throw new Error(stepFailed(1, argv, run, 0));
-    const result = (await checkOf(issue, "newest")).results.find(
+    const result = ((await checkOf(issue, "newest")).results ?? []).find(
       (row) => row.verdict === verdict && row.commit_sha === commit
     );
     if (result === undefined) throw new Error(`the command stored no ${verdict} at ${commit}`);
@@ -1556,7 +2732,15 @@ await runCase("after-merge-answer", async () => {
   };
   await recordWithCommand("pass", commits.answerMerge);
   const failed = await recordWithCommand("fail", commits.answerLater);
-  const placed = await awaitCommitStands(issue, "newest", commits.answerLater, "at_basis");
+  // The later result is placed when a read computes where its commit stands, so the read waits for
+  // it as long as a head an event moves is waited for. With no deadline the wait read once.
+  const placed = await awaitCommitStands(
+    issue,
+    "newest",
+    commits.answerLater,
+    "at_basis",
+    Date.now() + headAfterEventMs
+  );
   if (placed !== "at_basis") return `the later result stands ${placed}`;
   const failureLine = `A pass stands: no, as the newest result is fail ${failed} at ${commits.answerLater}.`;
   const failedOutput = await resultsCommand(issue);
@@ -1609,16 +2793,22 @@ await runCase("deploy-recorded", async () => {
 
 // k-attribution. What decides a pull request's issue: the five ranked sources
 // (delivery/attribution.go), of which a person's link to the pull request's own URL ranks above
-// the head branch, and the head branch above a key in the title or the body. Five pull requests
+// the head branch, and the head branch above a key in the title or the body. Six pull requests
 // drive it: one its branch credits to a child while its title names the parent first, one its
-// body credits, one whose link beats its branch, one whose link beats its title, and two stored
-// rows of the rule before this build's, which the reconcile re-judges.
+// body credits, one whose link beats its branch, one whose link beats its title, and two rows
+// stored as the release before writes them, with no texts, which one pass reads and records again.
+//
+// This case drives the four pull requests of events, against the server that runs a pass every
+// two seconds. The intake stores the facts and the texts of each one at once, and the statement
+// gives its issue at each read. The phase k-attribution then stores the two rows of the release
+// before, and after one pass it reads the issue that each of the six rows records
+// (kAttributionFixture, kAttributionAfterOnePass).
 //
 // The case's negative controls are in it: the pull request whose body decides is on a branch
 // that names no issue, so the branch rule swallows no other source; the pull request a person
-// linked is on the child's own branch, so the link stands above it; and the last envelope moves
-// a head without moving its attribution, which appends no event, so an event marks a change and
-// never a pass.
+// linked is on the child's own branch, so the link stands above it and the child does not compare
+// with it; the issue a linked title names does not compare with it either; and the last envelope
+// moves a head and not its attribution, so the pass of the phase appends no event for it.
 await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   // A check's id must be one among the issue and the issues above it: a result naming an id the
   // child and the parent both carry is refused 409 CHECK_AMBIGUOUS, so each issue's check is
@@ -1673,39 +2863,44 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   const envelopes = [
     {
       body: `This carries part of ${parent}, and ${child} is the issue it closes.`,
+      check: "child",
       head: commits.attributionBranch,
       head_ref: `legion/${child}`,
+      issue: child,
       number: 41,
       title: `${parent} and ${child}: the child's pull request`,
-      want: `${child} by branch`,
     },
     {
       body: `This one proves ${bodied}.`,
+      check: "body",
       head: commits.attributionBody,
       head_ref: "work/no-key-in-this-branch",
+      issue: bodied,
       number: 42,
       title: "A pull request whose title names no issue",
-      want: `${bodied} by title_body`,
     },
     {
       body: "A person linked this pull request to an issue of its own.",
+      check: "link-over-branch",
       head: commits.attributionLinkOverBranch,
       head_ref: `legion/${child}`,
+      issue: linkedOverBranch,
       number: 43,
       title: "A pull request on the child's branch that a person linked elsewhere",
-      want: `${linkedOverBranch} by external_link`,
     },
     {
       body: "A person linked this pull request too.",
+      check: "link-over-title",
       head: commits.attributionLinkOverTitle,
       head_ref: "work/no-key-in-this-one-either",
+      issue: linkedOverTitle,
       number: 44,
       title: `${titled} is the issue this title names`,
-      want: `${linkedOverTitle} by external_link`,
     },
   ];
+  const publishedEnvelopes = new Map<number, Published>();
   for (const envelope of envelopes) {
-    await publishPullRequest({
+    const published = await publishPullRequest({
       action: "opened",
       base_ref: "main",
       body: envelope.body,
@@ -1720,13 +2915,44 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
       updated_at: new Date(Date.now() - 60_000).toISOString(),
       url: `https://github.com/${repo}/pull/${envelope.number}`,
     });
+    publishedEnvelopes.set(envelope.number, published);
   }
+  // The intake stores each pull request's facts and texts, and the reader of the check gives
+  // its issue from them, both within the bound of an event. The issue that a row records waits
+  // for a pass, which the phase reads.
   for (const envelope of envelopes) {
-    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule ${attributionRuleVersion})`;
-    const stored = await awaitStoredHead(envelope.number, wanted);
+    const published = publishedEnvelopes.get(envelope.number);
+    if (published === undefined) return `#${envelope.number} was not published`;
+    const facts = `open at ${envelope.head.slice(0, 12)}, texts stored`;
+    const stored = await awaitStoredHead(envelope.number, facts, afterEvent(published));
     note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
     note(`  is stored as ${stored}`);
-    if (stored !== wanted) return `#${envelope.number} is stored as ${stored}, want ${wanted}`;
+    if (!stored.endsWith(`(${facts})`)) {
+      return `#${envelope.number} is stored as ${stored}, want its facts (${facts})`;
+    }
+    const compared = await awaitComparedWith(
+      envelope.issue,
+      envelope.check,
+      envelope.head,
+      afterEvent(published)
+    );
+    note(`  ${envelope.issue} compares with ${compared.shown}`);
+    if (!compared.held) {
+      return `${envelope.issue} compares with ${compared.shown}, want the head of #${envelope.number}`;
+    }
+  }
+  // A person's link stands above the branch and the title: the child does not take the pull
+  // request on its branch that a person linked elsewhere, and the issue a title names does not
+  // take the pull request whose title names it.
+  for (const [issue, check, number, head] of [
+    [child, "child", 43, commits.attributionLinkOverBranch],
+    [titled, "title", 44, commits.attributionLinkOverTitle],
+  ] as const) {
+    const bases = await checkOf(issue, check);
+    note(`${issue} compares with ${comparedOf(bases)}`);
+    if ((bases.compared_with ?? []).some((basis) => basis.commit === head)) {
+      return `${issue} took the head of #${number}, which a person linked to another issue`;
+    }
   }
 
   // The child's own pull request answers for the child's checks and for none of the parent's.
@@ -1745,7 +2971,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     surface: "cli",
   });
   const childCheck = (await checksOf(child, commits.attributionBranch))[0];
-  const childStands = childCheck?.results.map(standsOf).join(", ") ?? "";
+  const childStands = (childCheck?.results ?? []).map(standsOf).join(", ");
   note(
     `${child} with ?at=${commits.attributionBranch.slice(0, 12)} compares with ${comparedOf(childCheck as CheckBlock)}, and its result stands ${childStands}`
   );
@@ -1768,69 +2994,10 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   note(`the parent's result at the child's head stands ${parentStands}`);
   if (parentStands !== "other_commit") return `the parent's result stands ${parentStands}`;
 
-  // Two stored rows the rule before this build's credited to the parent, which no route of
-  // Dispatch can write: every write stamps the rule this build judges by. The reconcile takes
-  // the open one because no read has reached it and the merged one because an older rule judged
-  // it, reads each pull request from GitHub, and moves both to the child the answer names.
-  await seedRepositories({
-    "45": {
-      head_repo: repo,
-      head_sha: commits.attributionStoredOpen,
-      merged: false,
-      state: "open",
-      title: `${child} the stored open pull request`,
-    },
-    "46": {
-      head_repo: repo,
-      head_sha: commits.attributionStoredMerged,
-      merged: true,
-      state: "closed",
-      title: `${child} the stored merged pull request`,
-    },
-  });
-  const stored = [
-    { head: commits.attributionStoredOpen, number: 45, state: "open" },
-    { head: commits.attributionStoredMerged, number: 46, state: "merged" },
-  ];
-  for (const row of stored) {
-    await sql(
-      `insert into pull_request_heads
-         (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-          title, url, attribution_rule)
-       values ('${repo}', ${row.number}, '${row.head}', 'legion/${child}', 'main', '${row.state}',
-          '${parent}', 'title_body', 'the stored pull request #${row.number}',
-          'https://github.com/${repo}/pull/${row.number}', 1)`
-    );
-    note(`#${row.number} is stored ${row.state}, credited to ${parent} by title_body under rule 1`);
-  }
-  for (const row of stored) {
-    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule ${attributionRuleVersion})`;
-    const seen = await awaitStoredHead(row.number, wanted);
-    note(`the reconcile re-judged #${row.number}: ${seen}`);
-    if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
-  }
-
-  // One pass re-judges both rows, in an order of the reconcile's own, so the moves are compared
-  // sorted: which of the two it read first says nothing about the rule.
-  const parentMoves = await awaitAttributionMoves(parent, 2);
-  for (const move of parentMoves) note(`${parent} records ${move}`);
-  const childMoves = await awaitAttributionMoves(child, 3);
-  for (const move of childMoves) note(`${child} records ${move}`);
-  const wantedMoves = [
-    `#45 ${parent} → ${child} by title_body`,
-    `#46 ${parent} → ${child} by title_body`,
-  ];
-  if ([...parentMoves].sort().join("; ") !== wantedMoves.join("; ")) {
-    return `${parent} records ${parentMoves.join("; ")}, want ${wantedMoves.join("; ")}`;
-  }
-  const wantedChild = [`#41 nobody → ${child} by branch`, ...wantedMoves];
-  if ([...childMoves].sort().join("; ") !== wantedChild.join("; ")) {
-    return `${child} records ${childMoves.join("; ")}, want ${wantedChild.join("; ")}`;
-  }
-
   // An attribution that does not move appends no event: the same pull request at a new head,
-  // credited to the child as before, is written and recorded nowhere.
-  await publishPullRequest({
+  // credited to the child as before. The one pass of the phase comes after this push, and appends
+  // the moves of the two stored rows alone.
+  const pushed = await publishPullRequest({
     action: "synchronize",
     base_ref: "main",
     body: `This carries part of ${parent}, and ${child} is the issue it closes.`,
@@ -1845,16 +3012,3343 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/41`,
   });
-  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule ${attributionRuleVersion})`;
-  const movedHead = await awaitStoredHead(41, wantedHead);
+  const movedFacts = `open at ${commits.attributionBranchMoved.slice(0, 12)}, texts stored`;
+  const movedHead = await awaitStoredHead(41, movedFacts, afterEvent(pushed));
   note(`#41 after the push is stored as ${movedHead}`);
-  if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;
-  const afterPush = await attributionMoves(child);
-  note(`${child} still records ${afterPush.length} move(s), the push among them appending none`);
-  return afterPush.length === childMoves.length
-    ? undefined
-    : `${child} records ${afterPush.length} moves after the push, want ${childMoves.length}`;
+  if (!movedHead.endsWith(`(${movedFacts})`)) {
+    return `#41 after the push is stored as ${movedHead}, want its facts (${movedFacts})`;
+  }
+  const afterPush = await awaitComparedWith(
+    child,
+    "child",
+    commits.attributionBranchMoved,
+    afterEvent(pushed)
+  );
+  note(`${child} compares with ${afterPush.shown}`);
+  if (!afterPush.held) {
+    return `${child} compares with ${afterPush.shown} after the push, want the new head of #41`;
+  }
+  const issues: AttributionIssues = {
+    bodied,
+    child,
+    linkedOverBranch,
+    linkedOverTitle,
+    parent,
+    titled,
+  };
+  writeFileSync(statePath, JSON.stringify({ ...readState(), "k-attribution": issues }));
+  return undefined;
 });
+
+/** The issues that the case k-attribution seeded, which its phase reads from the state file. */
+interface AttributionIssues {
+  readonly bodied: string;
+  readonly child: string;
+  readonly linkedOverBranch: string;
+  readonly linkedOverTitle: string;
+  readonly parent: string;
+  readonly titled: string;
+}
+
+/** The fixture of the phase k-attribution, which runs while no server runs: GitHub's answer for
+ *  each of the two stored rows, whose title names the child, and the two rows as the release before
+ *  writes them, credited to the parent by title_body, with no texts and no attribution_rule. No
+ *  route of Dispatch can write such a row: every write of this build stores the texts. */
+async function kAttributionFixture(): Promise<void> {
+  const { child, parent } = readState()["k-attribution"] as AttributionIssues;
+  await seedRepositories(
+    Object.fromEntries(
+      storedAttributionRows.map((row) => [
+        String(row.number),
+        {
+          head_repo: repo,
+          head_sha: row.head,
+          merged: row.merged,
+          state: row.merged ? "closed" : "open",
+          title: `${child} the stored ${row.state} pull request`,
+        },
+      ])
+    )
+  );
+  for (const row of storedAttributionRows) {
+    await sql(
+      `insert into pull_request_heads
+         (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source, title, url)
+       values ('${repo}', ${row.number}, '${row.head}', 'legion/${child}', 'main', '${row.state}',
+          '${parent}', 'title_body', 'the stored pull request #${row.number}',
+          'https://github.com/${repo}/pull/${row.number}')`
+    );
+    note(
+      `#${row.number} is stored ${row.state}, credited to ${parent} by title_body, with no texts`
+    );
+  }
+}
+
+/** The case of the phase k-attribution, after one pass: the issue and the source that each of
+ *  the six rows records, and its texts; the moves that the pass appended; and what
+ *  `dispatch attribution` and the pass's log line count. */
+async function kAttributionAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { bodied, child, linkedOverBranch, linkedOverTitle, parent } = readState()[
+    "k-attribution"
+  ] as AttributionIssues;
+  const short = (commit: string) => commit.slice(0, 12);
+  const wanted: (readonly [number, string])[] = [
+    [41, `${child} by branch (open at ${short(commits.attributionBranchMoved)}, texts stored)`],
+    [42, `${bodied} by title_body (open at ${short(commits.attributionBody)}, texts stored)`],
+    [
+      43,
+      `${linkedOverBranch} by external_link (open at ${short(commits.attributionLinkOverBranch)}, texts stored)`,
+    ],
+    [
+      44,
+      `${linkedOverTitle} by external_link (open at ${short(commits.attributionLinkOverTitle)}, texts stored)`,
+    ],
+    ...storedAttributionRows.map(
+      (row) =>
+        [
+          row.number,
+          `${child} by title_body (${row.state} at ${short(row.head)}, texts stored)`,
+        ] as const
+    ),
+  ];
+  for (const [number, want] of wanted) {
+    const seen = await storedHead(number);
+    note(`#${number} records ${seen}`);
+    if (seen !== want) return `#${number} records ${seen} after one pass, want ${want}`;
+  }
+
+  // The pass reads both stored rows and moves both, in an order of its own, so the moves are
+  // compared sorted. The push of #41 moved no attribution, so the pass appended no event of it.
+  const parentMoves = await attributionMoves(parent);
+  for (const move of parentMoves) note(`${parent} records ${move}`);
+  const childMoves = await attributionMoves(child);
+  for (const move of childMoves) note(`${child} records ${move}`);
+  const wantedMoves = storedAttributionRows.map(
+    (row) => `#${row.number} ${parent} → ${child} by title_body`
+  );
+  if ([...parentMoves].sort().join("; ") !== wantedMoves.join("; ")) {
+    return `${parent} records ${parentMoves.join("; ")}, want ${wantedMoves.join("; ")}`;
+  }
+  const wantedChild = [`#41 nobody → ${child} by branch`, ...wantedMoves];
+  if ([...childMoves].sort().join("; ") !== wantedChild.join("; ")) {
+    return `${child} records ${childMoves.join("; ")}, want ${wantedChild.join("; ")}`;
+  }
+
+  // The pass read the facts of the two stored rows: the open arm reads #45, which no read has
+  // checked, before the facts line starts, so facts_left_before counts #46 alone. The pass leaves
+  // no pull request with no facts, and none that a pass still reads.
+  const line = attributionLines().at(-1) ?? {};
+  note(
+    `the pass logged facts_left_before=${line.facts_left_before} facts_left=${line.facts_left} reads_left=${line.reads_left} events=${line.events}`
+  );
+  if (line.facts_left !== "0" || line.reads_left !== "0") {
+    return `the pass logged facts_left=${line.facts_left} and reads_left=${line.reads_left}, want 0 and 0`;
+  }
+  const counts = await attributionCounts();
+  note(
+    `dispatch attribution: ${counts.facts_left} pull request(s) wait for their facts, and a pass still reads ${counts.reads_left}`
+  );
+  return counts.facts_left === 0 && counts.reads_left === 0
+    ? undefined
+    : `dispatch attribution prints ${counts.facts_left} that wait for their facts and ${counts.reads_left} that a pass still reads, want 0 and 0`;
+}
+
+// --- the seven checks ----------------------------------------------------------------------------
+//
+// Seven cases of the attribution, each driven through the server, the `dispatch` command and the
+// fake GitHub, each around one complete pass (onePassPhases): older-rows, rule-reaches-each-row,
+// key-reading-changes, facts-only, read-compares, stores-agree and limit-of-one. Their issues are
+// in the project ATT (attributionProject), and their names in the comments (L1, B7, T7, F2, R2,
+// S3, ...) stand for the keys the server gave them, which the state file holds (sevenState). Each
+// case that wants no read of GitHub runs before stores-agree writes the delivery settings, since a
+// pass with settings reads GitHub for its other steps.
+
+/** What the seven checks leave for a later process of the driver, in the state file. */
+interface SevenChecksState {
+  /** older-rows: the keys of L0 to L5, N0 to N5 and D0 to D5. */
+  readonly olderRows?: {
+    readonly D: readonly string[];
+    readonly L: readonly string[];
+    readonly N: readonly string[];
+  };
+  /** rule-reaches-each-row: the keys of B0 to B99 and T0 to T99, and the steps made so far. */
+  readonly rule?: {
+    readonly B: readonly string[];
+    readonly T: readonly string[];
+    readonly linked?: boolean;
+    readonly moved?: boolean;
+    readonly newIssue?: string;
+    readonly nextKey?: string;
+  };
+  /** key-reading-changes: the reading `dispatch attribution` printed before the change, and how
+   *  many lines `dispatch delivery: keys remade` the log held then. */
+  readonly reading?: { readonly recorded: string; readonly remadeLines?: number };
+  /** facts-only: the keys of F1 and F2, and the checked_at the fixture moved #16001 back to. */
+  readonly factsOnly?: { readonly F1: string; readonly F2: string; readonly movedTo?: string };
+  /** read-compares: the keys of R1 and R2. */
+  readonly readCompares?: { readonly R1: string; readonly R2: string };
+  /** stores-agree: the keys of S1, S2 and S3. */
+  readonly storesAgree?: { readonly S1: string; readonly S2: string; readonly S3: string };
+}
+
+function sevenState(): SevenChecksState {
+  return (readState()["seven-checks"] ?? {}) as SevenChecksState;
+}
+
+/** Writes `change` over what the seven checks left in the state file. */
+function writeSevenState(change: SevenChecksState): void {
+  writeFileSync(
+    statePath,
+    JSON.stringify({ ...readState(), "seven-checks": { ...sevenState(), ...change } })
+  );
+}
+
+/** The part `key` of what the seven checks left, which an earlier phase wrote. */
+function sevenPart<K extends keyof SevenChecksState>(key: K): NonNullable<SevenChecksState[K]> {
+  const part = sevenState()[key];
+  if (part === undefined) throw new Error(`the state file holds no ${key}: its phase did not run`);
+  return part as NonNullable<SevenChecksState[K]>;
+}
+
+/** Seeds one issue of the project ATT for each of `names`, ten at a time, each with one
+ *  `before_merge` check `attribution`, and answers their keys in the order of `names`. */
+async function seedAttributionIssues(names: readonly string[]): Promise<string[]> {
+  const keys: string[] = [];
+  for (let at = 0; at < names.length; at += 10) {
+    keys.push(
+      ...(await Promise.all(
+        names
+          .slice(at, at + 10)
+          .map((name) =>
+            seedIssue(
+              attributionProject,
+              `The issue ${name} of the seven checks`,
+              checkFor(
+                "attribution",
+                "The issue's results are compared with the pull requests the attribution gives it."
+              )
+            )
+          )
+      ))
+    );
+  }
+  return keys;
+}
+
+/** What the check `attribution` of one issue names: the pull requests it compares with, those
+ *  whose head Dispatch has not read, those whose answer is not known, and the reason it compares
+ *  with nothing, empty where it compares with something. */
+interface CheckPulls {
+  readonly compared: readonly number[];
+  readonly notKnown: readonly number[];
+  readonly notRead: readonly number[];
+  readonly nothing: string;
+}
+
+/** Reads GET /api/v1/issues/{key}/results for each of `keys`, ten at a time. */
+async function checkPullsOf(keys: readonly string[]): Promise<Map<string, CheckPulls>> {
+  const answers = new Map<string, CheckPulls>();
+  for (let at = 0; at < keys.length; at += 10) {
+    const chunk = keys.slice(at, at + 10);
+    const checks = await Promise.all(chunk.map((key) => checkOf(key, "attribution")));
+    chunk.forEach((key, index) => {
+      const check = checks[index] as CheckBlock;
+      answers.set(key, {
+        compared: (check.compared_with ?? []).flatMap((basis) =>
+          basis.pull_request === undefined ? [] : [basis.pull_request]
+        ),
+        notKnown: (check.issues_not_known ?? []).map((entry) => entry.number),
+        notRead: (check.heads_not_read ?? []).map((head) => head.number),
+        nothing: check.compared_nothing ?? "",
+      });
+    });
+  }
+  return answers;
+}
+
+/** Each issue of `answers` whose check names pull request number n, by n: through compared_with,
+ *  and through heads_not_read where `withNotRead` is set. */
+function holdersOf(answers: Map<string, CheckPulls>, withNotRead = false): Map<number, string[]> {
+  const holders = new Map<number, string[]>();
+  for (const [key, pulls] of answers) {
+    for (const number of [...pulls.compared, ...(withNotRead ? pulls.notRead : [])]) {
+      holders.set(number, [...(holders.get(number) ?? []), key]);
+    }
+  }
+  return holders;
+}
+
+/** Each pull request from `first` to `last` whose issues in `answers` (by compared_with) are not
+ *  the one issue that `want` gives it, or none where `want` gives undefined, in the words
+ *  `#<n> under <issues>, want <issue>`. */
+function ownersDiffer(
+  answers: Map<string, CheckPulls>,
+  first: number,
+  last: number,
+  want: (number: number) => string | undefined
+): string[] {
+  const holders = holdersOf(answers);
+  const differ: string[] = [];
+  for (let number = first; number <= last; number++) {
+    const held = [...(holders.get(number) ?? [])].sort().join(" and ") || "no issue";
+    const wanted = want(number) ?? "no issue";
+    if (held !== wanted) differ.push(`#${number} under ${held}, want ${wanted}`);
+  }
+  return differ;
+}
+
+/** The reads of pull requests the fake answered for the repositories of the seven checks, and
+ *  for every repository, in the words of a note. */
+async function caseReads(): Promise<{ readonly count: number; readonly shown: string }> {
+  const count = await pullReads(attributionRepos);
+  const all = await pullReads();
+  return {
+    count,
+    shown: `the fake answered ${count} read(s) of pull requests of ${attributionRepos.join(", ")} since the fixture, and ${all} of every repository (each pass reads again the open pull requests of ${repo} that the earlier cases left)`,
+  };
+}
+
+/** The delivery settings a case writes through PUT /api/v1/settings/delivery, with `deployRepo` as
+ *  the deploy repository, whose permissions each pass checks. */
+function deliverySettings(deployRepo: string): Json {
+  return {
+    deploy_repo: deployRepo,
+    deploy_workflow_path: ".github/workflows/deploy.yml",
+    population_authors: ["octocat"],
+    pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+    production_job_names: ["deploy / deploy"],
+  };
+}
+
+/** The SQL array of the quoted `keys`, which a statement indexes from 1. */
+function sqlKeys(keys: readonly string[]): string {
+  return `array[${keys.map((key) => `'${key}'`).join(", ")}]`;
+}
+
+// --- older-rows ----------------------------------------------------------------------------------
+//
+// v-older-rows, on a database that the release before's build wrote (the shell's
+// older_rows_upgrade, which runs it before any other case). 300 merged pull requests #7001 to
+// #7300 (index i = n - 7000, j = i % 6), each on the branch legion/N(j) with the body
+// `Follows D(j). Closes L(j).` (#7051 to #7060: `Follows D(j).`), as GitHub answers them from the
+// start (olderRowsPull). The release before's build stores them itself, under delivery settings,
+// which its timeline rows need, and which its intake, before main's #5525, needs to take any event:
+//   - with the issues L(j) alone made and acme/old-name the project's default repository
+//     (setDefaultRepository, by the route its build serves), the merged events of #7221 to #7240
+//     under that name; then, with acme/attribution-live the project's default repository, the
+//     events of #7001 to #7220 and #7241 to #7260, under the name the repository has after its
+//     rename.
+//     Its intake stores each results row from its event with no texts, which it has nowhere to
+//     store, as L(j): the body names it, and no candidate above it names an issue, N(j) being
+//     none yet. It stores #7051 to #7060 as no issue. The author of #7001 to #7060 is of the
+//     settings' population, so the intake stores their timeline rows too, as L(j) or no issue;
+//   - then the issues D(j), and one pass of its reconcile. The pass resolves the timeline rows of
+//     #7001 to #7060 again from their stored inputs, whose first issue is now D(j), and leaves each
+//     merged results row as the rule of its day judged it. Its merged search finds #7261 to #7300
+//     and stores their timeline rows alone, as D(j);
+//   - then the issues N(j), which take the keys that the branches named before they existed
+//     (keysAfter, seedForetoldIssues).
+// Then, while no server runs, older-rows' fixture writes the rename pair, acme/old-name renamed to
+// acme/attribution-live, as a repo_projects row (olderRowsFixture). No route of either build
+// writes a pair: each server reads the pairs once, at its start (store.ReadRepoRenames), and
+// before it serves, its boot pass writes the new name of each pair in place of the old name in
+// every stored repository field (store.RewriteRenamedRepositories). The pair is written there,
+// after the release before's last start and before this checkout's first, so that this build is
+// the one that reads it. Had the release before's second start read it, that start's boot pass
+// would have rewritten #7221 to #7240 to the new name before this build ever started, and the
+// phase would show nothing of what this build does with the rows the release before stored under
+// a name a pair renames. Written here, the release before leaves those 20 rows as it stored them,
+// under the old name and L(j). This build's first start, the one with no pass at its start that
+// older-rows reads through before its pass (--phase older-rows-before), reads the pair, and its
+// boot pass rewrites those rows to the new name before it serves; each later start of older-rows
+// reads the pair again.
+// Before any pass, each results row's stored answer holds (L(j), or no issue over the timeline's
+// D(j)), #7221 to #7240 included, and D(j) names #7261 to #7300 as heads Dispatch has not read,
+// with no read of GitHub. One pass reads all 300 and leaves none to read, and each is then
+// N(j)'s, #7221 to #7240 with one results row each, under acme/attribution-live and with texts.
+// A second pass, after each stored issue is set back to L(j), reads GitHub for none and leaves
+// each under N(j).
+
+/** older-rows' issue of a list (L, N or D) for pull request `number`, by its index i % 6. */
+function olderRowsIssue(keys: readonly string[], number: number): string {
+  return keys[(number - 7000) % 6] ?? "";
+}
+
+/** The names of older-rows' six issues of one list: L0 to L5, N0 to N5 or D0 to D5. */
+function olderRowsNames(list: "D" | "L" | "N"): string[] {
+  return [0, 1, 2, 3, 4, 5].map((j) => `${list}${j}`);
+}
+
+/** older-rows' pull request `number` as GitHub answers it from the start of the case. Its author
+ *  is of the settings' population where a timeline row comes of it, and the merged search finds
+ *  #7261 to #7300. */
+function olderRowsPull(number: number): FakePullRequest {
+  const { D, L, N } = sevenPart("olderRows");
+  return {
+    author: number <= 7060 || number >= 7261 ? "octocat" : "implementer[bot]",
+    base_ref: "main",
+    body:
+      number >= 7051 && number <= 7060
+        ? `Follows ${olderRowsIssue(D, number)}.`
+        : `Follows ${olderRowsIssue(D, number)}. Closes ${olderRowsIssue(L, number)}.`,
+    commit_messages: [`Work on change ${number}.`],
+    head_ref: `legion/${olderRowsIssue(N, number)}`,
+    head_repo: attributionRepo,
+    head_sha: attributionSha(number),
+    merge_commit_sha: attributionSha(number, "e"),
+    merged: true,
+    searched: number >= 7261,
+    state: "closed",
+    title: `Change ${number}`,
+    updated_at: attributionUpdatedAt,
+  };
+}
+
+/** The merged event of older-rows' pull request `number` under the repository name `under`, as
+ *  GitHub sent it: GitHub's facts under the name the repository had then, at the time of the
+ *  merge, before which GitHub's later update time of the pull request lies. */
+function olderRowsEvent(number: number, under: string): Record<string, string> {
+  const pull = olderRowsPull(number);
+  return {
+    action: "closed",
+    author: pull.author ?? "",
+    base_ref: pull.base_ref ?? "main",
+    body: pull.body ?? "",
+    head_ref: pull.head_ref ?? "",
+    head_repo: under,
+    head_sha: pull.head_sha,
+    kind: "pr",
+    merge_commit_sha: pull.merge_commit_sha ?? "",
+    merged: "true",
+    number: String(number),
+    repo: under,
+    title: pull.title,
+    updated_at: releaseBeforeEventAt,
+    url: `https://github.com/${under}/pull/${number}`,
+  };
+}
+
+/** older-rows' settings probe `number` of acme/settings-probe as GitHub answers it: merged, by the
+ *  settings' population, as #7001 is, and naming no issue in its branch, title, body or commits. */
+function olderRowsProbe(number: number): FakePullRequest {
+  return {
+    ...olderRowsPull(7001),
+    body: "A probe of the delivery settings.",
+    commit_messages: ["A probe of the delivery settings."],
+    head_ref: `probe/settings-${number}`,
+    head_repo: olderRowsProbeRepo,
+    head_sha: attributionSha(number, "c"),
+    merge_commit_sha: attributionSha(number, "b"),
+    title: `Settings probe ${number}`,
+  };
+}
+
+/** The merged event of older-rows' settings probe `number`, as olderRowsEvent makes one. */
+function olderRowsProbeEvent(number: number): Record<string, string> {
+  const pull = olderRowsProbe(number);
+  return {
+    ...olderRowsEvent(7001, olderRowsProbeRepo),
+    body: pull.body ?? "",
+    head_ref: pull.head_ref ?? "",
+    head_sha: pull.head_sha,
+    merge_commit_sha: pull.merge_commit_sha ?? "",
+    number: String(number),
+    title: pull.title,
+    url: `https://github.com/${olderRowsProbeRepo}/pull/${number}`,
+  };
+}
+
+/** Answers whether `probe` answered true within `ms`, asking it every pollMs. */
+async function awaitTrue(probe: () => Promise<boolean>, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (await probe()) return true;
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(pollMs);
+  }
+}
+
+/** The keys that the next `count` issues of the project ATT take after `keys`, whose newest is the
+ *  newest key it gave. */
+function keysAfter(keys: readonly string[], count: number): string[] {
+  const newest = Math.max(...keys.map((key) => Number(key.slice(attributionProject.length + 1))));
+  return Array.from({ length: count }, (_, at) => `${attributionProject}-${newest + 1 + at}`);
+}
+
+/** Makes the issues `names` one after another, so each takes the next key of the project, and
+ *  answers a failure where one takes another key than `foretold` gives it. */
+async function seedForetoldIssues(
+  names: readonly string[],
+  foretold: readonly string[]
+): Promise<string | undefined> {
+  for (const [at, name] of names.entries()) {
+    const [made] = await seedAttributionIssues([name]);
+    if (made !== foretold[at]) {
+      return `the issue ${name} took ${made}, want ${foretold[at]}, the key that GitHub's answers name`;
+    }
+  }
+  return undefined;
+}
+
+/** The count that `statement` answers. */
+async function countOf(statement: string): Promise<number> {
+  return Number(await sql(statement));
+}
+
+/** older-rows, through the release before's build started with no pass at its start: the project
+ *  with acme/old-name its default repository, the issues L(j), GitHub's answers, the delivery
+ *  settings, the merged events of #7221 to #7240 under the old name, acme/attribution-live the
+ *  project's default repository, the events of #7001 to #7220 and #7241 to #7260 under that name,
+ *  and the issues D(j). It waits for the intake's bind and for each event's row. The keys of D(j)
+ *  and N(j) are foretold, since GitHub's answers name them before they exist. It writes no rename
+ *  pair: older-rows' fixture writes it, after the release before's last start (the section
+ *  above). */
+async function olderRowsReleaseWrites(): Promise<string | undefined> {
+  await asPerson("POST", "/api/v1/projects", { key: attributionProject, name: "Attribution" });
+  await setDefaultRepository(attributionProject, attributionOldName);
+  const L = await seedAttributionIssues(olderRowsNames("L"));
+  const D = keysAfter(L, 6);
+  const N = keysAfter(D, 6);
+  writeSevenState({ olderRows: { D, L, N } });
+  note(
+    `L0 to L5 are ${L.join(", ")}; GitHub's answers name ${D.join(", ")} for D0 to D5 and ${N.join(", ")} for N0 to N5, the keys the next issues take`
+  );
+  const pulls: Record<string, FakePullRequest> = {};
+  for (let number = 7001; number <= 7300; number++) pulls[String(number)] = olderRowsPull(number);
+  const permissions = { actions: "read", contents: "read", pull_requests: "read" };
+  await seedRepositories(
+    {},
+    {
+      [attributionRepo]: {
+        ...permissions,
+        commits: Object.values(sevenCommits),
+        default_branch: "main",
+        installation_id: attributionInstallation,
+        pulls,
+      },
+      [olderRowsDeployRepo]: {
+        ...permissions,
+        default_branch: "main",
+        installation_id: attributionInstallation,
+      },
+      [olderRowsProbeRepo]: {
+        ...permissions,
+        default_branch: "main",
+        installation_id: attributionInstallation,
+        pulls: Object.fromEntries(
+          Array.from({ length: olderRowsProbes }, (_, at) => [
+            String(at + 1),
+            olderRowsProbe(at + 1),
+          ])
+        ),
+      },
+    }
+  );
+  await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(olderRowsDeployRepo));
+  // A release before main's #5525 binds the intake's durable of pull request events only once
+  // delivery settings are saved, and one with it binds that durable as it starts, whatever the
+  // settings: either way the events go out once the durable is push-bound.
+  if (!(await awaitTrue(async () => (await eventsDurable())?.push_bound === true, 60_000))) {
+    return `the release before's intake had bound no durable of pull request events 60 s after its delivery settings: ${durableText(await eventsDurable())}`;
+  }
+  // The intake reads the settings from its cache, which a NOTIFY reloads after the PUT, so the bind
+  // alone does not show the settings read, and #7001 to #7060 get their timeline rows only through
+  // them. A probe's timeline row shows it: the driver sends one merged probe a second, each once,
+  // until one has its row. The cache holds the settings from then on.
+  const probed = () =>
+    countOf(`select count(*) from delivery_pull_requests where repo = '${olderRowsProbeRepo}'`);
+  let probes = 0;
+  while ((await probed()) === 0) {
+    if (probes === olderRowsProbes) {
+      return `the release before's intake wrote no timeline row of the ${olderRowsProbes} merged probes of ${olderRowsProbeRepo}, one a second after its delivery settings`;
+    }
+    probes++;
+    await publishEnvelope(olderRowsProbeEvent(probes));
+    await awaitTrue(async () => (await probed()) > 0, 1_000);
+  }
+  note(
+    `the delivery settings name ${olderRowsDeployRepo}; the release before's intake bound its durable, and holds the settings: ${await probed()} of the ${probes} merged probe(s) of ${olderRowsProbeRepo} sent has its timeline row`
+  );
+  // The probes are no older rows: a later pass of this build would read their facts, and the counts
+  // of older-rows are of #7001 to #7300 alone. Once every probe sent has its head row, the driver
+  // deletes their rows; their merged pulls are not in the merged search (searched is false).
+  if (
+    !(await awaitTrue(
+      async () =>
+        (await countOf(
+          `select count(*) from pull_request_heads where repo = '${olderRowsProbeRepo}'`
+        )) === probes,
+      30_000
+    ))
+  ) {
+    return `the release before stored a head row of fewer than the ${probes} probe(s) of ${olderRowsProbeRepo} sent`;
+  }
+  await sql(
+    `delete from delivery_pull_requests where repo = '${olderRowsProbeRepo}';
+     delete from pull_request_heads where repo = '${olderRowsProbeRepo}'`
+  );
+  const publish = async (first: number, last: number, under: string) => {
+    for (let number = first; number <= last; number++) {
+      await publishEnvelope(olderRowsEvent(number, under));
+    }
+  };
+  const stored = (under: string, first: number, last: number) =>
+    countOf(
+      `select count(*) from pull_request_heads where repo = '${under}' and number between ${first} and ${last}`
+    );
+  await publish(7221, 7240, attributionOldName);
+  if (
+    !(await awaitTrue(async () => (await stored(attributionOldName, 7221, 7240)) === 20, 120_000))
+  ) {
+    return `the release before stored ${await stored(attributionOldName, 7221, 7240)} of the 20 results rows of #7221 to #7240 under ${attributionOldName} within 120 s of their events`;
+  }
+  await setDefaultRepository(attributionProject, attributionRepo);
+  note(
+    `${attributionRepo}, the name of ${attributionOldName} after its rename, is the project's default repository`
+  );
+  await publish(7001, 7220, attributionRepo);
+  await publish(7241, 7260, attributionRepo);
+  const timeline = () =>
+    countOf(
+      `select count(*) from delivery_pull_requests where repo = '${attributionRepo}' and number between 7001 and 7060`
+    );
+  const settled = async () =>
+    (await stored(attributionRepo, 7001, 7260)) === 240 && (await timeline()) === 60;
+  if (!(await awaitTrue(settled, 300_000))) {
+    return `the release before stored ${await stored(attributionRepo, 7001, 7260)} of the 240 results rows under ${attributionRepo} and ${await timeline()} of the 60 timeline rows of #7001 to #7060 within 300 s of their events`;
+  }
+  const rows = await sql(
+    `select coalesce(issue_key, 'no issue') || ' by ' || attribution_source || ': ' || count(*)
+     from pull_request_heads where number between 7001 and 7300 group by issue_key, attribution_source
+     order by 1`
+  );
+  note(`the release before stored 260 results rows with no texts: ${rows.replaceAll("\n", "; ")}`);
+  const failure = await seedForetoldIssues(olderRowsNames("D"), D);
+  if (failure !== undefined) return failure;
+  note(`D0 to D5 are ${D.join(", ")}`);
+  await prepareOnePass();
+  return undefined;
+}
+
+/** older-rows, through the release before's build started again with one pass at its start: that
+ *  pass; the results rows and the timeline rows it leaves, each as the section above says, #7221
+ *  to #7240 still under the old name, since neither start of the release before read a rename
+ *  pair; then the issues N(j). */
+async function olderRowsReleasePass(): Promise<string | undefined> {
+  note(await awaitOnePass(0, false));
+  const { D, L, N } = sevenPart("olderRows");
+  const read = async (statement: string) =>
+    new Map(
+      (await sql(statement))
+        .split("\n")
+        .filter((row) => row !== "")
+        .map((row) => {
+          const [number = "", answer = ""] = row.split("|");
+          return [Number(number), answer] as const;
+        })
+    );
+  const results = await read(
+    `select number, repo || ' ' || coalesce(issue_key, 'no issue') from pull_request_heads
+     where number between 7001 and 7300`
+  );
+  const timeline = await read(
+    `select number, coalesce(issue_key, 'no issue') from delivery_pull_requests
+     where repo = '${attributionRepo}' and number between 7001 and 7300`
+  );
+  const differ: string[] = [];
+  for (let number = 7001; number <= 7300; number++) {
+    const under = number >= 7221 && number <= 7240 ? attributionOldName : attributionRepo;
+    const stored = number >= 7051 && number <= 7060 ? "no issue" : olderRowsIssue(L, number);
+    const wanted = [
+      ["results row", results.get(number), number <= 7260 ? `${under} ${stored}` : undefined],
+      [
+        "timeline row",
+        timeline.get(number),
+        number <= 7060 || number >= 7261 ? olderRowsIssue(D, number) : undefined,
+      ],
+    ] as const;
+    for (const [row, got, want] of wanted) {
+      if (got !== want) differ.push(`#${number} ${row} ${got ?? "none"}, want ${want ?? "none"}`);
+    }
+  }
+  note(
+    `after the release before's pass: ${results.size} results rows and ${timeline.size} timeline rows of #7001 to #7300; ${differ.length} differ from what the release before writes`
+  );
+  if (differ.length > 0) {
+    return `the release before's build left ${differ.length} row(s) of older-rows other than it writes them: ${differ.slice(0, 5).join("; ")}`;
+  }
+  const failure = await seedForetoldIssues(olderRowsNames("N"), N);
+  if (failure !== undefined) return failure;
+  note(`N0 to N5 are ${N.join(", ")}`);
+  return undefined;
+}
+
+/** older-rows' fixture, while no server runs: the rename pair acme/old-name to
+ *  acme/attribution-live, as a repo_projects row with a renamed_to, the form in which the route
+ *  of an earlier release stored a pair; and the fake's count of reads set to 0. The next start,
+ *  this build's first on the database, reads the pair (store.ReadRepoRenames), and its boot pass
+ *  rewrites the 20 rows that the release before stored under the old name before it serves. The
+ *  section above says why the pair is written here and not before the release before's second
+ *  start. */
+async function olderRowsFixture(): Promise<void> {
+  await sql(
+    `insert into repo_projects (repo, project, created_by, renamed_to)
+     values ('${attributionOldName}', '${attributionProject}',
+       jsonb_build_object('kind', 'session', 'id', '${session}'), '${attributionRepo}')`
+  );
+  note(
+    `older-rows: ${attributionOldName} is renamed to ${attributionRepo} in repo_projects, which this build's next start reads`
+  );
+  await resetPullReads();
+}
+
+/** older-rows, before any pass, through a server that runs no pass: each pull request
+ *  with a results row is a basis of the issue that row stores, or of none, #7221 to #7240 too,
+ *  which that start's boot pass rewrote from the old name; D(j) names its pull requests with a
+ *  timeline row alone as heads Dispatch has not read; and no read of GitHub. */
+async function olderRowsBeforeThePass(): Promise<string | undefined> {
+  const { D, L, N } = sevenPart("olderRows");
+  const answers = await checkPullsOf([...L, ...N, ...D]);
+  const stored = (number: number) =>
+    number <= 7260 && (number < 7051 || number > 7060) ? olderRowsIssue(L, number) : undefined;
+  for (let number = 7001; number <= 7260; number++) {
+    const key = stored(number);
+    if (key !== undefined && !answers.get(key)?.compared.includes(number)) {
+      const j = (number - 7000) % 6;
+      return `#${number} is not a basis of L${j} before its read (L${j} is ${key}, which compares with ${answers.get(key)?.compared.length ?? 0} pull request(s))`;
+    }
+  }
+  const differ = ownersDiffer(answers, 7001, 7300, stored);
+  note(
+    `before the pass: each of #7001 to #7260 is a basis of the issue its results row stores, or of none; ${differ.length} of the 300 pull requests are under another issue`
+  );
+  if (differ.length > 0) {
+    return `${differ.length} pull request(s) are under another issue before their read: ${differ.slice(0, 5).join("; ")}`;
+  }
+  const [newNameRows, oldNameRows] = (
+    await sql(
+      `select count(*) filter (where repo = '${attributionRepo}'),
+         count(*) filter (where repo = '${attributionOldName}')
+       from pull_request_heads where number between 7221 and 7240`
+    )
+  ).split("|");
+  note(
+    `#7221 to #7240 after the boot pass of this build's first start: ${newNameRows} results row(s) under ${attributionRepo}, ${oldNameRows} under ${attributionOldName}`
+  );
+  for (const [j, key] of D.entries()) {
+    const wanted: number[] = [];
+    for (let number = 7261; number <= 7300; number++) {
+      if ((number - 7000) % 6 === j) wanted.push(number);
+    }
+    const notRead = [...(answers.get(key)?.notRead ?? [])].sort((a, b) => a - b);
+    if (notRead.join(",") !== wanted.join(",")) {
+      return `D${j} (${key}) names heads_not_read ${notRead.join(", ") || "none"}, want ${wanted.join(", ")}`;
+    }
+    const printed = await resultsCommand(key);
+    const head = commandHeadLines(printed)[0] ?? "";
+    const named = [
+      ...printed.matchAll(/^ {2}Not read yet: the head of pull request #(\d+)\.$/gm),
+    ].map((match) => Number(match[1]));
+    note(`dispatch results --issue ${key} (D${j}): ${head}`);
+    note(`  and ${named.length} line(s) Not read yet: the head of pull request #N.`);
+    for (const words of [
+      "Compared with nothing: Dispatch has not read the head of a pull request of this issue yet.",
+      "A pass stands: not known.",
+    ]) {
+      if (!head.includes(words)) {
+        return `dispatch results --issue ${key} (D${j}) prints ${JSON.stringify(head)}, want ${JSON.stringify(words)}`;
+      }
+    }
+    if ([...named].sort((a, b) => a - b).join(",") !== wanted.join(",")) {
+      return `dispatch results --issue ${key} (D${j}) names ${named.join(", ") || "no pull request"} in Not read yet: the head of pull request #N., want ${wanted.join(", ")}`;
+    }
+  }
+  const reads = await caseReads();
+  note(reads.shown);
+  return reads.count === 0
+    ? undefined
+    : `the reads before the pass asked GitHub for ${reads.count} read(s) of pull requests, want 0`;
+}
+
+/** older-rows, after one pass: the pass's counts, which leave nothing to read; each pull request
+ *  N(i % 6)'s; and one results row of each of #7221 to #7240, under the case's repository, with
+ *  texts, and none under the old name. */
+async function olderRowsAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const line = attributionLines().at(-1) ?? {};
+  note(
+    `the pass logged facts_left_before=${line.facts_left_before} facts_left=${line.facts_left} reads_left=${line.reads_left} facts_refused=${line.facts_refused}`
+  );
+  for (const [field, want] of [
+    ["facts_left_before", "300"],
+    ["facts_left", "0"],
+    ["reads_left", "0"],
+    ["facts_refused", "0"],
+  ] as const) {
+    if (line[field] !== want) return `${field} is ${line[field]} after one pass, want ${want}`;
+  }
+  const counts = await attributionCounts();
+  note(
+    `dispatch attribution: ${counts.facts_left} pull request(s) wait for their facts, and a pass still reads ${counts.reads_left}`
+  );
+  if (counts.facts_left !== 0 || counts.reads_left !== 0) {
+    return `dispatch attribution prints ${counts.facts_left} that wait for their facts and ${counts.reads_left} that a pass still reads, want 0 and 0`;
+  }
+  const failure = await olderRowsUnderN("after one pass");
+  if (failure !== undefined) return failure;
+  const [canonical, oldName] = (
+    await sql(
+      `select count(*) filter (where h.repo = '${attributionRepo}' and exists (select 1 from
+           pull_request_texts t where t.repo = h.repo and t.number = h.number)),
+         count(*) filter (where h.repo = '${attributionOldName}')
+       from pull_request_heads h where h.number between 7221 and 7240`
+    )
+  ).split("|");
+  note(
+    `#7221 to #7240: ${canonical} results row(s) with texts under ${attributionRepo}, ${oldName} under ${attributionOldName}`
+  );
+  return canonical === "20" && oldName === "0"
+    ? undefined
+    : `#7221 to #7240 hold ${canonical} results row(s) with texts under ${attributionRepo} and ${oldName} under ${attributionOldName}, want 20 and 0`;
+}
+
+/** older-rows: each of the 300 pull requests is N(i % 6)'s, and no other issue's. */
+async function olderRowsUnderN(step: string): Promise<string | undefined> {
+  const { D, L, N } = sevenPart("olderRows");
+  const differ = ownersDiffer(await checkPullsOf([...L, ...N, ...D]), 7001, 7300, (number) =>
+    olderRowsIssue(N, number)
+  );
+  note(`${step}: ${300 - differ.length} of the 300 pull requests are under N(i % 6)`);
+  return differ.length === 0
+    ? undefined
+    : `${step}, ${differ.length} pull request(s) are not under N(i % 6): ${differ.slice(0, 5).join("; ")}`;
+}
+
+/** older-rows' second fixture: each of the 300 rows stored as L(i % 6) again. */
+async function olderRowsSetBack(): Promise<void> {
+  const { L } = sevenPart("olderRows");
+  const set = await sql(
+    `with set as (update pull_request_heads set issue_key = (${sqlKeys(L)})[(number - 7000) % 6 + 1]
+       where repo = '${attributionRepo}' and number between 7001 and 7300 returning 1)
+     select count(*) from set`
+  );
+  note(`older-rows: ${set} rows stored as L(i % 6) again`);
+  await resetPullReads();
+}
+
+/** older-rows, after the second pass: each pull request N(i % 6)'s, with no read of GitHub. */
+async function olderRowsAfterTheSetBack(pass: string): Promise<string | undefined> {
+  note(pass);
+  const failure = await olderRowsUnderN("after the rows are set back and one more pass");
+  if (failure !== undefined) return failure;
+  const reads = await caseReads();
+  note(reads.shown);
+  return reads.count === 0
+    ? undefined
+    : `the pass after the set-back asked GitHub for ${reads.count} read(s) of pull requests, want 0`;
+}
+
+// --- rule-reaches-each-row -----------------------------------------------------------------------
+//
+// v-rule-reaches-each-row. 5,000 merged pull requests #10001 to #15000 (k = (n - 10000) % 100) on
+// the branch legion/<B(k) in lower case>, with the body `Follows T(k). Work of B(k).`, each with a
+// results row stored as T(k) and its texts (with no texts table, the build before it, a results
+// row stored as T(k) by attribution rule 2). The branch ranks above the body, so the rule gives
+// each one to B(k) at the read, with no read of GitHub, whatever its row stores. Three more
+// phases: a person links T7 to #10107, B8 moves to a second repository, and a person
+// makes the issue that the branch of a new pull request #15001 names. Each reads every B(k) and
+// T(k) again, and none reads GitHub.
+
+/** The issue the rule gives pull request `number` of rule-reaches-each-row, after the steps that
+ *  `rule` records; on the second reading (`readingB`), a branch in lower case names nothing. */
+function ruleOwner(
+  rule: NonNullable<SevenChecksState["rule"]>,
+  number: number,
+  readingB: boolean
+): string | undefined {
+  const k = (number - 10000) % 100;
+  if (rule.linked === true && number === 10107) return rule.T[7];
+  if (readingB || (rule.moved === true && k === 8)) return rule.T[k];
+  return rule.B[k];
+}
+
+/** rule-reaches-each-row, before its fixture: the issues B0 to B99 and T0 to T99. */
+async function ruleIssues(): Promise<string | undefined> {
+  const hundred = Array.from({ length: 100 }, (_, k) => k);
+  const B = await seedAttributionIssues(hundred.map((k) => `B${k}`));
+  const T = await seedAttributionIssues(hundred.map((k) => `T${k}`));
+  writeSevenState({ rule: { B, T } });
+  note(`B0 to B99 are ${B[0]} to ${B[99]}; T0 to T99 are ${T[0]} to ${T[99]}`);
+  return undefined;
+}
+
+/** rule-reaches-each-row's fixture, while no server runs: GitHub's answer for the 5,000 pull
+ *  requests, and their rows. Each row holds GitHub's merge commit and time where the build's table
+ *  has the columns (mergeColumnsExist), as a read of GitHub writes a merged row: the case's reads
+ *  are the rule's, and a row holding no time of merge would have each results read that orders the
+ *  issue's merges ask GitHub for it. */
+async function ruleFixture(): Promise<void> {
+  const { B, T } = sevenPart("rule");
+  const pulls: Record<string, FakePullRequest> = {};
+  for (let number = 10001; number <= 15000; number++) {
+    const k = (number - 10000) % 100;
+    pulls[String(number)] = {
+      base_ref: "main",
+      body: `Follows ${T[k]}. Work of ${B[k]}.`,
+      commit_messages: [`Work on change ${number}.`],
+      head_ref: `legion/${String(B[k]).toLowerCase()}`,
+      head_repo: attributionRepo,
+      head_sha: attributionSha(number),
+      merge_commit_sha: attributionSha(number, "e"),
+      merged: true,
+      state: "closed",
+      title: `Change ${number}`,
+      updated_at: attributionUpdatedAt,
+    };
+  }
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: { ...seeded.pulls, ...pulls },
+  }));
+  const texts = await textsTableExists();
+  const merges = await mergeColumnsExist();
+  const k = "(n - 10000) % 100 + 1";
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
+       attribution_source, title, url, event_at, checked_at, github_read_at${texts ? "" : ", attribution_rule"}${merges ? ", merge_commit_sha, merged_at" : ""})
+     select '${attributionRepo}', n, lpad(to_hex(n), 40, 'f'), 'legion/' || lower((${sqlKeys(B)})[${k}]),
+       'main', 'merged', (${sqlKeys(T)})[${k}], 'title_body', 'Change ' || n,
+       'https://github.com/${attributionRepo}/pull/' || n, '${attributionUpdatedAt}', now(), now()${texts ? "" : ", 2"}${merges ? `, lpad(to_hex(n), 40, 'e'), '${attributionUpdatedAt}'` : ""}
+     from generate_series(10001, 15000) n`
+  );
+  if (texts) {
+    await sql(
+      `insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title,
+         body, commit_messages, updated_at)
+       select h.repo, h.number, h.head_sha, h.head_ref, h.repo, h.base_ref, h.title,
+         'Follows ' || (${sqlKeys(T)})[(h.number - 10000) % 100 + 1] || '. Work of '
+           || (${sqlKeys(B)})[(h.number - 10000) % 100 + 1] || '.',
+         array['Work on change ' || h.number || '.'], h.event_at
+       from pull_request_heads h where h.repo = '${attributionRepo}' and h.number between 10001 and 15000`
+    );
+  }
+  note(
+    texts
+      ? "rule-reaches-each-row: 5,000 results rows stored as T(k), each with its texts, which the trigger keys"
+      : "rule-reaches-each-row: no texts table (a build before it): 5,000 results rows stored as T(k) by attribution rule 2, with no texts"
+  );
+  await resetPullReads();
+}
+
+/** rule-reaches-each-row, at the boundary of a pass after `step`. */
+async function ruleAtTheBoundary(pass: string, step: string): Promise<string | undefined> {
+  note(pass);
+  return ruleReads(step, false);
+}
+
+/** The reads of rule-reaches-each-row after `step`: each B(k) and T(k), and the new issue where
+ *  it exists, through GET /api/v1/issues/{key}/results; B0, B50 and T0 through `dispatch results`;
+ *  and the fake's count of reads, which must be 0. Each pull request must be the issue's that
+ *  ruleOwner gives. A failure names the counts under B0 to B99 and under T0 to T99, and the reads. */
+async function ruleReads(step: string, readingB: boolean): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  const answers = await checkPullsOf([
+    ...rule.B,
+    ...rule.T,
+    ...(rule.newIssue === undefined ? [] : [rule.newIssue]),
+  ]);
+  const reads = await caseReads();
+  const holders = holdersOf(answers);
+  const under = (keys: readonly string[]) => {
+    let count = 0;
+    for (let number = 10001; number <= 15000; number++) {
+      if ((holders.get(number) ?? []).some((key) => keys.includes(key))) count++;
+    }
+    return count;
+  };
+  const [underB, underT] = [under(rule.B), under(rule.T)];
+  const differ = ownersDiffer(answers, 10001, 15000, (number) => ruleOwner(rule, number, readingB));
+  note(
+    `after ${step}: ${underB} of the 5,000 pull requests are under B0 to B99 and ${underT} under T0 to T99; ${differ.length} differ from the rule`
+  );
+  note(reads.shown);
+  if (differ.length > 0) {
+    return `after ${step}, ${underT} of 5000 pull requests are under T0 to T99 and ${underB} under B0 to B99 at the boundary, and the fake answered ${reads.count} read(s) of pull requests; ${differ.length} differ from the rule, the first: ${differ.slice(0, 5).join("; ")}`;
+  }
+  for (const [name, key] of [
+    ["B0", rule.B[0]],
+    ["B50", rule.B[50]],
+    ["T0", rule.T[0]],
+  ] as const) {
+    const head = commandHeadLines(await resultsCommand(String(key)))[0] ?? "";
+    const named = [...head.matchAll(/the head of pull request #(\d+)/g)]
+      .map((match) => Number(match[1]))
+      .filter((number) => number >= 10001 && number <= 15000)
+      .sort((a, b) => a - b);
+    const wanted: number[] = [];
+    for (let number = 10001; number <= 15000; number++) {
+      if (ruleOwner(rule, number, readingB) === key) wanted.push(number);
+    }
+    note(
+      `dispatch results --issue ${key} (${name}) compares with ${named.length} of the pull requests`
+    );
+    if (named.join(",") !== wanted.join(",")) {
+      return `after ${step}, dispatch results --issue ${key} (${name}) compares with ${named.length} of the pull requests, want ${wanted.length}: ${JSON.stringify(head.slice(0, 300))}`;
+    }
+  }
+  return reads.count === 0
+    ? undefined
+    : `after ${step}, the pass and the reads asked GitHub for ${reads.count} read(s) of pull requests, want 0`;
+}
+
+/** rule-reaches-each-row: a person links T7 to #10107. */
+async function ruleLink(): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  await asPerson("PATCH", issuePath(String(rule.T[7])), {
+    external_links: [{ url: `https://github.com/${attributionRepo}/pull/10107` }],
+  });
+  writeSevenState({ rule: { ...rule, linked: true } });
+  note(`a person linked ${rule.T[7]} (T7) to ${attributionRepo}#10107, which B7's branch names`);
+  return undefined;
+}
+
+/** rule-reaches-each-row: B8 moves to a second repository, which it names as its own repository
+ *  (any owner/name is one), so its branch key holds no pull request of the project's default
+ *  repository, and the body gives T8 its 50 pull requests. */
+async function ruleMove(): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  await asPerson("PATCH", issuePath(String(rule.B[8])), { repo: attributionSecondRepo });
+  writeSevenState({ rule: { ...rule, moved: true } });
+  note(`${rule.B[8]} (B8) moved to ${attributionSecondRepo}`);
+  return undefined;
+}
+
+/** rule-reaches-each-row: the probe issue, whose key gives the next number of the project. */
+async function ruleProbe(): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  const probe = String(
+    (
+      (await asPerson("POST", "/api/v1/issues", {
+        force: true,
+        project: attributionProject,
+        title: "The probe that reads the next number of the project",
+      })) as Json
+    ).key
+  );
+  const number = Number(probe.slice(attributionProject.length + 1));
+  const nextKey = `${attributionProject}-${number + 1}`;
+  writeSevenState({ rule: { ...rule, nextKey } });
+  note(`the probe issue is ${probe}, so the next issue of ${attributionProject} is ${nextKey}`);
+  return undefined;
+}
+
+/** rule-reaches-each-row's last fixture: pull request #15001, whose branch names the key of the
+ *  issue nobody has made yet, in lower case as the other branches are written. Its row holds its
+ *  merge commit and time where the table has the columns, as ruleFixture's rows do. */
+async function ruleNewIssuePull(): Promise<void> {
+  const { nextKey } = sevenPart("rule");
+  const branch = `legion/${String(nextKey).toLowerCase()}`;
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: {
+      ...seeded.pulls,
+      "15001": {
+        base_ref: "main",
+        body: "A change whose body names no issue.",
+        commit_messages: ["Work on change 15001."],
+        head_ref: branch,
+        head_repo: attributionRepo,
+        head_sha: attributionSha(15001),
+        merge_commit_sha: attributionSha(15001, "e"),
+        merged: true,
+        state: "closed",
+        title: "Change 15001",
+        updated_at: attributionUpdatedAt,
+      },
+    },
+  }));
+  const merges = await mergeColumnsExist();
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state,
+       attribution_source, title, url, event_at, checked_at, github_read_at${merges ? ", merge_commit_sha, merged_at" : ""})
+     values ('${attributionRepo}', 15001, '${attributionSha(15001)}', '${branch}', 'main', 'merged',
+       'none', 'Change 15001', 'https://github.com/${attributionRepo}/pull/15001',
+       '${attributionUpdatedAt}', now(), now()${merges ? `, '${attributionSha(15001, "e")}', '${attributionUpdatedAt}'` : ""})`
+  );
+  if (await textsTableExists()) {
+    await sql(
+      `insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title,
+         body, commit_messages, updated_at)
+       values ('${attributionRepo}', 15001, '${attributionSha(15001)}', '${branch}',
+         '${attributionRepo}', 'main', 'Change 15001', 'A change whose body names no issue.',
+         array['Work on change 15001.'], '${attributionUpdatedAt}')`
+    );
+  }
+  note(`#15001 is stored on ${branch}, whose key no issue holds yet`);
+  await resetPullReads();
+}
+
+/** rule-reaches-each-row, after its last pass: a person makes the issue the branch of #15001
+ *  names, which must take the key the probe foretold, and that issue compares with #15001. */
+async function ruleNewIssue(pass: string): Promise<string | undefined> {
+  note(pass);
+  const rule = sevenPart("rule");
+  const [made] = await seedAttributionIssues(["the issue a branch names"]);
+  note(`a person made ${made}`);
+  if (made !== rule.nextKey) {
+    return `the new issue is ${made}, want ${rule.nextKey}, the key the branch of #15001 names`;
+  }
+  writeSevenState({ rule: { ...rule, newIssue: made } });
+  const [pulls] = (await checkPullsOf([made])).values();
+  note(
+    `${made} compares with ${pulls?.compared.map((number) => `#${number}`).join(", ") || "nothing"}`
+  );
+  if (pulls?.compared.join(",") !== "15001") {
+    return `${made} compares with ${pulls?.compared.join(", ") || "nothing"}, want #15001, whose branch names it`;
+  }
+  return ruleReads("a new issue that a stored branch names", false);
+}
+
+// --- key-reading-changes -------------------------------------------------------------------------
+//
+// v-key-reading-changes, on 5,000 pull requests of its own that the server under test stores:
+// #20001 to #25000 (k = (n - 20000) % 100), merged, on the branch legion/<B(k) in lower case> with
+// the body `Follows T(k). Work of B(k).`, as rule-reaches-each-row's are. The shell starts the
+// server with its reconcile every 2 seconds (one_pass_phase --store-every-2s). The driver
+// publishes their merged events; the server's intake takes each and reads it from GitHub, and its
+// passes read each once more by the batched query, which reads the commit messages too. So a
+// negative control's build stores them as that build stores any pull request. Then, with the
+// server down, the driver applies fixtures/attribution_reading_b.sql, a second reading on which a
+// branch in lower case names nothing. At the boundary of one pass the reading differs from the one
+// recorded before, and each of the 5,000 is T(k)'s and no B(k)'s, with no read of GitHub: the
+// statement computes the keys of each row on another reading from its texts. rule-reaches-each-
+// row's 5,000 rows are T(k)'s too. Then the key remake loop writes the keys again.
+
+/** key-reading-changes' pull request `number` as GitHub answers it. */
+function readingPull(number: number): FakePullRequest {
+  const { B, T } = sevenPart("rule");
+  const k = (number - 20000) % 100;
+  return {
+    base_ref: "main",
+    body: `Follows ${T[k]}. Work of ${B[k]}.`,
+    commit_messages: [`Work on change ${number}.`],
+    head_ref: `legion/${String(B[k]).toLowerCase()}`,
+    head_repo: attributionRepo,
+    head_sha: attributionSha(number),
+    merge_commit_sha: attributionSha(number, "e"),
+    merged: true,
+    state: "closed",
+    title: `Change ${number}`,
+    updated_at: attributionUpdatedAt,
+  };
+}
+
+/** key-reading-changes, before its fixture, through the server started with its reconcile every 2
+ *  seconds: GitHub's answers for its 5,000 pull requests and their merged events; the wait until
+ *  the intake has stored each, and then until each has texts whose commit messages are read, or
+ *  until no texts row of the 5,000 lacks its messages and the passes have read the 5,000 by the
+ *  batched query; and the reading `dispatch attribution` prints. Each wait gives up after 600 s and
+ *  fails the case then: a build that stores no rows does, and so does one that stores texts and
+ *  never their messages. */
+async function readingStored(): Promise<string | undefined> {
+  const pulls: Record<string, FakePullRequest> = {};
+  for (let number = readingFirst; number <= readingLast; number++) {
+    pulls[String(number)] = readingPull(number);
+  }
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: { ...seeded.pulls, ...pulls },
+  }));
+  await resetPullReads();
+  for (const [number, pull] of Object.entries(pulls)) {
+    await publishEnvelope({
+      action: "closed",
+      base_ref: pull.base_ref ?? "main",
+      body: pull.body ?? "",
+      head_ref: pull.head_ref ?? "",
+      head_repo: pull.head_repo,
+      head_sha: pull.head_sha,
+      kind: "pr",
+      merge_commit_sha: pull.merge_commit_sha ?? "",
+      merged: "true",
+      number,
+      repo: attributionRepo,
+      title: pull.title,
+      updated_at: pull.updated_at ?? attributionUpdatedAt,
+      url: `https://github.com/${attributionRepo}/pull/${number}`,
+    });
+  }
+  const range = `repo = '${attributionRepo}' and number between ${readingFirst} and ${readingLast}`;
+  const stored = () => countOf(`select count(*) from pull_request_heads where ${range}`);
+  if (!(await awaitTrue(async () => (await stored()) === 5000, 600_000))) {
+    return `the server stored ${await stored()} of the 5,000 pull requests #${readingFirst} to #${readingLast} within 600 s of their events`;
+  }
+  note(
+    `the server's intake stored the 5,000 pull requests #${readingFirst} to #${readingLast} from their events`
+  );
+  const batched = async () => {
+    const response = await fetch(new URL("/__fixture/requests", githubUrl));
+    const { pulls: reads } = (await response.json()) as {
+      pulls: Record<string, Record<string, number>>;
+    };
+    return reads[attributionRepo]?.graphql_pulls ?? 0;
+  };
+  const texts = async () => {
+    const [withMessages = "", withoutMessages = ""] = (
+      await sql(
+        `select count(*) filter (where commit_messages is not null), count(*) filter (where commit_messages is null)
+         from pull_request_texts where ${range}`
+      )
+    ).split("|");
+    return { withMessages: Number(withMessages), withoutMessages: Number(withoutMessages) };
+  };
+  // The fake counts a batched read when it answers it, before the server writes what it answered,
+  // so a count of 5,000 can stand while the rows of the last query, up to FactsBatchSize of them,
+  // still wait for their commit messages. A server stopped then leaves them without, and the pass
+  // at the boundary reads them from GitHub. So the wait is for the rows: each has texts with its
+  // messages, or no texts row lacks its messages and the passes have read the 5,000. A build that
+  // keeps no texts row, as the negative control's, stands the second way. The build under test
+  // writes each head row with its texts (upsertHead), so for it the second way too holds only once
+  // every one of the 5,000 has its messages.
+  const stands = async () => {
+    const { withMessages, withoutMessages } = await texts();
+    return withMessages === 5000 || (withoutMessages === 0 && (await batched()) >= 5000);
+  };
+  if (!(await awaitTrue(stands, 600_000))) {
+    const { withMessages, withoutMessages } = await texts();
+    return `600 s after the server stored them, its passes had read ${await batched()} of the 5,000 pull requests by the batched query; ${withMessages} have texts with their commit messages and ${withoutMessages} texts without them`;
+  }
+  const { withMessages, withoutMessages } = await texts();
+  note(
+    `the server's passes read ${await batched()} of them by the batched query; ${withMessages} have texts with their commit messages and ${withoutMessages} texts without them`
+  );
+  return readingRecorded();
+}
+
+/** key-reading-changes, before its fixture: the reading `dispatch attribution` prints. */
+async function readingRecorded(): Promise<string | undefined> {
+  const counts = await attributionCounts();
+  writeSevenState({ reading: { recorded: counts.reading } });
+  note(`dispatch attribution prints the key reading ${counts.reading}`);
+  return undefined;
+}
+
+/** key-reading-changes after the change of the reading: each of its 5,000 pull requests is T(k)'s
+ *  and no B(k)'s, through GET /api/v1/issues/{key}/results, and the fake answered no read of a
+ *  pull request since the fixture. */
+async function readingReads(): Promise<string | undefined> {
+  const { B, T } = sevenPart("rule");
+  const answers = await checkPullsOf([...B, ...T]);
+  const reads = await caseReads();
+  const holders = holdersOf(answers);
+  let [underB, underT] = [0, 0];
+  for (let number = readingFirst; number <= readingLast; number++) {
+    const held = holders.get(number) ?? [];
+    if (held.some((key) => B.includes(key))) underB++;
+    if (held.some((key) => T.includes(key))) underT++;
+  }
+  const differ = ownersDiffer(
+    answers,
+    readingFirst,
+    readingLast,
+    (number) => T[(number - 20000) % 100]
+  );
+  note(
+    `after the change of the reading: ${underB} of the 5,000 pull requests the server stored are under B0 to B99 and ${underT} under T0 to T99; ${differ.length} differ from the reading`
+  );
+  note(reads.shown);
+  if (differ.length > 0 || reads.count > 0) {
+    return `after the change of the reading, ${underT} of the 5,000 pull requests the server stored are under T0 to T99 and ${underB} under B0 to B99, and the fake answered ${reads.count} read(s) of pull requests; ${differ.length} differ from the reading${differ.length > 0 ? `, the first: ${differ.slice(0, 5).join("; ")}` : ""}`;
+  }
+  return undefined;
+}
+
+/** The lines `dispatch delivery: keys remade` of the server's log, every start of it. */
+function keysRemadeLines(): string[] {
+  return readFileSync(dispatchLog, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('msg="dispatch delivery: keys remade"'));
+}
+
+/** key-reading-changes' fixture, while no server runs: the second reading. */
+async function readingFixture(): Promise<void> {
+  const file = join(import.meta.dir, "fixtures/attribution_reading_b.sql");
+  const child = Bun.spawn(["psql", databaseUrl, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", file], {
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  if (code !== 0) throw new Error(`psql -f ${file} exited ${code}: ${stderr.trim()}`);
+  writeSevenState({
+    reading: { ...sevenPart("reading"), remadeLines: keysRemadeLines().length },
+  });
+  note(`applied ${file}`);
+  await resetPullReads();
+}
+
+/** key-reading-changes, after one pass: another reading, each of its own pull requests and each of
+ *  rule-reaches-each-row's T(k)'s, no read of GitHub; then, within 60 s, no row whose keys wait,
+ *  and the log line of the remake. */
+async function readingAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { recorded, remadeLines = 0 } = sevenPart("reading");
+  const counts = await attributionCounts();
+  note(
+    `dispatch attribution: the key reading ${counts.reading} (before the change ${recorded}); ${counts.keys_on_another_reading} pull request(s) whose keys wait`
+  );
+  if (counts.reading === recorded) {
+    return `the key reading is ${counts.reading} at the boundary, the reading recorded before the change`;
+  }
+  const own = await readingReads();
+  if (own !== undefined) return own;
+  const failure = await ruleReads("the change of the reading", true);
+  if (failure !== undefined) return failure;
+  const { newIssue } = sevenPart("rule");
+  if (newIssue !== undefined) {
+    const [pulls] = (await checkPullsOf([newIssue])).values();
+    note(
+      `${newIssue} compares with ${pulls?.compared.join(", ") || "nothing"} on the second reading`
+    );
+    if ((pulls?.compared.length ?? 0) > 0) {
+      return `${newIssue} compares with ${pulls?.compared.join(", ")} on the second reading, want nothing: its branch is in lower case`;
+    }
+  }
+  const deadline = Date.now() + 60_000;
+  let waiting = counts.keys_on_another_reading;
+  let remade = keysRemadeLines().slice(remadeLines);
+  while ((waiting !== 0 || remade.length === 0) && Date.now() < deadline) {
+    await Bun.sleep(1_000);
+    waiting = (await attributionCounts()).keys_on_another_reading;
+    remade = keysRemadeLines().slice(remadeLines);
+  }
+  note(`then dispatch attribution prints ${waiting} pull request(s) whose keys wait`);
+  for (const line of remade) note(`the log: ${line.slice(line.indexOf("msg="))}`);
+  if (waiting !== 0) {
+    return `60 s after the boundary, dispatch attribution prints ${waiting} pull request(s) whose keys wait, want 0`;
+  }
+  return remade.length > 0
+    ? undefined
+    : "the log holds no line dispatch delivery: keys remade since the change of the reading";
+}
+
+// --- facts-only ----------------------------------------------------------------------------------
+//
+// v-facts-only. Issues F1 and F2, and the open pull request #16001 on the branch legion/F2 with
+// the body `Follows F1. Closes F2.`; GitHub names it as the pull request of an earlier commit too.
+// Three writes reach it: an envelope with no head_ref, a pass after its checked_at moves back 10
+// minutes, and a result of F2 at the earlier commit. After each, its texts hold GitHub's body, its
+// branch keys are {F2}, and F2 compares with it while F1 does not: no writer takes a fact from the
+// envelope.
+
+/** facts-only's open pull request, as GitHub answers it. */
+function factsOnlyPull(F1: string, F2: string): FakePullRequest {
+  return {
+    base_ref: "main",
+    body: `Follows ${F1}. Closes ${F2}.`,
+    commit_messages: ["Work on the change of the facts."],
+    head_ref: `legion/${F2}`,
+    head_repo: attributionRepo,
+    head_sha: sevenCommits.factsOnlyHead,
+    merged: false,
+    state: "open",
+    title: "A change of the facts",
+    updated_at: "2026-11-11T00:00:00Z",
+  };
+}
+
+/** facts-only, the first write: the issues, GitHub's answer, and an envelope with no head_ref. */
+async function factsOnlyEnvelope(): Promise<string | undefined> {
+  const [F1 = "", F2 = ""] = await seedAttributionIssues(["F1", "F2"]);
+  writeSevenState({ factsOnly: { F1, F2 } });
+  note(`F1 is ${F1}, F2 is ${F2}`);
+  const pull = factsOnlyPull(F1, F2);
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    commit_pulls: { ...seeded.commit_pulls, [sevenCommits.factsOnlyEarly]: [16001] },
+    pulls: { ...seeded.pulls, "16001": pull },
+  }));
+  const published = await publishEnvelope({
+    action: "opened",
+    base_ref: "main",
+    body: String(pull.body),
+    head_repo: attributionRepo,
+    head_sha: pull.head_sha,
+    kind: "pr",
+    merged: "false",
+    number: "16001",
+    repo: attributionRepo,
+    title: pull.title,
+    updated_at: String(pull.updated_at),
+    url: `https://github.com/${attributionRepo}/pull/16001`,
+  });
+  note(`published the envelope of #16001 with no head_ref on ${published.subject}`);
+  return factsOnlyHolds("the envelope with no head_ref", afterEvent(published));
+}
+
+/** facts-only's wants after the write `step`: the texts of #16001 (waited for until `by`), F1
+ *  comparing with nothing of it, F2 comparing with it, and its texts and branch keys GitHub's. */
+async function factsOnlyHolds(step: string, by = Date.now()): Promise<string | undefined> {
+  const { F1, F2 } = sevenPart("factsOnly");
+  const texts = () =>
+    sql(
+      `select t.head_ref, t.branch_keys::text, t.body from pull_request_texts t
+       where t.repo = '${attributionRepo}' and t.number = 16001 and t.head_sha = '${sevenCommits.factsOnlyHead}'`
+    );
+  let row = await texts();
+  while (row === "" && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    row = await texts();
+  }
+  if (row === "") return `after ${step}, #16001 has no texts at its head`;
+  const [f1, f2] = [
+    (await checkPullsOf([F1])).get(F1)?.compared ?? [],
+    (await checkPullsOf([F2])).get(F2)?.compared ?? [],
+  ];
+  const [headRef, branchKeys, body] = row.split("|");
+  note(
+    `after ${step}: #16001's texts hold the branch ${headRef}, the branch keys ${branchKeys} and the body ${JSON.stringify(body)}; F1 compares with ${f1.join(", ") || "nothing"}, F2 with ${f2.join(", ") || "nothing"}`
+  );
+  if (f1.includes(16001))
+    return `F1 (${F1}) compares with #16001 after ${step}, want F2 (${F2}) alone`;
+  if (!f2.includes(16001)) return `F2 (${F2}) does not compare with #16001 after ${step}`;
+  const wantedBody = factsOnlyPull(F1, F2).body;
+  if (body !== wantedBody) {
+    return `after ${step}, #16001's texts hold the body ${JSON.stringify(body)}, want GitHub's ${JSON.stringify(wantedBody)}`;
+  }
+  return branchKeys === `{${F2}}`
+    ? undefined
+    : `after ${step}, #16001's branch keys are ${branchKeys}, want {${F2}}`;
+}
+
+/** facts-only's fixture, while no server runs: #16001's checked_at moves back 10 minutes, so the
+ *  pass's open arm reads it (delivery.PullRequestHeadStaleAfter is five minutes). */
+async function factsOnlyFixture(): Promise<void> {
+  const movedTo = await sql(
+    `update pull_request_heads set checked_at = checked_at - interval '10 minutes'
+     where repo = '${attributionRepo}' and number = 16001 returning checked_at`
+  );
+  if (movedTo === "") throw new Error(`#16001 has no results row in ${attributionRepo}`);
+  writeSevenState({ factsOnly: { ...sevenPart("factsOnly"), movedTo } });
+  note(`#16001's checked_at moved back to ${movedTo}`);
+}
+
+/** facts-only, after one pass: the pass read #16001, and the wants hold; then a result of F2 at
+ *  the earlier commit, whose read-through writes #16001 again, and the wants hold again. */
+async function factsOnlyAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { F2, movedTo } = sevenPart("factsOnly");
+  const checkedAt = await sql(
+    `select checked_at from pull_request_heads where repo = '${attributionRepo}' and number = 16001`
+  );
+  note(`#16001's checked_at is ${checkedAt}, moved back to ${movedTo} before the pass`);
+  if (checkedAt === movedTo)
+    return `the pass did not read #16001: its checked_at is still ${movedTo}`;
+  const afterPass = await factsOnlyHolds("one pass of the open arm");
+  if (afterPass !== undefined) return afterPass;
+  const readsBefore = await pullReads([attributionRepo]);
+  await record(F2, {
+    check: "attribution",
+    commit: sevenCommits.factsOnlyEarly,
+    observed: "the run passed at an earlier commit of the pull request",
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+  const readThrough = (await pullReads([attributionRepo])) - readsBefore;
+  note(
+    `recorded a result of F2 at ${sevenCommits.factsOnlyEarly.slice(0, 12)}; its read-through made ${readThrough} read(s) of pull requests`
+  );
+  if (readThrough === 0) return "the result at the earlier commit read no pull request from GitHub";
+  return factsOnlyHolds("a result at an earlier commit");
+}
+
+// --- read-compares -------------------------------------------------------------------------------
+//
+// v-read-compares. R1 holds a pass at Rhead, recorded first, and a newer pass at Rearly; GitHub
+// names no pull request of either at the record, then #16101 at the head Rhead for both. One read
+// of `dispatch results` compares with #16101, and the pass stands. R2 holds a pass at R2head, the
+// head of #16102, whose branch, title and body name no key, whose commit message names R2, and
+// whose commits GitHub answers 500: Dispatch does not know yet whether #16102 is R2's, so the read
+// says so and says nothing of a head it has not read. Once GitHub answers the commits, one pass
+// reads them, and R2 compares with #16102.
+
+/** The head line of `dispatch results --issue <key>` (commandHeadLines), and what it printed. */
+async function resultsHead(
+  key: string
+): Promise<{ readonly head: string; readonly printed: string }> {
+  const printed = await resultsCommand(key);
+  return { head: commandHeadLines(printed)[0] ?? "", printed };
+}
+
+/** read-compares, before its pass: R1's records and its one read, then R2's record and its one
+ *  read. R2's part runs whatever R1's part found, since each proves a rule of its own: a build that
+ *  compares R1 at the first read and still says no for R2, or the other way round, fails on the
+ *  part it breaks. The failure names R2's part first, then R1's. */
+async function readComparesFirstReads(): Promise<string | undefined> {
+  const [R1 = "", R2 = ""] = await seedAttributionIssues(["R1", "R2"]);
+  writeSevenState({ readCompares: { R1, R2 } });
+  note(`R1 is ${R1}, R2 is ${R2}`);
+  const passAt = (issue: string, commit: string, observed: string) =>
+    record(issue, {
+      check: "attribution",
+      commit,
+      observed,
+      run: "bash scripts/e2e/verification-results.sh",
+      surface: "cli",
+    });
+  await passAt(R1, sevenCommits.compareHead, "the run passed at the head");
+  await passAt(R1, sevenCommits.compareEarly, "a newer run passed at an earlier commit");
+  note(
+    `R1 holds a pass at ${sevenCommits.compareHead.slice(0, 12)}, then a newer one at ${sevenCommits.compareEarly.slice(0, 12)}; GitHub named no pull request of either`
+  );
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    commit_pulls: {
+      ...seeded.commit_pulls,
+      [sevenCommits.compareHead]: [16101],
+      [sevenCommits.compareEarly]: [16101],
+    },
+    pulls: {
+      ...seeded.pulls,
+      "16101": {
+        base_ref: "main",
+        body: "The change GitHub names once the passes are recorded.",
+        commit_messages: ["Work on the change GitHub names."],
+        head_ref: `legion/${R1}`,
+        head_repo: attributionRepo,
+        head_sha: sevenCommits.compareHead,
+        merged: false,
+        state: "open",
+        title: "A change GitHub names late",
+        updated_at: "2026-11-12T00:00:00Z",
+      },
+    },
+  }));
+  const first = await resultsHead(R1);
+  note(`dispatch results --issue ${R1}: ${first.head}`);
+  let r1Failure: string | undefined;
+  if (!first.head.includes("the head of pull request #16101") || !passStands(first.head, "yes")) {
+    const second = await resultsHead(R1);
+    note(`a second dispatch results --issue ${R1}: ${second.head}`);
+    r1Failure = `the first dispatch results --issue ${R1} (R1) prints ${JSON.stringify(first.head)}, want Compared with #16101 and A pass stands: yes; a second read prints ${JSON.stringify(second.head)}`;
+  }
+  const r2Failure = await readComparesNotKnown(R2, passAt);
+  const failures = [r2Failure, r1Failure].filter((failure) => failure !== undefined);
+  return failures.length === 0 ? undefined : failures.join("; and ");
+}
+
+/** read-compares' part of R2, before its pass: a pass at the head of #16102, whose answer is not
+ *  known while its commits answer 500, and one read of `dispatch results`. */
+async function readComparesNotKnown(
+  R2: string,
+  passAt: (issue: string, commit: string, observed: string) => Promise<CheckResultRecorded>
+): Promise<string | undefined> {
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    commit_pulls: { ...seeded.commit_pulls, [sevenCommits.notKnownHead]: [16102] },
+    pulls: {
+      ...seeded.pulls,
+      "16102": {
+        base_ref: "main",
+        body: "A change whose texts name no issue.",
+        commit_messages: [`Dispatch: ${R2}`],
+        commits_status: 500,
+        head_ref: "work/no-key-in-this-branch",
+        head_repo: attributionRepo,
+        head_sha: sevenCommits.notKnownHead,
+        merged: false,
+        state: "open",
+        title: "A change whose commits GitHub does not list",
+        updated_at: "2026-11-12T00:00:00Z",
+      },
+    },
+  }));
+  await passAt(R2, sevenCommits.notKnownHead, "the run passed at the head of a change");
+  const r2 = await resultsHead(R2);
+  note(`R2 is ${R2}; dispatch results --issue ${R2}:`);
+  for (const line of r2.printed.split("\n")) note(`  ${line}`);
+  const stands = passStandsAnswer(r2.head) ?? "nothing";
+  if (stands !== "not known") return `R2 answers A pass stands: ${stands}`;
+  const stored = await sql(
+    `select t.commit_messages is null from pull_request_texts t
+     where t.repo = '${attributionRepo}' and t.number = 16102`
+  );
+  if (stored !== "t") {
+    return `the record's read-through stored #16102 ${stored === "" ? "with no texts" : "with its messages read"}, want its texts with the messages not read`;
+  }
+  for (const words of [
+    "Where that commit stands is not known: Dispatch does not know yet whether a pull request it read is this issue's",
+    "  Not known yet: whether pull request #16102 is this issue's.",
+  ]) {
+    if (!r2.printed.includes(words)) return `the output for R2 holds no ${JSON.stringify(words)}`;
+  }
+  for (const words of ["has not read the head", "of this issue"]) {
+    if (r2.printed.includes(words)) return `the output for R2 holds ${JSON.stringify(words)}`;
+  }
+  return undefined;
+}
+
+/** read-compares' fixture, while no server runs: GitHub answers #16102's commits again. */
+async function readComparesFixture(): Promise<void> {
+  await seedAttribution(attributionRepo, (seeded) => {
+    const { commits_status: _cleared, ...pull } = seeded.pulls?.["16102"] ?? {
+      head_repo: attributionRepo,
+      head_sha: sevenCommits.notKnownHead,
+      merged: false,
+      state: "open",
+      title: "",
+    };
+    return { ...seeded, pulls: { ...seeded.pulls, "16102": pull } };
+  });
+  note("GitHub answers the commits of #16102 again");
+}
+
+/** read-compares, after one pass: R2 compares with #16102, and its pass stands. */
+async function readComparesAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { R2 } = sevenPart("readCompares");
+  const { head } = await resultsHead(R2);
+  note(`dispatch results --issue ${R2}: ${head}`);
+  return head.includes("the head of pull request #16102") && passStands(head, "yes")
+    ? undefined
+    : `after one pass, dispatch results --issue ${R2} (R2) prints ${JSON.stringify(head)}, want Compared with #16102 and A pass stands: yes`;
+}
+
+// --- stores-agree --------------------------------------------------------------------------------
+//
+// v-stores-agree, on rule-reaches-each-row's rows as the cases before it left them. The delivery
+// settings, the 5,000 timeline rows of those pull requests stored as T(k), and #16201, which has
+// no facts: its timeline row says S1, its results row says S2, and GitHub's branch is legion/S3.
+// Before a pass, after one pass, and after a person links T9 to #10109 and one more pass, the
+// timeline route and the results routes name one issue for each pull request: S2 for #16201 before
+// its read and S3 after it, and T9 for #10109 after the link. It counts no reads: a pass with
+// settings reads GitHub for its other steps.
+
+/** stores-agree, before its fixture: the permissions, the delivery settings, and S1 to S3. */
+async function storesAgreeSettings(): Promise<string | undefined> {
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    actions: "read",
+    pull_requests: "read",
+  }));
+  await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(attributionRepo));
+  const [S1 = "", S2 = "", S3 = ""] = await seedAttributionIssues(["S1", "S2", "S3"]);
+  writeSevenState({ storesAgree: { S1, S2, S3 } });
+  note(`the delivery settings name ${attributionRepo}; S1 is ${S1}, S2 is ${S2}, S3 is ${S3}`);
+  return undefined;
+}
+
+/** stores-agree's fixture, while no server runs: the timeline rows and #16201. */
+async function storesAgreeFixture(): Promise<void> {
+  const { T } = sevenPart("rule");
+  const { S1, S2, S3 } = sevenPart("storesAgree");
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: {
+      ...seeded.pulls,
+      "16201": {
+        base_ref: "main",
+        body: "A change whose texts Dispatch has not read.",
+        commit_messages: ["Work on change 16201."],
+        head_ref: `legion/${S3}`,
+        head_repo: attributionRepo,
+        head_sha: attributionSha(16201),
+        merge_commit_sha: attributionSha(16201, "e"),
+        merged: true,
+        state: "closed",
+        title: "Change 16201",
+        updated_at: attributionUpdatedAt,
+      },
+    },
+  }));
+  await sql(
+    `insert into delivery_pull_requests (repo, number, title, url, author, merged_at, issue_key)
+     select '${attributionRepo}', n, 'Change ' || n, 'https://github.com/${attributionRepo}/pull/' || n,
+       'octocat', now() - interval '1 hour',
+       case when n = 16201 then '${S1}' else (${sqlKeys(T)})[(n - 10000) % 100 + 1] end
+     from (select generate_series(10001, 15000) n union all select 16201) pulls`
+  );
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
+       attribution_source, title, url, event_at, checked_at, github_read_at)
+     values ('${attributionRepo}', 16201, '${attributionSha(16201)}', 'legion/${S3}', 'main', 'merged',
+       '${S2}', 'title_body', 'Change 16201', 'https://github.com/${attributionRepo}/pull/16201',
+       '${releaseBeforeEventAt}', now(), now())`
+  );
+  note(
+    `stores-agree: 5,000 timeline rows stored as T(k); #16201 with a timeline row of ${S1}, a results row of ${S2} and no texts, on GitHub's branch legion/${S3}`
+  );
+}
+
+/** stores-agree's reads at `step`: GET /api/v1/delivery/timeline and the results route of every
+ *  issue of the seven checks name one issue for each pull request of the case's repository, and
+ *  #16201 and #10109 take the issue the step wants. */
+async function storesAgreeRead(
+  pass: string | undefined,
+  step: string
+): Promise<string | undefined> {
+  if (pass !== undefined) note(pass);
+  const seven = sevenState();
+  const { S2, S3 } = sevenPart("storesAgree");
+  const timeline = (await asSession("GET", "/api/v1/delivery/timeline")) as {
+    prs: { issue: string | null; number: number; repo: string }[];
+  };
+  const inTimeline = new Map<number, string>();
+  for (const pull of timeline.prs) {
+    if (pull.repo === attributionRepo) inTimeline.set(pull.number, pull.issue ?? "no issue");
+  }
+  const keys = [
+    ...(seven.olderRows === undefined
+      ? []
+      : [...seven.olderRows.L, ...seven.olderRows.N, ...seven.olderRows.D]),
+    ...(seven.rule === undefined
+      ? []
+      : [
+          ...seven.rule.B,
+          ...seven.rule.T,
+          ...(seven.rule.newIssue === undefined ? [] : [seven.rule.newIssue]),
+        ]),
+    ...Object.values(seven.factsOnly ?? {}).filter((value) =>
+      value.startsWith(`${attributionProject}-`)
+    ),
+    ...Object.values(seven.readCompares ?? {}),
+    ...Object.values(seven.storesAgree ?? {}),
+  ];
+  const holders = holdersOf(await checkPullsOf(keys), true);
+  const numbers = new Set([...inTimeline.keys(), ...holders.keys()]);
+  const two: string[] = [];
+  for (const number of [...numbers].sort((a, b) => a - b)) {
+    const named = holders.get(number) ?? [];
+    const listed = inTimeline.get(number);
+    if (named.length > 1) {
+      two.push(`#${number} under ${named.join(" and ")} in the results`);
+    } else if (listed !== undefined && listed !== (named[0] ?? "no issue")) {
+      two.push(
+        `#${number} under ${listed} in the timeline and ${named[0] ?? "no issue"} in the results`
+      );
+    }
+  }
+  note(
+    `${step}: the timeline lists ${inTimeline.size} pull requests of ${attributionRepo}, and the results routes of ${keys.length} issues name ${holders.size}; ${two.length} with two issues`
+  );
+  if (two.length > 0) {
+    return `${step}, ${two.length} pull request(s) have two issues: ${two.slice(0, 5).join("; ")}`;
+  }
+  const wants: (readonly [number, string, string])[] = [
+    [16201, step === "before a pass" ? S2 : S3, step === "before a pass" ? "S2" : "S3"],
+  ];
+  if (step.includes("link")) wants.push([10109, String(seven.rule?.T[9]), "T9"]);
+  for (const [number, key, name] of wants) {
+    const listed = inTimeline.get(number) ?? "no row";
+    const named = holders.get(number)?.join(" and ") ?? "no issue";
+    note(`${step}: #${number} is under ${listed} in the timeline and ${named} in the results`);
+    if (listed !== key || named !== key) {
+      return `${step}, #${number} is under ${listed} in the timeline and ${named} in the results, want ${name} (${key}) in both`;
+    }
+  }
+  return undefined;
+}
+
+/** stores-agree: a person links T9 to #10109. */
+async function storesAgreeLink(): Promise<string | undefined> {
+  const { T } = sevenPart("rule");
+  await asPerson("PATCH", issuePath(String(T[9])), {
+    external_links: [{ url: `https://github.com/${attributionRepo}/pull/10109` }],
+  });
+  note(`a person linked ${T[9]} (T9) to ${attributionRepo}#10109`);
+  return undefined;
+}
+
+// --- limit-of-one --------------------------------------------------------------------------------
+//
+// v-limit-of-one, T10's case through the server. beta/tools, on an installation of its own, has
+// five pull requests that wait: #11 owed a read, #12 open and read an hour ago, #13 merged with no
+// facts, #14 a partial timeline row, and #15, which only the merged search finds. The case's
+// repository's installation has spent its rate limit, and it has a read owed (#16301) and a partial
+// row (#16302) too. After one pass each beta/tools pull request is read and written, and the
+// pass's log line names the first installation's limit.
+
+/** One pull request of limit-of-one as GitHub answers it, as T10's test seeds it: open or merged,
+ *  updated an hour ago, with an author, so the fake answers what the completion reads. */
+function limitPull(
+  repository: string,
+  number: number,
+  open: boolean,
+  updatedAt: string
+): FakePullRequest {
+  return {
+    author: "octocat",
+    base_ref: "main",
+    body: `The body of change ${number}.`,
+    commit_messages: [`Work on change ${number}.`],
+    head_ref: `work/change-${number}`,
+    head_repo: repository,
+    head_sha: attributionSha(number, "e"),
+    ...(open ? {} : { merge_commit_sha: attributionSha(number, "d") }),
+    merged: !open,
+    state: open ? "open" : "closed",
+    title: `Change ${number}`,
+    updated_at: updatedAt,
+  };
+}
+
+/** limit-of-one, before its fixture: the two beta repositories, and delivery settings whose deploy
+ *  repository is beta/deploy, as T10's test writes them. */
+async function limitSettings(): Promise<string | undefined> {
+  const updatedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 3_600_000).toISOString();
+  const permissions = {
+    actions: "read",
+    contents: "read",
+    default_branch: "main",
+    installation_id: betaInstallation,
+    pull_requests: "read",
+  };
+  const pulls: Record<string, FakePullRequest> = {};
+  for (const number of [11, 12, 13, 14, 15]) {
+    pulls[String(number)] = {
+      ...limitPull(betaRepo, number, number === 12, updatedAt),
+      ...(number === 15 ? { searched: true } : {}),
+    };
+  }
+  await seedRepositories(
+    {},
+    { [betaDeployRepo]: { ...permissions }, [betaRepo]: { ...permissions, pulls } }
+  );
+  await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(betaDeployRepo));
+  note(
+    `the delivery settings name ${betaDeployRepo}; ${betaRepo} holds #11 to #15, updated at ${updatedAt}`
+  );
+  return undefined;
+}
+
+/** limit-of-one's fixture, while no server runs: the first installation's limit, and the rows. */
+async function limitFixture(): Promise<void> {
+  const updatedAt =
+    attributionRepositories[betaRepo]?.pulls?.["12"]?.updated_at ?? attributionUpdatedAt;
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: {
+      ...seeded.pulls,
+      "16301": limitPull(attributionRepo, 16301, false, updatedAt),
+      "16302": limitPull(attributionRepo, 16302, false, updatedAt),
+    },
+    rate_limited: true,
+  }));
+  await sql(
+    `insert into pull_request_reads_owed (repo, number, reason)
+     values ('${betaRepo}', 11, 'failure'), ('${attributionRepo}', 16301, 'failure')`
+  );
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state,
+       attribution_source, title, url, event_at, checked_at, github_read_at)
+     values
+       ('${betaRepo}', 12, '${attributionSha(12, "0")}', 'work/none', 'main', 'open', 'none',
+        'Change 12', 'https://github.com/${betaRepo}/pull/12', '2026-11-01T00:00:12Z',
+        now() - interval '1 hour', now() - interval '1 hour'),
+       ('${betaRepo}', 13, '${attributionSha(13, "0")}', 'work/change-13', 'main', 'merged', 'none',
+        'Change 13', 'https://github.com/${betaRepo}/pull/13', '2026-11-01T00:00:13Z', now(), now())`
+  );
+  if (await textsTableExists()) {
+    await sql(
+      `insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title,
+         body, commit_messages, updated_at)
+       values ('${betaRepo}', 12, '${attributionSha(12, "0")}', 'work/none', '${betaRepo}', 'main',
+         'Change 12', 'The body before the rename.', '{}', '2026-11-01T00:00:12Z')`
+    );
+  }
+  await sql(
+    `insert into delivery_pull_requests (repo, number, title, url, author, created_at, partial)
+     values
+       ('${betaRepo}', 14, 'the title of the search', 'https://github.com/${betaRepo}/pull/14',
+        'octocat', '2026-11-01T00:00:14Z', true),
+       ('${attributionRepo}', 16302, 'the title of the search',
+        'https://github.com/${attributionRepo}/pull/16302', 'octocat', '2026-11-01T00:00:14Z', true)`
+  );
+  note(
+    `limit-of-one: ${attributionRepo}'s installation has spent its rate limit; ${betaRepo} holds #11 owed a read, #12 open, #13 merged with no facts and #14 partial, and the merged search alone finds #15`
+  );
+}
+
+/** limit-of-one, after one pass: each beta/tools pull request read and written, and the log line
+ *  naming the first installation's limit. A build before the texts table (a negative control)
+ *  answers #13's messages as "no texts table", which fails the case as well. */
+async function limitAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const line = attributionLines().at(-1) ?? {};
+  const scope = line.rate_limit_scope ?? "no rate_limit_scope";
+  note(`the pass logged rate_limit_scope=${scope}`);
+  const messages13 = (await textsTableExists())
+    ? `(select count(*)::text from pull_request_heads h where h.repo = '${betaRepo}' and h.number = 13
+          and exists (select 1 from pull_request_texts t where t.repo = h.repo and t.number = h.number
+            and t.commit_messages is not null))`
+    : "'no texts table'";
+  const rows = await sql(
+    `select
+       (select count(*) from pull_request_heads where repo = '${betaRepo}' and number = 11),
+       (select count(*) from pull_request_reads_owed where repo = '${betaRepo}' and number = 11),
+       (select head_sha from pull_request_heads where repo = '${betaRepo}' and number = 12),
+       ${messages13},
+       (select coalesce(partial::text, 'missing') || ' ' || (first_commit_at is not null)::text
+          from delivery_pull_requests where repo = '${betaRepo}' and number = 14),
+       (select coalesce(partial::text, 'missing') from delivery_pull_requests
+          where repo = '${betaRepo}' and number = 15),
+       (select coalesce(partial::text, 'missing') from delivery_pull_requests
+          where repo = '${attributionRepo}' and number = 16302)`
+  );
+  const [heads11, owed11, head12, read13, row14 = "", row15 = "", row16302 = ""] = rows.split("|");
+  note(
+    `${betaRepo}: #11 ${heads11} results row(s) and ${owed11} owed read(s); #12 at ${String(head12).slice(0, 12)}; #13 ${read13} row(s) with its messages; #14 partial and a first commit: ${row14 || "missing"}; #15 partial: ${row15 || "missing"}; ${attributionRepo} #16302 partial: ${row16302 || "missing"}`
+  );
+  const failures: string[] = [];
+  if (scope !== `installation:${attributionInstallation}`) {
+    failures.push(
+      `the pass logged rate_limit_scope=${scope}, want installation:${attributionInstallation}`
+    );
+  }
+  if (heads11 !== "1" || owed11 !== "0")
+    failures.push(`#11 holds ${heads11} results row(s) and ${owed11} owed read(s), want 1 and 0`);
+  if (head12 !== attributionSha(12, "e"))
+    failures.push(`#12 is at ${head12}, want GitHub's head ${attributionSha(12, "e")}`);
+  if (read13 !== "1") failures.push(`#13 has no texts with its messages (${read13})`);
+  if (row14 !== "false true")
+    failures.push(
+      row14.startsWith("true")
+        ? "#14 is still partial"
+        : `#14 reads ${row14 || "missing"}, want written and not partial, with its first commit`
+    );
+  if (row15 !== "false")
+    failures.push(row15 === "" ? "#15 is missing" : `#15 reads partial ${row15}, want false`);
+  return failures.length === 0 ? undefined : failures.join("; ");
+}
+
+// --- first-start-tip -------------------------------------------------------------------------------
+//
+// v-first-start-tip, R3 of the results lookup: the first start after a deploy begins after the last
+// event the bus holds, so it reads no older event; an open pull request then gets its head at its
+// next event; and a later start reads no event again. The shell's first_start_tip runs it last, on a
+// NATS of its own and an emptied database, in the project TIP and the repository acme/first-start,
+// in six halves, each a process of its own (firstStartTipHalf):
+//   backlog          while no server runs, after a server with no GitHub App made the stream: no
+//                    durable of the intake exists; the fake answers #21 at firstPushed and #22 at
+//                    secondOpened, and the driver publishes #21's opened and synchronize events and
+//                    #22's opened event to the stream. Under VERIFICATION_RESULTS_E2E_TIP_CONTROL=1,
+//                    the check's negative control, it then creates the intake's durable to deliver
+//                    from the stream's first message.
+//   first-start      after the first start with the App, once its intake bound, its durable holds
+//                    nothing pending and its start pass ended. T1: no head row of #21 or #22, the
+//                    bind at the stream's next sequence, and no read of either pull request from
+//                    GitHub. T2: a pass of the case's check recorded at secondPushed, then #22's push
+//                    there, with its body naming the issue: #22's row is open at secondPushed within
+//                    5 seconds of the push, #21 has none, and `dispatch results` compares the check
+//                    with #22 at secondPushed.
+//   stopped          while no server runs: where the durable stands, whether #22's texts hold its
+//                    commit messages, and the fake's log emptied.
+//   second-start     after a second start, the same three facts. T3: the bind right after the ack
+//                    floor the first start left, no event redelivered, no head row of #21, no read
+//                    of a pull request by the REST routes the intake reads with, and the start's
+//                    reconcile pass calls GitHub only to read the commit messages the read of the
+//                    push did not store: #22's not stored before, exactly one GraphQL query asking
+//                    for #22 alone with the lookup and token it needs (tipCallOfTheFactsLine), and
+//                    its messages stored after; stored before, no call at all.
+//   control-durable  while no server runs: the durable deleted and created again at the stream's
+//                    first message.
+//   control-start    after one more start: it binds at or below the floor the second start found,
+//                    and reads a pull request from GitHub, so T3's reading of the bind and its
+//                    reading of the calls can each see a start that reads an event again.
+
+/** What one half of first-start-tip leaves a later one, in the state file under its name: the
+ *  stream's last sequence before the first start, the durable's ack floor and whether #22's commit
+ *  messages are stored before the second, and the length of the server's log and its count of
+ *  attribution lines before the start to come. */
+interface TipState {
+  readonly floor?: number;
+  readonly lastSeq?: number;
+  readonly linesBefore?: number;
+  readonly logOffset?: number;
+  readonly messagesBefore?: string;
+}
+
+function writeTipState(change: TipState): void {
+  writeFileSync(
+    statePath,
+    JSON.stringify({
+      ...readState(),
+      "first-start-tip": { ...(readState()["first-start-tip"] as TipState | undefined), ...change },
+    })
+  );
+}
+
+/** The length in bytes of the server's log, every start of it. */
+function logLength(): number {
+  return readFileSync(dispatchLog).length;
+}
+
+/** The first line the server wrote to its log past byte `offset` for which `match` holds, read
+ *  every pollMs up to `waitMs` (awaitTrue), or undefined where none comes in that time. */
+async function logLineSince(
+  offset: number,
+  match: (line: string) => boolean,
+  waitMs: number
+): Promise<string | undefined> {
+  let found: string | undefined;
+  await awaitTrue(async () => {
+    found = readFileSync(dispatchLog).subarray(offset).toString("utf8").split("\n").find(match);
+    return found !== undefined;
+  }, waitMs);
+  return found;
+}
+
+/** The line `dispatch delivery: NATS consumer bound` of the durable delivery-events, the first the
+ *  server wrote after the byte `offset` of its log, and the stream sequence it names (`start_seq`):
+ *  where the start's intake bound. It waits for the line as the setup waits for the bind, and fails
+ *  the step when none comes. */
+async function bindSince(
+  offset: number,
+  step: string
+): Promise<{ readonly line: string; readonly seq: number }> {
+  const line = await logLineSince(
+    offset,
+    (text) => text.includes('msg="dispatch delivery: NATS consumer bound" name=delivery-events '),
+    intakeBindWaitMs
+  );
+  if (line === undefined) {
+    setupFailed(step, `the server logged no bind of delivery-events in ${intakeBindWaitMs} ms`);
+  }
+  return { line, seq: Number(/ start_seq=(\d+)/.exec(line)?.[1] ?? Number.NaN) };
+}
+
+/** The intake's durable of pull request events, delivery-events, as the server reports it, or
+ *  undefined where the stream holds no such consumer. */
+async function eventsDurable(): Promise<ConsumerInfo | undefined> {
+  const manager = await nats.jetstreamManager();
+  try {
+    return await manager.consumers.info("ENVOY_NOTIFICATIONS", "delivery-events");
+  } catch (error) {
+    if (/consumer not found/i.test(String(error))) return undefined;
+    throw error;
+  }
+}
+
+/** Where a durable stands, in the words a half prints. */
+function durableText(info: ConsumerInfo | undefined): string {
+  if (info === undefined) return "no durable delivery-events";
+  return `delivered stream seq ${info.delivered.stream_seq}, ack floor stream seq ${info.ack_floor.stream_seq}, pending ${info.num_pending}, ack pending ${info.num_ack_pending}, redelivered ${info.num_redelivered}, deliver policy ${info.config.deliver_policy}, start seq ${info.config.opt_start_seq ?? "none"}`;
+}
+
+/** Waits, as the setup waits for the bind, for the durable to hold nothing pending and nothing
+ *  unacknowledged: the start's intake has taken every event delivered to it. */
+async function tipDurableSettled(step: string): Promise<ConsumerInfo> {
+  const deadline = Date.now() + intakeBindWaitMs;
+  for (;;) {
+    const info = await eventsDurable();
+    if (info !== undefined && info.num_pending === 0 && info.num_ack_pending === 0) return info;
+    if (Date.now() >= deadline) {
+      setupFailed(step, `after ${intakeBindWaitMs} ms the durable is: ${durableText(info)}`);
+    }
+    await Bun.sleep(pollMs);
+  }
+}
+
+/** One pull request of acme/first-start as GitHub answers it: open, on its own branch. */
+function tipPull(number: number, head: string, body: string, updatedAt: string): FakePullRequest {
+  return {
+    base_ref: "main",
+    body,
+    head_ref: `feature/change-${number}`,
+    head_repo: tipRepo,
+    head_sha: head,
+    merged: false,
+    state: "open",
+    title: `Change ${number}`,
+    updated_at: updatedAt,
+  };
+}
+
+/** The `pull_request` envelope's payload of `pull`, number `number`, for the event `action`. */
+function tipPayload(number: number, action: string, pull: FakePullRequest): Record<string, string> {
+  return {
+    action,
+    base_ref: pull.base_ref ?? "main",
+    body: pull.body ?? "",
+    head_ref: pull.head_ref ?? "",
+    head_repo: pull.head_repo,
+    head_sha: pull.head_sha,
+    kind: "pr",
+    merged: "false",
+    number: String(number),
+    repo: tipRepo,
+    title: pull.title,
+    updated_at: pull.updated_at ?? "",
+    url: `https://github.com/${tipRepo}/pull/${number}`,
+  };
+}
+
+/** Seeds the fake with acme/first-start alone, answering `pulls`: every repository an earlier case
+ *  seeded goes. It holds each of the case's commits, so the record route takes a result at any. */
+async function seedTip(pulls: Record<string, FakePullRequest>): Promise<void> {
+  await putFakeRepositories({
+    [tipRepo]: {
+      commits: Object.values(tipCommits),
+      contents: "read",
+      default_branch: "main",
+      installation_id: tipInstallation,
+      pull_requests: "read",
+      pulls,
+    },
+  });
+}
+
+/** Publishes the envelope of `payload` to the stream, and answers the sequence the stream stored
+ *  it at and the moment it was published. */
+async function publishToStream(
+  payload: Record<string, string>
+): Promise<{ readonly at: number; readonly seq: number }> {
+  const at = Date.now();
+  const { data, subject } = envelopeOf(payload, at);
+  const ack = await nats.jetstream().publish(subject, data);
+  return { at, seq: ack.seq };
+}
+
+/** The head rows Dispatch stores, by repository and number, one line each: `<repo>#<number>
+ *  <state> at <head>`, the head cut to 12 characters, or, of `repository` alone where it is given,
+ *  `#<number> <state> at <head>`. */
+async function headRows(repository?: string): Promise<string[]> {
+  const named = repository === undefined ? "repo || " : "";
+  const only = repository === undefined ? "" : `where repo = '${repository}'`;
+  const rows = await sql(
+    `select ${named}'#' || number || ' ' || state || ' at ' || left(head_sha, 12)
+     from pull_request_heads ${only} order by repo, number`
+  );
+  return rows === "" ? [] : rows.split("\n");
+}
+
+/** One call the fake took, as its log keeps it (fake-github-fixture.ts's `Call`). */
+interface FakeCall {
+  readonly asks?: string;
+  readonly installation?: number;
+  readonly minted?: string;
+  readonly repo?: string;
+  readonly route: string;
+  readonly token?: string;
+}
+
+/** The fake's log of the calls it took since its counts were last emptied (resetPullReads),
+ *  oldest first, undefined where it keeps none, and how many calls it dropped past its bound. */
+async function fakeCallLog(): Promise<{
+  readonly calls?: readonly FakeCall[];
+  readonly dropped: number;
+}> {
+  const response = await fetch(new URL("/__fixture/requests", githubUrl));
+  if (!response.ok) {
+    throw new Error(`GET /__fixture/requests: ${response.status} ${await response.text()}`);
+  }
+  const { calls, calls_dropped } = (await response.json()) as {
+    calls?: FakeCall[];
+    calls_dropped?: number;
+  };
+  return { calls, dropped: calls_dropped ?? 0 };
+}
+
+/** Every call the fake took since its counts were last emptied (fakeCallLog). A fake that keeps
+ *  no log, or a log that dropped calls past its bound, fails the read. */
+async function fakeCalls(): Promise<readonly FakeCall[]> {
+  const { calls, dropped } = await fakeCallLog();
+  if (calls === undefined) throw new Error("the fake GitHub keeps no log of calls");
+  if (dropped > 0) throw new Error(`the fake's log dropped ${dropped} call(s)`);
+  return calls;
+}
+
+/** How many calls the fake took since its counts were last emptied, past its log's bound too. */
+async function fakeCallCount(): Promise<number> {
+  const { calls, dropped } = await fakeCallLog();
+  return (calls?.length ?? 0) + dropped;
+}
+
+/** One call in the words a half prints. */
+function callText(call: FakeCall): string {
+  const repository = call.repo === undefined ? "" : ` (${call.repo})`;
+  const installation =
+    call.installation === undefined ? "" : ` (installation ${call.installation})`;
+  const token =
+    call.minted !== undefined
+      ? ` minting ${call.minted}`
+      : call.token === undefined
+        ? ""
+        : ` with ${call.token}`;
+  return `${call.route}${repository}${installation}${call.asks === undefined ? "" : ` asking ${call.asks}`}${token}`;
+}
+
+/** Whether `call` reads a pull request by the REST routes the intake reads one with: the pull
+ *  request, its commits, and the pull requests of a commit. */
+function restPullRead(call: FakeCall): boolean {
+  return /^GET \/repos\/\{owner\}\/\{repo\}\/(pulls\/\{n\}(\/commits)?|commits\/\{sha\}\/pulls)$/.test(
+    call.route
+  );
+}
+
+/** Whether `call` reads a pull request of acme/first-start from GitHub, by REST or by GraphQL. */
+function readsATipPull(call: FakeCall): boolean {
+  return (
+    (call.repo === tipRepo && restPullRead(call)) ||
+    (call.route === "POST /graphql" && (call.asks ?? "").includes(`${tipRepo}#`))
+  );
+}
+
+/** Whether `call` is one of the reconcile pass's read of #22's facts, the facts line's read of a
+ *  pull request whose commit messages no read stored (Reconcile.readFactsLine): the installation
+ *  lookup of acme/first-start, the token it mints for the case's installation, and the one GraphQL
+ *  query that asks for #22 alone. T3 counts each: one lookup and one mint at most. The intake's
+ *  read of #22's push read its title, its body and its branch, and, its body naming the case's
+ *  issue, not its commit messages (storePullRequestFacts), and every pass reads the messages a
+ *  read did not store, so a later change of how Dispatch reads a key needs no read of GitHub. */
+function tipCallOfTheFactsLine(call: FakeCall): boolean {
+  return (
+    tipLookup(call) ||
+    tipMint(call) ||
+    (call.route === "POST /graphql" && call.asks === `${tipRepo}#22`)
+  );
+}
+
+/** Whether `call` is the installation lookup of acme/first-start. */
+function tipLookup(call: FakeCall): boolean {
+  return call.route === "GET /repos/{owner}/{repo}/installation" && call.repo === tipRepo;
+}
+
+/** Whether `call` mints a token for the case's installation. */
+function tipMint(call: FakeCall): boolean {
+  return (
+    call.route === "POST /app/installations/{n}/access_tokens" &&
+    call.installation === tipInstallation
+  );
+}
+
+/** The calls of `calls` that the rate reading of each start makes (cmd/dispatch's ratereading.go,
+ *  main's #4681): the App's installations (`GET /app/installations`, which only
+ *  githubapp.Client.ReadInstallations asks, for the rate reading), the App itself (`GET /app`,
+ *  AppIdentity, the same), the first repository of an installation (`GET
+ *  /installation/repositories` with `per_page=1`, where the reconcile's listing asks 100 a page),
+ *  that repository's workflows, whose answer carries the REST counter, `GET /rate_limit`, which
+ *  only the reading reads, and the token it mints for an installation: a mint whose token those
+ *  reads alone carried. The client keeps one token for each installation, so a token the pass also
+ *  carried is the pass's too, and stays counted. */
+function rateReadingCalls(calls: readonly FakeCall[]): Set<FakeCall> {
+  const reads = new Set(
+    calls.filter(
+      (call) =>
+        [
+          "GET /app/installations",
+          "GET /app",
+          "GET /repos/{owner}/{repo}/actions/workflows",
+          "GET /rate_limit",
+        ].includes(call.route) ||
+        (call.route === "GET /installation/repositories" && call.asks === "per_page=1")
+    )
+  );
+  for (const mint of calls) {
+    if (mint.minted === undefined) continue;
+    const carried = calls.filter((call) => call.token === mint.minted);
+    if (carried.length > 0 && carried.every((call) => reads.has(call))) reads.add(mint);
+  }
+  return reads;
+}
+
+/** Runs one half of first-start-tip, and ends the process. */
+async function firstStartTipHalf(half: string): Promise<never> {
+  const state = (readState()["first-start-tip"] ?? {}) as TipState;
+  switch (half) {
+    case "backlog":
+      await tipBacklog().catch((error: unknown) => setupFailed("first-start-tip's events", error));
+      break;
+    case "first-start": {
+      const { lastSeq, linesBefore, logOffset } = state;
+      if (lastSeq === undefined || linesBefore === undefined || logOffset === undefined) {
+        setupFailed("first-start-tip", "the state file holds no backlog: run its half first");
+      }
+      const pass = await awaitOnePass(linesBefore);
+      const bind = await bindSince(logOffset, "the first start's bind");
+      const settled = await tipDurableSettled("the first start's durable");
+      await runCase("first-start-tip", () => tipFirstStart(lastSeq, pass, bind, settled));
+      return summarise();
+    }
+    case "stopped":
+      await tipStopped().catch((error: unknown) =>
+        setupFailed("first-start-tip's read of the durable", error)
+      );
+      break;
+    case "second-start": {
+      const { floor, linesBefore, logOffset, messagesBefore } = state;
+      if (floor === undefined || linesBefore === undefined || logOffset === undefined) {
+        setupFailed(
+          "first-start-tip",
+          "the state file holds no durable's floor: run stopped first"
+        );
+      }
+      const pass = await awaitOnePass(linesBefore);
+      const bind = await bindSince(logOffset, "the second start's bind");
+      const settled = await tipDurableSettled("the second start's durable");
+      await runCase("first-start-tip", () =>
+        tipSecondStart(floor, messagesBefore ?? "not recorded", pass, bind, settled)
+      );
+      return summarise();
+    }
+    case "control-durable":
+      await tipControlDurable().catch((error: unknown) =>
+        setupFailed("first-start-tip's control durable", error)
+      );
+      break;
+    case "control-start": {
+      const { floor, logOffset } = state;
+      if (floor === undefined || logOffset === undefined) {
+        setupFailed("first-start-tip", "the state file holds no control durable: run it first");
+      }
+      const bind = await bindSince(logOffset, "the control's bind");
+      await runCase("first-start-tip", () => tipControlStart(floor, bind));
+      return summarise();
+    }
+    default:
+      setupFailed(
+        `phase first-start-tip-${half}`,
+        "first-start-tip's halves are backlog, first-start, stopped, second-start, control-durable and control-start"
+      );
+  }
+  void nats.close();
+  process.exit(0);
+}
+
+/** first-start-tip's backlog, while no server runs (the section "first-start-tip"). Before the
+ *  events, its self-check: one read of a pull request made here, not by Dispatch, is the one call
+ *  in the fake's log, so a log that cannot see a call fails here and not as a pass of T1 or T3. */
+async function tipBacklog(): Promise<void> {
+  const manager = await nats.jetstreamManager();
+  const stream = await manager.streams.info("ENVOY_NOTIFICATIONS");
+  const before = await eventsDurable();
+  if (before !== undefined) {
+    throw new Error(`the intake's durable exists before the first start: ${durableText(before)}`);
+  }
+  note(
+    `the stream a server with no GitHub App made holds ${stream.state.messages} message(s), last sequence ${stream.state.last_seq}; ${durableText(before)}`
+  );
+  const earlier = (minutes: number) =>
+    new Date(Date.now() - minutes * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const opened = tipPull(21, tipCommits.firstOpened, "A change.", earlier(30));
+  const first = tipPull(21, tipCommits.firstPushed, "A change.", earlier(20));
+  const second = tipPull(22, tipCommits.secondOpened, "Another change.", earlier(10));
+  await seedTip({ "21": first, "22": second });
+  await resetPullReads();
+  const probe = await fetch(new URL(`/repos/${tipRepo}/pulls/21`, githubUrl));
+  const probed = await fakeCalls();
+  const wanted = `GET /repos/{owner}/{repo}/pulls/{n} (${tipRepo})`;
+  if (!probe.ok || probed.length !== 1 || callText(probed[0] as FakeCall) !== wanted) {
+    throw new Error(
+      `one GET /repos/${tipRepo}/pulls/21 answered ${probe.status} and the fake's log holds ${probed.map(callText).join("; ") || "nothing"}, want 200 and ${wanted} alone`
+    );
+  }
+  await resetPullReads();
+  let lastSeq = 0;
+  for (const [number, action, pull] of [
+    [21, "opened", opened],
+    [21, "synchronize", first],
+    [22, "opened", second],
+  ] as const) {
+    lastSeq = (await publishToStream(tipPayload(number, action, pull))).seq;
+    note(
+      `published #${number}'s ${action} at ${pull.head_sha.slice(0, 12)}, stream sequence ${lastSeq}`
+    );
+  }
+  if (tipControl) {
+    const made = await manager.consumers.add("ENVOY_NOTIFICATIONS", {
+      ack_policy: AckPolicy.Explicit,
+      deliver_policy: DeliverPolicy.StartSequence,
+      deliver_subject: createInbox(),
+      durable_name: "delivery-events",
+      filter_subject: "notifications.github.>",
+      opt_start_seq: 1,
+    });
+    note(
+      `negative control (VERIFICATION_RESULTS_E2E_TIP_CONTROL=1): made the durable before the first start, ${durableText(made)}`
+    );
+  }
+  const fixtureAt = await prepareOnePass();
+  writeTipState({ lastSeq, linesBefore: attributionLines().length, logOffset: logLength() });
+  note(`first-start-tip's backlog is written, and no pass is recorded, at ${fixtureAt}`);
+}
+
+/** T1 and T2, after the first start (the section "first-start-tip"). */
+async function tipFirstStart(
+  lastSeq: number,
+  pass: string,
+  bind: { readonly line: string; readonly seq: number },
+  settled: ConsumerInfo
+): Promise<string | undefined> {
+  const failures: string[] = [];
+  note(pass);
+  note(`bind: ${bind.line}`);
+  note(`durable: ${durableText(settled)}`);
+  const rows = await headRows(tipRepo);
+  const calls = await fakeCalls();
+  note(`T1 head rows of ${tipRepo}: ${rows.join("; ") || "none"}`);
+  note(`T1 calls of GitHub since the events: ${calls.map(callText).join("; ") || "none"}`);
+  if (rows.length > 0) {
+    failures.push(
+      `T1: the first start wrote heads from the events the bus held: ${rows.join("; ")}`
+    );
+  }
+  if (bind.seq !== lastSeq + 1) {
+    failures.push(
+      `T1: the first start's intake bound at stream sequence ${bind.seq}, want ${lastSeq + 1}, the one after the last event the bus held`
+    );
+  }
+  const reads = calls.filter(readsATipPull);
+  if (reads.length > 0) {
+    failures.push(
+      `T1: the first start read the pull requests of the events the bus held from GitHub: ${reads.map(callText).join("; ")}`
+    );
+  }
+
+  await asPerson("POST", "/api/v1/projects", { key: tipProject, name: "First start" });
+  await setDefaultRepository(tipProject, tipRepo);
+  const issue = await seedIssue(
+    tipProject,
+    "A push after the first start moves the head",
+    checkFor("tip", "A result at the pushed head stands.")
+  );
+  await record(issue, {
+    check: "tip",
+    commit: tipCommits.secondPushed,
+    observed: "recorded at the head of the push after the first start",
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+  const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const pushed = tipPull(22, tipCommits.secondPushed, `Dispatch: ${issue}\n\nAnother change.`, now);
+  const kept = tipPull(21, tipCommits.firstPushed, "A change.", now);
+  await seedTip({ "21": kept, "22": pushed });
+  const published = await publishToStream(tipPayload(22, "synchronize", pushed));
+  const want = `#22 open at ${tipCommits.secondPushed.slice(0, 12)}`;
+  const by = published.at + headAfterEventMs;
+  let after = await headRows(tipRepo);
+  while (!after.includes(want) && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    after = await headRows(tipRepo);
+  }
+  const took = Date.now() - published.at;
+  note(
+    `T2 ${issue}; #22's push at stream sequence ${published.seq}; rows ${took} ms after it: ${after.join("; ") || "none"}`
+  );
+  if (!after.includes(want) || took > headAfterEventMs) {
+    failures.push(
+      `T2: ${want} is not stored within ${headAfterEventMs} ms of the push (${took} ms): ${after.join("; ") || "no row"}`
+    );
+  }
+  if (after.some((row) => row.startsWith("#21 "))) {
+    failures.push("T2: #21, which got no event after the first start, has a head row");
+  }
+  const printed = await resultsCommand(issue);
+  const lines = commandHeadLines(printed);
+  note(`T2 dispatch results --issue ${issue}: ${lines.join(" | ")}`);
+  if (!lines.some((line) => line.includes(`pull request #22 at ${tipCommits.secondPushed}`))) {
+    failures.push(
+      `T2: dispatch results --issue ${issue} does not compare its check with #22 at ${tipCommits.secondPushed}: ${JSON.stringify(printed)}`
+    );
+  }
+  return failures.length === 0 ? undefined : failures.join("\n   ");
+}
+
+/** first-start-tip's read while no server runs after the first start: where the durable stands,
+ *  which the second start must bind right after, whether #22's texts hold its commit messages, and
+ *  the fake's log emptied. */
+async function tipStopped(): Promise<void> {
+  const info = await eventsDurable();
+  if (info === undefined) throw new Error("the first start left no durable");
+  const messagesBefore = await sql(tipMessagesOfTheSecond);
+  await resetPullReads();
+  const fixtureAt = await prepareOnePass();
+  writeTipState({
+    floor: info.ack_floor.stream_seq,
+    linesBefore: attributionLines().length,
+    logOffset: logLength(),
+    messagesBefore,
+  });
+  note(
+    `after the first start: ${durableText(info)}; #22's commit messages: ${messagesBefore}; no pass is recorded, at ${fixtureAt}`
+  );
+}
+
+/** T3, after the second start (the section "first-start-tip"). */
+async function tipSecondStart(
+  floor: number,
+  messagesBefore: string,
+  pass: string,
+  bind: { readonly line: string; readonly seq: number },
+  settled: ConsumerInfo
+): Promise<string | undefined> {
+  const failures: string[] = [];
+  note(pass);
+  note(`bind: ${bind.line}`);
+  note(`durable: ${durableText(settled)}`);
+  const rows = await headRows(tipRepo);
+  const calls = await fakeCalls();
+  note(`T3 head rows of ${tipRepo}: ${rows.join("; ") || "none"}`);
+  note(`T3 calls of GitHub since the second start: ${calls.map(callText).join("; ") || "none"}`);
+  if (bind.seq !== floor + 1) {
+    failures.push(
+      `T3: the second start's intake bound at stream sequence ${bind.seq}, want ${floor + 1}, the one after the ack floor ${floor} the first start left`
+    );
+  }
+  if (settled.num_redelivered !== 0) {
+    failures.push(`T3: the durable redelivered ${settled.num_redelivered} event(s)`);
+  }
+  if (rows.some((row) => row.startsWith("#21 "))) {
+    failures.push(`T3: #21 has a head row, from an event the bus held: ${rows.join("; ")}`);
+  }
+  const eventReads = calls.filter(restPullRead);
+  if (eventReads.length > 0) {
+    failures.push(
+      `T3: the second start read pull requests as the intake reads an event's: ${eventReads.map(callText).join("; ")}`
+    );
+  }
+  // The claim (v-first-start-tip): the start's reconcile pass calls GitHub only to read the commit
+  // messages that the read of the push did not store. Where #22's texts held none before the second
+  // start (the push's read stores none where the body names the issue), the start sends exactly one
+  // GraphQL query, the facts line's, asking for #22 alone, beside the installation lookup and the
+  // token that query needs, and #22's messages are stored after the pass. Where they were stored
+  // before, it calls GitHub for nothing. The webhook redelivery sweep's read
+  // (GET /app/hook/deliveries) and the start's rate reading (rateReadingCalls, main's #4681: its
+  // reads and the token it minted for them alone) are the App's own duties, neither the intake's
+  // nor the pass's, and are left out, and named so a reader sees what was.
+  const messagesAfter = await sql(tipMessagesOfTheSecond);
+  note(
+    `T3 #22's commit messages: ${messagesBefore} before the second start, ${messagesAfter} after its pass`
+  );
+  const reading = rateReadingCalls(calls);
+  note(`T3 left out as the rate reading's: ${[...reading].map(callText).join("; ") || "none"}`);
+  const counted = calls.filter(
+    (call) => call.route !== "GET /app/hook/deliveries" && !reading.has(call)
+  );
+  const unstored = messagesBefore === "not read";
+  if (unstored) {
+    const queries = counted.filter((call) => call.route === "POST /graphql");
+    if (queries.length !== 1 || queries[0]?.asks !== `${tipRepo}#22`) {
+      failures.push(
+        `T3: the second start sent ${queries.length} GraphQL query(ies) (${queries.map(callText).join("; ") || "none"}), want one asking for ${tipRepo}#22 alone, the facts line's read of the commit messages the push's read did not store`
+      );
+    }
+    if (messagesAfter !== "read") {
+      failures.push(
+        `T3: after the second start's pass #22's commit messages are ${messagesAfter}, want read: its query read no messages the push's read left unread`
+      );
+    }
+    const lookups = counted.filter(tipLookup).length;
+    const mints = counted.filter(tipMint).length;
+    if (lookups > 1 || mints > 1) {
+      failures.push(
+        `T3: the second start looked up ${tipRepo}'s installation ${lookups} time(s) and minted ${mints} token(s) for installation ${tipInstallation}, want one each at most: the one query's lookup and token`
+      );
+    }
+  }
+  const others = counted.filter((call) => !(unstored && tipCallOfTheFactsLine(call)));
+  if (others.length > 0) {
+    failures.push(
+      `T3: the second start called GitHub for more than ${unstored ? "the facts line's read of #22's commit messages" : "nothing, #22's messages being stored"}: ${others.map(callText).join("; ")}`
+    );
+  }
+  return failures.length === 0 ? undefined : failures.join("\n   ");
+}
+
+/** The control of T3, while no server runs: the durable deleted and made again to deliver from
+ *  the stream's first message, and the fake's log emptied. */
+async function tipControlDurable(): Promise<void> {
+  const manager = await nats.jetstreamManager();
+  await manager.consumers.delete("ENVOY_NOTIFICATIONS", "delivery-events");
+  const made = await manager.consumers.add("ENVOY_NOTIFICATIONS", {
+    ack_policy: AckPolicy.Explicit,
+    deliver_policy: DeliverPolicy.StartSequence,
+    deliver_subject: createInbox(),
+    durable_name: "delivery-events",
+    filter_subject: "notifications.github.>",
+    opt_start_seq: 1,
+  });
+  await resetPullReads();
+  writeTipState({ logOffset: logLength() });
+  note(`T3's control: the durable made again, ${durableText(made)}`);
+}
+
+/** The control of T3, after one more start: it binds at or below the floor the second start
+ *  found, and reads a pull request of acme/first-start from GitHub within the 5 seconds of an
+ *  event, so the readings of T3 see a start that reads an event again. */
+async function tipControlStart(
+  floor: number,
+  bind: { readonly line: string; readonly seq: number }
+): Promise<string | undefined> {
+  const failures: string[] = [];
+  note(`bind: ${bind.line}`);
+  if (!(bind.seq <= floor)) {
+    failures.push(
+      `T3's control: with the durable made at the stream's first message the start bound at stream sequence ${bind.seq}, not at or below the floor ${floor}, so T3's reading of the bind cannot see a start that reads again`
+    );
+  }
+  const by = Date.now() + headAfterEventMs;
+  let calls = await fakeCalls();
+  while (!calls.some((call) => readsATipPull(call) && restPullRead(call)) && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    calls = await fakeCalls();
+  }
+  note(
+    `T3's control: calls of GitHub since its start: ${calls.map(callText).join("; ") || "none"}`
+  );
+  if (!calls.some((call) => readsATipPull(call) && restPullRead(call))) {
+    failures.push(
+      "T3's control: the start that reads the events again read no pull request from GitHub, so T3's reading of the calls cannot see it"
+    );
+  }
+  return failures.length === 0 ? undefined : failures.join("\n   ");
+}
+
+// --- the head checks on a stack of their own -------------------------------------------------------
+//
+// v-head-no-settings-main, v-head-from-github and v-github-outage: R1, R2 and R4 of the results
+// lookup. The shell runs each one after the one-pass phases and before first-start-tip, or alone
+// under its own name, on a stack of its own (fresh_stack): a NATS of its own with no stream, an
+// emptied database, so no delivery settings, and one start of the server whose delivery reconcile
+// runs as a deployment's does, every five minutes from a moment within its first five, with no
+// pass at its start. Each case runs in two halves, each a process of its own (headCaseHalf), as
+// its row of headChecks says:
+//   <case>-fixture  while no server runs: the fake holds the case's repositories alone.
+//   <case>          once the server answers: the intake bound (awaitIntakeBound), no delivery
+//                   settings, the project ACME with acme/default as its default repository, then
+//                   the case. Each event GitHub sends goes on the bus as the cases before the
+//                   phases publish one, the fake first made to hold what GitHub holds after it
+//                   (publishHeadPull); each read of the results is the `dispatch` command's.
+// head-no-settings, in acme/default and in acme/tools, a repository an issue of ACME names as its
+// own:
+//   S1  a pass at C1, then the pull request opens at C1: within 5 seconds of the event the check
+//       is compared with that head and the pass stands.
+//   S2  a late copy of an older push, which GitHub's answer no longer holds, leaves the head at C1;
+//       a push to C2 leaves the pass at none of the compared commits within 5 seconds; a pass at
+//       C2 stands at the next read.
+//   S3  a pull request opens before any result: within 5 seconds the check is compared with it,
+//       and a pass at its head stands at the next read.
+//   Each read waits 45 seconds before it says a head is missing, as the negative control does.
+// head-from-github:
+//   L   #48 opens and closes, then gets a labeled and an edited event while GitHub holds it
+//       closed: 3 seconds after each, #48 is still no basis, so no pass at its head stands. That
+//       the opening makes #48 a basis and the close takes it away are the half's self-checks: a run
+//       where either fails shows nothing of the check.
+//   F1 to F6  envelopes GitHub never sent, each with an issue and a pull request of its own: a
+//       synchronize back to an older commit that carries a pass; a close of an open pull request
+//       whose head carries one; a reopen of a closed one whose head carries one; a number GitHub
+//       does not have (404); a repository the App is not installed on; a pull request whose read
+//       the App's token may not make (403); and a synchronize dated an hour ahead, after which
+//       GitHub's own push still lands. Each is sent twice. Through a real envoy-listener (POST
+//       /v1/messages/publish, source github), which refuses GitHub's lane (400, `topic`), so the
+//       envelope reaches no bus; then straight onto the bus, where the intake reads GitHub. None
+//       moves a head or the route's answer.
+// github-outage: #3001 opens and its head row is stored; GitHub then answers every call with 500
+//   for 6 minutes (PUT /__fixture/outage), and in that time #2001 opens and #3001 gets a push,
+//   GitHub holding each new head; within 10 minutes after GitHub answers again, each head row and
+//   `dispatch results` name the head GitHub holds.
+// The negative control of each case is a build, which the shell makes from its control switch.
+
+/** A commit of the head checks: `seed` written again and again to 40 characters. */
+function seededSha(seed: string): string {
+  return seed.repeat(Math.ceil(40 / seed.length)).slice(0, 40);
+}
+
+/** Makes GitHub hold pull request `number` of `repository` as `pull`, in `seed` and in the fake. */
+async function holdPull(
+  seed: Record<string, FakeRepository>,
+  repository: string,
+  number: string,
+  pull: FakePullRequest
+): Promise<void> {
+  seed[repository] = changedRepository(seed, repository, (held) => ({
+    ...held,
+    pulls: { ...(held.pulls ?? {}), [number]: pull },
+  }));
+  await putFakeRepositories(seed);
+}
+
+/** Takes GitHub down, every call answering `status` (PUT /__fixture/outage), or, with `status`
+ *  undefined, brings it back (DELETE). */
+async function setOutage(status: number | undefined): Promise<void> {
+  const response = await fetch(
+    new URL("/__fixture/outage", githubUrl),
+    status === undefined
+      ? { method: "DELETE" }
+      : {
+          body: JSON.stringify({ status }),
+          headers: { "Content-Type": "application/json" },
+          method: "PUT",
+        }
+  );
+  if (!response.ok) {
+    throw new Error(`/__fixture/outage answered ${response.status} ${await response.text()}`);
+  }
+}
+
+/** The `pull_request` payload of pull request `number` of `repository` at `head`, for the event
+ *  `action`, updated at `at`: on the branch legion/<issue> with a body naming `issue`, or, with no
+ *  issue, on a branch and with a body that name none. */
+function headPayload(
+  repository: string,
+  number: number,
+  action: string,
+  head: string,
+  at: number,
+  issue?: string
+): Record<string, string> {
+  return {
+    action,
+    author: "implementer[bot]",
+    base_ref: "main",
+    body: issue === undefined ? "A change." : `Dispatch: ${issue}`,
+    head_ref: issue === undefined ? `feature/change-${number}` : `legion/${issue}`,
+    head_repo: repository,
+    head_sha: head,
+    kind: "pr",
+    merged: "false",
+    number: String(number),
+    repo: repository,
+    title: `Change ${number}`,
+    // To the second, as GitHub writes a time.
+    updated_at: new Date(at).toISOString().replace(/\.\d+Z$/, "Z"),
+    url: `https://github.com/${repository}/pull/${number}`,
+  };
+}
+
+/** Whether `answered`, the listener's body for a publish, is its refusal of GitHub's lane: the
+ *  field `topic` named as the one to change, and the error naming `notifications.github.`. */
+function listenerRefusedLane(answered: string): boolean {
+  try {
+    const body = JSON.parse(answered) as { readonly error?: unknown; readonly expected?: unknown };
+    return (
+      Array.isArray(body.expected) &&
+      body.expected.includes("topic") &&
+      typeof body.error === "string" &&
+      body.error.startsWith("cannot publish to notifications.github. topics")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Publishes the event `payload` reports, as GitHub sends one: the fake is first made to hold what
+ *  GitHub holds after the event, since the intake takes from an envelope only which pull request
+ *  changed and reads that pull request from GitHub. */
+async function publishHeadPull(
+  seed: Record<string, FakeRepository>,
+  payload: Record<string, string>
+): Promise<Published> {
+  await holdPull(seed, payload.repo, payload.number, pullAfter(payload));
+  return publishEnvelope(payload);
+}
+
+/** The line `dispatch results` prints for the check k1, which every issue of a head check holds. */
+function k1Line(printed: string): string {
+  return commandHeadLines(printed).find((line) => line.startsWith("- k1 ")) ?? "(no k1 line)";
+}
+
+/** The line `dispatch results` prints for the result at `commit`. */
+function resultLineAt(printed: string, commit: string): string {
+  return (
+    printed
+      .split("\n")
+      .find((line) => line.startsWith("  - ") && line.includes(` at ${commit}.`)) ??
+    `(no result at ${commit})`
+  );
+}
+
+/** Reads `dispatch results --issue <key>` every pollMs until `accept` holds of what it printed, or
+ *  until `waitMs` past `from` (milliseconds since the epoch, an event's publish). It answers the
+ *  last text, whether `accept` held of it, `ended`, how long after `from` that read's command
+ *  ended, and `answered`, how long after `from` the results route answered that read: the `time=`
+ *  of the server's log line of its GET (resultsAnsweredAt). `answered` still holds the start of
+ *  that read's own `dispatch` command, which sends its GET only once it runs; it leaves out what
+ *  the command does after the answer (it renders, prints and exits), which on 2026-11-27, at a
+ *  load of 280 on 288 CPUs, was 3.7 s of a read the route answered 4.0 s after the event. It is
+ *  undefined where `accept` never held, or the server logged no such GET within requestLogWaitMs.
+ *  `ms`, what a bound is held to, is `answered` where there is one and `ended` otherwise, so a
+ *  missing line never makes a read look sooner; readTimeText says which. */
+async function awaitResults(
+  key: string,
+  accept: (printed: string) => boolean,
+  from: number,
+  waitMs = headReadWaitMs
+): Promise<HeadRead> {
+  let offset = logLength();
+  let text = await resultsCommand(key);
+  while (!accept(text) && Date.now() - from < waitMs) {
+    await Bun.sleep(pollMs);
+    offset = logLength();
+    text = await resultsCommand(key);
+  }
+  const ended = Date.now() - from;
+  const met = accept(text);
+  const answeredAt = met ? await resultsAnsweredAt(key, offset) : undefined;
+  const answered = answeredAt === undefined ? undefined : answeredAt - from;
+  return { answered, ended, met, ms: answered ?? ended, text };
+}
+
+/** One read of awaitResults: its text, whether it showed what was awaited, and its times. */
+interface HeadRead {
+  readonly answered?: number;
+  readonly ended: number;
+  readonly met: boolean;
+  readonly ms: number;
+  readonly text: string;
+}
+
+/** A read's times in the words a head check prints, after the moment they count from ("it"): the
+ *  route's answer and the command's end, or the command's end alone where the server logged no
+ *  GET of it, or that the read never showed what was awaited. */
+function readTimeText(read: HeadRead): string {
+  if (!read.met) return `no read showed it; the last command ended ${read.ended} ms after it`;
+  return read.answered === undefined
+    ? `the server logged no GET of the read that showed it; that command ended ${read.ended} ms after it`
+    : `the route answered ${read.answered} ms after it, and the command ended ${read.ended} ms after it`;
+}
+
+/** When the results route answered the first GET of `key`'s results that the server logged past
+ *  byte `offset` of its log, from the line's `time=`, in milliseconds since the epoch, or undefined
+ *  where none comes within requestLogWaitMs (logLineSince). */
+async function resultsAnsweredAt(key: string, offset: number): Promise<number | undefined> {
+  const path = ` path=/api/v1/issues/${key}/results `;
+  const logged = await logLineSince(
+    offset,
+    (line) => line.includes('msg="dispatch: request" method=GET ') && line.includes(path),
+    requestLogWaitMs
+  );
+  const at = logged === undefined ? undefined : /^time=(\S+) /.exec(logged)?.[1];
+  return at === undefined ? undefined : Date.parse(at);
+}
+
+/** An issue of a head check in `project`, with the before_merge check k1, in `repo` where it is
+ *  given (the issue's own repository) and else in the project's default. */
+function seedHeadIssue(title: string, repo?: string, project = headProject): Promise<string> {
+  return seedIssue(
+    project,
+    title,
+    checkFor("k1", "The change holds at the pull request's head."),
+    undefined,
+    repo
+  );
+}
+
+/** Records a pass of k1 on `key` at `commit`, by `role`. */
+async function recordHeadPass(key: string, commit: string, role: string): Promise<void> {
+  await record(key, {
+    check: "k1",
+    commit,
+    observed: `a pass at ${commit.slice(0, 12)}`,
+    role,
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+}
+
+/** How many reads of GitHub Dispatch owes, or `no table` for a build without the table. */
+async function readsOwed(): Promise<string> {
+  return sql("select count(*) from pull_request_reads_owed").catch(() => "no table");
+}
+
+/** A judge of one expectation of a head check: it prints `holds` or `FAILS` before `what`, and
+ *  keeps each one that fails. */
+function expectations(): {
+  readonly expect: (holds: boolean, what: string) => void;
+  readonly failure: () => string | undefined;
+} {
+  const failed: string[] = [];
+  return {
+    expect: (holds, what) => {
+      note(`${holds ? "holds" : "FAILS"}: ${what}`);
+      if (!holds) failed.push(what);
+    },
+    failure: () => (failed.length === 0 ? undefined : failed.join("\n   ")),
+  };
+}
+
+/** Runs one half of the head check `name` (the section "the head checks on a stack of their
+ *  own"), the fixture where `fixture` is true, and ends the process. */
+async function headCaseHalf(name: string, check: HeadCheck, fixture: boolean): Promise<never> {
+  const seed = { ...check.repositories };
+  if (fixture) {
+    await putFakeRepositories(seed).catch((error: unknown) =>
+      setupFailed(`${name}'s fixture`, error)
+    );
+    note(`${name}: the fake holds ${Object.keys(seed).join(", ")}, and no other repository`);
+    void nats.close();
+    process.exit(0);
+  }
+  const unbound = await awaitIntakeBound(check.intakeMustBind);
+  if (unbound !== undefined) note(`${name}: the intake bound no durable: ${unbound}`);
+  for (const [key, defaultRepo] of check.projects) {
+    await asPerson("POST", "/api/v1/projects", { key, name: `Head checks, ${defaultRepo}` }).catch(
+      (error: unknown) => setupFailed(`project ${key}`, error)
+    );
+    await setDefaultRepository(key, defaultRepo).catch((error: unknown) =>
+      setupFailed(`default repository ${defaultRepo} of ${key}`, error)
+    );
+  }
+  const settings = await asSession("GET", "/api/v1/settings/delivery").catch((error: unknown) =>
+    setupFailed("the read of the delivery settings", error)
+  );
+  if (settings !== null) {
+    setupFailed(name, `the deployment holds delivery settings: ${JSON.stringify(settings)}`);
+  }
+  note(`${name}: GET /api/v1/settings/delivery answers null: the deployment holds no settings`);
+  await runCase(name, () => check.body(seed));
+  return summarise();
+}
+
+/** head-no-settings: S1 to S3 in each of its two places (the section "the head checks on a stack
+ *  of their own"). */
+async function headNoSettings(seed: Record<string, FakeRepository>): Promise<string | undefined> {
+  const { expect, failure } = expectations();
+  for (const kind of headKinds) {
+    const commit = (n: string) => seededSha(`${kind.prefix}${n}`);
+    // A read that never showed the head keeps the words the negative control's line is quoted by.
+    const late = (read: HeadRead) =>
+      read.met ? readTimeText(read) : `took ${read.ms} ms, not within ${headReadWaitMs} ms`;
+    note(`${kind.name}: ${kind.repo}`);
+
+    const key = await seedHeadIssue(`The change in ${kind.repo}`, kind.own);
+    await recordHeadPass(key, commit("1"), "implementer");
+    const t0 = Date.now();
+    const opened = await publishHeadPull(
+      seed,
+      headPayload(kind.repo, kind.pr, "opened", commit("1"), t0 - 5_000, key)
+    );
+    const s1 = await awaitResults(
+      key,
+      (text) =>
+        k1Line(text).includes(`pull request #${kind.pr} at ${commit("1")}`) &&
+        passStands(k1Line(text), "yes"),
+      opened.at
+    );
+    note(`S1 ${key}, after the opening of #${kind.pr}: ${readTimeText(s1)}: ${k1Line(s1.text)}`);
+    expect(
+      s1.met && s1.ms <= headAfterEventMs,
+      `S1 ${kind.name}: dispatch results compares k1 with the head of #${kind.pr} and a pass stands within ${headAfterEventMs} ms of the event (${late(s1)})`
+    );
+
+    // A late copy of an older push: GitHub's answer no longer holds it, so the fake stays as it is.
+    await publishEnvelope(
+      headPayload(kind.repo, kind.pr, "synchronize", commit("9"), t0 - 3_600_000, key)
+    );
+    await Bun.sleep(3_000);
+    const stale = k1Line(await resultsCommand(key));
+    expect(
+      stale.includes(`at ${commit("1")}`) && passStands(stale, "yes"),
+      `S2 ${kind.name}: 3 s after a late copy of an older push to ${commit("9").slice(0, 12)}, which GitHub no longer holds, the head is still C1 and the pass stands: ${stale}`
+    );
+    const pushed = await publishHeadPull(
+      seed,
+      headPayload(kind.repo, kind.pr, "synchronize", commit("2"), t0 + 60_000, key)
+    );
+    const s2 = await awaitResults(
+      key,
+      (text) =>
+        resultLineAt(text, commit("1")).includes("none of the compared commits") &&
+        passStands(k1Line(text), "no"),
+      pushed.at
+    );
+    note(`S2 after the push to C2: ${readTimeText(s2)}: ${k1Line(s2.text)}`);
+    note(`S2 ${resultLineAt(s2.text, commit("1"))}`);
+    expect(
+      s2.met && s2.ms <= headAfterEventMs,
+      `S2 ${kind.name}: within ${headAfterEventMs} ms of the push the pass at C1 stands at none of the compared commits and no pass stands (${late(s2)})`
+    );
+    await recordHeadPass(key, commit("2"), "tester");
+    const atNewHead = await resultsCommand(key);
+    expect(
+      k1Line(atNewHead).includes(`pull request #${kind.pr} at ${commit("2")}`) &&
+        passStands(k1Line(atNewHead), "yes") &&
+        resultLineAt(atNewHead, commit("2")).includes(`head of pull request #${kind.pr}`),
+      `S2 ${kind.name}: a pass recorded at the new head stands at the next read: ${k1Line(atNewHead)}`
+    );
+
+    const key3 = await seedHeadIssue(`The change with no result yet in ${kind.repo}`, kind.own);
+    const opened3 = await publishHeadPull(
+      seed,
+      headPayload(kind.repo, kind.pr3, "opened", commit("3"), Date.now(), key3)
+    );
+    const s3 = await awaitResults(
+      key3,
+      (text) => k1Line(text).includes(`pull request #${kind.pr3} at ${commit("3")}`),
+      opened3.at
+    );
+    note(`S3 ${key3}, after the opening of #${kind.pr3}: ${readTimeText(s3)}: ${k1Line(s3.text)}`);
+    expect(
+      s3.met && s3.ms <= headAfterEventMs,
+      `S3 ${kind.name}: with no result yet dispatch results names #${kind.pr3} within ${headAfterEventMs} ms of the event (${late(s3)})`
+    );
+    await recordHeadPass(key3, commit("3"), "implementer");
+    const atHead3 = await resultsCommand(key3);
+    expect(
+      passStands(k1Line(atHead3), "yes") &&
+        resultLineAt(atHead3, commit("3")).includes(`head of pull request #${kind.pr3}`),
+      `S3 ${kind.name}: a pass recorded at its head stands at the next read: ${k1Line(atHead3)}`
+    );
+  }
+  note(`head rows: ${(await headRows()).join("; ") || "none"}`);
+  return failure();
+}
+
+/** head-from-github: L, then F1 to F6 (the section "the head checks on a stack of their own"). */
+async function headFromGithub(seed: Record<string, FakeRepository>): Promise<string | undefined> {
+  if (listenerUrl === "") {
+    setupFailed(
+      "head-from-github",
+      "VERIFICATION_RESULTS_E2E_LISTENER_URL names no envoy-listener"
+    );
+  }
+  const { expect, failure } = expectations();
+  const c = fromGithubCommits;
+  const ago = (ms: number) => Date.now() - ms;
+
+  // L. GitHub holds #48 as each event leaves it: open at the opening, closed at the close, and
+  // still closed, with a later update time, at each later event.
+  const key = await seedHeadIssue("L: the change");
+  await recordHeadPass(key, c.l1, "implementer");
+  const event = async (action: string, at: number, state: "open" | "closed") => {
+    const payload = headPayload(headRepo, 48, action, c.l1, at, key);
+    await holdPull(seed, headRepo, "48", { ...pullAfter(payload), state });
+    return publishEnvelope(payload);
+  };
+  const opening = await event("opened", ago(120_000), "open");
+  const opened = await awaitResults(
+    key,
+    (text) => k1Line(text).includes("pull request #48") && passStands(k1Line(text), "yes"),
+    opening.at,
+    15_000
+  );
+  if (!opened.met) {
+    setupFailed(
+      "head-from-github's self-check",
+      `15 s after the opening of #48, #48 is no basis of k1: ${k1Line(opened.text)}`
+    );
+  }
+  note(`L: the opening makes #48 a basis (${opened.ms} ms): ${k1Line(opened.text)}`);
+  const closing = await event("closed", ago(60_000), "closed");
+  const closed = await awaitResults(
+    key,
+    (text) => !k1Line(text).includes("pull request #48"),
+    closing.at,
+    15_000
+  );
+  if (!closed.met) {
+    setupFailed(
+      "head-from-github's self-check",
+      `15 s after the close of #48, #48 is still a basis of k1: ${k1Line(closed.text)}`
+    );
+  }
+  note(`L: the close takes #48 away (${closed.ms} ms): ${k1Line(closed.text)}`);
+  for (const [action, offset] of [
+    ["labeled", 0],
+    ["edited", 10_000],
+  ] as const) {
+    await event(action, Date.now() + offset, "closed");
+    await Bun.sleep(3_000);
+    const line = k1Line(await resultsCommand(key));
+    expect(
+      !line.includes("pull request #48"),
+      `L: 3 s after the ${action} event of the closed #48, #48 is still no basis: ${line}`
+    );
+  }
+
+  // F1 to F6. Each envelope GitHub never sent is tried twice, and leaves the fake as it is. First
+  // through the envoy-listener's publish route, as any caller of the listener can send one: the
+  // listener refuses GitHub's lane by name (400, `expected: ["topic"]`, since main's #4194), and
+  // the subject the envelope names carries no message in the next second, so the forgery never
+  // reaches the bus. Then straight onto the bus, as only GitHub's own publisher can: the intake
+  // takes from the envelope only which pull request changed and reads that pull request from
+  // GitHub. The same watcher of the subject sees that copy arrive, which shows its second of
+  // silence could have heard one. The expectation after each forgery reads the head the bus copy
+  // leaves.
+  const forge = async (
+    label: string,
+    repository: string,
+    number: number,
+    action: string,
+    head: string,
+    at: number,
+    issue: string
+  ): Promise<string> => {
+    await resetPullReads();
+    const payload = headPayload(repository, number, action, head, at, issue);
+    const { subject } = envelopeOf(payload, at);
+    const watched = nats.subscribe(subject);
+    let reached = 0;
+    const counted = (async () => {
+      for await (const _message of watched) reached++;
+    })();
+    await nats.flush();
+    const answer = await fetch(new URL("/v1/messages/publish", listenerUrl), {
+      body: JSON.stringify({
+        message: `pull request #${number} ${action}`,
+        payload: JSON.stringify(payload),
+        source: "github",
+        topic: subject,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const answered = await answer.text();
+    await Bun.sleep(1_000);
+    const fromListener = reached;
+    // The listener stamped an envelope with the time it took it, so the bus copy is stamped too.
+    const onBus = envelopeOf(payload, Date.now());
+    nats.publish(onBus.subject, onBus.data);
+    await nats.flush();
+    const heardBy = Date.now() + 1_000;
+    while (reached === fromListener && Date.now() < heardBy) await Bun.sleep(pollMs);
+    watched.unsubscribe();
+    await counted;
+    expect(
+      answer.status === 400 && listenerRefusedLane(answered) && fromListener === 0 && reached === 1,
+      `${label}: the listener refuses the forged ${action} of ${repository}#${number} on GitHub's lane, and it reaches no bus: it answered ${answer.status} ${answered.trimEnd()}; ${subject} carried ${fromListener} message(s) in the second after, and ${reached - fromListener} once the copy went straight onto the bus, want 0 and 1`
+    );
+    await Bun.sleep(3_000);
+    const calls = await fakeCalls();
+    return `the listener answered ${answer.status}; the subject carried ${fromListener} message(s) after it and ${reached - fromListener} after the bus copy; the calls of GitHub since: ${calls.map(callText).join("; ") || "none"}`;
+  };
+
+  const k1 = await seedHeadIssue("F1: the change");
+  await recordHeadPass(k1, c.f1old, "implementer");
+  const f1Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 61, "opened", c.f1, ago(60_000), k1)
+  );
+  const f1 = await awaitResults(
+    k1,
+    (text) => k1Line(text).includes(`#61 at ${c.f1}`),
+    f1Opening.at,
+    15_000
+  );
+  note(`F1 GitHub's opening: ${k1Line(f1.text)}`);
+  note(
+    `F1 forged synchronize to ${c.f1old.slice(0, 12)}, dated now: ${await forge("F1", headRepo, 61, "synchronize", c.f1old, Date.now(), k1)}`
+  );
+  const f1After = k1Line(await resultsCommand(k1));
+  expect(
+    f1.met && f1After.includes(`#61 at ${c.f1}`) && passStands(f1After, "no"),
+    `F1: a forged synchronize back to an older commit that carries a pass moves no head, and that pass does not stand: ${f1After}`
+  );
+
+  const k2 = await seedHeadIssue("F2: the change");
+  await recordHeadPass(k2, c.f2, "implementer");
+  const f2Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 62, "opened", c.f2, ago(60_000), k2)
+  );
+  const f2 = await awaitResults(
+    k2,
+    (text) => k1Line(text).includes(`#62 at ${c.f2}`) && passStands(k1Line(text), "yes"),
+    f2Opening.at,
+    15_000
+  );
+  note(`F2 GitHub's opening: ${k1Line(f2.text)}`);
+  note(`F2 forged close: ${await forge("F2", headRepo, 62, "closed", c.f2, Date.now(), k2)}`);
+  const f2After = k1Line(await resultsCommand(k2));
+  expect(
+    f2.met && f2After.includes(`#62 at ${c.f2}`) && passStands(f2After, "yes"),
+    `F2: a forged close leaves the pull request open, and its pass still stands: ${f2After}`
+  );
+
+  const k3 = await seedHeadIssue("F3: the change");
+  await recordHeadPass(k3, c.f3, "implementer");
+  const f3Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 63, "opened", c.f3, ago(120_000), k3)
+  );
+  await awaitResults(k3, (text) => k1Line(text).includes("#63"), f3Opening.at, 15_000);
+  const f3Closing = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 63, "closed", c.f3, ago(60_000), k3)
+  );
+  const f3 = await awaitResults(k3, (text) => !k1Line(text).includes("#63"), f3Closing.at, 15_000);
+  note(`F3 GitHub's opening, then its close: ${k1Line(f3.text)}`);
+  note(`F3 forged reopen: ${await forge("F3", headRepo, 63, "reopened", c.f3, Date.now(), k3)}`);
+  const f3After = k1Line(await resultsCommand(k3));
+  expect(
+    f3.met && !f3After.includes("#63") && passStands(f3After, "no"),
+    `F3: a forged reopen leaves the pull request closed, and the pass at its head does not stand: ${f3After}`
+  );
+
+  const k4 = await seedHeadIssue("F4: the change");
+  await recordHeadPass(k4, c.f4, "implementer");
+  note(
+    `F4 forged opening of #64, which GitHub does not have (404): ${await forge("F4", headRepo, 64, "opened", c.f4, Date.now(), k4)}`
+  );
+  const f4After = k1Line(await resultsCommand(k4));
+  expect(
+    !f4After.includes("#64") &&
+      !(await headRows()).some((row) => row.startsWith(`${headRepo}#64 `)),
+    `F4: a forged pull request GitHub does not have writes no row and is no basis: ${f4After}`
+  );
+
+  const k5 = await seedHeadIssue("F5: the change", undefined, "HIDE");
+  note(
+    `F5 forged opening of ${hiddenHeadRepo}#65, a repository the App is not installed on: ${await forge("F5", hiddenHeadRepo, 65, "opened", c.f5, Date.now(), k5)}`
+  );
+  expect(
+    !(await headRows()).some((row) => row.startsWith(`${hiddenHeadRepo}#65 `)),
+    `F5: a forged pull request of a repository the App is not installed on writes no row`
+  );
+
+  const k5b = await seedHeadIssue("F5b: the change", undefined, "LOCK");
+  await recordHeadPass(k5b, c.f5b, "implementer");
+  note(
+    `F5b forged opening of ${lockedHeadRepo}#66, whose read GitHub refuses (403): ${await forge("F5b", lockedHeadRepo, 66, "opened", c.f5b, Date.now(), k5b)}`
+  );
+  const f5bAfter = k1Line(await resultsCommand(k5b));
+  expect(
+    !f5bAfter.includes("#66") &&
+      !(await headRows()).some((row) => row.startsWith(`${lockedHeadRepo}#66 `)),
+    `F5b: a forged pull request whose read GitHub refuses writes no row and is no basis: ${f5bAfter}`
+  );
+
+  const k6 = await seedHeadIssue("F6: the change");
+  await recordHeadPass(k6, c.f6b, "implementer");
+  const f6Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 67, "opened", c.f6a, ago(60_000), k6)
+  );
+  await awaitResults(k6, (text) => k1Line(text).includes(`#67 at ${c.f6a}`), f6Opening.at, 15_000);
+  note(
+    `F6 forged synchronize to ${c.f6b.slice(0, 12)}, dated an hour ahead: ${await forge("F6", headRepo, 67, "synchronize", c.f6b, Date.now() + 3_600_000, k6)}`
+  );
+  const f6Forged = k1Line(await resultsCommand(k6));
+  note(`F6 after the forgery: ${f6Forged}`);
+  const f6Push = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 67, "synchronize", c.f6b, Date.now() + 30_000, k6)
+  );
+  const f6 = await awaitResults(
+    k6,
+    (text) => k1Line(text).includes(`#67 at ${c.f6b}`) && passStands(k1Line(text), "yes"),
+    f6Push.at,
+    15_000
+  );
+  note(`F6 after GitHub's own push (${f6.ms} ms): ${k1Line(f6.text)}`);
+  expect(
+    f6Forged.includes(`#67 at ${c.f6a}`) && f6.met,
+    `F6: a forged synchronize dated an hour ahead moves nothing, and GitHub's later push still lands: ${f6Forged}; then ${k1Line(f6.text)}`
+  );
+
+  note(`head rows: ${(await headRows()).join("; ") || "none"}; reads owed: ${await readsOwed()}`);
+  return failure();
+}
+
+/** github-outage (the section "the head checks on a stack of their own"). The outage ends however
+ *  the case ends, so no step after it meets a GitHub that is down. */
+async function githubOutage(seed: Record<string, FakeRepository>): Promise<string | undefined> {
+  const { expect, failure } = expectations();
+  const keyOpened = await seedHeadIssue("Opens during the outage");
+  const keyPushed = await seedHeadIssue("Pushed during the outage");
+  await recordHeadPass(keyPushed, outageCommits.pushed, "implementer");
+  note(
+    `${keyOpened} gets #2001, which opens during the outage, and holds no result; ${keyPushed} gets #3001, pushed during it, and holds a pass at its pushed head ${outageCommits.pushed.slice(0, 12)}`
+  );
+
+  await publishHeadPull(
+    seed,
+    headPayload(headRepo, 3001, "opened", outageCommits.before, Date.now() - 3_599_000, keyPushed)
+  );
+  const before = `#3001 open at ${outageCommits.before.slice(0, 12)}`;
+  if (!(await awaitTrue(async () => (await headRows(headRepo)).includes(before), outageBoundMs))) {
+    setupFailed(
+      "github-outage",
+      `before the outage, the head rows of ${headRepo} are ${(await headRows(headRepo)).join("; ") || "none"}, want ${before}`
+    );
+  }
+  note(`before the outage: ${keyPushed} ${k1Line(await resultsCommand(keyPushed))}`);
+  await Bun.sleep(1_100);
+
+  await setOutage(500);
+  try {
+    // The outage's self-check: a call made here, not by Dispatch, answers 500.
+    const probe = await fetch(new URL(`/repos/${headRepo}/installation`, githubUrl));
+    await probe.text();
+    if (probe.status !== 500) {
+      setupFailed("github-outage", `during the outage the fake answered ${probe.status}, want 500`);
+    }
+    await resetPullReads();
+    const downAt = Date.now();
+    note(
+      `GitHub answers 500 to every call from ${new Date(downAt).toISOString()} for ${outageMs} ms`
+    );
+    await Bun.sleep(Math.max(0, downAt + 10_000 - Date.now()));
+    await publishHeadPull(
+      seed,
+      headPayload(headRepo, 2001, "opened", outageCommits.opened, Date.now(), keyOpened)
+    );
+    note(
+      `#2001 opened at ${outageCommits.opened.slice(0, 12)}, ${Date.now() - downAt} ms into the outage`
+    );
+    await Bun.sleep(Math.max(0, downAt + outageMs - 40_000 - Date.now()));
+    await publishHeadPull(
+      seed,
+      headPayload(headRepo, 3001, "synchronize", outageCommits.pushed, Date.now(), keyPushed)
+    );
+    note(
+      `#3001 pushed to ${outageCommits.pushed.slice(0, 12)}, ${Date.now() - downAt} ms into the outage`
+    );
+    await Bun.sleep(Math.max(0, downAt + outageMs - Date.now()));
+    note(
+      `end of the outage: GitHub answered ${await fakeCallCount()} call(s) with 500 during it; reads owed ${await readsOwed()}; ${durableText(await eventsDurable())}`
+    );
+  } finally {
+    await setOutage(undefined);
+  }
+  const upAt = Date.now();
+  note(`GitHub answers again from ${new Date(upAt).toISOString()}`);
+
+  const wantRows = [
+    [2001, `#2001 open at ${outageCommits.opened.slice(0, 12)}`],
+    [3001, `#3001 open at ${outageCommits.pushed.slice(0, 12)}`],
+  ] as const;
+  const routes = [
+    [keyOpened, 2001, outageCommits.opened],
+    [keyPushed, 3001, outageCommits.pushed],
+  ] as const;
+  const rowAt = new Map<number, number>();
+  const routeAt = new Map<string, number>();
+  const lastRoute = new Map<string, string>();
+  while (Date.now() - upAt < outageBoundMs) {
+    const held = await headRows(headRepo);
+    for (const [number, want] of wantRows) {
+      if (!rowAt.has(number) && held.includes(want)) rowAt.set(number, Date.now() - upAt);
+    }
+    for (const [key, number, head] of routes) {
+      if (routeAt.has(key)) continue;
+      const line = k1Line(await resultsCommand(key));
+      lastRoute.set(key, line);
+      if (line.includes(`pull request #${number} at ${head}`)) routeAt.set(key, Date.now() - upAt);
+    }
+    if (rowAt.size === wantRows.length && routeAt.size === routes.length) break;
+    await Bun.sleep(2_000);
+  }
+  const held = await headRows(headRepo);
+  for (const [number, want] of wantRows) {
+    const at = rowAt.get(number);
+    expect(
+      at !== undefined,
+      `${want} is ${at === undefined ? `not stored within ${outageBoundMs} ms (the head rows of ${headRepo} are ${held.join("; ") || "none"})` : `stored ${at} ms`} after GitHub answered again`
+    );
+  }
+  for (const [key, number, head] of routes) {
+    const at = routeAt.get(key);
+    expect(
+      at !== undefined,
+      `dispatch results --issue ${key} names #${number} at ${head.slice(0, 12)} ${at === undefined ? `not within ${outageBoundMs} ms` : `${at} ms`} after GitHub answered again: ${lastRoute.get(key) ?? "(not read)"}`
+    );
+  }
+  note(
+    `reads owed now: ${await readsOwed()}; GitHub calls since the outage began: ${await fakeCallCount()}`
+  );
+  return failure();
+}
 
 // --- a bare `-` given to a text flag -----------------------------------------------------------
 //

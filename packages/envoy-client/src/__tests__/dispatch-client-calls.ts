@@ -51,6 +51,7 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   getAgentArtifact: (client) => client.getAgentArtifact("session-1", "notes", AT),
   getIssueArtifact: (client) => client.getIssueArtifact("DSP-1", "notes", AT),
   search: (client) => client.search("notes", {}, AT),
+  attribution: (client) => client.attribution(),
   related: (client) => client.related("DSP", { title: "A title", text: "Some text." }),
   getIssue: (client) => client.getIssue("DSP-1", AT),
   updateIssue: (client) => client.updateIssue("DSP-1", { status: "testing", actor }),

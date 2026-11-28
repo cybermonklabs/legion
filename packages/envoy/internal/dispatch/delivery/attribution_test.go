@@ -10,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -44,33 +42,54 @@ func seedAttributionIssues(t *testing.T, ctx context.Context, pool *store.Pool, 
 	}
 }
 
-func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts attributionFacts) (string, attributionSource) {
-	t.Helper()
-	attributor := unrenamed()
-	key, source, err := attributor.resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributor.attributionInputsFrom(facts))
-	if err != nil {
-		t.Fatalf("resolveStoredIssueKey(%+v): %v", facts, err)
-	}
-	if key == nil {
-		return "", source
-	}
-	return *key, source
+// ruleFacts is one pull request as a test gives it to the rule: its repository and URL, the
+// texts of one read of GitHub, and the repository of its head branch. HeadRepo "" is the pull
+// request's own repository. CommitMessages nil means that the read did not read the messages.
+type ruleFacts struct {
+	Repo, URL, Title, Body, HeadRef, HeadRepo string
+	CommitMessages                            []string
 }
 
-// storedIssueKey is the issue delivery_pull_requests credits one stored pull request to, as a
-// failure message names it: "none" where the row credits nobody, which AttributePullRequests
-// writes as a null issue_key.
-func storedIssueKey(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) string {
+// resolvedKey stores facts as the results row and the texts of a pull request of facts.Repo
+// (storeStatementRow), with facts.URL as its URL. Where facts.URL is that repository's pull
+// request URL, the row takes its number, as GitHub's own URL holds the pull request's number, and
+// replaces the rows an earlier call stored under it, so one test can store many sets of facts of
+// one pull request; else the row takes a number above every stored one. resolvedKey answers the
+// issue that PullRequestIssues gives, "" for nobody, and the source that named it.
+func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts ruleFacts) (string, attributionSource) {
 	t.Helper()
-	var issue *string
-	if err := pool.QueryRow(ctx,
-		`select issue_key from delivery_pull_requests where repo = $1 and number = $2`, repo, number).Scan(&issue); err != nil {
-		t.Fatalf("read the stored pull request %s#%d: %v", repo, number, err)
+	var number int
+	if repo, n, ok := linkedPullRequest(facts.URL); ok && strings.EqualFold(repo, facts.Repo) {
+		number = n
+		for _, table := range []string{"pull_request_texts", "pull_request_heads"} {
+			if _, err := pool.Exec(ctx, `delete from `+table+` where repo = $1 and number = $2`, facts.Repo, number); err != nil {
+				t.Fatalf("clear %s of %s#%d: %v", table, facts.Repo, number, err)
+			}
+		}
+	} else if err := pool.QueryRow(ctx, `select greatest(100000, (select max(number) from pull_request_heads),
+		(select max(number) from delivery_pull_requests)) + 1`).Scan(&number); err != nil {
+		t.Fatalf("choose the number of %+v: %v", facts, err)
 	}
-	if issue == nil {
-		return "none"
+	texts := &statementTexts{body: facts.Body, messages: facts.CommitMessages}
+	if facts.HeadRepo != "" {
+		texts.headRepo = &facts.HeadRepo
 	}
-	return *issue
+	storeStatementRow(t, ctx, pool, statementRow{
+		repo: facts.Repo, number: number, branch: facts.HeadRef, title: facts.Title, url: facts.URL, texts: texts,
+	})
+	key := PullRequestKey{Repo: facts.Repo, Number: number}
+	answers, err := unrenamed().PullRequestIssues(ctx, pool, []PullRequestKey{key})
+	if err != nil {
+		t.Fatalf("PullRequestIssues(%+v): %v", facts, err)
+	}
+	answer, found := answers[key]
+	if !found {
+		t.Fatalf("PullRequestIssues gives no answer for %+v, stored as %s#%d", facts, facts.Repo, number)
+	}
+	if answer.IssueKey == nil {
+		return "", attributionSource(answer.Source)
+	}
+	return *answer.IssueKey, attributionSource(answer.Source)
 }
 
 // TestAttributionTakesAnExternalLinkNamingThePullRequest: source 1, an issue whose external
@@ -81,7 +100,7 @@ func TestAttributionTakesAnExternalLinkNamingThePullRequest(t *testing.T) {
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-101"}, map[string][]string{
 		"ATTR-101": {"https://github.com/acme/widgets/pull/101"},
 	})
-	key, source := resolvedKey(t, ctx, pool, attributionFacts{
+	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/101", Title: "feat: no key here",
 	})
 	if key != "ATTR-101" || source != sourceExternalLink {
@@ -97,7 +116,7 @@ func TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest(t *testing.T) 
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-103"}, map[string][]string{
 		"ATTR-103": {"https://github.com/acme/widgets/pull/1030"},
 	})
-	key, source := resolvedKey(t, ctx, pool, attributionFacts{
+	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/103",
 		Body: "Follows https://github.com/acme/widgets/pull/1030.",
 	})
@@ -141,7 +160,7 @@ func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
 		{"github.com in another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
 		// Userinfo before the host is a citation, because the host after it is github.com and
 		// that is where the reader goes; the host of `github.com@evil.test` is evil.test, which
-		// citation_boundary_test.go holds.
+		// the corpus of the reading holds (testdata/attribution_reading.json).
 		{"userinfo before github.com", "See https://user@github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
 		// An issue path with no host is the path of no URL at all: the finder matches the path
 		// rather than the host, so this is the row that says so.
@@ -150,7 +169,7 @@ func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
 		{"a pull request URL is not an issue", "Reverts https://github.com/acme/widgets/pull/77.", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			key, source := resolvedKey(t, ctx, pool, attributionFacts{
+			key, source := resolvedKey(t, ctx, pool, ruleFacts{
 				Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/110", Body: tc.body,
 			})
 			if key != tc.want {
@@ -163,142 +182,13 @@ func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
 	}
 }
 
-// TestCitedIssuesCreditsTheURLsOwnPath drives citedIssues, which needs no database, over the
-// shapes that tell a citation from the same bytes standing inside another URL. Each row names
-// what the body cites, whole: an extra citation is a defect of its own, which a membership test
-// would pass over.
-func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
-	t.Parallel()
-	const cited = "https://github.com/acme/widgets/issues/7"
-	const citedAB = "https://github.com/a/b/issues/7"
-	const citedCD = "https://github.com/c/d/issues/9"
-	const cited12 = "https://github.com/acme/widgets/issues/12"
-	for _, row := range []struct {
-		name string
-		body string
-		want []string
-	}{
-		// The matched path must be the URL's own path from its start. A host check alone credits
-		// any path a github.com URL carries, which is how /blob/, /tree/ and /wiki/ URLs were
-		// read as citations of an issue nobody wrote.
-		{"a blob URL deep in a repository", "See https://github.com/acme/widgets/blob/main/docs/issues/12 here.", nil},
-		{"a tree URL", "See https://github.com/acme/widgets/tree/fix/issues/123 here.", nil},
-		{"a wiki URL", "See https://github.com/acme/widgets/wiki/issues/3 here.", nil},
-		{"an issue path repeated inside a longer path", "See https://github.com/acme/widgets/issues/7/x/y/issues/8 here.", []string{cited}},
-		// A citation the prose wraps is still a citation: the host opens a word of its own,
-		// whatever stands beside it, and a space is not the only thing that can end a word.
-		{"in parentheses", "See (github.com/acme/widgets/issues/7) here.", []string{cited}},
-		{"in backticks", "See `github.com/acme/widgets/issues/7` here.", []string{cited}},
-		{"in a Markdown link", "See [the issue](github.com/acme/widgets/issues/7) here.", []string{cited}},
-		{"between bold markers", "See **github.com/acme/widgets/issues/7** here.", []string{cited}},
-		{"after a non-breaking space", "See\u00a0github.com/acme/widgets/issues/7 here.", []string{cited}},
-		{"after a line separator", "See\u2028github.com/acme/widgets/issues/7 here.", []string{cited}},
-		{"in text with no spaces at all", "参照github.com/acme/widgets/issues/7です", []string{cited}},
-		{"after a key and a colon", "Refs:github.com/acme/widgets/issues/7", []string{cited}},
-		// A separator or a closing bracket left of the host ends whatever stood before it, so the
-		// host opens a URL of its own even where that earlier text carries a `/` or a `#`: a
-		// citation before this one, a bare #N, or a Markdown link's own text.
-		{"two citations joined by a comma", "github.com/a/b/issues/7,github.com/c/d/issues/9", []string{citedAB, citedCD}},
-		{"two citations joined by a semicolon", "github.com/a/b/issues/7;github.com/c/d/issues/9", []string{citedAB, citedCD}},
-		{"two citations joined by an ampersand", "github.com/a/b/issues/7&github.com/c/d/issues/9", []string{citedAB, citedCD}},
-		{"two citations joined by a plus", "github.com/a/b/issues/7+github.com/c/d/issues/9", []string{citedAB, citedCD}},
-		{"a schemed citation before a bare one", "https://github.com/a/b/issues/7,github.com/c/d/issues/9", []string{citedAB, citedCD}},
-		{"two citations each in parentheses", "(github.com/a/b/issues/7)(github.com/c/d/issues/9)", []string{citedAB, citedCD}},
-		{"after a bare reference and a comma", "#12,github.com/acme/widgets/issues/7", []string{cited12, cited}},
-		{"after a bare reference and a colon", "#12:github.com/acme/widgets/issues/7", []string{cited12, cited}},
-		{"after a bracketed bare reference", "Fixes (#12)github.com/acme/widgets/issues/7", []string{cited12, cited}},
-		{"in a Markdown link whose text names the issue", "See [acme/widgets#7](github.com/acme/widgets/issues/7)", []string{cited}},
-		{"in a Markdown link whose text is a bare reference", "See [#7](github.com/acme/widgets/issues/7)", []string{cited}},
-		{"after bold markers and a colon", "**#7**:github.com/acme/widgets/issues/7", []string{cited}},
-		{"after a word of prose carrying a slash", "Related issues/PRs:github.com/acme/widgets/issues/7", []string{cited}},
-		{"a scheme-relative URL in parentheses", "(//github.com/acme/widgets/issues/7)", []string{cited}},
-		{"a scheme-relative URL in brackets", "[//github.com/acme/widgets/issues/7]", []string{cited}},
-		// What stands to the left of the authority decides nothing, here as on the default
-		// branch: a github.com issue path inside another URL's query, fragment or path is
-		// credited, because the bytes the path hangs off name github.com. Whether such a URL
-		// ought to credit at all is a question of its own, asked of the person this work is for
-		// and not answered by this change, whose subject is a host that is not github.com.
-		{"inside another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/7 here.", []string{cited}},
-		{"inside another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/7 here.", []string{cited}},
-		{"inside another host's path behind a tilde", "See https://example.test/~github.com/acme/widgets/issues/7 here.", []string{cited}},
-		{"inside another host's path behind a bracket", "See https://example.test/(github.com/acme/widgets/issues/7) here.", []string{cited}},
-		// An `@` before the host leaves github.com the authority the path hangs off, so the
-		// citation is credited; `github.com@evil.test` is the other way round, with evil.test the
-		// authority, and is credited to nobody (citation_boundary_test.go holds that pair).
-		{"userinfo carrying another host's name", "See https://example.test/x@github.com/acme/widgets/issues/7 here.", []string{cited}},
-		// Whatever digits stand between a colon and the path are read as the port, however many:
-		// they name no host, so a port no URL may carry leaves the citation where it was rather
-		// than dropping it for a typo. Past a host name's length the digits are no port, and what
-		// then runs into the path is no host name either.
-		{"a port no URL may carry", "See https://github.com:99999/acme/widgets/issues/7 here.", []string{cited}},
-		{"digits where a port should be", "See https://github.com:443443443/acme/widgets/issues/7 here.", []string{cited}},
-		{"more digits than a host name is long", "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here.", nil},
-		// The host is the run of host bytes before the path and nothing further, so a long run of
-		// bytes no host name may hold leaves the citation where it was, while a run of host bytes
-		// longer than a host name is no host at all.
-		{"a citation after a long run of bytes no host holds", strings.Repeat("~", 2100) + "github.com/acme/widgets/issues/7", []string{cited}},
-		{"a host-byte run longer than a host name", strings.Repeat("a", 300) + ".github.com/acme/widgets/issues/7", nil},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			if got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(row.body, nil)); !slices.Equal(got, row.want) {
-				t.Errorf("citedIssues(%q) = %v, want %v", row.body, got, row.want)
-			}
-		})
-	}
-}
-
-// A body that cites an issue under the old name of a rename pair, in any case, cites it under
-// the new name, and a citation of one issue under both names is one URL, at the first place it is
-// cited. A bare #N in a pull request stored under the old name names an issue under the new name.
-// A citation of a repository that only begins like the old name keeps its name.
-func TestCitedIssuesNameARenamedRepositoryByItsNewName(t *testing.T) {
-	t.Parallel()
-	renames := refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}})
-	body := "Fixes https://github.com/SJawhar/Legion/issues/5 and github.com/cybermonklabs/legion/issues/5, " +
-		"see https://github.com/sjawhar/legion-smoke/issues/599 and #12."
-	want := []string{
-		"https://github.com/cybermonklabs/legion/issues/5",
-		"https://github.com/sjawhar/legion-smoke/issues/599",
-		"https://github.com/cybermonklabs/legion/issues/12",
-	}
-	if got := citedIssues(renames, "sjawhar/legion", citebody.New(body, nil)); !slices.Equal(got, want) {
-		t.Errorf("citedIssues(%q) = %v, want %v", body, got, want)
-	}
-}
-
-// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body. It
-// reaches the body only through citebody's counted reads, and the row holds those counts
-// (holdToTheReader): one pass over the body for each finder, at most four spans for each issue
-// path and one for each bare reference, and no span longer than citationReach and the longest
-// path, so how busy the machine is decides nothing. The body is 1 MiB with no whitespace in it and
-// an issue path every thirteen bytes, which is the shape a reading that walks back to the nearest
-// space pays the square of: such a reading needs the body back to its start at every path.
-func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
-	t.Parallel()
-	const cited = "https://github.com/acme/widgets/issues/7"
-	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
-	var reads citebody.Reads
-	got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(body, &reads))
-	t.Logf("a body of %d bytes: %+v", len(body), reads)
-	for _, problem := range holdToTheReader("a body of "+strconv.Itoa(len(body))+" bytes", body, reads) {
-		t.Error(problem)
-	}
-	if !slices.Equal(got, []string{cited}) {
-		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
-	}
-	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
-	if got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(whole, nil)); len(got) != 0 {
-		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
-	}
-}
-
 // TestAttributionTakesTheHeadBranch: source 3, a key in the branch name, matched whatever its
 // case.
 func TestAttributionTakesTheHeadBranch(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-121"}, nil)
-	key, source := resolvedKey(t, ctx, pool, attributionFacts{
+	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/120", HeadRef: "fix/attr-121-guard-the-thing",
 	})
 	if key != "ATTR-121" || source != sourceBranch {
@@ -306,18 +196,21 @@ func TestAttributionTakesTheHeadBranch(t *testing.T) {
 	}
 }
 
-// TestAttributionFallsBackToCommitMessages: source 5, the first known key across the commit
-// messages in commit order, which is read only where the four sources above name nobody.
+// TestAttributionFallsBackToCommitMessages: source 5, the one key the commit messages name, which
+// is read only where the four sources above name nobody. A key counts where it names an issue
+// Dispatch holds, so ATTR-999, which names none, leaves ATTR-131 the messages' one key. Messages
+// that name two keys credit no issue
+// (TestCommitMessagesNamingTwoIssuesCreditNoIssue).
 func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-131", "ATTR-132"}, nil)
-	key, source := resolvedKey(t, ctx, pool, attributionFacts{
+	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/130",
-		CommitMessages: []string{"wip", "refs ATTR-999 and ATTR-132", "closes ATTR-131"},
+		CommitMessages: []string{"wip", "refs ATTR-999", "closes ATTR-131"},
 	})
-	if key != "ATTR-132" || source != sourceCommitMessage {
-		t.Fatalf("resolved %q from %q, want ATTR-132 from %q", key, source, sourceCommitMessage)
+	if key != "ATTR-131" || source != sourceCommitMessage {
+		t.Fatalf("resolved %q from %q, want ATTR-131, the messages' one key, from %q", key, source, sourceCommitMessage)
 	}
 }
 
@@ -332,21 +225,21 @@ func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
 		"ATTR-142": {prURL},
 		"ATTR-143": {"https://github.com/acme/widgets/issues/143"},
 	})
-	all := attributionFacts{
+	all := ruleFacts{
 		Repo: "acme/widgets", URL: prURL, Title: "feat: ATTR-141", Body: "Fixes #143.",
 		HeadRef: "attr-144-branch", CommitMessages: []string{"ATTR-145"},
 	}
 	steps := []struct {
-		drop   func(*attributionFacts)
+		drop   func(*ruleFacts)
 		want   string
 		source attributionSource
 	}{
-		{func(*attributionFacts) {}, "ATTR-142", sourceExternalLink},
-		{func(f *attributionFacts) { f.URL = "https://github.com/acme/widgets/pull/149" }, "ATTR-143", sourceGitHubIssueLink},
-		{func(f *attributionFacts) { f.Body = "" }, "ATTR-144", sourceBranch},
-		{func(f *attributionFacts) { f.HeadRef = "main" }, "ATTR-141", sourceTitleBody},
-		{func(f *attributionFacts) { f.Title = "feat: none" }, "ATTR-145", sourceCommitMessage},
-		{func(f *attributionFacts) { f.CommitMessages = nil }, "", sourceNone},
+		{func(*ruleFacts) {}, "ATTR-142", sourceExternalLink},
+		{func(f *ruleFacts) { f.URL = "https://github.com/acme/widgets/pull/149" }, "ATTR-143", sourceGitHubIssueLink},
+		{func(f *ruleFacts) { f.Body = "" }, "ATTR-144", sourceBranch},
+		{func(f *ruleFacts) { f.HeadRef = "main" }, "ATTR-141", sourceTitleBody},
+		{func(f *ruleFacts) { f.Title = "feat: none" }, "ATTR-145", sourceCommitMessage},
+		{func(f *ruleFacts) { f.CommitMessages = nil }, "", sourceNone},
 	}
 	facts := all
 	for _, step := range steps {
@@ -367,7 +260,7 @@ func TestAttributionTakesTheHeadBranchOverTheTitle(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-231", "ATTR-232"}, nil)
-	key, source := resolvedKey(t, ctx, pool, attributionFacts{
+	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/230",
 		Title: "feat: follows ATTR-231", HeadRef: "legion/attr-232-the-work",
 	})
@@ -389,20 +282,20 @@ func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
 	})
 	for _, tc := range []struct {
 		name  string
-		facts attributionFacts
+		facts ruleFacts
 		want  string
 		from  attributionSource
 	}{
 		{
 			name: "the issue linking the pull request",
-			facts: attributionFacts{
+			facts: ruleFacts{
 				Repo: "acme/widgets", URL: prURL, Title: "feat: follows ATTR-241",
 			},
 			want: "ATTR-242", from: sourceExternalLink,
 		},
 		{
 			name: "the issue holding the GitHub issue the body cites",
-			facts: attributionFacts{
+			facts: ruleFacts{
 				Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/249",
 				Title: "feat: follows ATTR-241", Body: "Fixes #243.",
 			},
@@ -421,56 +314,87 @@ func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
 // TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStoredIn: two issues whose
 // links both name one pull request are two candidates of one source and one place, and they rank
 // by key. A URL holds one link (issue_external_links_url), so the two links spell it two ways, as
-// GitHub spells the repository (`Acme/Widgets`) and lowercased, as Dispatch stores a GitHub link,
-// and the link source compares both lowercased. So every reader of the ranked list — one pull
-// request's pick (resolveStoredIssueKey), the stored rows' pick (AttributePullRequests) and the
-// full list (ResolvedCandidates) — answers alike for two pull requests
-// whose links were stored in opposite orders, as two databases holding the same links may hold
-// them.
+// GitHub spells the repository (upper case here) and lowercased, as Dispatch stores a GitHub link,
+// and the link source compares both lowercased. So the statement (attributedTerms) answers every
+// reader alike, the pull request's own answer, the list of an issue's heads and the full ranked
+// list (ResolvedCandidates), for two pull requests whose links were stored in opposite orders, as
+// two databases holding the same links may hold them: the issue whose key sorts first in byte order
+// credits both, and ranks first.
 func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStoredIn(t *testing.T) {
-	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	link := func(spelling string, number int) string {
-		return "https://github.com/" + spelling + "/pull/" + strconv.Itoa(number)
+	statementIssues(t, ctx, pool, "ACME-251", "ACME-252")
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 250, branch: "work/none", title: "no key", texts: readTexts("")},
+		statementRow{number: 255, branch: "work/none", title: "no key", texts: readTexts("")})
+	link := func(repo string, number int) string {
+		return "https://github.com/" + repo + "/pull/" + strconv.Itoa(number)
 	}
-	// #250's links are stored ATTR-252's first, #255's ATTR-251's first.
-	seedAttributionIssues(t, ctx, pool, []string{"ATTR-252"}, map[string][]string{"ATTR-252": {link("acme/widgets", 250)}})
-	seedAttributionIssues(t, ctx, pool, []string{"ATTR-251"}, map[string][]string{"ATTR-251": {link("Acme/Widgets", 250), link("acme/widgets", 255)}})
-	seedAttributionIssues(t, ctx, pool, []string{"ATTR-252"}, map[string][]string{"ATTR-252": {link("Acme/Widgets", 255)}})
-	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
-	pulls := []PullRequestKey{{Repo: "acme/widgets", Number: 250}, {Repo: "acme/widgets", Number: 255}}
-	for _, pull := range pulls {
-		url := "https://github.com/acme/widgets/pull/" + strconv.Itoa(pull.Number)
-		key, source := resolvedKey(t, ctx, pool, attributionFacts{Repo: pull.Repo, URL: url, Title: "feat: no key here"})
-		if key != "ATTR-251" || source != sourceExternalLink {
-			t.Errorf("#%d resolved %q from %q, want ATTR-251, the lower key of the two linking it, from %q",
-				pull.Number, key, source, sourceExternalLink)
-		}
-		if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
-			Repo: pull.Repo, Number: pull.Number, Title: "feat: no key here", URL: url,
-			Author: "octocat", CreatedAt: &merged, MergedAt: &merged, Attribution: &AttributionInputs{},
-		}); err != nil {
-			t.Fatalf("seed #%d: %v", pull.Number, err)
-		}
+	upper := strings.ToUpper(statementRepo)
+	// #250's links are stored ACME-252's first, #255's ACME-251's first.
+	changeIssueLink(t, ctx, pool, "ACME-252", link(statementRepo, 250), "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-251", link(upper, 250), "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-251", link(statementRepo, 255), "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-252", link(upper, 255), "url", true)
+	for _, number := range []int{250, 255} {
+		wantAnswer(t, unrenamed(), ctx, pool, statementRepo, number, "ACME-251 from external_link")
 	}
-	if _, err := unrenamed().AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
-		t.Fatalf("attribute the stored rows: %v", err)
-	}
+	wantListed(t, unrenamed(), ctx, pool, "ACME-251", "#255", "#250")
+	wantListed(t, unrenamed(), ctx, pool, "ACME-252")
+	pulls := []PullRequestKey{{Repo: statementRepo, Number: 250}, {Repo: statementRepo, Number: 255}}
 	resolved, err := unrenamed().ResolvedCandidates(ctx, pool, pulls)
 	if err != nil {
-		t.Fatalf("read the stored rows' candidates: %v", err)
+		t.Fatalf("read the candidates: %v", err)
 	}
 	for _, pull := range pulls {
-		if stored := storedIssueKey(t, ctx, pool, pull.Repo, pull.Number); stored != "ATTR-251" {
-			t.Errorf("#%d is stored crediting %s, want ATTR-251", pull.Number, stored)
-		}
-		var keys []string
+		var named []string
 		for _, candidate := range resolved[pull] {
-			keys = append(keys, candidate.Key)
+			named = append(named, candidate.Key+" from "+candidate.Source)
 		}
-		if !slices.Equal(keys, []string{"ATTR-251", "ATTR-252"}) {
-			t.Errorf("#%d's candidates read %v, want [ATTR-251 ATTR-252]", pull.Number, keys)
+		if want := []string{"ACME-251 from external_link", "ACME-252 from external_link"}; !slices.Equal(named, want) {
+			t.Errorf("#%d's candidates read %v, want %v", pull.Number, named, want)
 		}
+	}
+}
+
+// TestResolvedCandidatesReadTheTextsNotTheInputsAnOlderReleaseStored: ResolvedCandidates answers
+// from the texts of a pull request's last read of GitHub, as the statement does, and never from
+// the attribution inputs a release before this one stored on its timeline row, which no writer of
+// this build updates. #260's texts name ACME-261 in its title, and its timeline row holds inputs
+// naming ACME-262, as an older read left them: a reader of those columns answers ACME-262. #265's
+// texts describe another head, so its candidates are not read: it is absent, and its issue is the
+// one its stored rows hold (PullRequestIssues). #266 has no row at all and is absent too. #267's
+// texts are current and name nothing, so it is present with no candidate.
+func TestResolvedCandidatesReadTheTextsNotTheInputsAnOlderReleaseStored(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	statementIssues(t, ctx, pool, "ACME-261", "ACME-262")
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 260, branch: "work/none", title: "ACME-261: work", texts: readTexts("")},
+		statementRow{number: 267, branch: "work/none", title: "no key", texts: readTexts("")})
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 265, branch: "work/none", title: "ACME-261: work",
+			texts: &statementTexts{body: "", messages: []string{}, headSHA: strings.Repeat("e", 40)}},
+		statementRow{number: 268, branch: "work/none", title: "no key"})
+	if _, err := pool.Exec(ctx, `
+		update delivery_pull_requests set attribution_title_keys = array['ACME-262'], attribution_cited_issues = '{}',
+			attribution_branch_keys = '{}', attribution_commit_keys = '{}'
+		where repo = $1 and number in (260, 265)`, statementRepo); err != nil {
+		t.Fatalf("store the inputs an older release read: %v", err)
+	}
+	at := func(number int) PullRequestKey { return PullRequestKey{Repo: statementRepo, Number: number} }
+	resolved, err := unrenamed().ResolvedCandidates(ctx, pool, []PullRequestKey{at(260), at(265), at(266), at(267)})
+	if err != nil {
+		t.Fatalf("read the candidates: %v", err)
+	}
+	if want := []ResolvedCandidate{{Key: "ACME-261", Project: "ACME", Source: string(sourceTitleBody)}}; !slices.Equal(resolved[at(260)], want) {
+		t.Errorf("#260's candidates read %+v, want %+v: the texts' key, not the stored input's", resolved[at(260)], want)
+	}
+	for _, number := range []int{265, 266} {
+		if candidates, found := resolved[at(number)]; found {
+			t.Errorf("#%d is in the answer with %+v, want it absent", number, candidates)
+		}
+	}
+	if candidates, found := resolved[at(267)]; !found || len(candidates) != 0 {
+		t.Errorf("#267 reads %+v (in the answer: %t), want it present with no candidate", candidates, found)
 	}
 }
 
@@ -479,7 +403,7 @@ func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStore
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	key, source := resolvedKey(t, ctx, pool, attributionFacts{
+	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/150",
 		Title: "feat: ATTR-9150", Body: "ATTR-9151, #9152", HeadRef: "attr-9153-x", CommitMessages: []string{"ATTR-9154"},
 	})
@@ -488,89 +412,11 @@ func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {
 	}
 }
 
-// TestReconcileBackfillsAttributionInputsOnce: a complete row stored before its attribution
-// inputs existed is fetched once, stores them and is credited (here from its head branch); a
-// row whose inputs are stored is never fetched again, on that pass or the next. The backfill
-// reads only what the attribution needs: the pull request once and its commits once (one page),
-// never FetchPullRequest's first-commit read, which a complete row already answered.
-func TestReconcileBackfillsAttributionInputsOnce(t *testing.T) {
-	t.Parallel()
-	pool, ctx := deliveryTestPool(t)
-	seedDeliverySettings(t, ctx, pool)
-	seedAttributionIssues(t, ctx, pool, []string{"ATTR-161"}, nil)
-	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
-	for _, number := range []int{160, 162} {
-		if _, err := pool.Exec(ctx, `
-			insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at, partial)
-			values ('acme/widgets', $1, 'feat: history', $2, 'octocat', $3, $3, false)`,
-			number, "https://github.com/acme/widgets/pull/"+strconv.Itoa(number), merged); err != nil {
-			t.Fatalf("seed stored row #%d: %v", number, err)
-		}
-	}
-	if _, err := pool.Exec(ctx, `
-		update delivery_pull_requests
-		set attribution_title_keys = '{}', attribution_cited_issues = '{}', attribution_branch_keys = '{}', attribution_commit_keys = '{}'
-		where number = 162`); err != nil {
-		t.Fatalf("store #162's inputs: %v", err)
-	}
-
-	var fetches160, commits160, firstCommit160, fetches162 atomic.Int32
-	fake := newFakeGitHub(t)
-	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
-	})
-	fake.handle("GET /repos/acme/widgets/pulls/160", func(w http.ResponseWriter, r *http.Request) {
-		fetches160.Add(1)
-		mustEncode(t, w, map[string]any{
-			"number": 160, "title": "feat: history", "html_url": "https://github.com/acme/widgets/pull/160",
-			"user": map[string]any{"login": "octocat"}, "labels": []any{map[string]any{"name": "non-task"}},
-			"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T01:00:00Z",
-			"merge_commit_sha": "abc", "additions": 1, "deletions": 1, "body": "",
-			"head": map[string]any{"ref": "fix/attr-161-history"},
-		})
-	})
-	fake.handle("GET /repos/acme/widgets/pulls/160/commits", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("per_page") == "1" {
-			firstCommit160.Add(1)
-		} else {
-			commits160.Add(1)
-		}
-		mustEncode(t, w, []any{
-			map[string]any{"commit": map[string]any{"message": "feat: history\n\nOmp-Session: ses-160", "author": map[string]any{"date": "2024-01-01T00:00:00Z"}}},
-		})
-	})
-	fake.handle("GET /repos/acme/widgets/pulls/162", func(w http.ResponseWriter, r *http.Request) {
-		fetches162.Add(1)
-		w.WriteHeader(http.StatusNotFound)
-	})
-	noRuns(t, fake)
-
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
-	reconcile.runOnce(ctx)
-	reconcile.runOnce(ctx)
-
-	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where number = 160`))
-	if err != nil {
-		t.Fatalf("read #160: %v", err)
-	}
-	if pr.IssueKey == nil || *pr.IssueKey != "ATTR-161" || pr.Attribution == nil || len(pr.Attribution.BranchKeys) != 1 {
-		t.Fatalf("#160 issue = %v, inputs = %+v; want ATTR-161 from its stored head branch keys", pr.IssueKey, pr.Attribution)
-	}
-	if len(pr.Sessions) != 1 || pr.Sessions[0] != "ses-160" {
-		t.Fatalf("#160 sessions = %v, want the trailer its commits name", pr.Sessions)
-	}
-	if pull, commits, first := fetches160.Load(), commits160.Load(), firstCommit160.Load(); pull != 1 || commits != 1 || first != 0 {
-		t.Fatalf("#160 over two passes: %d pull reads, %d commits pages, %d first-commit reads; want 1, 1, 0", pull, commits, first)
-	}
-	if n := fetches162.Load(); n != 0 {
-		t.Fatalf("#162, whose inputs are stored, was fetched %d times; want 0", n)
-	}
-}
-
 // TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial: a completion whose commit read fails
 // (a 500 here, which readGitHubPage does not retry) writes nothing, so the row stays partial with
-// no sessions and no attribution inputs rather than recording them short for good, and the next
-// pass completes it once the commits answer.
+// no sessions rather than recording them short for good. Its texts row holds no commit messages,
+// so the statement does not know its issue yet. The next pass completes the row once the commits
+// answer, and the statement takes the issue from its commit message.
 func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -590,13 +436,15 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
 	})
+	// The head branch lives in acme/widgets itself, so the rule reads the commit messages of #180.
 	fake.handle("GET /repos/acme/widgets/pulls/180", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, map[string]any{
 			"number": 180, "title": "feat: commits fail once", "html_url": "https://github.com/acme/widgets/pull/180",
-			"user": map[string]any{"login": "octocat"}, "labels": []any{},
-			"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T01:00:00Z",
+			"user": map[string]any{"login": "octocat"}, "labels": []any{}, "state": "closed", "merged": true,
+			"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T01:00:00Z", "updated_at": "2024-01-01T01:00:00Z",
 			"merge_commit_sha": "abc", "additions": 1, "deletions": 1, "body": "",
-			"head": map[string]any{"ref": "feature"},
+			"head": map[string]any{"ref": "feature", "sha": headOf(180), "repo": map[string]any{"full_name": "acme/widgets"}},
+			"base": map[string]any{"ref": "main"},
 		})
 	})
 	fake.handle("GET /repos/acme/widgets/pulls/180/commits", func(w http.ResponseWriter, r *http.Request) {
@@ -605,7 +453,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 			return
 		}
 		// A 500, which readGitHubPage does not retry (it retries only timeouts and gateway
-		// timeouts), for the whole first pass: the completion's read and the backfill's.
+		// timeouts), for each read of the commit messages in the first pass.
 		if commitsFailing.Load() {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
@@ -620,9 +468,15 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read #180 after the first pass: %v", err)
 	}
-	if !first.Partial || first.Attribution != nil || first.IssueKey != nil || len(first.Sessions) != 0 {
-		t.Fatalf("#180 after its commits failed: partial = %v, inputs = %+v, issue = %v, sessions = %v; want still partial with nothing written",
-			first.Partial, first.Attribution, first.IssueKey, first.Sessions)
+	if !first.Partial || len(first.Sessions) != 0 {
+		t.Fatalf("#180 after its commits failed: partial = %v, sessions = %v; want still partial with no sessions", first.Partial, first.Sessions)
+	}
+	if texts, found := storedTextsOf(t, ctx, pool, "acme/widgets", 180); !found || texts.messagesRead {
+		t.Fatalf("#180 after its commits failed: texts row found = %v, messages read = %v; want a texts row with commit_messages null",
+			found, texts.messagesRead)
+	}
+	if answer := answerOf(t, unrenamed(), ctx, pool, "acme/widgets", 180); answer != "nobody from none, no facts" {
+		t.Fatalf("#180 after its commits failed answers %q, want %q: no source names an issue yet", answer, "nobody from none, no facts")
 	}
 
 	commitsFailing.Store(false)
@@ -631,67 +485,21 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read #180 after the second pass: %v", err)
 	}
-	if second.Partial || second.Attribution == nil || len(second.Attribution.CommitKeys) != 1 || second.IssueKey == nil || *second.IssueKey != "ATTR-181" {
-		t.Fatalf("#180 after the commits answer: partial = %v, inputs = %+v, issue = %v; want complete with ATTR-181 from its commit message",
-			second.Partial, second.Attribution, second.IssueKey)
+	if second.Partial {
+		t.Fatal("#180 after the commits answer is still partial, want complete")
+	}
+	if texts, found := storedTextsOf(t, ctx, pool, "acme/widgets", 180); !found || !texts.messagesRead || !slices.Equal(texts.commit, []string{"ATTR-181"}) {
+		t.Fatalf("#180 after the commits answer: texts row found = %v, messages read = %v, commit_keys = %q; want read, with [ATTR-181]",
+			found, texts.messagesRead, texts.commit)
+	}
+	if answer := answerOf(t, unrenamed(), ctx, pool, "acme/widgets", 180); answer != "ATTR-181 from commit_message" {
+		t.Fatalf("#180 after the commits answer answers %q, want %q", answer, "ATTR-181 from commit_message")
 	}
 }
 
-// TestAttributingStoredPullRequestsWalksTheTableInBatches: each pass resolves at most its batch of
-// stored rows, those checked longest ago first, so the walk comes round to every row and an
-// issue that links a pull request credits it within one walk of the table.
-func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
-	t.Parallel()
-	pool, ctx := deliveryTestPool(t)
-	seedAttributionIssues(t, ctx, pool, []string{"ATTR-191"}, nil)
-	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
-	for number := 190; number < 195; number++ {
-		if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
-			Repo: "acme/widgets", Number: number, Title: "feat: walked", URL: "https://github.com/acme/widgets/pull/" + strconv.Itoa(number),
-			Author: "octocat", CreatedAt: &merged, MergedAt: &merged, Attribution: &AttributionInputs{},
-		}); err != nil {
-			t.Fatalf("seed #%d: %v", number, err)
-		}
-	}
-	checked := func() int {
-		var n int
-		if err := pool.QueryRow(ctx, `select count(*) from delivery_pull_requests where attribution_checked_at is not null`).Scan(&n); err != nil {
-			t.Fatalf("count checked rows: %v", err)
-		}
-		return n
-	}
-	if _, err := unrenamed().AttributePullRequests(ctx, pool, 2); err != nil {
-		t.Fatalf("first pass: %v", err)
-	}
-	if n := checked(); n != 2 {
-		t.Fatalf("after one pass of 2: %d rows checked, want 2", n)
-	}
-	if _, err := unrenamed().AttributePullRequests(ctx, pool, 2); err != nil {
-		t.Fatalf("second pass: %v", err)
-	}
-	if n := checked(); n != 4 {
-		t.Fatalf("after two passes of 2: %d rows checked, want 4 (the walk takes the unchecked rows next)", n)
-	}
-
-	// A link added now credits #194 within the walk: one more pass takes the last unchecked row.
-	seedAttributionIssues(t, ctx, pool, []string{"ATTR-191"}, map[string][]string{
-		"ATTR-191": {"https://github.com/acme/widgets/pull/194"},
-	})
-	changed, err := unrenamed().AttributePullRequests(ctx, pool, 2)
-	if err != nil {
-		t.Fatalf("third pass: %v", err)
-	}
-	var issue *string
-	if err := pool.QueryRow(ctx, `select issue_key from delivery_pull_requests where number = 194`).Scan(&issue); err != nil {
-		t.Fatalf("read #194: %v", err)
-	}
-	if changed != 1 || issue == nil || *issue != "ATTR-191" {
-		t.Fatalf("third pass changed %d rows, #194 issue = %v; want 1 and ATTR-191", changed, issue)
-	}
-}
-
-// TestReconcileCreditsAPullRequestAnIssueLinksLater: a pull request stored with no issue is
-// credited once an issue's external link names it, by the next pass and with no GitHub call.
+// TestReconcileCreditsAPullRequestAnIssueLinksLater: a pull request whose stored facts name no
+// issue gets the issue whose external link names it. The timeline gives that issue after the link
+// and one pass, and no pass reads GitHub for the pull request.
 func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -700,10 +508,14 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
 		Repo: "acme/widgets", Number: 170, Title: "feat: unlinked", URL: "https://github.com/acme/widgets/pull/170",
-		Author: "octocat", CreatedAt: &merged, MergedAt: &merged, Attribution: &AttributionInputs{},
+		Author: "octocat", CreatedAt: &merged, MergedAt: &merged,
 	}); err != nil {
 		t.Fatalf("seed #170: %v", err)
 	}
+	// The results row and the texts of #170 name no key. Its messages are read, and they are empty.
+	storeStatementRow(t, ctx, pool, statementRow{
+		repo: "acme/widgets", number: 170, branch: "feature", title: "feat: unlinked", texts: readTexts(""),
+	})
 
 	var pullFetches atomic.Int32
 	fake := newFakeGitHub(t)
@@ -718,12 +530,20 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
+	day := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	issueOf := func() *string {
-		var issue *string
-		if err := pool.QueryRow(ctx, `select issue_key from delivery_pull_requests where number = 170`).Scan(&issue); err != nil {
-			t.Fatalf("read #170: %v", err)
+		t.Helper()
+		listed, err := unrenamed().ListPullRequestsInWindow(ctx, pool, day, day.Add(24*time.Hour))
+		if err != nil {
+			t.Fatalf("ListPullRequestsInWindow over %s: %v", day.Format(time.DateOnly), err)
 		}
-		return issue
+		for _, pr := range listed {
+			if pr.Repo == "acme/widgets" && pr.Number == 170 {
+				return pr.IssueKey
+			}
+		}
+		t.Fatalf("ListPullRequestsInWindow over %s lists no #170", day.Format(time.DateOnly))
+		return nil
 	}
 	if issue := issueOf(); issue != nil {
 		t.Fatalf("#170 issue = %s before any link names it, want none", *issue)
@@ -737,7 +557,7 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 		t.Fatalf("#170 issue = %v after ATTR-171 linked it, want ATTR-171", issue)
 	}
 	if n := pullFetches.Load(); n != 0 {
-		t.Fatalf("pull request fetched %d times; want 0 (stored inputs need no GitHub call)", n)
+		t.Fatalf("pull request fetched %d times; want 0 (the statement reads the stored facts, with no GitHub call)", n)
 	}
 }
 

@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `dispatch results` ends with the issue's links that Dispatch reads no more: each link to a pull
+  request or an issue of a repository the GitHub App is not installed on, whose read GitHub
+  refused, with the time of that refusal. Dispatch reads such a link again once the issue links it
+  again, an event of its pull request arrives, or the App is installed on the repository.

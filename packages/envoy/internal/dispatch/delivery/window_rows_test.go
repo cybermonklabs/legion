@@ -58,18 +58,18 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 		for _, to := range ends {
 			from := to.Add(-time.Duration(24*60+random.IntN(3*24*60)) * time.Minute)
 			label := fmt.Sprintf("seed %d, [%s, %s)", seed, from.Format(time.RFC3339), to.Format(time.RFC3339))
-			wantMerged, err := ReadMergedRows(ctx, pool, settings, from, to)
+			wantMerged, err := unrenamed().ReadMergedRows(ctx, pool, settings, from, to)
 			if err != nil {
 				t.Fatalf("%s: ReadMergedRows: %v", label, err)
 			}
-			wantDeploys, err := ReadDeploys(ctx, pool, settings, from, to)
+			wantDeploys, err := unrenamed().ReadDeploys(ctx, pool, settings, from, to)
 			if err != nil {
 				t.Fatalf("%s: ReadDeploys: %v", label, err)
 			}
 			wantApplies := ProductionApplies(wantMerged.ApplyRuns, wantMerged.ApplyJobs, production).Applies
 			for _, failedJobs := range []bool{false, true} {
 				label := label + ", failed jobs " + strconv.FormatBool(failedJobs)
-				merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, true)
+				merged, deploys, err := unrenamed().ReadWindowRows(ctx, pool, settings, from, to, failedJobs, true)
 				if err != nil {
 					t.Fatalf("%s: ReadWindowRows: %v", label, err)
 				}
@@ -114,7 +114,7 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 				}
 				shippedAfterEnd += truth.check(t, label, settings, from, to, merged, deploys)
 
-				bare, none, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, false)
+				bare, none, err := unrenamed().ReadWindowRows(ctx, pool, settings, from, to, failedJobs, false)
 				if err != nil {
 					t.Fatalf("%s: ReadWindowRows without deploys: %v", label, err)
 				}
@@ -160,7 +160,7 @@ func readWindowTruth(t *testing.T, ctx context.Context, pool *store.Pool, produc
 	if err != nil {
 		t.Fatalf("read every job of every deploy run: %v", err)
 	}
-	prs, err := ListPullRequestsInWindow(ctx, pool, epoch, end)
+	prs, err := unrenamed().ListPullRequestsInWindow(ctx, pool, epoch, end)
 	if err != nil {
 		t.Fatalf("read every pull request: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 	seedWaitingHistory(t, ctx, pool, runs, []waitingPR{shipped, elsewhere})
 	seedPullRequestsASecondApart(t, ctx, pool, "acme/other", 1000, maxPullRequestsPerWindow+1, from.Add(-40*time.Hour))
 
-	control, err := ListPullRequestsInWindow(ctx, pool, time.Time{}, from)
+	control, err := unrenamed().ListPullRequestsInWindow(ctx, pool, time.Time{}, from)
 	if err != nil {
 		t.Fatalf("ListPullRequestsInWindow: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 		}
 	}
 
-	merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, false, true)
+	merged, deploys, err := unrenamed().ReadWindowRows(ctx, pool, settings, from, to, false, true)
 	if err != nil {
 		t.Fatalf("ReadWindowRows: %v", err)
 	}

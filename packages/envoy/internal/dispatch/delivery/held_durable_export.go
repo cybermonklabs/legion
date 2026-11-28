@@ -98,16 +98,16 @@ func (m HeldMessage) Context() context.Context {
 }
 
 // Ack acknowledges the message, and hands it back for redelivery when the acknowledgement does not
-// reach the server (intakeDelivery.acknowledge).
+// reach the server (intakeDelivery.acknowledge), logged through the delivery's own logger.
 func (m HeldMessage) Ack() {
-	m.delivery.acknowledge(m.Msg)
+	m.delivery.acknowledge(m.delivery.tuning.log, m.Msg)
 }
 
 // HandBack hands the message back for redelivery at once, while the hold still covers this
 // delivery, and leaves it with the durable for the next holder's take-over once it does not
 // (intakeDelivery.handBack).
 func (m HeldMessage) HandBack() {
-	m.delivery.handBack(m.Msg)
+	m.delivery.handBack(m.delivery.tuning.log, m.Msg)
 }
 
 // HandBackAfter hands the message back for redelivery in after: the handler's own answer that the
@@ -118,5 +118,5 @@ func (m HeldMessage) HandBack() {
 // it: when it was not, it has logged one line that names why, and the message goes back to the
 // stream only through that take-over.
 func (m HeldMessage) HandBackAfter(after time.Duration) bool {
-	return m.delivery.handBackOwn(m.Msg, after)
+	return m.delivery.handBackOwn(m.delivery.tuning.log, m.Msg, after)
 }

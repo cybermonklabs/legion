@@ -56,13 +56,15 @@ const DSNSetting = "DATABASE_URL"
 
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
-// string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
-// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration. A URL
+// string that names its database. Its pool is PoolConfig's, so every connection it opens scans
+// timestamptz in UTC and carries sessionSettings, as every connection opened from Pool.Config
+// does; each also gives back a large statement's encoded arguments when it returns to its pool
+// (argumentReleaser). The pools Pool.separate copies from its configuration do all three. A URL
 // holding an "@" after its user part, where a password holding an "@" or a "/" leaves part of
 // itself, is refused by DSNSetting alone before anything connects (pgdsn.Refusal), and every
 // failure to parse, open or reach the database is named without the URL's password
-// (pgdsn.ConnectError), since Dispatch logs it.
+// (pgdsn.ConnectError, which PoolConfig's and ConnConfig's parse answers too), since Dispatch logs
+// it.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
 		return nil, err
@@ -76,12 +78,11 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.sharedPoolSize). Remove the parameter",
 			poolSizeParam, sharedPoolSize)
 	}
-	config, err := pgxpool.ParseConfig(databaseURL)
+	config, err := PoolConfig(databaseURL)
 	if err != nil {
-		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
+		return nil, err
 	}
 	config.MaxConns = sharedPoolSize
-	config.AfterConnect = scanTimestampsInUTC
 	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
@@ -92,6 +93,63 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
+}
+
+// sessionSettings are the server settings every connection Dispatch opens on its database sends in
+// its startup message (applySessionSettings): every pool PoolConfig configures, Open's shared pool
+// among them, and so every pool Pool.separate copies from its configuration and every connection
+// opened from Pool.Config (the server process registry's pool, the migration runner's lock watch,
+// the test helpers' pools), and every connection opened from ConnConfig (Census, CheckVersions,
+// the measurements of benchtime, the reads of horizontest.Dialed). Sent at startup, a setting is
+// the session's default rather than a SET: `discard all` (pgmigrate.ResetSession) and `reset all`
+// keep it, and it replaces whatever the connection string sets for the same name.
+//
+// jit = off. A server built with LLVM JIT (pg_jit_available(); the official postgres image and the
+// pgdg packages are) compiles a statement, again at each execution, when the planner's estimate of
+// its cost passes jit_above_cost (100,000 by default), and inlines and optimizes the code as well
+// past jit_inline_above_cost and jit_optimize_above_cost (500,000). That pays off for a long
+// analytic scan. Dispatch's statements read a few rows through indexes, but the planner prices
+// some of them far above what they read: a recursive walk is estimated at many times its rows, and
+// each arm of a union adds its estimate. Such a statement passes the thresholds and spends every
+// execution compiling a plan that then runs in milliseconds. On a test server with JIT, the pull
+// request attribution pass's statement (delivery's attribution.go) compiled about 380 functions at
+// each execution and took 0.13 to 0.28 s with its expressions compiled, 2.8 to 5 s inlined and
+// optimized as well; the thread read in api/messages.go spent 780 ms compiling and 3 ms running on
+// production's own data. A statement that does read widely sets its own plan settings in its
+// transaction (embedqueue's coverageSettings).
+var sessionSettings = map[string]string{"jit": "off"}
+
+// applySessionSettings sets sessionSettings on config, over any value its connection string gave.
+func applySessionSettings(config *pgx.ConnConfig) {
+	for name, value := range sessionSettings {
+		config.RuntimeParams[name] = value
+	}
+}
+
+// PoolConfig is the configuration of a pool on the Dispatch database databaseURL names, as Open
+// builds its own before it sizes it: every connection scans timestamptz in UTC
+// (scanTimestampsInUTC) and carries sessionSettings. A pool of a size or shape of its own, such as
+// a test's pool of one connection, starts from it, or from Pool.Config, never from the bare URL.
+func PoolConfig(databaseURL string) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
+	}
+	config.AfterConnect = scanTimestampsInUTC
+	applySessionSettings(config.ConnConfig)
+	return config, nil
+}
+
+// ConnConfig is the configuration of one connection of its own on the Dispatch database
+// databaseURL names, carrying sessionSettings as every connection of a PoolConfig pool does: for a
+// connection that is not opened from a Store's Pool.Config, as Census's and CheckVersions' are.
+func ConnConfig(databaseURL string) (*pgx.ConnConfig, error) {
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
+	}
+	applySessionSettings(config)
+	return config, nil
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone

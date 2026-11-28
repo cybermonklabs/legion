@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -190,9 +191,15 @@ func (f Fixture) Summary() string {
 }
 
 // Seed writes one project's Legion history into the database (Write), fails the test if it
-// cannot, logs one line naming what it wrote, and answers it.
+// cannot, logs one line naming what it wrote, and answers it. It also builds the statement of a
+// pull request's issue (delivery.PrepareAttribution), as Dispatch's main builds it after the
+// migrations, because the metrics read the merge time of each issue it seeds through that
+// statement (metrics' readMergeTimes).
 func Seed(t testing.TB, pool *store.Pool, spec Spec) Fixture {
 	t.Helper()
+	if err := delivery.PrepareAttribution(t.Context(), pool); err != nil {
+		t.Fatalf("prepare the statement of a pull request's issue: %v", err)
+	}
 	fixture, err := Write(t.Context(), pool, spec)
 	if err != nil {
 		t.Fatalf("seed the Legion history: %v", err)

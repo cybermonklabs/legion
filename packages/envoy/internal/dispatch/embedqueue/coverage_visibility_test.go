@@ -62,7 +62,7 @@ func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *tes
 	fillCounts(t, database)
 
 	url := database.Pool.Config().ConnString()
-	config, err := pgxpool.ParseConfig(url)
+	config, err := store.PoolConfig(url)
 	if err != nil {
 		t.Fatalf("parse the database's URL: %v", err)
 	}

@@ -285,13 +285,15 @@ func TestNoBucketYetNoPass(t *testing.T) {
 // A stored name no repository GitHub could hold is skipped before the pass asks GitHub anything
 // about it, counted and named at WARN under the name the pass reads (splitRepo,
 // refs.SplitGitHubRepo): project defaults stored as `acme/..`, `acme/.git` and `acme/`, as a
-// write before the routes held a name to GitHub's names or direct SQL could leave them, an
-// issue's own `Zeta/..`, and the rename pair's new name `acme/...git`, which the default
-// `oldco/tools` is read under.
+// write before the routes held a name to GitHub's names or direct SQL could leave them, and an
+// issue's own `Zeta/..`. A rename pair whose new name is such a name, `acme/...git`, which only
+// SQL by hand writes, is dropped when the pairs are read (refs.NewRenames), so the default
+// `oldco/tools` is read under its own name, which GitHub allows, and no line names the new name:
+// GitHub's stand-in answers 404 for its installation, so the pass skips it as a default the App
+// is missing from, which the pass line counts beside the four refused names.
 //
 // The negative control is splitRepo reading a name as two non-empty halves, as it did, which
-// takes `acme/..`, `acme/.git`, `Zeta/..` and `acme/...git` and asks GitHub about
-// `/repos/acme/../installation`.
+// takes `acme/..`, `acme/.git` and `Zeta/..` and asks GitHub about `/repos/acme/../installation`.
 func TestARefusedStoredNameIsSkippedAndNamed(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, reviewerAppID)
@@ -300,11 +302,14 @@ func TestARefusedStoredNameIsSkippedAndNamed(t *testing.T) {
 	h.seedProjectDefault("acme/")
 	h.issueInRepository("Zeta/..")
 	h.seedRenamePair("oldco/tools", "acme/...git")
+	if dropped := h.reconciler.Renames.Dropped(); len(dropped) != 1 || dropped[0].To != "acme/...git" {
+		t.Fatalf("the pairs read dropped %v, want the one pair to acme/...git", dropped)
+	}
 	h.seedProjectDefault("oldco/tools")
 
 	h.pass()
 
-	refused := []string{"acme/..", "acme/.git", "acme/", "Zeta/..", "acme/...git"}
+	refused := []string{"acme/..", "acme/.git", "acme/", "Zeta/.."}
 	skipped := map[string]map[string]any{}
 	for _, line := range h.lines("ci reconcile skipped a repository whose name is not an owner/name GitHub allows") {
 		skipped[fmt.Sprint(line["repository"])] = line
@@ -317,7 +322,13 @@ func TestARefusedStoredNameIsSkippedAndNamed(t *testing.T) {
 			t.Errorf("no WARN names %s:\n%s", row, h.logs.String())
 		}
 	}
-	if got := number(t, h.passLine(), "defaults_skipped"); got != len(refused) {
-		t.Errorf("the pass line reports %d repositories skipped, want %d", got, len(refused))
+	if strings.Contains(h.logs.String(), "acme/...git") {
+		t.Errorf("a line names acme/...git, the new name of the pair the read dropped:\n%s", h.logs.String())
+	}
+	if lines := h.lines("ci reconcile skipped a repository it holds no token for"); len(lines) != 1 || fmt.Sprint(lines[0]["repository"]) != "oldco/tools" {
+		t.Errorf("the pass skipped %v as repositories it holds no token for, want oldco/tools alone, read under its own name:\n%s", lines, h.logs.String())
+	}
+	if got := number(t, h.passLine(), "defaults_skipped"); got != len(refused)+1 {
+		t.Errorf("the pass line reports %d repositories skipped, want %d: the refused names and oldco/tools", got, len(refused)+1)
 	}
 }

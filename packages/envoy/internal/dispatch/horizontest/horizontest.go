@@ -582,13 +582,18 @@ func readHolder(db Querier) (Warning, bool, error) {
 
 // Dialed is a Querier that opens a connection of its own to databaseURL for each read and closes
 // it once the row is read: for a test whose Dispatch runs as a process, which holds no pool the
-// watch could read through, and whose connections the process may need.
+// watch could read through, and whose connections the process may need. Each connection carries
+// the session settings of every Dispatch connection (store.ConnConfig).
 func Dialed(databaseURL string) Querier { return dialed(databaseURL) }
 
 type dialed string
 
 func (d dialed) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	conn, err := pgx.Connect(ctx, string(d))
+	config, err := store.ConnConfig(string(d))
+	if err != nil {
+		return failedRow{err}
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return failedRow{err}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -300,7 +301,7 @@ func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		started.Add(1)
 		<-delivery.handling.Done()
-		delivery.handBack(message.msg)
+		delivery.handBack(slog.Default(), message.msg)
 	}, true)
 	naks := watchHandBacks(t, row.uri)
 	delivery := row.delivery()

@@ -151,6 +151,7 @@ func (g *otherRepositoryGitHub) serve(t *testing.T) (http.Handler, *store.Store)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"status":"diverged"}`)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},

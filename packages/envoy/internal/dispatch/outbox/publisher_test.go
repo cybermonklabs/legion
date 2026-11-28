@@ -340,10 +340,10 @@ func TestRunPublishesAskAnswerEnvelope(t *testing.T) {
 }
 
 // TestRunPublishesTheDeployedEventOnTheIssueSubject: issue.deployed, which the delivery timeline
-// appends with a system actor (delivery.RecordDeployedEvents), is quiet (Notify false) and still
-// publishes on the issue's own subject, notifications.dispatch.issue.<KEY>.issue.deployed, as
-// every issue event does: the Legion daemon's intake reads it there. The issue's route is not a
-// destination, since nobody is woken by it.
+// appends with a system actor (delivery.Attributor.RecordDeployedEvents), is quiet (Notify false)
+// and still publishes on the issue's own subject,
+// notifications.dispatch.issue.<KEY>.issue.deployed, as every issue event does: the Legion daemon's
+// intake reads it there. The issue's route is not a destination, since nobody is woken by it.
 func TestRunPublishesTheDeployedEventOnTheIssueSubject(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)

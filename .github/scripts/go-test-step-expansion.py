@@ -352,6 +352,25 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
+            (ENVOY_GO, "Test the attribution's database guard and the reading's identity on PostgreSQL 16"),
+            (ENVOY_GO_RACE, ENVOY_RACE_STEP),
+        }),
+        package="github.com/sjawhar/envoy/internal/dispatch/delivery",
+        functions=("TestPrepareAttributionRefusesADatabaseItCannotRead",
+                   "TestTheReadingIdentityIsTheStoredBodyAndTheMajorVersion",
+                   "TestTheReadingIdentitySurvivesARestoreOfItsText"),
+        requirement=(
+            "envoy-go-postgres16 runs these three against PostgreSQL 16, which an envoy-infra stack "
+            "can still run (databaseVersion: POSTGRES_16), where every other job runs 18: the "
+            "attribution guard fails on 16 alone when it reads pg_database's datlocale, a column of "
+            "17 and later, as a column, and 16 alone keeps each node's place in a function's stored "
+            "body, which the reading's identity must leave out. envoy-go-race's step is their run "
+            "on 18, under the race detector, with the rest of the package, in the race leg "
+            ".github/go-legs.yaml gives internal/dispatch/delivery."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
             (ENVOY_GO, ENVOY_UNIT_STEP),
             (".github/workflows/ci-job-envoy-go-build.yaml", "Test pmdoc's tables in a build without inlining"),
         }),

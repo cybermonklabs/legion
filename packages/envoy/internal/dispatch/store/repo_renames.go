@@ -18,6 +18,14 @@ import (
 // (refs.Renames). One step is the whole rule: the route that wrote the rows refused a pair whose
 // target was itself renamed, and refused a rename of a repository another pair already pointed
 // at, so no chain and no cycle exists.
+//
+// No event and no migration writes a pair either (20261105075455_repo_projects_renamed_to added
+// the column null in every row), so a pair written now is SQL by hand, which nothing checks but
+// the column's check that a repository is not renamed to itself. Its renamed_to must be the
+// `owner/name` GitHub gives the repository today, a name GitHub can hold (refs.SplitGitHubRepo):
+// the boot drops a pair whose new name is not, with one ERROR line that names it and why, and
+// applies the others (refs.NewRenames, cmd/dispatch's readRenames), so the old name reads as its
+// own until the row is corrected and a process starts again.
 type RepoRename struct {
 	From, To string
 }

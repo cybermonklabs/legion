@@ -417,7 +417,7 @@ func TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool(t *testin
 	store := openEmptyTestStore(t)
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
-	holder, err := pgx.Connect(ctx, store.Pool.Config().ConnString())
+	holder, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
 	if err != nil {
 		t.Fatalf("connect the session that holds the key while the boot waits: %v", err)
 	}
@@ -780,7 +780,11 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	}
 	// A session of the test's own, not one of the pools': it holds the key while both runners
 	// queue for it, and no pooled connection may be left holding a session-level key.
-	holder, err := pgx.Connect(ctx, databaseURL)
+	config, err := ConnConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("read the database's URL: %v", err)
+	}
+	holder, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("connect the session that holds the key first: %v", err)
 	}

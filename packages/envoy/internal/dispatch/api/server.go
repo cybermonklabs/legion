@@ -758,13 +758,25 @@ type server struct {
 	branches delivery.Branches
 	// commitPulls is the moment before which the results read will not read GitHub again for the
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
-	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
+	// comparisonReader.readThroughHeads), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
-	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
-	// policy is delivery's; the server holds the one cache the process shares. A read-only
-	// caller's results read takes no claim here and only reads the writers' (Refuses), so it asks
-	// GitHub where a writer's read at that moment would and leaves the claims as it found them.
+	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. It is
+	// this process's memory of the claim every process shares in the database (commit_pull_reads),
+	// which bounds the reads of every process together. The policy is delivery's; the server holds
+	// the one cache the process shares. A read-only caller's results read takes no claim here or in
+	// the database and only reads the writers' (RefusesAcrossProcesses), so it asks GitHub where a
+	// writer's read at that moment would and leaves the claims as it found them.
 	commitPulls delivery.CommitPullReads
+	// linkedHeads is the same memory for the linked pull requests the results read reads itself
+	// (comparisonReader.readLinkedHeads): a pull request the issue links whose head Dispatch does not
+	// hold is read at most once per delivery.CommitPullReadStaleAfter in this process, keyed by its
+	// owed name and `pull/<number>` in the place of a commit, however often the results are read. A
+	// read-only caller's read takes no claim here and only reads the writers' (Refuses).
+	linkedHeads delivery.CommitPullReads
+	// readThroughBudget is how long after it begins one results read's read-through may start a
+	// question to GitHub (comparisonReader.learn): zero is delivery.ReadThroughTimeout. A test
+	// shortens it.
+	readThroughBudget time.Duration
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of
@@ -1304,8 +1316,7 @@ type apiError struct {
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
 	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
-	// DELETE_CONTENDED, linkedReadRefusal's 502 for a linked repository's read GitHub
-	// rate-limited with a wait, and the keyed layer's 409 KEY_IN_FLIGHT (writeKeyInFlight,
+	// DELETE_CONTENDED, and the keyed layer's 409 KEY_IN_FLIGHT (writeKeyInFlight,
 	// writeKeyFreed). writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other

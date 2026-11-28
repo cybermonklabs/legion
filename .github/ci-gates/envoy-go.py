@@ -1,8 +1,9 @@
 # The envoy_go filter's gate: what job envoy-go reads. Its steps are in the jobs of the file it
 # calls (ENVOY_GO_FILE): the unit step in the legs of envoy-go-legs, each over the packages
-# .github/go-legs.yaml lists for it, and the job's other steps beside them in envoy-go-alone,
-# envoy-go-race-impossible, envoy-go-skips and envoy-go-natslive; the job envoy-go itself only
-# restates their result. So each citation names one of those jobs.
+# .github/go-legs.yaml lists for it, the job's other steps beside them in envoy-go-alone,
+# envoy-go-race-impossible, envoy-go-skips and envoy-go-natslive, and the PostgreSQL 16 job's step
+# in envoy-go-postgres16; the job envoy-go itself only restates their result. So each citation
+# names one of those jobs.
 GATE = gate("envoy_go", "envoy-go", runs=[
     step_run(ENVOY_NATSLIVE_JOB, "Integration test envoy (a real NATS server, in the test process)",
              "go test ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"],
@@ -99,6 +100,13 @@ GATE = gate("envoy_go", "envoy-go", runs=[
         (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
         (ENVOY, ["./cmd/listener/"], "go test -tags natslive ./cmd/listener/", {"tags": "natslive"}),
     ], workflow=ENVOY_GO_FILE),
+    # The PostgreSQL 16 job, a job of envoy-go's file beside the legs (POSTGRES16_JOB): its three
+    # tests by name (POSTGRES16_TESTS). Its Run is the plain go test of the package, which compiles
+    # every test file of internal/dispatch/delivery whichever three the -run selects, and which
+    # envoy-go-alone's run of the package's xid window rows already puts on this gate's filter.
+    pinned_step(POSTGRES16_JOB, POSTGRES16_STEP, ENVOY, POSTGRES16_SCRIPT, [
+        (ENVOY, [POSTGRES16_PACKAGE], f"go test -run of three tests in {POSTGRES16_PACKAGE} on PostgreSQL 16", {}),
+    ], workflow=ENVOY_GO_FILE),
 ], reads=reads(
     (".github/actions/pull-test-images/**", at(ENVOY_LEGS_JOB, "Pull test container images", ENVOY_GO_FILE)),
     (TAGGED_TESTS, f"{at(ENVOY_NATSLIVE_JOB, NATS_MATRIX_STEP, ENVOY_GO_FILE)} takes its -run from it"),
@@ -110,8 +118,10 @@ GATE = gate("envoy_go", "envoy-go", runs=[
 ) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + install_jj(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
   + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+  + setup_go(POSTGRES16_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE)
+  + service_settings_reads(POSTGRES16_JOB, ENVOY_GO_FILE)
   + go_test_events(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
-  + [read for job in (ENVOY_ALONE_JOB, ENVOY_RACE_IMPOSSIBLE_JOB, ENVOY_SKIPS_JOB, ENVOY_NATSLIVE_JOB)
+  + [read for job in (ENVOY_ALONE_JOB, ENVOY_RACE_IMPOSSIBLE_JOB, ENVOY_SKIPS_JOB, ENVOY_NATSLIVE_JOB, POSTGRES16_JOB)
      for read in install_gotestsum(job, ENVOY_GO_FILE) + go_test_events(job, ENVOY_GO_FILE)])
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),

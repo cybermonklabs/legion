@@ -453,7 +453,9 @@ describe("each read command with and without --as-of", () => {
       ],
     });
     const presentText = body(present.stdout).join("\n");
-    expect(presentText).toContain("A pass stands: yes, from implementer.");
+    expect(presentText).toContain(
+      "A pass stands: yes. Newest at that commit: implementer: pass (01234567)."
+    );
     expect(presentText).toContain(
       "The check's words did not move after this result (result version 1, check version 1)."
     );

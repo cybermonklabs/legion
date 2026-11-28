@@ -153,7 +153,7 @@ func TestAnIntegrationBranchReachesTheDefaultBranchThroughItsLanding(t *testing.
 	// merge commit, which GitHub's answer gives.
 	mergedAt := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	rig.github.setPull(5, afterMergePull("ACME-0", 5, f5, integration, "main", m2, mergedAt.Format(time.RFC3339)), 0)
-	if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(context.Background(), rig.database.Pool, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: 5, HeadSHA: f5, HeadRef: integration, BaseRef: "main", State: "merged",
 		Title: "Land the integration branch", URL: "https://github.com/acme/widgets/pull/5", MergedAt: &mergedAt,
 	}); err != nil {
@@ -207,7 +207,10 @@ func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 	onlyLinked := issueInRepository(t, handler, afterMergeProject, "acme/widgets", "Work merged in the second repository").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+onlyLinked, "verification.md", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, onlyLinked, toolsPull)
-	writeHeadOnBase(t, database, "acme/tools", 9, toolsHead, "merged", "", "main")
+	// acme/tools#9 as a read of GitHub stores it, with texts that name no issue, so only the link
+	// names it as the issue's. R10 and R19 of the spec of several open pull requests: a row with no
+	// texts keeps the issue it stores, here none.
+	storeLinkedHeadOn(t, database, "acme/tools", 9, toolsHead, "merged", "main")
 
 	bases := []afterMergeBasis{branchBasis("main", ""), {Kind: "branch", Repo: "acme/tools", Branch: "main", MergeCommit: toolsMerge}}
 	toolsMain := bases[1]
@@ -250,7 +253,7 @@ func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 	linked.mu.Unlock()
 	both := issueOfProject(t, handler, afterMergeProject, "Work merged in both repositories", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, both, "https://github.com/acme/tools/pull/10")
-	writeHeadOnBase(t, database, "acme/tools", 10, toolsHead, "merged", "", "main")
+	storeLinkedHeadOn(t, database, "acme/tools", 10, toolsHead, "merged", "main")
 	linked.mu.Lock()
 	linked.merged["acme/widgets#3"] = linkedMerge{title: both + ": the work", headRef: "legion/" + both, headSHA: widgetsHead,
 		base: "main", mergeCommit: widgetsMerge, mergedAt: "2026-11-21T12:00:00Z"}

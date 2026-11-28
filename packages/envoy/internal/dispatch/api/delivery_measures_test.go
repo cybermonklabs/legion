@@ -76,8 +76,9 @@ const measuresFixtureWindow = "from=2026-08-30T00:00:00Z&to=2026-09-27T20:00:00Z
 
 // seedMeasuresFixture writes the fixture's settings, issues, pull requests, runs and jobs through
 // the same store calls intake and reconcile use, so Dispatch derives each PR's deploy from the
-// stored rows (containment.go FirstShippingApply) as it does in production.
-func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
+// stored rows (containment.go FirstShippingApply) as it does in production. attributor is the
+// server's (Deps.Attributor), which writes and reads each pull request's issue.
+func seedMeasuresFixture(t *testing.T, attributor *delivery.Attributor, database *store.Store) measuresFixture {
 	t.Helper()
 	ctx := t.Context()
 	pool := database.Pool
@@ -116,6 +117,9 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 		}
 	}
 
+	// Each issue's own repo is the repository of the pull requests that name it, so it resolves
+	// there: the statement holds a pull request's issue to the repository of the pull request.
+	issueRepos := map[string]string{}
 	for _, pr := range fixture.PRs {
 		createdAt, mergedAt := pr.CreatedAt, pr.MergedAt
 		additions, deletions := pr.Additions, pr.Deletions
@@ -123,10 +127,22 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 			Repo: pr.Repo, Number: pr.Number, Title: pr.Title, Author: pr.Author,
 			URL:       "https://github.com/" + pr.Repo + "/pull/" + strconv.Itoa(pr.Number),
 			CreatedAt: &createdAt, MergedAt: &mergedAt, FirstCommitAt: pr.FirstCommitAt,
-			Additions: &additions, Deletions: &deletions, Rework: pr.Rework, IssueKey: pr.Issue,
+			Additions: &additions, Deletions: &deletions, Rework: pr.Rework,
 		}); err != nil {
 			t.Fatalf("seed PR %s#%d: %v", pr.Repo, pr.Number, err)
 		}
+		if pr.Issue == nil {
+			continue
+		}
+		if repo, seen := issueRepos[*pr.Issue]; seen && repo != pr.Repo {
+			t.Fatalf("the fixture names %s from %s and from %s", *pr.Issue, repo, pr.Repo)
+		} else if !seen {
+			issueRepos[*pr.Issue] = pr.Repo
+			if _, err := pool.Exec(ctx, `update issues set repo = $1 where key = $2`, pr.Repo, *pr.Issue); err != nil {
+				t.Fatalf("resolve %s to %s: %v", *pr.Issue, pr.Repo, err)
+			}
+		}
+		seedAttributedHead(t, attributor, pool, pr.Repo, pr.Number, *pr.Issue)
 	}
 
 	for _, run := range fixture.Runs {
@@ -261,8 +277,8 @@ func TestGetDeliveryMeasuresIsAgentReadable(t *testing.T) {
 // Only computed_at, the moment each answer was computed, may differ.
 func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
-	seedMeasuresFixture(t, database)
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	seedMeasuresFixture(t, deps.Attributor, database)
 	for _, query := range []string{
 		measuresFixtureWindow,
 		measuresFixtureWindow + "&repo=acme/widgets",
@@ -300,8 +316,8 @@ func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 // set.
 func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	t.Parallel()
-	handler, database := newTestHandlerWithStore(t)
-	fixture := seedMeasuresFixture(t, database)
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	fixture := seedMeasuresFixture(t, deps.Attributor, database)
 
 	body := getDeliveryMeasures(t, handler, measuresFixtureWindow)
 	result := body.Measures

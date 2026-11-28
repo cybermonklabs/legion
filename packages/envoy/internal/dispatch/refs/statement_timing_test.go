@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -888,11 +889,17 @@ const probeFixtureAnalyze = `analyze projects, issues, artifacts, refs, block_re
 // to the measurement database, never the runner's, which is for reading (benchtime.Runner.Conn):
 // it first removes what an interrupted run left, commits the fixture in one transaction, analyzes
 // the tables it wrote, and holds them to the rows round 12 wrote. t.Cleanup removes it
-// (removeProbeFixture) and then analyzes the tables again (probeFixtureAnalyze).
+// (removeProbeFixture) and then analyzes the tables again (probeFixtureAnalyze). The connection
+// carries the session settings of every Dispatch connection (store.ConnConfig), as the runner's
+// does.
 func writeProbeFixture(t *testing.T) probeFixture {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, os.Getenv(benchtime.DatabaseURLEnv))
+	config, err := store.ConnConfig(os.Getenv(benchtime.DatabaseURLEnv))
+	if err != nil {
+		t.Fatalf("read %s: %v", benchtime.DatabaseURLEnv, err)
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("connect to write the probe fixture: %v", err)
 	}

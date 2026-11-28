@@ -93,7 +93,7 @@ func TestOneDaysRunsPastTheBoundLeaveEveryOtherDayAnswered(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadDaysDeploys: %v", err)
 			}
-			want, err := ReadDeploys(ctx, pool, settings, day, day.AddDate(0, 0, 1))
+			want, err := unrenamed().ReadDeploys(ctx, pool, settings, day, day.AddDate(0, 0, 1))
 			if err != nil {
 				t.Fatalf("ReadDeploys of the second day: %v", err)
 			}

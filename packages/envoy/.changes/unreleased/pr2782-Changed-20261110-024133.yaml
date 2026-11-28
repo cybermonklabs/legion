@@ -10,8 +10,9 @@ body: |-
   whose suites has more than 60 check runs, a head whose Checks fields GitHub refuses, and every
   head of a page GitHub will not answer. A GraphQL rate limit, which GitHub answers in shapes
   none of which is a REST limit, ends the pass where it stands, and which of GitHub's two
-  limits it is says what it holds: the App's GraphQL points spent is recorded under a GraphQL
-  scope of its own, which leaves every REST read of every process going, and a secondary limit,
+  limits it is says what it holds: an installation's GraphQL points spent is recorded under that
+  installation's GraphQL scope, which leaves every REST read of every process, and the queries
+  of every other installation, going, and a secondary limit,
   which GitHub shares between an installation's REST calls and its queries, is recorded under
   that installation's scope with a doubling wait and holds that installation's REST reads too.
   A pass now ends at the last page of the last repository rather than beginning the order

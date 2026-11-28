@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+    Of two answers of GitHub for one pull request with the same `updated_at` second, the stored
+    head is the one whose read of GitHub took the later place in one order of every read: each
+    read takes a value of a database sequence just before its request goes out, the row stores it
+    (`pull_request_heads.github_read_order`, migration `20261117172917_pull_request_heads_read_order`),
+    and an update whose read took an earlier place than the stored row's writes nothing. The answer
+    that arrived last won, so a slow read of an older head replaced the newer one, and a pass at the
+    older head stood until the next reconcile pass; no clock of a process decides the order, so two
+    replicas whose clocks differ order their reads as the reads began. A read whose place cannot be
+    taken does not start. `pull_request_heads.github_read_at` is the reader's clock as the read began,
+    and orders nothing. Two answers of one second that differ still owe a read. A row an earlier
+    release changes while it serves beside this one keeps the place of the read it replaced, so an
+    answer of the same second whose read took an earlier place is refused over it too; that change
+    owes a read, so the pass that reaches it writes GitHub's head.
+time: 2026-11-17T12:16:12.000000000Z
+custom:
+    Issue: pr4209

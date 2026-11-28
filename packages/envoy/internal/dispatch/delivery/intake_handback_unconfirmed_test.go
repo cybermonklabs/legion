@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"slices"
 	"sync"
@@ -405,7 +406,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 		t.Fatalf("control: the holder's connection did not write the filler into its socket: %v", err)
 	}
 	relay.AwaitParked(t)
-	earlier.handBack(msg)
+	earlier.handBack(slog.Default(), msg)
 	select {
 	case <-earlier.handBacksLanded():
 	case <-time.After(30 * time.Second):
@@ -661,7 +662,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the holder's first delivery was not handed the message: " + consumerState(publisher))
 	}
-	earlier.handBackOwn(msg, time.Hour)
+	earlier.handBackOwn(slog.Default(), msg, time.Hour)
 	select {
 	case <-earlier.handBacksLanded():
 	case <-time.After(30 * time.Second):

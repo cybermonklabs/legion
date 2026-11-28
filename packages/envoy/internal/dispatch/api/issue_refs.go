@@ -48,13 +48,19 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 	if err != nil {
 		return "", err
 	}
-	var urls []string
-	for _, link := range externalURLs(repo, number) {
-		urls = append(urls, s.deps.Renames.URLSpellings(link)...)
-	}
+	// A link's URL is compared folded with lower(), as a pull request's issue is read through it
+	// (delivery's attributedTerms) and as the link check compares it (issue_patch.go), so an issue
+	// that holds the URL in another letter case is found, and two issues that hold it in two cases
+	// answer AMBIGUOUS_ISSUE_REF. The reference is read as the URL the external create stores,
+	// its /issues/ form, and a link of the pull request or issue in either form under any name of
+	// its repository (linkFormsSQL over the rename pairs the boot read, the one link rule) is found
+	// the same way, so a reference by the name a repository had before a rename finds the issue
+	// that links it by its name today, and the reverse. A link the rule refuses, of a name GitHub
+	// cannot have, is found only as that URL. issue_external_links_url_lower serves the read.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select distinct issue_key from issue_external_links where url = any($1) order by issue_key
-	`, urls)
+		select distinct issue_key from issue_external_links
+		where lower(url) = any(`+linkFormsSQL(s.deps.Renames, "$1::text")+`) order by issue_key
+	`, externalURL(repo, number))
 	if err != nil {
 		return "", err
 	}
@@ -107,11 +113,4 @@ func externalRef(ref string) (repo string, number string, err error) {
 
 func externalURL(repo, number string) string {
 	return "https://github.com/" + repo + "/issues/" + number
-}
-
-func externalURLs(repo, number string) []string {
-	return []string{
-		externalURL(repo, number),
-		"https://github.com/" + repo + "/pull/" + number,
-	}
 }

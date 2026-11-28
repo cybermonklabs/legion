@@ -28,9 +28,19 @@ type intakeTuning struct {
 	// stopBudget is the one deadline of the intake's stop, counted from the moment Run's context
 	// ends (stopContext): intakeStopBudget.
 	stopBudget time.Duration
-	// headWriteMaxDeliveries is how many deliveries an envelope whose head row could not be stored
-	// gets before deliver acknowledges it (headWriteDeliveriesSpent): headWriteMaxDeliveries.
-	headWriteMaxDeliveries uint64
+	// redeliverAfter is how long NATS waits before it delivers again an envelope the intake hands
+	// back because its head row and the read it is owed could not be stored (Intake.deliver):
+	// headWriteRedeliverAfter.
+	redeliverAfter time.Duration
+	// bindInterval is how often the intake, while it delivers nothing, tries for its durable's hold
+	// and the durable (heldDurable.run): durableBindInterval.
+	bindInterval time.Duration
+	// holdTTL, holdRenew and holdMargin are the TTL, the renewal and the margin of the durable's
+	// hold (heldDurable.takeHold): intakeHoldTTL, intakeHoldRenew and intakeHoldMargin. holdRenew
+	// also bounds the hold's statements and the durable's lookup, and is how often the holder
+	// checks that the durable still delivers to it. A test shortens all four together, in the
+	// proportion duty.TryHold requires (Renew under TTL less Margin).
+	holdTTL, holdRenew, holdMargin time.Duration
 	// createDurable creates the durable a take-over configured on the notification stream
 	// (heldDurable.finishTakeOver): addDurable, unless a test fails the create after its delete.
 	createDurable func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error)
@@ -69,12 +79,16 @@ type intakeTuning struct {
 // as it is when newIntakeTuning is called.
 func newIntakeTuning() *intakeTuning {
 	tuning := &intakeTuning{
-		messageTimeout:         intakeMessageTimeout,
-		maxAckPending:          intakeMaxAckPending,
-		stopBudget:             intakeStopBudget,
-		headWriteMaxDeliveries: headWriteMaxDeliveries,
-		createDurable:          addDurable,
-		log:                    slog.Default(),
+		messageTimeout: intakeMessageTimeout,
+		maxAckPending:  intakeMaxAckPending,
+		stopBudget:     intakeStopBudget,
+		redeliverAfter: headWriteRedeliverAfter,
+		bindInterval:   durableBindInterval,
+		holdTTL:        intakeHoldTTL,
+		holdRenew:      intakeHoldRenew,
+		holdMargin:     intakeHoldMargin,
+		createDurable:  addDurable,
+		log:            slog.Default(),
 	}
 	tuning.callWait.Store(int64(bus.ConnLockWait))
 	tuning.drainWait.Store(int64(natsgo.DefaultDrainTimeout))

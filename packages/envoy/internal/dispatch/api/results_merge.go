@@ -13,8 +13,8 @@ import (
 // each branch a check compared with a branch is compared with (mergeOn), whether a result's commit
 // holds it (holds), and whether a set of merged pull request rows can be ordered by when each
 // merged (fillMergeTimes), each over a memo of the read. The store and GitHub reads behind them
-// are delivery's (delivery/merge_holds.go, delivery.Attributor.RefreshPullRequestHead); the bases
-// they make are results_comparison.go's (branchBases, branchesIn) and results_linked.go's
+// are delivery's (delivery/merge_holds.go, delivery.Attributor.RefreshMergedPullRequest); the
+// bases they make are results_comparison.go's (branchBases, branchesIn) and results_linked.go's
 // (linkedBranchBases).
 
 // mergeLandings is the most pull requests mergeOn follows from the branch an issue's pull request
@@ -77,10 +77,10 @@ type refreshedMerge struct {
 // fillMergeTimes reports whether rows, the merged pull request rows one read orders by when each
 // merged, can be ordered (ordered), and gives each row the time of its merge the read learned. A
 // set of fewer than two rows needs no order. A row with no time of merge is refreshed once
-// (refreshMerge) where the rule that last judged it is below this build's
-// (delivery.AttributionRuleVersion), since the reconcile will still offer it; a row the current rule
-// already offered and GitHub did not answer (delivery.MarkPullRequestHeadChecked) is not asked
-// again. A set holding a row that still has no time after that cannot be ordered, since the row
+// (refreshMerge) where the rule stamped on it is below delivery.AttributionRuleVersion: no read
+// that stores merge times has read it. A row such a read already offered and GitHub did not
+// answer is stamped at that rule (delivery.MarkPullRequestHeadChecked) and is not asked again. A
+// set holding a row that still has no time after that cannot be ordered, since the row
 // ordered last may have merged last, so no read names an older merge as the newest: the fill
 // stops there and refreshes no row after it.
 func (s *server) fillMergeTimes(ctx context.Context, fills *mergeTimeFills, rows []delivery.MergeTime) (ordered bool) {
@@ -107,23 +107,23 @@ func mergeRowOf(repo string, number int) mergeRow {
 }
 
 // refreshMerge is pull request number of repo as the store holds it after one refresh from GitHub
-// in this read (delivery.Attributor.RefreshPullRequestHead), read back by its number
+// in this read (delivery.Attributor.RefreshMergedPullRequest), read back by its number
 // (delivery.MergedPullRequestOf) under the name the refresh writes it under, since the refresh
-// answers only whether it failed. A second ask in the same read answers from fills and asks GitHub
-// nothing. A refresh that failed leaves the row as it was, and a read that failed answers no row.
+// answers only whether it failed. A writer's read stores what the refresh read; a read-only
+// caller's read passes its request's answers, which keep the refresh's writes for that request
+// alone, and reads the row back through them. A second ask in the same read answers from fills
+// and asks GitHub nothing. A refresh that failed leaves the row as it was, and a read that failed
+// answers no row.
 func (s *server) refreshMerge(ctx context.Context, fills *mergeTimeFills, repo string, number int) refreshedMerge {
 	key := mergeRowOf(repo, number)
 	if learned, refreshed := fills.refreshed[key]; refreshed {
 		return learned
 	}
-	var refreshErr error
+	var kept *delivery.HeadAnswers
 	if fills.readOnly {
-		pulls, err := s.deps.Attributor.ReadPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, repo, number, s.resultsNow(), *fills.answers)
-		fills.answers.Add(pulls)
-		refreshErr = err
-	} else {
-		refreshErr = s.deps.Attributor.RefreshPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, repo, number, s.resultsNow())
+		kept = fills.answers
 	}
+	refreshErr := s.deps.Attributor.RefreshMergedPullRequest(ctx, s.deps.Store.Pool, s.deps.GitHub, kept, repo, number, s.resultsNow())
 	if refreshErr != nil {
 		slog.Warn("dispatch: refresh a merged pull request a results read orders", "repo", repo, "number", number, "error", refreshErr)
 	}

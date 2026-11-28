@@ -56,7 +56,7 @@ func TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts(t *tes
 	}
 	ctx := context.Background()
 	store := openMigratedTestStore(t, blockRefsSourceIndex)
-	reader, err := pgx.Connect(ctx, store.Pool.Config().ConnString())
+	reader, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
 	if err != nil {
 		t.Fatalf("connect the reader: %v", err)
 	}

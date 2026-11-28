@@ -28,15 +28,15 @@ type timelineJobsRun struct {
 }
 
 // TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers: the timeline reads each deploy run's
-// production jobs and the jobs of it that failed (delivery.ReadWindowRows with failedJobs), never
-// every job the run holds, and answers what it answers from every job, byte for byte. Over a
-// deliverytest history, beside which deploy runs are added whose failed jobs are two with a guard
-// among them, the production job and another, guards alone, and one in a run that succeeded, the
-// body deliveryTimelineCompute computes from the population the timeline reads is, for each
-// window, the body it computes from that population with each apply run's and each window deploy
-// run's every job (delivery.ListRunJobs) in place of the jobs read, and
-// GET /api/v1/delivery/timeline answers it. The jobs read are fewer than every job for both lists,
-// so neither read is every job under another name.
+// production jobs and the jobs of it that failed (delivery.Attributor.ReadWindowRows with
+// failedJobs), never every job the run holds, and answers what it answers from every job, byte for
+// byte. Over a deliverytest history, beside which deploy runs are added whose failed jobs are two
+// with a guard among them, the production job and another, guards alone, and one in a run that
+// succeeded, the body deliveryTimelineCompute computes from the population the timeline reads is,
+// for each window, the body it computes from that population with each apply run's and each
+// window deploy run's every job (delivery.ListRunJobs) in place of the jobs read, and GET
+// /api/v1/delivery/timeline answers it. The jobs read are fewer than every job for both lists, so
+// neither read is every job under another name.
 func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})

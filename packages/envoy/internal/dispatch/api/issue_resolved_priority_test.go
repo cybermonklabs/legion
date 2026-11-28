@@ -786,8 +786,15 @@ func TestEveryPriorityReaderOrdersFiltersAndCountsByTheResolvedPriority(t *testi
 			t.Fatalf("seed the delivery settings: %v", err)
 		}
 		merged := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+		// A timeline row's issue is the statement's: each pull request gets a results row whose
+		// branch names its issue (seedAttributedHead), which needs the issue to resolve to
+		// acme/widgets, ACME's default repository here.
+		if _, err := database.Pool.Exec(ctx, `update projects set default_repo = 'acme/widgets' where key = 'ACME'`); err != nil {
+			t.Fatalf("set acme/widgets as ACME's default repository: %v", err)
+		}
 		for number, key := range map[int]string{1: seed.m0c, 2: seed.nc} {
 			at := merged.Add(time.Duration(number) * time.Minute)
+			seedAttributedHead(t, unrenamed(), database.Pool, "acme/widgets", number, key)
 			if err := delivery.UpsertPullRequest(ctx, database.Pool, delivery.DeliveryPullRequest{
 				Repo: "acme/widgets", Number: number, Title: "feat: " + seed.issueNames[key], Author: "octocat",
 				URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number), IssueKey: &key, MergedAt: &at, CreatedAt: &at,
