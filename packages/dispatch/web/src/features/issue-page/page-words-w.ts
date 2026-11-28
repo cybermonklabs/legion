@@ -72,8 +72,8 @@ export default {
       /** A constraint of the issue or of the lens catalogue: a standard the work keeps, or a
        *  measurement taken of it. */
       constraint: "constraint",
-      /** One block a lens wrote under itself: a `block` node whose parent is a lens, which the
-       *  model gives no kind of its own. */
+      /** One block a lens wrote under itself: a `block` node whose own id names its lens
+       *  (`lens/<uuid>#<block id>`), which the model gives no kind of its own. */
       finding: "finding",
       /** One analysis of a kind of the lens catalogue, invoked on a node of the issue. Its row's
        *  tag draws its kind's words; this names its shape. */

@@ -361,8 +361,9 @@ test("a finding is a block whose parent is a lens", () => {
 });
 
 // A block is a finding by its own id alone, as the server reads one, wherever it stands. A
-// paragraph moved under a lens keeps its bare block id, so it is no finding and carries no
-// finding's address, which the server would not answer; the lens's own finding beside it is one.
+// paragraph moved under a lens keeps its own id, which names no lens, so it is no finding and
+// carries no finding's address, which the server would not answer; the lens's own finding beside
+// it is one.
 test("a block under a lens is a finding only by its own id, as the server reads it", () => {
   const lensId = `lens/${FIRST}`;
   const { drafts, root } = drawn(

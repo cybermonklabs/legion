@@ -359,7 +359,7 @@ export function lensChips(
 }
 
 /** Which of the four kinds `node` is: a lens, a risk and a constraint by their supertags, and a
- *  finding a block whose own id names its lens (`findingOf`), as the server reads one, wherever it
+ *  finding a block whose own id names its lens (`findingLensOf`), as the server reads one, wherever it
  *  stands: the server gives a finding no kind of its own (`graphstore/reasoning.go`), and a block
  *  moved under a lens keeps its own id, so it is no finding. Its supertag is read as `block`
  *  (`8bdd1621fb`) and as `lens_block` (`5c85ffdc1b`), the two spellings of its kind in the model. */
@@ -371,23 +371,21 @@ export function lensTypeOf(node: TreeAnswerNode): StoreKind | undefined {
       return node.supertag;
     case "block":
     case "lens_block":
-      return findingOf(node.id) === undefined ? undefined : "finding";
+      return findingLensOf(node.id) === undefined ? undefined : "finding";
     default:
       return undefined;
   }
 }
 
-/** The lens's uuid and the block id that `id`, a block's read id, names where it is a finding's,
- *  read as the server reads one (`graphstore.ParseFindingID`): after `lens/`, the lens's uuid up
- *  to the first `#` and the block id after it, `""` where it holds no `#`. Undefined for any other
- *  id: a block of a document, of an ask, a comment or a message, and one moved under a lens. */
-function findingOf(id: string): { readonly block: string; readonly lens: string } | undefined {
+/** The lens's uuid that `id`, a block's read id, names where it is a finding's, read as the
+ *  server reads one (`graphstore.ParseFindingID`): after `lens/`, up to the first `#`. Undefined
+ *  for any other id: a block of a document, of an ask, a comment or a message, and one moved under
+ *  a lens. */
+function findingLensOf(id: string): string | undefined {
   if (!id.startsWith("lens/")) return undefined;
   const named = id.slice("lens/".length);
   const hash = named.indexOf("#");
-  return hash === -1
-    ? { block: "", lens: named }
-    : { block: named.slice(hash + 1), lens: named.slice(0, hash) };
+  return hash === -1 ? named : named.slice(0, hash);
 }
 
 /** Whether `constraint` is one of the issue's own that draws a row: under the issue
@@ -435,13 +433,13 @@ function lensParents(answer: TreeAnswer): ReadonlySet<string> {
  * (`store-link.ts`'s `storeAddressOf`) until the server serves that read: a node's read id is its
  * store id, bare or after its kind (`lens/<uuid>`), and a finding's names its lens and its block
  * id (`lens/<uuid>#<block id>`, as the server writes one), so its address takes its lens from its
- * own id (`findingOf`), wherever it stands.
+ * own id (`findingLensOf`), wherever it stands.
  */
 export function addressOf(node: TreeAnswerNode): string | undefined {
   const type = lensTypeOf(node);
   if (type === undefined) return undefined;
   return type === "finding"
-    ? storeAddressOf(type, node.id, findingOf(node.id)?.lens)
+    ? storeAddressOf(type, node.id, findingLensOf(node.id))
     : storeAddressOf(type, node.id);
 }
 
