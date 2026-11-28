@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -13,7 +12,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // dropBlock returns a live edit that removes the block whose text starts with prefix, as a
@@ -195,127 +196,138 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 	}
 }
 
-// A transaction may reuse the rendering it cached only while the fork it was taken from still
-// describes the document, and the only thing that can say so is the fork itself, read on either
-// side of the one update it absorbs. Two reads of the room are two snapshots - websocket
-// Server.Apply holds no lock across its callback (ygo provider/websocket/inject.go:305) - so a
-// browser update landing between them is in one and not the other, and a signal built from that
-// pair concludes the room held while handing the fork the very update it missed. The version is
-// then written from a document that no longer exists.
-//
-// The browser's delete here is queued on the document's mutex while the transaction's first
-// encoding of the room runs, so it is granted the lock in that window: the interleave is driven
-// rather than waited for.
+// A delete moves the room without advancing its Yjs state vector. A warm fork must
+// include any delete committed at its read point, even if the observer has not run.
+// Later deletes must not reach the fork, or make capture reuse a stale rendering.
 func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 	t.Parallel()
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	body := make([]string, 0, 1200)
-	for index := range 1200 {
-		body = append(body, fmt.Sprintf("Paragraph %d of the specification body with enough words to be realistic prose.", index+1))
-	}
-	seedServiceText(t, service, artifactID, strings.Join(body, "\n\n"))
+	const doomed = "Doomed paragraph."
+	for _, tc := range []struct {
+		name       string
+		keepDoomed bool
+	}{
+		{name: "before_apply_ops"},
+		{name: "observer_held_across_fork_read"},
+		{name: "after_fork_read", keepDoomed: true},
+		{name: "after_capture_fork", keepDoomed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := storetest.Open(t)
+			artifactID := createDocument(t, db, "# First")
+			deps := testServiceDeps(db)
+			deps.Settle = time.Hour
+			deps.RoomIdleTimeout = time.Hour
+			service := newTestServiceWith(t, deps)
+			seedServiceText(t, service, artifactID, "Before.\n\nKept paragraph.\n\n"+doomed)
+			checks := checkRenderings(service)
 
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	reused, stale := 0, 0
-	const rounds = 640
-	for round := range rounds {
-		marker := fmt.Sprintf("DOOMED-%d under the browser's cursor", round)
-		editLiveTree(t, service, artifactID, appendBlocks(t, marker))
-
-		// The marker was just appended, so its paragraph is last. Locate that exact text without
-		// reading and rendering the entire document again to prepare a one-paragraph deletion.
-		markerIndex := -1
-		if err := service.srv.Apply(context.Background(), artifactID,
-			func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
-				children := doc.GetXmlFragment(fragmentName).Children()
-				if len(children) == 0 {
-					return
-				}
-				last, ok := children[len(children)-1].(*crdt.YXmlElement)
-				if !ok || last.NodeName != "paragraph" {
-					return
-				}
-				content := last.Children()
-				if len(content) != 1 {
-					return
-				}
-				text, ok := content[0].(*crdt.YXmlText)
-				if !ok || text.ToString() != marker {
-					return
-				}
-				markerIndex = len(children) - 1
-			}); err != nil && !strings.Contains(err.Error(), "no changes") {
-			t.Fatalf("round %d: precompute the browser's delete: %v", round, err)
-		}
-		if markerIndex < 0 {
-			t.Fatalf("round %d: could not precompute the browser's delete", round)
-		}
-
-		ctx := context.Background()
-		tx, err := service.store.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("round %d: begin: %v", round, err)
-		}
-		joinedCtx, ledger := service.Join(ctx, tx)
-
-		var browser sync.WaitGroup
-		browser.Add(1)
-		go func() {
-			defer browser.Done()
-			// Long enough for the transaction's first forkLive to be inside its first encoding
-			// of the room, short enough to be well before the version snapshot.
-			// Walk the delete across the window in which the transaction's first forkLive
-			// takes the owner row and then encodes the room, so it is queued on the
-			// document's mutex while that encoding runs.
-			time.Sleep(time.Duration(200+(round%160)*50) * time.Microsecond)
-			_ = service.srv.Apply(context.Background(), artifactID,
-				func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
-					fragment := doc.GetXmlFragment(fragmentName)
-					transact(func(txn *crdt.Transaction) { fragment.Delete(txn, markerIndex, 1) })
-				})
-		}()
-
-		_, editErr := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
-			Op:   "replace",
-			Find: fmt.Sprintf("Paragraph %d of the specification body with enough words to be realistic prose.", round+1),
-			With: fmt.Sprintf("EDITED %d of the specification body with enough words to be realistic prose.", round+1),
-		}}, alice, nil)
-		browser.Wait()
-		if editErr != nil {
-			ledger.Discard()
-			_ = tx.Rollback(ctx)
-			continue
-		}
-		write := ledger.liveWriteFor(artifactID)
-		if write != nil && write.tree != nil {
-			captured, _, err := service.captureLiveTextAndAuthors(joinedCtx, artifactID, nil)
-			tree, markdown := captured.tree, captured.markdown
+			ctx := testwait.Context(t)
+			if err := service.warmLiveDocument(ctx, artifactID); err != nil {
+				t.Fatalf("warm the room before the fork read: %v", err)
+			}
+			tx, err := service.store.Pool.Begin(ctx)
 			if err != nil {
-				t.Fatalf("round %d: capture: %v", round, err)
+				t.Fatalf("begin transactional edit: %v", err)
 			}
-			if tree == write.tree {
-				reused++
-				fresh, err := treeOf(write.fork)
-				if err != nil {
-					t.Fatalf("round %d: read the fork: %v", round, err)
-				}
-				freshMarkdown, err := renderTree(fresh)
-				if err != nil {
-					t.Fatalf("round %d: render the fork: %v", round, err)
-				}
-				if freshMarkdown != markdown {
-					stale++
-					t.Errorf("round %d: the capture reused a rendering of %d bytes while the fork"+
-						" it was taken from now renders %d", round, len(markdown), len(freshMarkdown))
+			testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
+			joinedCtx, ledger := service.Join(ctx, tx)
+			testcleanup.Add(t, ledger.Discard)
+
+			var browser sync.WaitGroup
+			var deleteErr error
+			deleteStarted := false
+			startDelete := func() {
+				deleteStarted = true
+				browser.Go(func() {
+					deleteErr = service.srv.Apply(ctx, artifactID,
+						func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+							fragment := doc.GetXmlFragment(fragmentName)
+							transact(func(txn *crdt.Transaction) { fragment.Delete(txn, 2, 1) })
+						})
+				})
+			}
+			waitForDelete := func() {
+				testwait.Returns(t, "the browser's delete to return", browser.Wait)
+				if deleteErr != nil {
+					t.Fatalf("delete the last paragraph from the room: %v", deleteErr)
 				}
 			}
-		}
-		ledger.Discard()
-		_ = tx.Rollback(ctx)
-	}
-	t.Logf("captures that reused the cached rendering: %d of %d; stale: %d", reused, rounds, stale)
-	if stale > 0 {
-		t.Fatalf("%d captures reused a rendering the fork had moved past", stale)
+			deleteAndWait := func() {
+				startDelete()
+				waitForDelete()
+			}
+			switch tc.name {
+			case "before_apply_ops":
+				deleteAndWait()
+			case "observer_held_across_fork_read":
+				held, proceed := make(chan struct{}), make(chan struct{})
+				release := sync.OnceFunc(func() { close(proceed) })
+				testcleanup.Add(t, func() {
+					release()
+					testwait.Returns(t, "the released browser delete to return", browser.Wait)
+				})
+				service.beforeObserveUpdate = onFirst(artifactID, func() {
+					close(held)
+					<-proceed // The fork-read hook or the cleanup releases the observer.
+				})
+				service.afterForkRead = onFirst(artifactID, release)
+				startDelete()
+				testwait.Receive(t, "the committed delete's observer to reach the hold", held)
+			case "after_fork_read":
+				service.afterForkRead = onFirst(artifactID, deleteAndWait)
+			case "after_capture_fork":
+				service.afterCaptureFork = onFirst(artifactID, deleteAndWait)
+			}
+
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
+				Op: "replace", Find: "Before.", With: "After.",
+			}}, alice, nil); err != nil {
+				t.Fatalf("joined edit: %v", err)
+			}
+			if tc.name == "observer_held_across_fork_read" {
+				waitForDelete()
+			}
+			write := ledger.liveWriteFor(artifactID)
+			if write == nil || write.tree == nil {
+				t.Fatal("the edit recorded no rendering")
+			}
+			if write.cold {
+				t.Fatal("the edit forked the store instead of the warmed room")
+			}
+
+			base := readForkReads(service)
+			captured, _, err := service.captureLiveTextAndAuthors(joinedCtx, artifactID, nil)
+			if err != nil {
+				t.Fatalf("capture live text: %v", err)
+			}
+			if !deleteStarted {
+				t.Fatal("the browser's delete never started")
+			}
+			requireForkReads(t, "capture", readForkReads(service).minus(base), forkReads{renderingReused: 1})
+			calls, failures := checks.take()
+			if calls["capture"] != 1 {
+				t.Errorf("capture checked %d reused renderings, want 1", calls["capture"])
+			}
+			for _, failure := range failures {
+				t.Errorf("a write's rendering is not its fork's at %s", failure)
+			}
+
+			fresh, err := treeOf(write.fork)
+			if err != nil {
+				t.Fatalf("read the fork: %v", err)
+			}
+			freshMarkdown, err := renderTree(fresh)
+			if err != nil {
+				t.Fatalf("render the fork: %v", err)
+			}
+			if captured.markdown != freshMarkdown {
+				t.Errorf("capture reused stale markdown:\n got %q\nwant %q", captured.markdown, freshMarkdown)
+			}
+			if !strings.Contains(captured.markdown, "After.") || strings.Contains(captured.markdown, doomed) != tc.keepDoomed {
+				t.Errorf("capture markdown = %q, want the agent edit and doomed paragraph present = %t", captured.markdown, tc.keepDoomed)
+			}
+		})
 	}
 }
