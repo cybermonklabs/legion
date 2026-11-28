@@ -1,0 +1,5 @@
+kind: Fixed
+body: The daemon releases the Dispatch claim of each session it leaves behind. Each claim write that moves a claim off a session it recorded, such as a fresh session or a retry in a new session, queues a `claim_release` row that names that session, in the same transaction. A move out of the workflow (`backlog`, `icebox` or `triage`) now also releases the claim of a session that a claim of the issue's tree left behind. A release that leaves a claim on purpose writes the holder, the reason and the time into the issue's record, and `GET /legion/v1/state`, `GET /legion/v1/issues/{key}/record` and `read_record` serve it as `claimLeft` (contract entry 20261127202231, claim-left). The migration 20261127193428_claim_left adds `issues.claim_left`. A rollback runs the way back in its header with every daemon of the database stopped (docs/kubernetes.md, "Rolling back the release that releases a left session's claim").
+time: 2026-11-27T20:40:53.509766508Z
+custom:
+    Issue: INFRA-3144

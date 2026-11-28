@@ -265,7 +265,9 @@ func (in ServedInstall) logf(format string, args ...any) {
 }
 
 // InstallServed installs the check the daemon served into in.Dir. The pod's launcher runs it once
-// for the pod, before any role starts; every role's shim then reads the install (Installed).
+// for the pod, before any role starts; every role's shim then reads the install (Installed). A
+// caller that guards gh calls of its own outside a pod may run it the same way, into a directory
+// of its own (in.Dir).
 //
 // The steps are in this order, and the order is the point:
 //

@@ -6,7 +6,8 @@
  *
  * A thread comes as a route answers it: a row of a page of `comments`, `messages` or `asks` with
  * `order=activity` (INFRA-5703), or the read of one thread by an id that R12's lookups send. The
- * function makes no request and reads no clock.
+ * function makes no request and reads no clock. Each record names the node it is on where a view
+ * draws that node (`node`), and `nodeLink` makes that the link the opened record draws (R8).
  */
 import type {
   AskThreadRow,
@@ -24,6 +25,8 @@ import type {
   MessageWithTrees,
 } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
+import { buildIssuePath } from "../../refs/routes";
+import { agentsOnlyIds } from "../agents-only";
 
 /** One thread as a route answers it. A row of a page carries the thread's `last_activity_at`,
  *  and the read of one thread by its id carries none. */
@@ -44,6 +47,15 @@ export interface RecordWrite {
   readonly author: Actor;
 }
 
+/** The node a record on text is on, where a view draws that node (R8): the entry that the reply
+ *  with a quote that begins the record answers, which Conversation's outline draws as the ask,
+ *  the comment or the message it is, unless it is an approval request, or no person wrote in its
+ *  thread (`agents-only.ts`). */
+export interface RecordNode {
+  readonly kind: "ask" | "comment" | "message";
+  readonly id: string;
+}
+
 interface RecordFields {
   /** The record's id, which its address `/threads/<id>` names (R12): the ask's id, the id of a
    *  comment thread's first comment or of a message thread's root, or the id of the reply with a
@@ -62,6 +74,12 @@ interface RecordFields {
   /** The words a record on text quotes above its root: its anchor's quote, or the quote of the
    *  reply that begins it. */
   readonly quote: string | undefined;
+  /** The node the record is on, where a view draws it, which the opened record links to
+   *  (`nodeLink`). Undefined for a record on no text, for one whose reply with a quote names an
+   *  entry its thread does not hold, for one whose node no view draws, and for one whose root
+   *  holds an anchor, whose link is owed until dispatch://INFRA-1253's node anchor is on the
+   *  base. */
+  readonly node: RecordNode | undefined;
   /** Every write of the record, oldest first. */
   readonly writes: readonly RecordWrite[];
   /** Each person the server keeps a read mark of the record's thread for, once, in the order of
@@ -110,6 +128,10 @@ interface Part<P extends Post> {
   readonly posts: P[];
   readonly onText: boolean;
   readonly quote: string | undefined;
+  /** The entry that the reply with a quote that begins the part answers. Undefined for the root's
+   *  part, and for a part whose reply names an entry the thread does not hold, which is on no
+   *  node. */
+  readonly answers: string | undefined;
 }
 
 /** The words a reply quotes of the block it answers, or undefined where it quotes none. */
@@ -126,7 +148,9 @@ export function quoteOf(post: {
  * reply joins the part of the entry it answers, so each entry whose answers lead to a reply with a
  * quote is in that reply's part, and no entry is in two. A reply is read after the entry it
  * answers, so the replies are read oldest first, and one that answers an entry this thread does
- * not hold joins the root's part.
+ * not hold is placed as if it answered the root: it joins the root's part, or, where it quotes
+ * while the root's part is on no text, begins a part of its own that answers no entry
+ * (`Part.answers`), so that part is on no node.
  */
 function partsOf<P extends Post>(
   root: Part<P>,
@@ -139,10 +163,18 @@ function partsOf<P extends Post>(
     compareTimestamps(one.created_at, two.created_at)
   );
   for (const reply of oldestFirst) {
-    const parent = partOf.get(answered(reply)) ?? root;
+    const named = answered(reply);
+    const held = partOf.get(named);
+    const parent = held ?? root;
     const quote = quoteOf(reply);
     if (quote !== undefined && !parent.onText) {
-      const own: Part<P> = { id: reply.id, onText: true, posts: [reply], quote };
+      const own: Part<P> = {
+        answers: held === undefined ? undefined : named,
+        id: reply.id,
+        onText: true,
+        posts: [reply],
+        quote,
+      };
       parts.push(own);
       partOf.set(reply.id, own);
     } else {
@@ -178,6 +210,30 @@ interface ThreadFields {
   readonly waitsOn: string | undefined;
   /** Whether the thread gives one record alone, which then takes the thread's time. */
   readonly whole: boolean;
+  /** An entry of the thread as its node, or undefined where no view draws it (`nodeOf`). */
+  readonly entry: (id: string) => RecordNode | undefined;
+}
+
+/**
+ * The node `part` is on where a view draws it (R8). A part that a reply with a quote begins is
+ * on the entry that reply answers, which `entry` gives as its node, or as undefined where no view
+ * draws that entry. The root's part is on no node, and neither is a part whose reply names an
+ * entry the thread does not hold, since the thread holds no post that reply quotes.
+ */
+function nodeOf<P extends Post>(
+  part: Part<P>,
+  entry: (id: string) => RecordNode | undefined
+): RecordNode | undefined {
+  return part.answers === undefined ? undefined : entry(part.answers);
+}
+
+/** An entry of `kind` as its node, or undefined where it is one of `agentsOnly`, which the
+ *  outline draws none of (`agents-only.ts`). */
+function drawnEntry(
+  agentsOnly: ReadonlySet<string>,
+  kind: "comment" | "message"
+): (id: string) => RecordNode | undefined {
+  return (id) => (agentsOnly.has(id) ? undefined : { id, kind });
 }
 
 function fieldsOf<P extends Post>(
@@ -193,6 +249,7 @@ function fieldsOf<P extends Post>(
   return {
     id: part.id,
     lastActivity: shared.whole && shared.lastActivity !== undefined ? shared.lastActivity : newest,
+    node: nodeOf(part, shared.entry),
     onText: part.onText,
     quote: part.quote,
     thread: shared.thread,
@@ -224,6 +281,7 @@ function askRecords(
   const answerer: Actor | undefined =
     ask.answer === null ? undefined : { id: ask.answer.user, kind: "user" };
   const head: Part<CommentWithTrees> = {
+    answers: undefined,
     id: ask.id,
     onText: ask.anchor !== null,
     posts: [],
@@ -231,7 +289,14 @@ function askRecords(
   };
   // An ask's comment answers the ask, or the comment its `answers` names.
   const parts = partsOf(head, comments, (comment) => comment.answers ?? ask.id);
+  // The outline draws each question as a node and no approval request, and a comment under the
+  // ask where it draws that comment's thread (`agents-only.ts`).
+  const askNode: RecordNode | undefined =
+    ask.kind === "question" ? { id: ask.id, kind: "ask" } : undefined;
+  const agentsOnly = agentsOnlyIds(comments, undefined, [ask]);
+  const commentNode = drawnEntry(agentsOnly, "comment");
   const shared: ThreadFields = {
+    entry: (id) => (id === ask.id ? askNode : commentNode(id)),
     lastActivity,
     thread: ask.id,
     threadWriters: people([
@@ -269,6 +334,7 @@ function commentRecords(
 ): ThreadRecord[] {
   const headQuote = quoteOf(head);
   const root: Part<CommentWithTrees> = {
+    answers: undefined,
     id: head.id,
     onText: head.anchor !== null || headQuote !== undefined,
     posts: [head],
@@ -276,7 +342,9 @@ function commentRecords(
   };
   // A reply stores its thread's head in `reply_to` and the comment it answers in `answers`.
   const parts = partsOf(root, replies, (reply) => reply.answers ?? head.id);
+  const agentsOnly = agentsOnlyIds([head, ...replies], undefined, undefined);
   const shared: ThreadFields = {
+    entry: drawnEntry(agentsOnly, "comment"),
     lastActivity,
     thread: head.id,
     threadWriters: people([head, ...replies].map((comment) => comment.author)),
@@ -292,13 +360,20 @@ function messageRecords(
   lastActivity: string | undefined
 ): ThreadRecord[] {
   const root: Part<MessageWithTrees> = {
+    answers: undefined,
     id: first.id,
     onText: false,
     posts: [first],
     quote: undefined,
   };
   const parts = partsOf(root, replies, (reply) => reply.in_reply_to ?? first.id);
+  const agentsOnly = agentsOnlyIds(
+    undefined,
+    [{ message: first, replies: [...replies] }],
+    undefined
+  );
   const shared: ThreadFields = {
+    entry: drawnEntry(agentsOnly, "message"),
     lastActivity,
     thread: first.id,
     threadWriters: people([first, ...replies].map((message) => message.author)),
@@ -348,4 +423,14 @@ export function threadRecords(source: ThreadSource): readonly ThreadRecord[] {
     (one, two) =>
       compareTimestamps(two.lastActivity, one.lastActivity) || (two.id > one.id ? 1 : -1)
   );
+}
+
+/**
+ * The record's `node` (`RecordFields.node`) as its address in the issue `key` (R8), or undefined
+ * where the record is on none. An ask, a comment or a message opens at its own address, which
+ * lands on its node in Conversation's outline.
+ */
+export function nodeLink(record: ThreadRecord, key: string): string | undefined {
+  const { node } = record;
+  return node === undefined ? undefined : buildIssuePath({ id: node.id, key, kind: node.kind });
 }

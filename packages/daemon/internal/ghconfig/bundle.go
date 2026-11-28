@@ -38,7 +38,7 @@ import (
 // difference matter — one directory per owner cannot answer both — and it is this deployment's
 // own case, where the implement App's sjawhar installation holds 151 repositories and not
 // cybermonklabs/legion. A pair whose `to` owner the bundle holds no directory for is left in the
-// file and refused by the wrapper that reads it (cmd/legion's ghConfigDirFor), naming the pair:
+// file and refused by the wrapper that reads it (ghroute.DirFor), naming the pair:
 // no lease of this bundle reaches that repository, and answering the `from` owner's token
 // instead would be a push that cannot land.
 type Bundle struct {
@@ -72,7 +72,7 @@ func Dir(root, name string) string { return filepath.Join(root, name) }
 // spelling of such a name needs, so a second call changes nothing; a name ending `.git.git`
 // would lose one suffix a call, and GitHub holds no repository of that name. The gh wrapper
 // keys the repositories a command names by it, so two spellings of one repository are one
-// repository (cmd/legion's gh_selectors).
+// repository (internal/ghroute's selectors).
 func RepositoryName(repo string) string {
 	return strings.TrimSuffix(strings.ToLower(repo), ".git")
 }
@@ -155,8 +155,8 @@ func ReadPairs(root string) ([]ghrepo.Rename, error) {
 //
 // It is the one rule a repository is routed to a directory by, so no two places can route one
 // repository to two directories: `legion gh` and `legion git-credential` route every command
-// and every credential request by it over the bundle's own pairs file (cmd/legion's
-// ghConfigDirFor), and appauth's bundleDirs routes the issue's own repository by it to the
+// and every credential request by it over the bundle's own pairs file (ghroute.DirFor), and
+// appauth's bundleDirs routes the issue's own repository by it to the
 // bundle's Default, the directory GH_CONFIG_DIR names. A Default picked by the recorded owner
 // alone is the `from` owner's directory for a repository a pair moved away from it, and where
 // the App is installed on that owner too, that directory holds the owner's own lease, which
@@ -207,7 +207,7 @@ func (b Bundle) DirNames() []string { return slices.Sorted(maps.Keys(b.Dirs)) }
 //
 // A pair whose `to` owner the bundle holds no directory for is no refusal here: the bundle is
 // written and served, and the wrapper that routes a request to that missing directory is what
-// refuses, naming the pair (cmd/legion's ghConfigDirFor). Refusing the bundle would leave the
+// refuses, naming the pair (ghroute.DirFor). Refusing the bundle would leave the
 // role no gh at all over a repository it may never touch.
 func (b Bundle) Validate() error {
 	if b.Default == "" {
