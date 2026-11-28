@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+  Dispatch's writing boxes no longer show the line under the box that said how to open the
+  reference picker and who a pick tells. The `@`, `#` and `[[` picker and the links a pick writes
+  do not change.
+time: 2026-11-28T15:57:32Z
+custom:
+    Issue: pr6067

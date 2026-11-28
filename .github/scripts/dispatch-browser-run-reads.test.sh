@@ -46,7 +46,8 @@ source "$script_dir/test-lib.sh"
 # The run attempt every case drives with: the route carries it, and so does every refusal line.
 run_attempt=4
 # The id of the job that calls dispatch-browser.yaml, which every `jobs` drive passes: only the
-# jobs named `<caller> / <job>` are that lane's.
+# jobs named `<caller> / <job>`, or `<outer> / <caller> / <job>` under one outer job's name, are
+# that lane's.
 caller=dispatch-browser
 
 mkdir -p "$work/bin" "$work/calls"
@@ -355,6 +356,35 @@ happy_page() {
     "20|dispatch-browser-pr / merge|null"
 }
 
+# outer_page: one attempt of a run in which ci.yaml is itself a called workflow, as the jobs API
+# named run 46163941895's, read 2026-11-28: `.github/workflows/large-pr-lanes.yaml#approval`
+# calls ci.yaml, so
+# every job of the run is named under `approval / `, ci.yaml's own as `approval / <job>` or
+# `approval / <job> / <its job>` and this workflow's as `approval / <caller> / <job>`. Beside this
+# lane's jobs it holds the legs of ci.yaml's two other callers of this workflow under the same
+# outer name, which that run did not have - ci.yaml runs those two only on a pull_request event,
+# and an approval's is pull_request_review - and which hold the filter to the caller's segment
+# whole under an outer name as happy_page does without one; and one leg under two outer names,
+# which is deeper than the filter reads.
+outer_page() {
+  page "30|approval / dispatch-browser / binaries|success" \
+    "31|approval / dispatch-browser / shard (1)|success" \
+    "32|approval / dispatch-browser / shard (2)|failure" \
+    "33|approval / dispatch-browser / alone (webkit-alone)|success" \
+    "34|approval / dispatch-browser / multiprocess|success" \
+    "35|approval / dispatch-browser / embedder|success" \
+    "36|approval / dispatch-browser / visual|failure" \
+    "37|approval / dispatch-browser / merge|null" \
+    "38|approval / changes|success" \
+    "39|approval / dispatch-multiprocess / dispatch-multiprocess|success" \
+    "40|approval / dispatch-browser-pr / shard (1)|failure" \
+    "41|approval / dispatch-browser-pr / merge|null" \
+    "42|approval / dispatch-references / shard (1)|failure" \
+    "43|approval / dispatch-references / merge|null" \
+    "44|approval / ci-ok|null" \
+    "45|approval / nightly / dispatch-browser / shard (3)|failure"
+}
+
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
 # stand-in that refuses that many calls and then answers, and the happy page for the answer. It
 # also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
@@ -477,6 +507,49 @@ check "writes that caller's two jobs and no other" "$(is "$(entries)" 2)"
 check "its shard leg reads shard-1" "$(is "$(field 19 .leg)" shard-1)"
 check "with its own conclusion" "$(is "$(field 19 .conclusion)" failure)"
 check "and the full lane's shard (1) is not in it" "$(is "$(jq -r '[.[] | select(.id == 11)] | length' "$work/out.json")" 0)"
+
+echo "case: under an outer job's name, the caller's legs are found, each with its leg"
+# Run 46163941895's merge job, job 141044122226, failed on 2026-11-28 and took ci-ok with it,
+# because the filter held each name to start with `<caller> / ` and every leg of that run started
+# `approval / `: reading one found no shard or alone leg. The leg is read after the caller's
+# segment, so it is the one the same job gets without the outer name.
+fixture 0
+outer_page
+drive jobs "$work/out.json" "$caller"
+check "exits 0" "$(is "$status" 0)"
+check "writes every job of this workflow under the outer name and no other" "$(is "$(entries)" 8)"
+check "a shard job's id, name and conclusion travel unchanged" \
+  "$(is "$(field 32 '"\(.id) \(.name) \(.conclusion)"')" \
+    '32 approval / dispatch-browser / shard (2) failure')"
+check "the first shard leg reads shard-1" "$(is "$(field 31 .leg)" shard-1)"
+check "the second reads shard-2" "$(is "$(field 32 .leg)" shard-2)"
+check "the alone leg reads alone-webkit-alone" "$(is "$(field 33 .leg)" alone-webkit-alone)"
+check "the binaries job is kept, with a null leg" "$(is "$(field 30 .leg)" null)"
+check "the multiprocess job is kept, with a null leg" "$(is "$(field 34 .leg)" null)"
+check "the embedder job is kept, with a null leg" "$(is "$(field 35 .leg)" null)"
+check "the visual job is kept, with a null leg and its conclusion" \
+  "$(is "$(field 36 '"\(.leg) \(.conclusion)"')" 'null failure')"
+check "the merge job is kept, with a null leg" "$(is "$(field 37 .leg)" null)"
+check "ci.yaml's own jobs under the outer name are dropped" \
+  "$(is "$(jq -r '[.[] | select(.id == 38 or .id == 39 or .id == 44)] | length' "$work/out.json")" 0)"
+check "and so are the other two callers' legs under the same outer name" \
+  "$(is "$(jq -r '[.[] | select(.id >= 40 and .id <= 43)] | length' "$work/out.json")" 0)"
+check "and a leg named under two outer names" \
+  "$(is "$(jq -r '[.[] | select(.id == 45)] | length' "$work/out.json")" 0)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+
+echo "case: under the same outer name, the other caller's merge job reads its own jobs alone"
+# The other side of the same page: dispatch-browser-pr's legs are found under `approval / ` too,
+# and none of the full lane's, whose segment `dispatch-browser` only starts that caller's id.
+fixture 0
+outer_page
+drive jobs "$work/out.json" dispatch-browser-pr
+check "exits 0" "$(is "$status" 0)"
+check "writes that caller's two jobs and no other" "$(is "$(entries)" 2)"
+check "its shard leg reads shard-1" "$(is "$(field 40 .leg)" shard-1)"
+check "its merge job carries a null leg" "$(is "$(field 41 .leg)" null)"
+check "and the full lane's shard (1) is not in it" \
+  "$(is "$(jq -r '[.[] | select(.id == 31)] | length' "$work/out.json")" 0)"
 
 echo "case: a project name holding a digit, a capital and a space is one leg"
 # The capture takes any project that holds no `)`. It read `[a-z-]*` once, which silently

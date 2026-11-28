@@ -21,10 +21,10 @@
 
 # A sentence of what a worker is told when its turn ends with work its claim still owes
 # (owedReminder in packages/pi-shared/src/phase-stall.ts), which the implementer's `legion` MCP
-# server answers its `Stop` hook with. The reminder a worker is given when the daemon's answer could
-# not be read (UNREAD_REMINDER, the same file) carries the same sentence. A fragment of each, not the
-# whole of either, so a later rewording of the rest does not break a proof silently; this sentence
-# is in no other message a worker is given.
+# server answers its `Stop` hook with. It is the only reminder a worker is given: a check that
+# cannot read the daemon's answer reminds no one. A fragment of it, not the whole, so a later
+# rewording of the rest does not break a proof silently; this sentence is in no other message a
+# worker is given.
 stall_reminder_needle="This reminder repeats at the end of every turn"
 # claude_entries OFFSET prints one line per transcript entry written past OFFSET bytes: `assistant`
 # for an assistant message, and `user <its text>` for a user one — its content, a string or the text

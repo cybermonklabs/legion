@@ -4,8 +4,8 @@
  * The dashboard mounts one text field in most of them (`MentionField.tsx`), and the two boxes
  * that are editors of their own - a document's body and an agent's live conversation - host the
  * same picker in their own way, so the picker is in every box rather than in the composer
- * alone. This table is what the three readers of that fact share: each box reads its own hint
- * here at the mount, so the words under a box and the words in this list cannot disagree; a
+ * alone. This table is what the readers of that fact share: each box reads its own row here at
+ * the mount, for whether its write tells a picked party and whose rows its picker lists; a
  * browser row drives each covered box by the name under `reach`; and a box with no picker says
  * here why it has none.
  *
@@ -127,116 +127,21 @@ export interface DispatchWritingBoxRow {
   /** Whether Dispatch tells an agent or a role that this write names it. Only a comment does: a
    *  message reaches the session it is addressed to and tells nobody it names, and an ask, an
    *  answer, a spec, a reason and a setting tell nobody they name. A person is never told, and a
-   *  person's reference is their name with no link until a person has a page (R5), which is why
-   *  a delivering box says so. */
+   *  person's reference is their name with no link until a person has a page (R5). */
   readonly delivers: boolean;
   /** Whether the picker here lists the rows that need an issue - the issue's people. A box that
    *  writes on no issue lists everyone who has signed in instead. For a box whose surface is
    *  sometimes a project document, this says what it does on an issue. */
   readonly issueRows: boolean;
-  /** The line under the box, which the box itself reads from this row at the mount: the doors,
-   *  and what a pick does on this write - whether a picked agent or role is told and, where
-   *  nobody picked is told, what does tell (R4). Empty for a box that is not covered: with no
-   *  picker in it, it has no such line to show. It is never written into a row: it follows from
-   *  the row's other fields (`writingHint`). */
-  readonly hint: string;
   /** Why the box is not covered. Only a row whose `covered` is false carries one. */
   readonly reason?: string;
 }
-
-/** How each door is opened, which every hint starts with. */
-const DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for anything else.";
-
-/** What a box says when a mention on its write is delivered. The comment route tells an agent
- *  or a role the body names and never a person (`commentPartiesOf` in the Go API's
- *  comment_create.go), and it tells a role only while a session holds it: a role nobody holds is
- *  refused at once ("no holder for role …", `resolveDeliveryTarget`) and kept for no later
- *  holder, though the picker offers the issue's stopped roles and the reader links them. A
- *  person's reference is drawn as their name with no link until a person has a page (R5). */
-export const DISPATCH_WRITING_HINT_DELIVERED = `${DOORS} A picked agent or role is told while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
-
-/** What a box whose write tells nobody it names says of a pick, before it says what does tell:
- *  every such write but a suggestion's, whose replacement shows no link (below). It says nothing
- *  of a person's link, since a person's reference has none. */
-const PICKED_QUIET =
-  "A picked agent or role gets a link, and a picked person shows as a name without one. Nobody you pick is told.";
-
-/**
- * What a box says when its write tells nobody it names, by the write: that a pick links and
- * tells nobody, and then what does tell, which is the write's own doing. Only the comment route
- * reads the parties of a body and delivers to them (`createCommentFor` in the Go API's
- * comment_create.go), so each sentence says where the write itself goes, or, for a write that
- * goes nowhere, which comment would tell a picked agent or role, or that nothing would. A
- * suggestion's replacement box does not say that a pick links. Until someone accepts the
- * suggestion, its card shows the replacement as the characters written, with no link and no
- * name drawn over a reference (the reading list's `margin-suggestion-diff`), so the box says
- * that instead.
- *
- * - a message reply goes to the target of its thread, and to whoever wrote the message it
- *   answers (`createStoredMessage`, and the outbox's `addAuthorRoutes`);
- * - an edit of a comment resolves no party and opens no delivery (`editComment`): only a new
- *   comment tells a party the edit adds;
- * - an ask waits in the Inbox of its issue's assignee, or of its project's default assignee
- *   (ask_asked_of.go);
- * - a message to one agent goes to that session, and a broadcast to each selected session
- *   (`createAgentMessage`, broadcasts.go);
- * - a decline's note rides the ask's resolution to whoever asked (`declineAsk`, and the outbox's
- *   `addFollowerRoutes`);
- * - a reason for asking changes answers the open approval request, which reaches whoever asked
- *   (`createArtifactReview`); with none open, it rides the review's own event alone, on the
- *   document's issue (`docs.WriteReview`);
- * - a priority's write is published to nobody (`priorityEvent`), and a priority takes no
- *   comment.
- */
-export const DISPATCH_WRITING_HINT_QUIET = {
-  "agent-message": `${DOORS} ${PICKED_QUIET} The message goes to this agent.`,
-  "approval-reason": `${DOORS} ${PICKED_QUIET} An open approval request sends the reason to whoever asked.`,
-  "architecture-reason": `${DOORS} ${PICKED_QUIET} A comment on the issue tells a picked agent or role.`,
-  ask: `${DOORS} ${PICKED_QUIET} The ask goes to the assignee's Inbox.`,
-  "ask-decline": `${DOORS} ${PICKED_QUIET} The note goes to whoever asked.`,
-  broadcast: `${DOORS} ${PICKED_QUIET} The message goes to each agent you selected.`,
-  "comment-edit": `${DOORS} ${PICKED_QUIET} A new comment, not an edit, tells a picked agent or role.`,
-  "document-text": `${DOORS} ${PICKED_QUIET} A comment on the document tells a picked agent or role.`,
-  "issue-spec": `${DOORS} ${PICKED_QUIET} A comment on the new issue tells a picked agent or role.`,
-  "message-reply": `${DOORS} ${PICKED_QUIET} Your reply goes to whoever the thread is with.`,
-  "priority-description": `${DOORS} ${PICKED_QUIET} Nothing on a priority tells anyone.`,
-  suggestion: `${DOORS} Until someone accepts the suggestion, the replacement shows the characters you write. Nobody you pick is told. A pick in the Reason box tells an agent or a role.`,
-} as const satisfies Partial<Record<DispatchWriting, string>>;
-
-/** What the ask card's one box says, since the reader chooses there which write it makes: an
- *  answer reaches whoever asked and tells nobody it names, while a question back is a comment,
- *  which tells what a delivering box's line says it tells (`DISPATCH_WRITING_HINT_DELIVERED`): a
- *  picked agent or role while a session holds it, never a role that is not running, which still
- *  gets a link, and never a person. Both of that box's rows carry it, since the box shows one
- *  line for the two. */
-export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
 
 /** Why the delivery settings boxes have no picker. */
 const SETTINGS_REASON =
   "One setting per line rather than prose: a job name, a login or an owner/repo, which a reference would not name.";
 
-/** The words of the writes that tell nobody they name, by write, for `writingHint` to look up. */
-const QUIET_WORDS: Partial<Record<DispatchWriting, string>> = DISPATCH_WRITING_HINT_QUIET;
-
-/**
- * The line under a box, from what its write does: none where there is no picker; the ask card's
- * one line for its two writes, since the reader chooses there which one they make; the line of a
- * write that tells a picked agent or role; and otherwise the words of the write that tells nobody
- * it names, which say what does. A covered write that tells nobody and has no words of its own
- * is a mistake in this list, so it throws rather than leaving the box with no words.
- */
-function writingHint(row: Omit<DispatchWritingBoxRow, "hint">): string {
-  if (!row.covered) return "";
-  if (row.box === "ask-answer") return DISPATCH_WRITING_HINT_ASK;
-  if (row.delivers) return DISPATCH_WRITING_HINT_DELIVERED;
-  const words = QUIET_WORDS[row.write];
-  if (words === undefined) {
-    throw new Error(`${row.box} writing ${row.write} tells nobody it names and has no words`);
-  }
-  return words;
-}
-
-const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
+export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
   // The issue's Conversation tab, above the list, and the same composer as a phone's thread
   // sheet draws it. Either can also answer a message thread, which goes to that thread's
   // target rather than to anyone the body names.
@@ -520,8 +425,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
   // over it (`margin-suggestion-diff`). Nobody is told of it: the delivery a comment makes is
   // read from its body alone, by the browser (`draftParties`) and by the server
   // (`commentPartiesOf` over `text.ExtractAt(input.Body)`), and neither reads
-  // `suggestion.replace_with`. So this box says both rather than promising a link or a delivery
-  // no reader of the write would ever see.
+  // `suggestion.replace_with`.
   {
     box: "suggestion-replacement",
     covered: true,
@@ -725,14 +629,10 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
   },
 ];
 
-export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = WRITING_BOXES.map(
-  (row) => ({ ...row, hint: writingHint(row) })
-);
-
 /**
- * The row for one write of one box, which is what the box reads its hint from at the mount. A
- * pair with no row is a box that writes something this list does not hold, which is a mistake in
- * one or the other, so it throws rather than leaving the box with no words.
+ * The row for one write of one box, which the box reads at the mount. A pair with no row is a
+ * box that writes something this list does not hold, which is a mistake in one or the other, so
+ * it throws.
  */
 export function dispatchWritingBox(
   box: DispatchWritingBox,

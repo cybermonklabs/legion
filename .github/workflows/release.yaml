@@ -119,7 +119,7 @@ env:
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/internal/weborigin/
     packages/envoy/listenerwire/
     packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/natsconn/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/ packages/envoy/programfile/
+    packages/envoy/migrationid/ packages/envoy/natsconn/ packages/envoy/natscred/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/ packages/envoy/programfile/
     packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum go.work go.work.sum

@@ -160,9 +160,9 @@ export interface AskBodyProps {
    *  renderer marks the ask's own texts. The mark stands on each such element and never on a
    *  box that holds several: a reader of the page takes each marked element's words whole, with
    *  its values taken out, and two controls in one marked box read as one word ("Answer" and
-   *  "Ask back" as "answerask"). The shared answer box, with its hint, and a refusal under it,
-   *  are the box's and the server's words, so the form that holds them wears the mark of a
-   *  value, and the options' name and each action in it the body's again. Dashboard hands them;
+   *  "Ask back" as "answerask"). The shared answer box and a refusal under it are the box's and
+   *  the server's words, so the form that holds them wears the mark of a value, and the options'
+   *  name and each action in it the body's again. Dashboard hands them;
    *  no other host does, so every other surface draws the elements it always drew, with no mark. */
   marks?: TextMarks;
   /** Called once the server has recorded the reader's decline (`DeclineControl`). */
@@ -375,8 +375,8 @@ export function AskBody({
     : ON_PAGE.action;
   const answerField = (
     <>
-      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
-          under it in the page's words, and while the body refuses it is `readOnly` rather than
+      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label in the page's
+          words, and while the body refuses it is `readOnly` rather than
           `disabled`, and takes no Ctrl+Enter, paste or drop (`refusing`). Outside it is
           `disabled` while the write is out, as on `main`. The Inbox's Enter puts the caret in the
           box by its `data-ask-answer` (`askAnswer`), as its 1 to 9 find an option by
@@ -390,7 +390,6 @@ export function AskBody({
         disabled={disabledWhileOut}
         fieldClassName={tooltips ? undefined : ON_PAGE.field}
         fieldRef={answerFieldRef}
-        hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
         issueKey={displayedAsk.issue_key ?? undefined}
         label={
           reasonRequired

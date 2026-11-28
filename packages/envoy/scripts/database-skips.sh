@@ -5,6 +5,8 @@
 # test as a pass and, without -v, prints nothing for it, so a package run with its database
 # variable unset, or with a t.Skip left in one of its tests, reads as green. This script runs
 # `go test -json` and counts the skips in that report, and fails on any.
+# On CI, tee keeps the same events in $RUNNER_TEMP/go-test-events/database-skips-*.jsonl for
+# the job's artifact. Locally only the temporary report is written, and it is removed on exit.
 #
 #   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--count-table] [-run=PATTERN] [PACKAGE...]
 #   database-skips.sh --report FILE [PACKAGE...]
@@ -45,7 +47,7 @@
 # failure of theirs fails go test and so this script. A run whose PACKAGEs hold no package of the
 # table counts nothing, and says so: it prints `database_skips=NONE` and passes or fails on go
 # test's result alone. It needs a PACKAGE.
-# `--report FILE` reads FILE instead and runs nothing, which the controls use; the six options
+# `--report FILE` reads FILE instead: it runs no test and writes no events. The six options
 # that shape a run (--var, --race, --timeout, --skip, --count-table, -run) are refused beside it.
 #
 # It prints each skipped test of a package the patterns name (as `go list` names them under the
@@ -329,8 +331,16 @@ if [ -z "$report" ]; then
   # patterns name, in go list's order.
   tested=("${runs[@]}")
   [ -z "$count_table" ] || tested=("${given[@]}")
-  go_test_exit=0
-  go test -json -count=1 "${race[@]}" "${skip[@]}" "${run[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${tested[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
+  artifacts=()
+  if [ -n "${RUNNER_TEMP:-}" ]; then
+    mkdir -p "$RUNNER_TEMP/go-test-events"
+    artifacts+=("$(mktemp --suffix=.jsonl "$RUNNER_TEMP/go-test-events/database-skips-XXXXXX")")
+  fi
+  pipeline_status=(0 0)
+  go test -json -count=1 "${race[@]}" "${skip[@]}" "${run[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${tested[@]}" 2>"$work/stderr" |
+    tee "${artifacts[@]}" >"$report" || pipeline_status=("${PIPESTATUS[@]}")
+  go_test_exit=${pipeline_status[0]}
+  [ "${pipeline_status[1]}" -eq 0 ] || unknown "tee could not write the test events"
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"
