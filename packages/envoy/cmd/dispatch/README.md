@@ -7493,19 +7493,20 @@ Each item below names a path with its method and identity, then its purpose.
       The read of the other document names the definition that the list holds as a finding.
       When the document that the list keeps a term from leaves the root, the list holds the definition that joined next.
       A move changes no text.
-      A definition of a term of the list also breaks the form, unless its own document holds the definition that governs.
-      A judgment compares each definition with the definition of its term that governs once the person approves the request.
-      That is the first definition of the term in the order above whose document the request does not name, or names at a version that still defines the term.
-      So a request that drops a listed definition in one document and adds the term in another is compared with the definition that joined next.
-      A term that no such definition holds is compared with the first definition in the request, so a second definition of a term in the documents of one request breaks the form too.
-      The finding names the term and the document that defines it.
-      To change a definition, change the document that defines it, and request approval of that document.
       A person's approval takes the lock of the root's list before it reads the list.
       A move into the root takes that lock before it writes its event.
       So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
       While an earlier release serves beside this one, its move takes no lock.
       So its move and an approval at one time can join the list in either order.
       An earlier release also judges no approval, so an approval that it takes during a roll can put a second definition under the root.
+
+    - What a judgment compares a definition with: a definition of a term of the list also breaks the form, unless its own document holds the definition that governs.
+      A judgment compares each definition with the definition of its term that governs once the person approves the request.
+      That is the first definition of the term in the order of the list whose document the request does not name, or names at a version that still defines the term.
+      So a request that drops a listed definition in one document and adds the term in another is compared with the definition that joined next.
+      A term that no such definition holds is compared with the first definition in the request, so a second definition of a term in the documents of one request breaks the form too.
+      The finding names the term and the document that defines it.
+      To change a definition, change the document that defines it, and request approval of that document.
 
     - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
       A finding is its rule and its `detail`, the rule's words at its place.
