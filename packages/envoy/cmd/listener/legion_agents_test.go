@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,11 +18,11 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // legionListener is a listener's /v1 mux over a session registry and the Legion agent registry on
@@ -45,9 +46,7 @@ func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := sessions.WaitForCacheReady(ctx); err != nil {
+	if err := sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
 	}
 	agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
@@ -60,15 +59,15 @@ func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	return &legionListener{deps: deps, mux: mux}
 }
 
-func (l *legionListener) do(t *testing.T, method, target, body string) *httptest.ResponseRecorder {
+func (l *legionListener) do(t testing.TB, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	l.mux.ServeHTTP(recorder, httptest.NewRequest(method, target, strings.NewReader(body)))
+	l.mux.ServeHTTP(recorder, httptest.NewRequestWithContext(testwait.Context(t), method, target, strings.NewReader(body)))
 	return recorder
 }
 
 // want asserts a request's status and returns its body.
-func (l *legionListener) want(t *testing.T, status int, method, target, body string) string {
+func (l *legionListener) want(t testing.TB, status int, method, target, body string) string {
 	t.Helper()
 	recorder := l.do(t, method, target, body)
 	if recorder.Code != status {
@@ -497,10 +496,11 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 		"$JS.API.DIRECT.GET."+bucket+".>", "$KV."+bus.LegionAgentBucket+".>",
 	), []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "no-registry-grant")
+	listener := startListenerProcess(t, promptListenerBinary(t), uri, "no-registry-grant")
 	listener.waitHealthy(t)
+	ctx := testwait.Context(t)
 
-	if status, answer := callListener(t, listener.port, http.MethodGet, "/v1/sessions", ""); status != http.StatusOK {
+	if status, answer := callListenerWithinTest(t, ctx, listener.port, http.MethodGet, "/v1/sessions", ""); status != http.StatusOK {
 		t.Fatalf("GET /v1/sessions without the registry grant = %d %s, want 200\n%s", status, answer, listener.Output.String())
 	}
 	entry := legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z")
@@ -512,7 +512,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 		{http.MethodPut, "/v1/legion/agents", `{"entries":[` + entry + `]}`},
 	}
 	for _, route := range routes {
-		status, answer := callListener(t, listener.port, route.method, route.path, route.body)
+		status, answer := callListenerWithinTest(t, ctx, listener.port, route.method, route.path, route.body)
 		if status != http.StatusServiceUnavailable || !strings.Contains(answer, "could not open the legion_agents bucket (a missing grant is the usual cause): ") {
 			t.Fatalf("%s %s without the registry grant = %d %s, want a 503 naming the failed open", route.method, route.path, status, answer)
 		}
@@ -524,18 +524,11 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 	}
 
 	server.Restart(t, listenerGrant())
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for {
-		status, answer := callListener(t, listener.port, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", entry)
-		if status == http.StatusOK {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after the grant the registry still answers %d %s\n%s", status, answer, listener.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	status, answer := callListener(t, listener.port, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
+	testwait.Until(t, "the registry PUT to answer 200 after the grant and reconnect", func() (string, bool) {
+		status, answer := callListenerWithinTest(t, ctx, listener.port, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", entry)
+		return fmt.Sprintf("%d %s", status, answer), status == http.StatusOK
+	})
+	status, answer := callListenerWithinTest(t, ctx, listener.port, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
 	if ids := legionIDs(t, answer); status != http.StatusOK || !slices.Equal(ids, []string{"ses-tester"}) {
 		t.Fatalf("GET INFRA-448's agents after the grant = %d %s, want the tester", status, answer)
 	}
@@ -550,40 +543,37 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *testing.T) {
 	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
-	var failing atomic.Bool
-	failing.Store(true)
+	store := l.deps.legionAgents.store()
 	var opens atomic.Int32
 	logs := &lockedBuffer{}
-	registry := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(ctx context.Context, conn *natsgo.Conn) (*legionagents.Store, error) {
-		opens.Add(1)
-		if failing.Load() {
-			return nil, errors.New("nats: timeout")
-		}
-		return legionagents.Open(ctx, conn, legionagents.WithReplicas(1))
-	}, 10*time.Millisecond, 40*time.Millisecond)
-	t.Cleanup(func() { registry.close(context.Background()) })
-	l.deps.legionAgents = registry
+	testwait.Bubble(t, func(t testing.TB) {
+		// The retry runs on the bubble's clock. The open stub uses the store already
+		// opened by the fixture, so the retry does not need real network I/O.
+		fourthOpen := make(chan struct{})
+		var failing atomic.Bool
+		failing.Store(true)
+		registry := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(context.Context, *natsgo.Conn) (*legionagents.Store, error) {
+			if opens.Add(1) == 4 {
+				close(fourthOpen)
+			}
+			if failing.Load() {
+				return nil, errors.New("nats: timeout")
+			}
+			return store, nil
+		}, 10*time.Millisecond, 40*time.Millisecond)
+		defer registry.close(context.Background())
+		l.deps.legionAgents = registry
 
-	retried := time.Now().Add(10 * time.Second)
-	for opens.Load() < 4 {
-		if time.Now().After(retried) {
-			t.Fatalf("the registry opened %d times in 10 s, want its retry to open again", opens.Load())
+		testwait.Receive(t, "the registry to reach its fourth open without a reconnect", fourthOpen)
+		body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
+		if !strings.Contains(body, "envoy: the legion agent registry is unavailable: could not open the legion_agents bucket (a missing grant is the usual cause): nats: timeout") {
+			t.Fatalf("the 503 = %s, want it to name the failed open", body)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
-	if !strings.Contains(body, "envoy: the legion agent registry is unavailable: could not open the legion_agents bucket (a missing grant is the usual cause): nats: timeout") {
-		t.Fatalf("the 503 = %s, want it to name the failed open", body)
-	}
 
-	failing.Store(false)
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "").Code != http.StatusOK {
-		if time.Now().After(deadline) {
-			t.Fatalf("the registry still answers 503 after its open recovered\n%s", logs.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		failing.Store(false)
+		testwait.Receive(t, "the registry to open on its own retry and stop retrying", registry.retried)
+	})
+	l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
 
 	count := func(level, msg string) int {
@@ -623,106 +613,95 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	}
 	t.Cleanup(latest.Close)
 
-	var registry atomic.Pointer[legionAgentRegistry]
-	var opens atomic.Int32
-	var openedOn atomic.Pointer[natsgo.Conn]
-	logs := &lockedBuffer{}
-	started := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(ctx context.Context, conn *natsgo.Conn) (*legionagents.Store, error) {
-		switch opens.Add(1) {
-		case 1:
-			// The first open fails, so the retry runs the opens after it.
-			return nil, errors.New("nats: timeout")
-		case 2:
-			// The connection is replaced, by one that is already gone, while this open runs.
-			for registry.Load() == nil {
-				time.Sleep(time.Millisecond)
+	firstStore := l.deps.legionAgents.store()
+	latestStore, err := legionagents.Open(testwait.Context(t), latest, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the registry bucket on the latest connection: %v", err)
+	}
+	testwait.Bubble(t, func(t testing.TB) {
+		// The stub returns pre-opened stores. The only move the retry itself makes
+		// is onto an already closed connection, which cannot do network I/O.
+		var registry *legionAgentRegistry
+		started := make(chan struct{})
+		var opens atomic.Int32
+		var openedOn atomic.Pointer[natsgo.Conn]
+		logs := &lockedBuffer{}
+		registry = startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(_ context.Context, conn *natsgo.Conn) (*legionagents.Store, error) {
+			switch opens.Add(1) {
+			case 1:
+				// The first open fails, so the retry runs the opens after it.
+				return nil, errors.New("nats: timeout")
+			case 2:
+				// A connection event replaces the connection while this open runs.
+				<-started
+				if err := registry.reconnect(context.Background(), closed); err != nil {
+					t.Errorf("the reconnect hook without a store = %v, want nil", err)
+				}
 			}
-			if err := registry.Load().reconnect(context.Background(), closed); err != nil {
-				t.Errorf("the reconnect hook without a store = %v, want nil", err)
+			openedOn.Store(conn)
+			switch conn {
+			case l.deps.client.Conn:
+				return firstStore, nil
+			case latest:
+				return latestStore, nil
+			default:
+				return nil, natsgo.ErrConnectionClosed
 			}
-		}
-		openedOn.Store(conn)
-		return legionagents.Open(ctx, conn, legionagents.WithReplicas(1))
-	}, 10*time.Millisecond, 40*time.Millisecond)
-	registry.Store(started)
-	t.Cleanup(func() { started.close(context.Background()) })
-	l.deps.legionAgents = started
+		}, 10*time.Millisecond, 40*time.Millisecond)
+		close(started)
+		defer registry.close(context.Background())
+		l.deps.legionAgents = registry
 
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for !strings.Contains(logs.String(), "legion agent registry did not move to the new NATS connection") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the registry did not report the failed move\n%s", logs.String())
+		testwait.Until(t, "the registry to report the failed move", func() (string, bool) {
+			output := logs.String()
+			return output, strings.Contains(output, "legion agent registry did not move to the new NATS connection")
+		})
+		// Not the store on the replaced connection: opens on the closed connection fail,
+		// so the routes answer 503 until a healthy connection comes.
+		body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
+		if !strings.Contains(body, "envoy: the legion agent registry is unavailable: ") {
+			t.Fatalf("the 503 = %s, want it to say the registry is unavailable", body)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// Not the store on the replaced connection: the retry's next open, on the connection that is
-	// gone, fails too, so the routes answer 503 until a healthy connection comes.
-	body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
-	if !strings.Contains(body, "envoy: the legion agent registry is unavailable: ") {
-		t.Fatalf("the 503 = %s, want it to say the registry is unavailable", body)
-	}
 
-	// The healthy connection that replaces the gone one: the retry opens on it.
-	if err := started.reconnect(context.Background(), latest); err != nil {
-		t.Fatalf("the reconnect hook without a store = %v, want nil", err)
-	}
-	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "").Code != http.StatusOK {
-		if time.Now().After(deadline) {
-			t.Fatalf("the registry still answers 503 after the latest connection came\n%s", logs.String())
+		if err := registry.reconnect(context.Background(), latest); err != nil {
+			t.Fatalf("the reconnect hook without a store = %v, want nil", err)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if openedOn.Load() != latest {
-		t.Fatalf("the registry serves a store opened on another connection, want the latest")
-	}
+		testwait.Receive(t, "the registry to finish opening on the latest connection", registry.retried)
+		if openedOn.Load() != latest {
+			t.Fatalf("the registry serves a store opened on another connection, want the latest")
+		}
+	})
+	l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
 }
 
-// The drain runs its hooks one after another inside its budget, and the registry's open takes no
-// context and can run its 10 s. close ends the retry and returns at once, an open under way or not;
-// that open, ending later, opens nothing more.
+// The drain runs its hooks in order. The registry's close must return even if an open
+// is still blocked, and the retry must end without opening again once that open returns.
 func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
-	// Not parallel: it requires the registry's close to return within 1 s while an open is under
-	// way (legionAgentRegistry.close).
-	l := newLegionListener(t, setupPublishTestClient(t))
-	var opens atomic.Int32
-	inOpen := make(chan struct{})
-	release := make(chan struct{})
-	registry := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", &lockedBuffer{}), func(context.Context, *natsgo.Conn) (*legionagents.Store, error) {
-		if opens.Add(1) == 2 {
-			close(inOpen)
-			<-release
-		}
-		return nil, errors.New("nats: timeout")
-	}, 10*time.Millisecond, 40*time.Millisecond)
-	t.Cleanup(func() {
-		select {
-		case <-release:
-		default:
-			close(release)
+	t.Parallel()
+	testwait.Bubble(t, func(t testing.TB) {
+		var opens atomic.Int32
+		inOpen := make(chan struct{})
+		release := make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		registry := startLegionAgentRegistry(nil, logging.NewWithWriter("test", &lockedBuffer{}), func(context.Context, *natsgo.Conn) (*legionagents.Store, error) {
+			if opens.Add(1) == 2 {
+				close(inOpen)
+				<-release
+			}
+			return nil, errors.New("nats: timeout")
+		}, 10*time.Millisecond, 40*time.Millisecond)
+		defer registry.stop()
+		defer unblock()
+		testwait.Receive(t, "the retry to start its second open", inOpen)
+
+		testwait.Returns(t, "registry close to return while its open is still blocked", func() {
+			registry.close(context.Background())
+		})
+		unblock()
+		testwait.Receive(t, "the retry to end once its open returns", registry.retried)
+		if n := opens.Load(); n != 2 {
+			t.Fatalf("the registry opened %d times, want no open after close", n)
 		}
 	})
-	select {
-	case <-inOpen:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the retry did not open again")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	began := time.Now()
-	registry.close(ctx)
-	if took := time.Since(began); took > time.Second {
-		t.Fatalf("close took %s with an open under way, want it to return without waiting", took)
-	}
-
-	close(release)
-	select {
-	case <-registry.retried:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the retry did not end once its open returned")
-	}
-	if n := opens.Load(); n != 2 {
-		t.Fatalf("the registry opened %d times, want no open after close", n)
-	}
 }
