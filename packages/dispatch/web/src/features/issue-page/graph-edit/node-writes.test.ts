@@ -758,6 +758,27 @@ function belowCriterion(): NewRowAsk {
   };
 }
 
+/** The new row New row below makes on the owed issue's requirement, a block of the issue's own
+ *  fragment under the issue that the indexed read holds: right after it, under the issue. */
+function belowRequirement(): NewRowAsk {
+  const from = "<owed-requirement>";
+  const verdict = placementOf({
+    closed: false,
+    held: indexedRead,
+    node: from,
+    unplaced: false,
+  }).new_below;
+  if (verdict.kind !== "new") throw new Error("New row below is not offered on the requirement");
+  return {
+    blockId: WRITTEN,
+    entry: "new_below",
+    from,
+    parent: KEY,
+    place: verdict.place,
+    under: KEY,
+  };
+}
+
 /** The server's answer to the one placing `PATCH` of `ask`: the node where its body puts it, under
  *  `placementSeq`, the next placement_seq unless given, as a move's answer is (`fixture.moved`). */
 function placedAnswer(ask: NewRowAsk, placementSeq = "<seq:owed-paragraph>@2"): Exchange {
@@ -903,22 +924,8 @@ test("the read that holds the node sends the one placing PATCH", async () => {
 // requirement places it right after it. The answer written into the held read puts the node there,
 // which lets the row go: its placement_seq never changes.
 test("a placing answered with the placement_seq it went under lets the row go once the held read holds the node at the answer's place", async () => {
-  const from = "<owed-requirement>";
-  const verdict = placementOf({
-    closed: false,
-    held: indexedRead,
-    node: from,
-    unplaced: false,
-  }).new_below;
-  if (verdict.kind !== "new") throw new Error("New row below is not offered on the requirement");
-  const ask: NewRowAsk = {
-    blockId: WRITTEN,
-    entry: "new_below",
-    from,
-    parent: KEY,
-    place: verdict.place,
-    under: KEY,
-  };
+  const ask = belowRequirement();
+  const { from } = ask;
   const sentSeq = nodeOf(indexedRead, WRITTEN).placement_seq;
   const patches = answerPatches(placedAnswer(ask, String(sentSeq)));
   answerOutline();
@@ -948,7 +955,7 @@ test("a placing answered with the placement_seq it went under lets the row go on
 // node last under the issue, ranked, which lets the row go by the parent the answer names; the
 // read made again holds it right after the criterion, first in its band, the place the body asked
 // for.
-test("a placing whose answer names a gone sibling as after lets the row go once the held read holds the node first in its band", async () => {
+test("a placing whose answer names a gone sibling as after lets the row go once the held read holds the node under the answer's parent", async () => {
   const ask = belowCriterion();
   const gone = "<owed-gone-statement>";
   expect(ask.place.body, "New row below on the criterion names another place").toEqual({
@@ -1104,22 +1111,8 @@ test("two placings under one parent that land together let each row go once the 
 // held read puts the node last under the issue, ranked, and the row is let go by the parent the
 // answer names.
 test("a placing whose body names a sibling gone before the PATCH lets the row go once the held read holds the node under the answer's parent", async () => {
-  const from = "<owed-requirement>";
-  const verdict = placementOf({
-    closed: false,
-    held: indexedRead,
-    node: from,
-    unplaced: false,
-  }).new_below;
-  if (verdict.kind !== "new") throw new Error("New row below is not offered on the requirement");
-  const ask: NewRowAsk = {
-    blockId: WRITTEN,
-    entry: "new_below",
-    from,
-    parent: KEY,
-    place: verdict.place,
-    under: KEY,
-  };
+  const ask = belowRequirement();
+  const { from } = ask;
   const removed: TreeAnswer = {
     ...indexedRead,
     nodes: (indexedRead.nodes ?? []).filter((node) => node.id !== from),

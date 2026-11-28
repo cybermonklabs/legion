@@ -152,21 +152,14 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 	// is part_of its ask in graph_edges alone, so the climb ends at either.
 	ask := createPartAsk(t, rig.handler, key, "Which criterion stands under this ask?")
 	aboveAsk := createPartAsk(t, rig.handler, above.Key, "Which criterion of the issue below stands under this ask?")
-	// itemBlock is the reference of the block at place, counted from 1 among the current blocks
-	// of the item id of kind, an item of issueKey, and the parent the tree read names for a node
-	// under that block: its storage kind and node id. An ask's blocks are its parts.
+	// itemBlock is the reference of the block at place of the item id of kind, an item of issueKey
+	// (itemBlockAt), and the parent the tree read names for a node under that block: its storage
+	// kind and node id.
 	itemBlock := func(kind refs.ItemKind, issueKey, id string, place int) (string, model.IssueTreeParent) {
-		blocks := map[refs.ItemKind]string{refs.ItemAsk: "ask_blocks where ask_id",
-			refs.ItemComment: "comment_blocks where comment_id", refs.ItemMessage: "message_blocks where message_id"}[kind]
-		var block string
-		if err := rig.database.Pool.QueryRow(t.Context(), `select block_id from `+blocks+` = $1::uuid and position is not null
-			order by position offset $2 limit 1`, id, place-1).Scan(&block); err != nil {
-			t.Fatalf("read block %d of %s %s: %v", place, kind, id, err)
-		}
-		reference, written := text.FormatItemBlockRef(text.Ref{Kind: "block", Item: string(kind), IssueKey: issueKey, ID: id, Block: block})
+		reference := itemBlockAt(t, rig.database, kind, issueKey, id, place)
 		ref, ok := text.CanonicalItemBlockRef(reference)
-		if !written || !ok {
-			t.Fatalf("block %s of %s %s is written %q, which reads as no block of an item", block, kind, id, reference)
+		if !ok {
+			t.Fatalf("block %d of %s %s is written %q, which reads as no block of an item", place, kind, id, reference)
 		}
 		return reference, model.IssueTreeParent{Kind: kind.BlockKind(), ID: text.TargetID(ref)}
 	}

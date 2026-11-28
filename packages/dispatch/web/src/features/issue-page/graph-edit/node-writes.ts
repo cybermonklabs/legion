@@ -253,9 +253,9 @@ interface Chain {
   readonly issue: string;
   readonly node: string;
   readonly acts: Act[];
-  /** The place the last move or placing put the node at, if it is past the loaded pages and a
-   *  read can hold it (`lacksPlace`). The chain reads for that place before planning its next act
-   *  or refreshing the outlines. */
+  /** The place the last move or placing put the node at. The chain reads for that place before
+   *  planning its next act or refreshing the outlines; `advance` clears it once the held read
+   *  holds it (`lacksPlace`), or where no read is held. */
   place: Place | undefined;
   /** Whether an act of the chain was taken, or refused with an answer that says the tree is
    *  stale: what reads the outline reads again once the chain is empty. */
@@ -546,20 +546,6 @@ function lacksPlace(held: TreeAnswer, node: string, place: Place): boolean {
   return moved === undefined || !holdsPlace(held, moved, place);
 }
 
-/** The place `answer` put the node of read id `node` at, where Graph's held read of `issue`, with
- *  the answer written into it, lacks it (`lacksPlace`); else undefined, and so for a landing with
- *  no answer, which says nothing of the place. */
-function owedPlace(
-  client: QueryClient,
-  issue: string,
-  node: string,
-  answer: NodeMoved | null
-): Place | undefined {
-  const held = heldRead(client, issue);
-  if (answer === null || held === undefined) return undefined;
-  return lacksPlace(held, node, answer) ? answer : undefined;
-}
-
 /** `held` without the copy of `node`'s subtree that `movedIn` placed after the last child the
  *  pages held before a next page merged into it, where that page holds the node too: the run of
  *  the subtree from the node's first place, where that stands before `before`, the length of the
@@ -833,7 +819,7 @@ function sendMove(
         // A landing with no answer to give says nothing of the place: the next act goes from the
         // read as it stands, and its refusal reads the tree again.
         if (answer !== null) placeHeld(client, chain.issue, chain.node, answer);
-        chain.place = owedPlace(client, chain.issue, chain.node, answer);
+        chain.place = answer ?? undefined;
       } finally {
         advance(client, chain);
       }
