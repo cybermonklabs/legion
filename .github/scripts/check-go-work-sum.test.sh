@@ -46,8 +46,9 @@ for name, version, directives in (
         z.writestr(f"{module}@{version}/{name}.go", f"package {name}\n")
 PY
 
-# tree <name>: create a workspace using ./a and echo its root. Keep a Git index so the old
-# check sees the same tracked files when this harness runs as a negative control.
+# tree <name>: create a workspace using ./a and echo its root. It keeps a Git index, as a
+# checkout does, so that the Verification document's negative control can run these cases over
+# the script at b836532eab4f, which read the tracked go.sum files with `git ls-files`.
 tree() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/a"
@@ -79,12 +80,14 @@ if ((FAIL > 0)); then
   summary "fixture seed"
 fi
 
+# stage_fixture <root>: track what the case wrote, as a checkout tracks it, and keep a copy of
+# its go.work.sum to compare with after the check.
 stage_fixture() {
   git -C "$1" add -A
-  git -C "$1" show :go.work.sum > "$1.committed"
+  cp -- "$1/go.work.sum" "$1.committed"
 }
 
-# run_check <root>: stage its inputs and run on a cold cache, recording output and status.
+# run_check <root>: stage the tree and run the check on a cold cache, recording output and status.
 run_check() {
   stage_fixture "$1"
   status=0
@@ -101,7 +104,7 @@ echo "case 1: every hash the workspace needs is committed"
 root=$(tree complete)
 cp "$seed/go.work.sum" "$root/go.work.sum"
 run_check "$root"
-check "exits 0" "$(is "$status" 0)"
+check "exits 0 (got $status)" "$(is "$status" 0)"
 check "prints the success line" \
   "$(is "$out" 'no checksum is missing: go mod download all in a copy of the root workspace added nothing to go.work.sum or to the go.sum of a')"
 assert_unchanged "$root"
@@ -110,7 +113,7 @@ echo "case 2: a selected module's content hash is missing"
 root=$(tree missing-content)
 grep -Fxv -- "$selected" "$seed/go.work.sum" > "$root/go.work.sum"
 run_check "$root"
-check "exits 1" "$(is "$status" 1)"
+check "exits 1 (got $status)" "$(is "$status" 1)"
 check "counts one missing checksum" \
   "$(contains "$out" '^::error file=go\.work\.sum::no committed file holds 1 of the checksums a download in the root workspace needs')"
 check "names the selected content hash verbatim" "$(grep -Fxq -- "  $selected" <<< "$out" && echo true || echo false)"
@@ -162,7 +165,7 @@ chmod +x "$work/stand-in/bin/go" "$work/stand-in-root/bin/go"
 # Give the check its own process group so SIGKILL stops both it and the stand-in Go.
 set -m
 (cd "$root" && export PATH="$work/stand-in/bin:$PATH" STAND_IN_WROTE="$work/killed.wrote" TMPDIR="$work" &&
-  exec .github/scripts/check-go-work-sum.sh > "$work/killed.out" 2>&1) &
+  exec .github/scripts/check-go-work-sum.sh > /dev/null 2>&1) &
 pid=$!
 set +m
 for ((i = 0; i < 100; i++)); do
@@ -175,7 +178,5 @@ status=0
 wait "$pid" 2> /dev/null || status=$?
 check "the check ends on SIGKILL" "$(is "$status" 137)"
 assert_unchanged "$root"
-check "the planted line did not reach the checkout" \
-  "$(grep -Fq -- 'example.com/planted' "$root/go.work.sum" && echo false || echo true)"
 
 summary "check-go-work-sum.sh and the checkout's unchanged sum files"
