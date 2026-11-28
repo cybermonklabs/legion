@@ -14,10 +14,15 @@ package api
 //     is written; and the same write by a token that names the private project is never 403
 //     PROJECT_SCOPE.
 //
-// Each route is sent objects of its own, so a write that deletes one leaves the next route its own.
-// A route that needs the person scope answers a broker token OAUTH_SCOPE_REQUIRED before the project
-// check reads anything, for a missing object as for a held one, so the walk counts those routes and
-// holds them to one answer all the same.
+// Each route is sent objects of its own, of the one kind its path names, so a write that deletes
+// one leaves every other route its own, and the routes run beside each other: in the walk at a
+// public project, every route on the one server; in the walk at a private project, whose check
+// that nothing is written counts whole tables, each kind of object on a server of its own, its
+// routes one after another. A route that needs the person scope answers a broker token
+// OAUTH_SCOPE_REQUIRED before the project check reads anything, for a missing object as for a held
+// one. The walk at a private project counts those routes and holds them to one answer all the
+// same; the walk at a public project sends each route at a missing object first, and files nothing
+// for a route that answers so.
 
 import (
 	"encoding/json"
@@ -28,38 +33,40 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// sweepObjects are the ids of the objects one project holds, as a route's path names them.
-type sweepObjects struct {
-	project  string
-	issue    string
-	document []string // a project document and an issue document
-	ask      []string // an issue ask and a document ask
-	comment  []string // an issue comment and a document comment
-	message  []string
-	// result holds a result recorded on the project's own issue and a result recorded on an issue of
-	// the project against a check of an issue of the token's project above it, whose project is not
-	// the project of the issue that the result was recorded on.
-	result []string
+// sweepKinds are the kinds of object a route's path can name first, each as the path's first
+// segment after /api/v1/ spells it.
+var sweepKinds = []string{"issues", "projects", "artifacts", "asks", "comments", "messages", "results"}
+
+// sweepKind is the kind of object pattern names first, or "" for a kind the walk does not know.
+func sweepKind(pattern string) string {
+	kind, _, _ := strings.Cut(strings.TrimPrefix(pattern, "/api/v1/"), "/")
+	if !slices.Contains(sweepKinds, kind) {
+		return ""
+	}
+	return kind
 }
 
 var sweepCounter atomic.Int64
 
-// sweepMake files the objects of project with the person's own credential.
-func (rig *privateProjectRig) sweepMake(t *testing.T, project string) sweepObjects {
+// sweepMake files, with the person's own credential, the objects of project that a route whose
+// path names kind reads, and answers the ids of those of kind, each an object the route is sent
+// at. A route reads only the objects its path names, so each kind files what those rest on and
+// nothing more: an issue route an issue; a project route nothing, since the project's key is the
+// object; a document route an issue document and a project document; an ask route and a comment
+// route one on an issue and one anchored in a project document; a message route one on an issue;
+// and a results route two results, with the issues and the Verification documents they are
+// recorded on and against.
+func (rig *privateProjectRig) sweepMake(t *testing.T, project, kind string) []string {
 	t.Helper()
-	n := sweepCounter.Add(1)
-	o := sweepObjects{project: project}
-	o.issue = rig.issue(t, project, "A sweep issue", map[string]any{"spec": "# Spec"})
-	uploadDocument(t, rig.handler, "/api/v1/issues/"+o.issue, "verification.md", twoChecks)
-	issueDoc := uploadDocument(t, rig.handler, "/api/v1/issues/"+o.issue, "notes.md", "# Notes\n\nOne.\n").Artifact
-	projectDoc := createProjectDocument(t, rig.handler, project, fmt.Sprintf("Design notes %d", n), "# Design notes\n")
-	o.document = []string{projectDoc.ID, issueDoc.ID}
 	created := func(what string, response *httptest.ResponseRecorder) string {
 		t.Helper()
 		if response.Code != http.StatusCreated {
@@ -69,16 +76,6 @@ func (rig *privateProjectRig) sweepMake(t *testing.T, project string) sweepObjec
 			ID string `json:"id"`
 		}](t, response).ID
 	}
-	anchor := map[string]string{"artifact": projectDoc.Slug, "quote": "Design"}
-	o.ask = []string{
-		created("ask on the issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+o.issue+"/asks", map[string]any{"question": "Which?"})),
-		created("ask on the document", rig.asPerson(t, http.MethodPost, "/api/v1/artifacts/"+projectDoc.ID+"/asks", map[string]any{"question": "Ready?", "anchor": anchor})),
-	}
-	o.comment = []string{
-		created("comment on the issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+o.issue+"/comments", map[string]any{"body": "A remark."})),
-		created("comment on the document", rig.asPerson(t, http.MethodPost, "/api/v1/artifacts/"+projectDoc.ID+"/comments", map[string]any{"body": "Use Plan.", "anchor": anchor})),
-	}
-	o.message = []string{created("message on the issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+o.issue+"/messages", map[string]any{"body": "A note."}))}
 	record := func(what, issue string) string {
 		t.Helper()
 		response := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+issue+"/results", resultBody("k1", "pass", newHeadCommit, nil))
@@ -87,68 +84,108 @@ func (rig *privateProjectRig) sweepMake(t *testing.T, project string) sweepObjec
 		}
 		return decodeBody[recordedResult](t, response).Result.ID
 	}
-	// A result on an issue of project against the check of the token's project's issue above it.
-	holder := rig.issue(t, brokerTestProject, "A holder of a check", map[string]any{"spec": "# Spec"})
-	uploadDocument(t, rig.handler, "/api/v1/issues/"+holder, "verification.md", twoChecks)
-	below := rig.issue(t, project, "An issue that records on the holder's check", map[string]any{"parent": holder})
-	o.result = []string{record("result on the issue", o.issue), record("result against a check of another project", below)}
-	return o
+	fileIssue := func() string {
+		t.Helper()
+		return rig.issue(t, project, "A sweep issue", map[string]any{"spec": "# Spec"})
+	}
+	// Each project document takes a name of its own, so its slug is design-notes-<n>: none is
+	// design-notes, the slug every {slug} of the walk names.
+	projectDocument := func() model.Artifact {
+		t.Helper()
+		return createProjectDocument(t, rig.handler, project, fmt.Sprintf("Design notes %d", sweepCounter.Add(1)), "# Design notes\n")
+	}
+	switch kind {
+	case "issues":
+		return []string{fileIssue()}
+	case "projects":
+		return []string{project}
+	case "artifacts":
+		issue := fileIssue()
+		issueDoc := uploadDocument(t, rig.handler, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nOne.\n").Artifact
+		return []string{projectDocument().ID, issueDoc.ID}
+	case "asks":
+		issue, projectDoc := fileIssue(), projectDocument()
+		anchor := map[string]string{"artifact": projectDoc.Slug, "quote": "Design"}
+		return []string{
+			created("ask on the issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{"question": "Which?"})),
+			created("ask on the document", rig.asPerson(t, http.MethodPost, "/api/v1/artifacts/"+projectDoc.ID+"/asks", map[string]any{"question": "Ready?", "anchor": anchor})),
+		}
+	case "comments":
+		issue, projectDoc := fileIssue(), projectDocument()
+		anchor := map[string]string{"artifact": projectDoc.Slug, "quote": "Design"}
+		return []string{
+			created("comment on the issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": "A remark."})),
+			created("comment on the document", rig.asPerson(t, http.MethodPost, "/api/v1/artifacts/"+projectDoc.ID+"/comments", map[string]any{"body": "Use Plan.", "anchor": anchor})),
+		}
+	case "messages":
+		issue := fileIssue()
+		return []string{created("message on the issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "A note."}))}
+	case "results":
+		// A result recorded on the project's own issue, and a result recorded on an issue of the
+		// project against the check of an issue of the token's project above it, whose project is
+		// not the project of the issue that the result was recorded on.
+		issue := fileIssue()
+		uploadDocument(t, rig.handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+		holder := rig.issue(t, brokerTestProject, "A holder of a check", map[string]any{"spec": "# Spec"})
+		uploadDocument(t, rig.handler, "/api/v1/issues/"+holder, "verification.md", twoChecks)
+		below := rig.issue(t, project, "An issue that records on the holder's check", map[string]any{"parent": holder})
+		return []string{record("result on the issue", issue), record("result against a check of another project", below)}
+	}
+	t.Fatalf("the walk files no object of kind %q", kind)
+	return nil
 }
 
 var sweepWildcard = regexp.MustCompile(`\{([a-z_]+)\}`)
 
-// targets are the paths of one route at each object of the kind its path names, and at an object
-// of that kind that does not exist.
-func (o sweepObjects) targets(pattern string) (held []string, missing string) {
-	rest := strings.TrimPrefix(pattern, "/api/v1/")
-	var ids []string
-	var absent string
-	switch strings.SplitN(rest, "/", 2)[0] {
+// sweepPath is pattern at the object id of the kind its path names. Its first wildcard is that
+// object. Each other wildcard takes a value of its own, which names no object the walk files but
+// for {number}, the first version every document has: no document's slug is design-notes
+// (projectDocument in sweepMake), and the documents an artifact route is sent at hold no block k1,
+// which only a Verification document of a results route holds.
+func sweepPath(pattern, id string) string {
+	first := true
+	return sweepWildcard.ReplaceAllStringFunc(pattern, func(wildcard string) string {
+		if first {
+			first = false
+			return id
+		}
+		switch wildcard {
+		case "{slug}":
+			return "design-notes"
+		case "{block_id}":
+			return "k1"
+		case "{session_id}", "{session}":
+			return "a-session"
+		case "{phase}":
+			return "implement"
+		case "{owner}":
+			return "owner"
+		case "{repo}":
+			return "repo"
+		}
+		return "1"
+	})
+}
+
+// sweepMissing is the path of pattern at an object of kind, the kind its path names, that does not
+// exist. It needs no object filed, so a route can be sent there before the walk files its objects.
+func sweepMissing(pattern, kind string) string {
+	switch kind {
 	case "issues":
-		ids, absent = []string{o.issue}, missingIssue
+		return sweepPath(pattern, missingIssue)
 	case "projects":
-		ids, absent = []string{o.project}, missingProject
-	case "artifacts":
-		ids, absent = o.document, uuid.NewString()
-	case "asks":
-		ids, absent = o.ask, uuid.NewString()
-	case "comments":
-		ids, absent = o.comment, uuid.NewString()
-	case "messages":
-		ids, absent = o.message, uuid.NewString()
-	case "results":
-		ids, absent = o.result, uuid.NewString()
-	default:
-		return nil, ""
+		return sweepPath(pattern, missingProject)
 	}
-	fill := func(id string) string {
-		first := true
-		return sweepWildcard.ReplaceAllStringFunc(pattern, func(wildcard string) string {
-			if first {
-				first = false
-				return id
-			}
-			switch wildcard {
-			case "{slug}":
-				return "design-notes"
-			case "{block_id}":
-				return "k1"
-			case "{session_id}", "{session}":
-				return "a-session"
-			case "{phase}":
-				return "implement"
-			case "{owner}":
-				return "owner"
-			case "{repo}":
-				return "repo"
-			}
-			return "1"
-		})
-	}
+	return sweepPath(pattern, uuid.NewString())
+}
+
+// sweepHeld is the path of pattern at each object of ids.
+func sweepHeld(pattern string, ids []string) []string {
+	held := make([]string, 0, len(ids))
 	for _, id := range ids {
-		held = append(held, fill(id))
+		held = append(held, sweepPath(pattern, id))
 	}
-	return held, fill(absent)
+	return held
 }
 
 // sweepAnswer is the status and the code of one answer.
@@ -157,11 +194,22 @@ type sweepAnswer struct {
 	code   string
 }
 
+// sweepSigning holds the walks to one signature at a time. The routes of the walk at a public
+// project run beside each other through one caller, and ciphertokentest's Caller.Signed answers
+// the last request its transport signed, so two proofs signed at once could each come back as the
+// other's.
+var sweepSigning sync.Mutex
+
 // sweepSend is the answer to the write of method to path under token. A route that Dispatch does
 // not mount (a test hook of a build that mounts none) answers its router's plain 404.
 func (rig *privateProjectRig) sweepSend(t *testing.T, token, method, path string) sweepAnswer {
 	t.Helper()
-	response := rig.send(t, token, method, path, map[string]any{})
+	signed := func() *http.Request {
+		sweepSigning.Lock()
+		defer sweepSigning.Unlock()
+		return rig.caller.presenting(t, method, path, token, map[string]any{})
+	}()
+	response := rig.serve(signed)
 	code := ""
 	if response.Code >= http.StatusBadRequest {
 		var body struct {
@@ -199,29 +247,40 @@ func TestEveryProjectRouteWritesAnotherPublicProjectsObject(t *testing.T) {
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": "PUB", "name": "PUB"}); created.Code != http.StatusCreated {
 		t.Fatalf("create project PUB: status=%d body=%s", created.Code, created.Body.String())
 	}
-	reached := 0
-	for _, route := range projectWriteRoutes() {
-		method, pattern, _ := strings.Cut(route, " ")
-		held, missing := rig.sweepMake(t, "PUB").targets(pattern)
-		if len(held) == 0 {
-			t.Errorf("%s names no kind of object that the walk knows", route)
-			continue
+	// The routes run beside each other on the one server, each at objects of its own, so the
+	// counts are read once the group has returned, when every route has.
+	var reached, routes atomic.Int64
+	t.Run("each route", func(t *testing.T) {
+		for _, route := range projectWriteRoutes() {
+			t.Run(route, func(t *testing.T) {
+				t.Parallel()
+				method, pattern, _ := strings.Cut(route, " ")
+				kind := sweepKind(pattern)
+				if kind == "" {
+					t.Errorf("%s names no kind of object that the walk knows", route)
+					return
+				}
+				// The object that does not exist needs nothing filed, so the walk sends it first
+				// and files no objects for a route that it leaves there.
+				absent := rig.sweepSend(t, scopedToken, method, sweepMissing(pattern, kind))
+				if absent.code == "OAUTH_SCOPE_REQUIRED" || absent.code == "NOT_JSON" {
+					return
+				}
+				if absent.code != codeProjectScope {
+					t.Errorf("%s at an object that does not exist: %d %s, want 403 %s", route, absent.status, absent.code, codeProjectScope)
+				}
+				for _, path := range sweepHeld(pattern, rig.sweepMake(t, "PUB", kind)) {
+					if got := rig.sweepSend(t, scopedToken, method, path); got.code == codeProjectScope {
+						t.Errorf("%s at %s: %d %s, want the handler's answer, as a credential that names no project gets", route, path, got.status, got.code)
+					}
+					reached.Add(1)
+				}
+				routes.Add(1)
+			})
 		}
-		absent := rig.sweepSend(t, scopedToken, method, missing)
-		if absent.code == "OAUTH_SCOPE_REQUIRED" || absent.code == "NOT_JSON" {
-			continue
-		}
-		if absent.code != codeProjectScope {
-			t.Errorf("%s at an object that does not exist: %d %s, want 403 %s", route, absent.status, absent.code, codeProjectScope)
-		}
-		for _, path := range held {
-			if got := rig.sweepSend(t, scopedToken, method, path); got.code == codeProjectScope {
-				t.Errorf("%s at %s: %d %s, want the handler's answer, as a credential that names no project gets", route, path, got.status, got.code)
-			}
-			reached++
-		}
-	}
-	if reached == 0 {
+	})
+	t.Logf("the walk reached the project check of %d routes, at %d objects", routes.Load(), reached.Load())
+	if reached.Load() == 0 {
 		t.Fatal("the walk reached no route's project check")
 	}
 }
@@ -232,56 +291,80 @@ func TestEveryProjectRouteWritesAnotherPublicProjectsObject(t *testing.T) {
 // not refused PROJECT_SCOPE.
 func TestEveryProjectRouteAnswersAPrivateProjectsObjectAsAMissingOne(t *testing.T) {
 	t.Parallel()
-	rig := newPrivateProjectRig(t, testServerOptions{})
-	type objects struct {
-		route, method string
-		held          []string
-		missing       string
-	}
-	var filed []objects
-	// The objects are filed while PRIV is public, so that each write below meets objects that
-	// exist, then PRIV is made private.
+	byKind := map[string][]string{}
 	for _, route := range projectWriteRoutes() {
-		method, pattern, _ := strings.Cut(route, " ")
-		held, missing := rig.sweepMake(t, privateTestProject).targets(pattern)
-		if len(held) == 0 {
+		_, pattern, _ := strings.Cut(route, " ")
+		kind := sweepKind(pattern)
+		if kind == "" {
 			t.Errorf("%s names no kind of object that the walk knows", route)
 			continue
 		}
-		filed = append(filed, objects{route, method, held, missing})
+		byKind[kind] = append(byKind[kind], route)
 	}
-	rig.makePrivate(t)
-	refused := 0
-	for _, set := range filed {
-		before := rig.written(t)
-		absent := rig.sweepSend(t, scopedToken, set.method, set.missing)
-		for _, path := range set.held {
-			got := rig.sweepSend(t, scopedToken, set.method, path)
-			if got.status < http.StatusBadRequest {
-				t.Errorf("%s at %s by a token that does not name the private project: %d, want a refusal", set.route, path, got.status)
-			}
-			if got != absent {
-				t.Errorf("%s at %s: %d %s, and at an object that does not exist %d %s, want one answer", set.route, path, got.status, got.code, absent.status, absent.code)
-			}
-			if got.code == codeProjectScope {
-				refused++
-			}
+	// written counts whole tables, so no two routes of one server may write at once: each kind of
+	// object has a server of its own, whose routes run one after another, and the kinds run beside
+	// each other. The counts are read once the group has returned, when every kind has.
+	var refused, routes atomic.Int64
+	t.Run("each kind", func(t *testing.T) {
+		for _, kind := range sweepKinds {
+			t.Run(kind, func(t *testing.T) {
+				t.Parallel()
+				rig := newPrivateProjectRig(t, testServerOptions{})
+				type objects struct {
+					route, method string
+					held          []string
+					missing       string
+				}
+				var filed []objects
+				// The objects are filed while PRIV is public, so that each write below meets
+				// objects that exist, then PRIV is made private.
+				for _, route := range byKind[kind] {
+					method, pattern, _ := strings.Cut(route, " ")
+					held := sweepHeld(pattern, rig.sweepMake(t, privateTestProject, kind))
+					filed = append(filed, objects{route, method, held, sweepMissing(pattern, kind)})
+				}
+				rig.makePrivate(t)
+				for _, set := range filed {
+					before := rig.written(t)
+					absent := rig.sweepSend(t, scopedToken, set.method, set.missing)
+					reached := false
+					for _, path := range set.held {
+						got := rig.sweepSend(t, scopedToken, set.method, path)
+						if got.status < http.StatusBadRequest {
+							t.Errorf("%s at %s by a token that does not name the private project: %d, want a refusal", set.route, path, got.status)
+						}
+						if got != absent {
+							t.Errorf("%s at %s: %d %s, and at an object that does not exist %d %s, want one answer", set.route, path, got.status, got.code, absent.status, absent.code)
+						}
+						if got.code == codeProjectScope {
+							refused.Add(1)
+							reached = true
+						}
+					}
+					if reached {
+						routes.Add(1)
+					}
+					if after := rig.written(t); after != before {
+						t.Errorf("%s changed %s to %s for a token that does not name the private project", set.route, before, after)
+					}
+				}
+				// The token that names PRIV is sent at objects filed once PRIV is private, and
+				// sweepMake fails on any answer but 201, so this also holds that a person files
+				// each kind of object in a private project.
+				for _, route := range byKind[kind] {
+					method, pattern, _ := strings.Cut(route, " ")
+					for _, path := range sweepHeld(pattern, rig.sweepMake(t, privateTestProject, kind)) {
+						if got := rig.sweepSend(t, namingToken, method, path); got.code == codeProjectScope {
+							t.Errorf("%s at %s by the token that names the private project: %d %s, want the handler's answer", route, path, got.status, got.code)
+						}
+					}
+				}
+			})
 		}
-		if after := rig.written(t); after != before {
-			t.Errorf("%s changed %s to %s for a token that does not name the private project", set.route, before, after)
-		}
-	}
-	if refused == 0 {
+	})
+	t.Logf("the walk reached the project check of %d routes: %d objects were refused %s", routes.Load(), refused.Load(), codeProjectScope)
+	if refused.Load() == 0 {
 		t.Fatal("the walk reached no route's project check")
-	}
-	for _, route := range projectWriteRoutes() {
-		method, pattern, _ := strings.Cut(route, " ")
-		held, _ := rig.sweepMake(t, privateTestProject).targets(pattern)
-		for _, path := range held {
-			if got := rig.sweepSend(t, namingToken, method, path); got.code == codeProjectScope {
-				t.Errorf("%s at %s by the token that names the private project: %d %s, want the handler's answer", route, path, got.status, got.code)
-			}
-		}
 	}
 }
 
