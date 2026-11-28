@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -15,7 +14,7 @@ import (
 // (pg_class.relallvisible over relpages) record more of embeddings as all-visible than is.
 //
 // The test builds that table from the scale test's corpus at 0.005 x production's size
-// (loadSmallCoverageCorpus), with autovacuum off on embeddings and every issue's source recorded:
+// (openSmallCoverageCorpus), with autovacuum off on embeddings and every issue's source recorded:
 // embeddings vacuumed, so every page is all-visible; one row of every even page updated and the
 // table analyzed, so the statistics record about half the pages all-visible, and the test fails
 // unless they record at least laggingVisibleShare; then one row of every odd page updated with no
@@ -42,22 +41,21 @@ import (
 // windows by the bitmap and Coverage took 1,339 ms and 2,963 ms.
 func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t *testing.T) {
 	t.Parallel()
-	opened := storetest.Open(t)
+	opened := openSmallCoverageCorpus(t)
 	ctx := context.Background()
 	// Every session of the database commits synchronously, whatever the server's setting, as the
 	// scale test's do (measureCoverageAtScale says why): with asynchronous commits the vacuum below
 	// marked no page all-visible in four runs of five on a pod's test server. A session takes the
-	// setting when it starts, so the test works on a store opened after it.
+	// setting when it starts, so the test works on a store opened after it. A clone takes none of
+	// its template's database settings, so the setting is made here, on the clone; the corpus's own
+	// load committed in the template before the clone was made, and the checkpoint Postgres forces
+	// before it copies a database has flushed that commit.
 	mustExec(t, opened.Pool, `do $$ begin execute format('alter database %I set synchronous_commit = on', current_database()); end $$`)
 	database, err := store.Open(ctx, opened.Pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the database again: %v", err)
 	}
 	t.Cleanup(database.Pool.Close)
-	// No autovacuum or autoanalyze of embeddings sets its visibility map or its statistics while
-	// the test makes the state.
-	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
-	loadSmallCoverageCorpus(t, database)
 	recordOnce(t, database)
 	mustExec(t, database.Pool, `vacuum (analyze) embeddings`)
 	var vacuumed float64

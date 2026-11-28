@@ -13,9 +13,9 @@ import (
 // callBound is the most one Embed call this queue makes may take, whatever the place:
 // embed.Bounded ends the call there through its context. It is Azure's own request timeout
 // (azureRequestTimeout, 60 s); Bedrock's SDK sets no bound of its own. Half claimWindow, it leaves
-// a call that starts with a fresh claim the other half to end in. A var, as renewClaimInterval is,
-// so a test can shrink it and see a call end at its bound in milliseconds.
-var callBound = 60 * time.Second
+// a call that starts with a fresh claim the other half to end in. The bound runs on the queue's
+// clock (Deps.Clock), so a test that wants a call to reach it moves that clock there.
+const callBound = 60 * time.Second
 
 // callSlack is how much of its claim a call that runs to callBound must still have when it ends,
 // for what runs before the next renewal: the call's unwinding once its context ends, the commit,
@@ -26,10 +26,10 @@ const callSlack = 15 * time.Second
 // row it still protects (claimRenewal.renew) - during a wait longer than this, a reservation's on
 // the token budget (reserveTokens) or the pace's before an Embed call (embedDocuments) -
 // comfortably inside claimWindow so a renewal always lands before the claim it is refreshing could
-// lapse. A call that could outlive the claim renews it sooner (claimRenewal.renew's need). A var,
-// not a const as claimWindow is, so a test can shrink it well below claimWindow's own 2 minutes
-// and observe a renewal firing in milliseconds rather than needing to wait out the real interval.
-var renewClaimInterval = claimWindow / 2
+// lapse. A call that could outlive the claim renews it sooner (claimRenewal.renew's need). A
+// claim's age is read on the queue's clock (Deps.Clock), so a test that wants a renewal moves that
+// clock past the interval rather than waiting it out.
+const renewClaimInterval = claimWindow / 2
 
 // claimRenewal re-extends scanPending's claim on every row of the original top-level batch a
 // ProcessBatch call is working through - not just whatever subtree bisection is currently in,
@@ -81,10 +81,8 @@ func (c *claimRenewal) renew(ctx context.Context, need time.Duration) {
 // due is how long until renew(need) renews c's claim, and 0 once it would: until the claim is
 // claimWindow less need old, or renewClaimInterval old if that is sooner. The interval bounds a
 // call's renewal too, so a call's own renewal, a statement after its reservation, renews whatever
-// a renewal before the reservation would, whatever renewClaimInterval is; without it no renewal
-// runs between bisection's attempts once a test shrinks the interval
-// (TestProcessBatchActuallyCallsRenewalAndReservesTokens). The claim's age is read on c's clock.
-// A nil *claimRenewal, which renews nothing, is never due.
+// a renewal before the reservation would, whatever renewClaimInterval is. The claim's age is read
+// on c's clock. A nil *claimRenewal, which renews nothing, is never due.
 func (c *claimRenewal) due(need time.Duration) time.Duration {
 	if c == nil {
 		return math.MaxInt64
@@ -195,8 +193,8 @@ func reserveBackgroundTokens(ctx context.Context, deps Deps, texts []string, ren
 // due during the wait, not only before or after it, so a claim never lapses mid-wait;
 // renewal.renew is a safe no-op on nil (a caller with no claim to protect, such as a test
 // exercising the budget alone). ceilingPerMinute is a parameter rather than read from deps here so
-// a test can use a tiny ceiling and observe a real, short wait instead of needing to simulate a
-// whole minute. The wait runs on the queue's clock (Deps.Clock).
+// a test can reserve against a ceiling of its own. The wait runs on the queue's clock
+// (Deps.Clock), where a test reads it as the deadline it arms rather than waiting it out.
 func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int, renewal *claimRenewal) {
 	var available float64
 	if err := deps.Store.Pool.QueryRow(ctx, `

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -19,7 +18,7 @@ import (
 // the one before started.
 //
 // The test builds that table from the scale test's corpus at 0.005 x production's size
-// (loadSmallCoverageCorpus): the identity step of another identity run over every window kind,
+// (openSmallCoverageCorpus): the identity step of another identity run over every window kind,
 // which must drop a vector, then embeddings analyzed. The statement's plan there, under
 // planCoverage's settings as the recount runs it (explainPlanned), must read embeddings by no Seq
 // Scan, test no window's text in a filter of embeddings, and read the windows by a Bitmap Heap Scan
@@ -38,9 +37,8 @@ import (
 // twice the size each took 9.9 s.
 func TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector(t *testing.T) {
 	t.Parallel()
-	database := storetest.Open(t)
+	database := openSmallCoverageCorpus(t)
 	ctx := context.Background()
-	loadSmallCoverageCorpus(t, database)
 
 	// The embedder changes: the identity step drops every vector the old identity made.
 	const newIdentity = "azure:example.services.ai.azure.com/embed-v-5-0"

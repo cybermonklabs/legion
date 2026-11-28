@@ -7,7 +7,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible holds the report to its two
@@ -17,7 +16,7 @@ import (
 // planner prices an index-only scan's heap fetches by.
 //
 // The test builds that table from the scale test's corpus at 0.005 x production's size
-// (loadSmallCoverageCorpus), with autovacuum off on embeddings and every issue's source recorded,
+// (openSmallCoverageCorpus), with autovacuum off on embeddings and every issue's source recorded,
 // and fills the counts once after that load, whose triggers were off: one row of each page of
 // embeddings updated, so no page is all-visible, then the table analyzed, so the statistics record
 // fewer than a quarter of its pages all-visible, and the test fails unless they do. Coverage, run
@@ -52,12 +51,11 @@ import (
 // Coverage runs on a pool of one connection, so the statistics of its own statement are the ones
 // read: pg_stat_force_next_flush makes that backend flush them before it next answers.
 func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *testing.T) {
-	t.Parallel()
-	database := storetest.Open(t)
+	// Not parallel: it builds the shared small-corpus template (openSmallCoverageCorpus) once for
+	// this test process while the parallel tests are paused, so the two parallel corpus tests clone
+	// it and wait for no build. The build is listed as an exception, with its warm control.
+	database := openSmallCoverageCorpus(t)
 	ctx := context.Background()
-	// No autovacuum sets the visibility map while the test reads it.
-	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
-	loadSmallCoverageCorpus(t, database)
 	recordOnce(t, database)
 	fillCounts(t, database)
 

@@ -619,18 +619,50 @@ func loadCoverageCorpus(t *testing.T, databaseURL string, scale coverageScale, p
 	}
 }
 
-// loadSmallCoverageCorpus loads the corpus at 0.005 x production's size into database
-// (loadCoverageCorpus), about 4,900 window rows and 56 issues, and analyzes the tables it fills
-// (coverageScaleTables): the table each test of the coverage statement in a state of embeddings
-// builds that state from, on a test server, once it has set what else the state needs.
-func loadSmallCoverageCorpus(t *testing.T, database *store.Store) {
+// smallCoverageCorpusKey is the key of the template openSmallCoverageCorpus clones
+// (storetest.OpenFrom).
+const smallCoverageCorpusKey = "the small coverage corpus (openSmallCoverageCorpus)"
+
+// openSmallCoverageCorpus returns a store on a new database, dropped after t ends, that holds the
+// corpus at 0.005 x production's size (loadCoverageCorpus), about 4,900 window rows and 56 issues,
+// with the tables it fills analyzed (coverageScaleTables): the table each test of the coverage
+// statement in a state of embeddings builds that state from, on a test server, once it has set
+// what else the state needs. The database is a clone of a template the first test of this
+// process to ask loads once (storetest.OpenFrom): this tree's migrations, autovacuum turned off on
+// embeddings before the load, so no autovacuum or autoanalyze of embeddings sets its visibility
+// map or its statistics while a test makes its state, then the corpus and the analyze. A clone
+// keeps the template's tables, their storage parameters (autovacuum_enabled among them) and their
+// statistics; it keeps none of the template's database settings, and its counters of scans start
+// at none.
+//
+// TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible builds the template: it is
+// serial, and Go starts no parallel test of a package until its serial tests have finished, so it
+// asks first and builds the template while the two parallel tests that clone it
+// (TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector and
+// TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap) are paused; they then
+// clone it and wait for no build. It is the one of the three whose own work after the clone is the
+// least, so the one test that pays the build pays the least besides it.
+func openSmallCoverageCorpus(t *testing.T) *store.Store {
 	t.Helper()
-	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
-	if err != nil {
-		t.Fatalf("read the corpus script: %v", err)
-	}
-	loadCoverageCorpus(t, database.Pool.Config().ConnString(), coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
-	mustExec(t, database.Pool, `analyze `+coverageScaleTables)
+	return storetest.OpenFrom(t, smallCoverageCorpusKey, func(databaseURL string) error {
+		script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
+		if err != nil {
+			return fmt.Errorf("read the corpus script: %w", err)
+		}
+		ctx := context.Background()
+		database, err := store.Open(ctx, databaseURL)
+		if err != nil {
+			return fmt.Errorf("open the corpus's template: %w", err)
+		}
+		defer database.Pool.Close()
+		if err := database.Migrate(ctx); err != nil {
+			return fmt.Errorf("migrate the corpus's template: %w", err)
+		}
+		mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
+		loadCoverageCorpus(t, databaseURL, coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
+		mustExec(t, database.Pool, `analyze `+coverageScaleTables)
+		return nil
+	})
 }
 
 // checkCoverageCorpus fails t unless the database holds the corpus the scale makes: production's

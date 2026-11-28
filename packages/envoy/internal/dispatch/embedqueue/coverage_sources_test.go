@@ -267,8 +267,11 @@ func attrsOf(record slog.Record) map[string]slog.Value {
 // runCoverage. The counts are filled after the seed, and search_coverage_counts is then locked in
 // another connection, so the report's read of the base rows waits however fast the statement
 // would run, and the bound is what ends it; no step before the report touches that table, since a
-// write's triggers write delta rows and never the base. Once the lock is released, the same pass
-// logs its ordinary line with the coverage it leaves.
+// write's triggers write delta rows and never the base. The bound is a server's timer no clock of
+// this module reaches, so the test shortens it to 50 ms for the first pass alone and restores it as
+// soon as that pass returns, while the lock is still held: no verdict reads the 50 ms, and the
+// second pass runs at the production bound. Once the lock is released, that pass logs its ordinary
+// line with the coverage it leaves.
 func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	// Not parallel: it shortens coverageStatementTimeout (ShortenCoverageBoundForTest), a package
 	// variable every coverage report reads, and sets the default logger (logtest.SetDefault).
@@ -279,7 +282,8 @@ func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	deps := Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)}
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
-	t.Cleanup(ShortenCoverageBoundForTest(500 * time.Millisecond))
+	restore := ShortenCoverageBoundForTest(50 * time.Millisecond)
+	t.Cleanup(restore)
 	hold, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the transaction that holds search_coverage_counts: %v", err)
@@ -292,6 +296,9 @@ func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	if err := Cover(ctx, deps); err != nil {
 		t.Fatalf("Cover with its report past the bound = %v, want nil: the steps before the report are done", err)
 	}
+	// The first pass has returned, with the lock still held: the bound is production's again for
+	// the second pass, which must finish its report.
+	restore()
 	failed := passRecords(records, slog.LevelWarn, "dispatch embedqueue: coverage pass report failed")
 	if len(failed) != 1 {
 		t.Fatalf("the pass logged %d WARN lines of a failed report, want 1: %v", len(failed), records.Records())

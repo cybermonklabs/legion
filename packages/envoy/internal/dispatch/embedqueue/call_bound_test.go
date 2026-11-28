@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A call that starts with its claim 59 s old and runs to the queue's bound (callBound, 60 s) has
@@ -61,13 +64,18 @@ func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
 // A Bedrock call that gets no answer ends at the queue's bound (callBound) with the context's
 // deadline, marked an outage, while its caller still waits: Bedrock's SDK sets no bound of its
 // own, and unbounded the call ran as long as the service held it, past claimWindow. The stand-in
-// Bedrock answers nothing until the row ends. callBound is shrunk to 300 ms, and the caller gives
-// the call 5 s: unbounded, the call ends with the caller's own deadline, which is no outage.
+// Bedrock answers nothing until the row ends. The bound runs on the queue's clock (Deps.Clock), a
+// fake the test moves to callBound once the stand-in has the call and the bound is armed. The
+// caller gives the call twice callBound on the same fake, the input the bound is checked against,
+// which the fake never reaches: unbounded, the call never returns, and the wait for it fails
+// naming it.
 func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
-	// Not parallel: it shortens callBound (setForTest), which every Embed call the queue makes reads.
-	setForTest(t, &callBound, 300*time.Millisecond)
+	t.Parallel()
 	release := make(chan struct{})
+	arrived := make(chan struct{})
+	arrive := sync.OnceFunc(func() { close(arrived) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrive()
 		select {
 		case <-r.Context().Done():
 		case <-release:
@@ -75,11 +83,21 @@ func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
 	}))
 	defer server.Close()
 	defer close(release)
-	deps := Deps{Embedder: bedrockClientFor(server)}.Paced()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	start := fake.Now()
+	deps := Deps{Embedder: bedrockClientFor(server), Clock: fake}.Paced()
+	ctx, cancel := fake.WithTimeout(context.Background(), 2*callBound)
 	defer cancel()
 
-	_, err := deps.embedDocuments(ctx, []string{"bedrock"}, nil)
+	ended := make(chan error, 1)
+	go func() {
+		_, err := deps.embedDocuments(ctx, []string{"bedrock"}, nil)
+		ended <- err
+	}()
+	testwait.Receive(t, "the stand-in Bedrock to have the call", arrived)
+	fake.AwaitArmedAt(t, "the call's bound", start.Add(callBound))
+	fake.Set(start.Add(callBound))
+	err := testwait.Receive(t, "the Bedrock call to return once the queue's clock reached its bound", ended)
 	if !errors.Is(err, context.DeadlineExceeded) || !embed.IsOutage(err) || embed.IsThrottled(err) || ctx.Err() != nil {
 		t.Fatalf("the Bedrock call ended with %v (outage %v, throttled %v, the caller's context %v), want the bound's deadline as an outage while the caller still waits", err, embed.IsOutage(err), embed.IsThrottled(err), ctx.Err())
 	}
