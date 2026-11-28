@@ -2370,6 +2370,51 @@ test("the placed node keeps its row and its caret", async () => {
   expect(editorsFrom(live, TREE_ID), "the placing let the editor go").toEqual([TREE_ID]);
 });
 
+// R3 and R6: a menu opened on a new row before its node is placed draws Delete grey, not placed
+// yet, and asks no count. When the PATCH places the node while that menu stays open, Delete is
+// the node's own and asks its count: it is never drawn counting with no dry run out.
+test("a menu open while its new row is placed asks Delete's count", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const sent = answerNodeRoutes({
+    deletes: [deleted.dry_run, deleted.dry_run],
+    patches: [
+      {
+        body: { after: HEADING.id, parent: `issue/${NAMED}`, placement_seq: PLACED_SEQ },
+        status: 200,
+      },
+    ],
+  });
+  const live = drawLive();
+  await pickOn(live, user, HEADING, CONTROL_LABELS.edit_new_below);
+  const { editable, row } = await caretInNewRow(live);
+  const id = row.dataset.nodeId ?? "";
+  pressIn(editable, "Q");
+  await waitFor(() => expect(caretPlace()).toEqual([`${id}|Q|1`, `${id}|Q|1`]));
+  // The heading's menu, which made the new row, asked its own count.
+  const asked = sent.deletes.length;
+  await user.click(await menuControl(live.view));
+  await waitFor(() => expect(menuOf(live.view)).not.toBeNull());
+  expect(
+    entry(live.view, CONTROL_LABELS.edit_delete).textContent,
+    "Delete on a new row not placed yet does not say so"
+  ).toContain(ANSWER_LINES.grey_not_placed);
+  expect(sent.deletes, "the menu asked the count of a node not placed").toHaveLength(asked);
+
+  act(() => live.client.setQueryData(outlineQuery(KEY, "graph").queryKey, indexedWith(id)));
+  await waitFor(() =>
+    expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(PLACED_SEQ)
+  );
+  expect(menuOf(live.view), "the placing closed the menu").not.toBeNull();
+  await waitFor(() =>
+    expect(
+      entry(live.view, CONTROL_LABELS.edit_delete).textContent,
+      "Delete stays counting once its row was placed"
+    ).not.toContain(CONTROL_LABELS.delete_counting)
+  );
+  expect(sent.deletes, "the menu sent no dry run once its row was placed").toHaveLength(asked + 1);
+});
+
 const QUESTION = nodeOf(converted, "<question>");
 const QUESTION_BLOCK = nodeOf(converted, "<question-block>");
 
