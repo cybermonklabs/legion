@@ -384,7 +384,10 @@ if (run === "main") {
     }
     const fails = scenario.sendFails || !allowed;
     if (!fails && !scenario.outboundDropped) {
-      writeFileSync(join(state, "outbound"), JSON.stringify({ text: plan.outbound, from: session, to: plan.outboundTo }));
+      // Whole or not there, as the screen is written: the probe's receiver parses the file the
+      // moment it is there, and one it read between its creation and its write would be empty.
+      writeFileSync(join(state, "outbound.writing"), JSON.stringify({ text: plan.outbound, from: session, to: plan.outboundTo }));
+      renameSync(join(state, "outbound.writing"), join(state, "outbound"));
     }
     log({ step: "sent", ok: !fails, detail: scenario.sendFails ? "tool call error: Envoy is not ready" : allowed ? "delivered to " + plan.outboundTo : "tool call cancelled" });
   } else {
@@ -837,6 +840,15 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     stdout: run.stdout,
   });
 
+  /** The exit code of `run`, beside each row's verdict, its rows and its progress lines for the
+   *  failure message, so a wrong code names the row that made it. */
+  const exitOf = (run: CodexRun) => ({
+    code: run.code,
+    verdicts: verdictsOf(run.stdout),
+    stdout: run.stdout,
+    stderr: run.stderr,
+  });
+
   test(
     "C7 passes where the installed entry's whoami says its token names the project, as a release since a token naming a project writes other projects says it",
     async () => {
@@ -865,11 +877,11 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       );
       expect(rowOf(noInside, "C2")).toMatchObject({ row: { verdict: "UNKNOWN" } });
       expect(rowOf(noInside, "C2").row?.got).toContain("OUTSIDE_INSIDE_DISPATCH_URL is unset");
-      expect(noInside.code).toBe(2);
+      expect(exitOf(noInside)).toMatchObject({ code: 2 });
       // C4's control: a message sent to a session of another project reached this one.
       expect(rowOf(crossed, "C4")).toMatchObject({ row: { verdict: "FAIL" } });
       expect(rowOf(crossed, "C4").row?.got).toContain("a session of another project");
-      expect(crossed.code).toBe(1);
+      expect(exitOf(crossed)).toMatchObject({ code: 1 });
     },
     // The three runs at once, each a bounded child under the Codex run's bound.
     rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun"] })

@@ -941,7 +941,7 @@ func TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt(t *testing.T) {
 		if tag, err := database.Pool.Exec(ctx, `update `+post.state+` set owed_at = now() where `+post.key+` = $1::uuid`, post.id); err != nil || tag.RowsAffected() != 1 {
 			t.Fatalf("owe %s %s its block index: %s, %v", post.kind, post.id, tag, err)
 		}
-		if indexed, err := refs.IndexOwedItemBlocks(ctx, database.Pool, refs.OwedItemBlock{Kind: post.kind, ID: post.id}, "https://dispatch.example"); err != nil || !indexed {
+		if indexed, err := refs.IndexOwedItemBlocks(ctx, database.Pool, refs.OwedItemBlock{Kind: post.kind, ID: post.id}, testOrigins); err != nil || !indexed {
 			t.Fatalf("the reconciliation indexed %s %s = %v (%v), want it indexed", post.kind, post.id, indexed, err)
 		}
 		// The re-index rewrote the block's excerpt and dated nothing after the cut: the block

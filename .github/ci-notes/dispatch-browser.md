@@ -128,8 +128,8 @@ can move what a go command compiles, so a go command there would fall out of
 check-ci-filters.sh's reduction and be counted as reading every Go file of the repository,
 which is the opposite of what the `dispatch_browser` filter is for. So the builds live in
 this job, which takes no container, and the suite's own scripts execute what it built
-instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
-run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
+instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN,
+run-signin-issuer.sh's DISPATCH_E2E_ISSUER_BIN and run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
 already decided the call. ci.yaml's three callers hold the `dispatch_browser`,
@@ -149,18 +149,23 @@ run that misses it builds four commands cold, which the planner measured at 3m37
 rather than the warm one, as the multiprocess job's Playwright install step, "Install Playwright Chromium", carries
 its own retry arithmetic rather than its measured maximum.
 
-## Why the binaries job restores go-envoy-test
+## Why the binaries job restores go-browser-binaries
 
-go-envoy-test, restored only: this job builds the Dispatch server and the real broker's
-three commands, and that family's entry is the one that holds them. go-envoy is filled
-by a build of ./cmd/listener and ./internal/testnats/cmd/natsd alone
-(.github/workflows/ci-caches.yaml), so a job that restores it and builds these four
-downloads and compiles their closure on a key that hit: 115 `go: downloading` lines in
-job 129055096326 of run 42585736615, where this build still sat inside the alone job's
-3-minute browser step. go-envoy-test is filled by `go test -count=1 -run '^$' ./...` over
-the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
-restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
-here saves either one.
+go-browser-binaries, restored only: .github/workflows/ci-caches.yaml fills it on every push to
+main with the texts of this job's two steps, the build step's two `CGO_ENABLED=0` builds (four
+binaries) and the connections step's `go run`, each in this job's directory, and saves only what
+those builds used (.github/ci-notes/ci-caches.md#the-go-browser-binaries-family). No job here
+saves it.
+
+go-envoy is no answer: it is filled by a build of ./cmd/listener and
+./internal/testnats/cmd/natsd alone (.github/workflows/ci-caches.yaml), so a job that restores it
+and builds these four downloads and compiles their closure on a key that hit: 115 `go:
+downloading` lines in job 129055096326 of run 42585736615. The job restored go-envoy-test before,
+which is filled by `go test -count=1 -run '^$' ./...` over the whole envoy module with cgo on, so
+it carries every module these builds read but not every object: with `CGO_ENABLED=0`, net and
+os/user build other files, so every package above them has other cache keys, and on a
+go-envoy-test entry 427 of the 1,034 packages of this job's closure were stale
+(.github/ci-notes/ci-caches.md#the-go-browser-binaries-family has the measurements).
 
 ## What the binaries build writes, and why it is static
 
@@ -455,7 +460,9 @@ and go-envoy cache restore, which are gone: with no go command left here they bo
 nothing, and the restore was there only for the build run-server.sh no longer does.
 The directory is the one run-broker.sh built the broker's three binaries in, which is
 the directory `packages/dispatch/e2e/real-broker.ts#requestseed` points into, so the suite runs requestseed from there; the server
-binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN (.github/scripts/dispatch-browser-shard-suite.sh).
+binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN, and the dev-oidc-issuer
+of the broker's three is named by path in DISPATCH_E2E_ISSUER_BIN as well, for the sign-in issuer
+e2e/served-addresses.e2e.ts starts (.github/scripts/dispatch-browser-shard-suite.sh).
 
 A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
 leg but one, which took 428 s (the budget note above), so a slow read is answered by
@@ -1096,9 +1103,11 @@ go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
 
 ## Why the two-process job restores go-envoy-test
 
-go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
-this job builds the Dispatch server and the dev OIDC issuer, which only that family's
-entry holds. It saves none.
+go-envoy-test, restored only: this job's `go build -o ./dispatch-e2e ./cmd/dispatch` builds with
+cgo on, as go-envoy-test's fill does, so that family's entry holds its closure. Measured in the
+4-CPU build-cluster pod of .github/ci-notes/ci-caches.md#the-go-browser-binaries-family (main
+1cd586b462b): 6.2 s and 1 compile on a go-envoy-test entry, against 26.7 s and 250 compiles on a
+go-browser-binaries entry, whose objects are `CGO_ENABLED=0` ones. It saves none.
 
 ## Why the two-process job builds contracts
 
@@ -1332,9 +1341,9 @@ six columns above, the sixth being run 42614920253 (job 129152410516). So the su
 
 ## Why the visual job restores go-envoy-test
 
-go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
-this job's run-server.sh builds the Dispatch server, which only that family's entry
-holds. It saves none.
+go-envoy-test, restored only, for the reason the two-process job's step of this name gives:
+this job's run-server.sh builds the Dispatch server with `go build -o ./dispatch-e2e
+./cmd/dispatch`, cgo on, the same build. It saves none.
 
 ## Why the visual job builds contracts
 
