@@ -246,19 +246,19 @@ export function IssuePropertiesRow({
             {PROPERTY_LABELS.waiting_on_you} (
             <span {...authorText}>
               {waiting.total}
-              {waiting.mayWait > 0 ? (
-                "+"
-              ) : plusDrawn.current ? (
-                // The "+" that went: a "+" of its own width that is not seen or heard, and that
-                // no text of the count holds.
-                <span
-                  aria-hidden="true"
-                  className="after:invisible after:content-['+']"
-                  data-plus-held=""
-                />
-              ) : null}
+              {waiting.mayWait > 0 ? "+" : ""}
             </span>
             )
+            {waiting.mayWait > 0 || !plusDrawn.current ? null : (
+              // The "+" that went, held after the brackets so nothing but the number stands
+              // between them: a "+" of its own width that is not seen or heard, and that no text
+              // of the count holds.
+              <span
+                aria-hidden="true"
+                className="after:invisible after:content-['+']"
+                data-plus-held=""
+              />
+            )}
           </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (

@@ -18,6 +18,7 @@ import {
 import { IssueOutlinePage } from "./IssueOutlinePage";
 import { presetPath } from "./issue-address";
 import { TWO_THREADS } from "./outline-fixtures";
+import { AUTHOR_TEXT_ATTRIBUTE } from "./page-structure";
 import { type TasksByHand, tasksByHand } from "./slices-fixtures";
 import { AppProviders, commentNodes, stubReads, treeOf } from "./slots/stage-fixtures";
 import { coverageRead } from "./spec-filter/spec-fixtures";
@@ -248,6 +249,18 @@ test("the count's + goes as the tree read answers, and the count keeps its place
   );
   expect(plusHeld?.className, "the held + is seen").toContain("after:invisible");
   expect(plusHeld?.getAttribute("aria-hidden"), "the held + is heard").toBe("true");
+  // The held "+" stands after the brackets, so nothing but the number stands between them
+  // (dispatch://INFRA-5939/comment/44dc3103-b601-4856-8aae-b6d849889b4e).
+  const number = chip?.querySelector(`[${AUTHOR_TEXT_ATTRIBUTE}]`) ?? null;
+  expect(number?.textContent, "the brackets hold more than the number").toBe("2");
+  expect(
+    number?.querySelector("[data-plus-held]") ?? null,
+    "the held + stands between the brackets"
+  ).toBeNull();
+  expect(
+    plusHeld?.previousSibling?.textContent?.endsWith(")"),
+    "the held + does not stand after the brackets"
+  ).toBe(true);
   expect(
     [...line.children].includes(approval as Element) && placeIn(line, approval),
     "the approval control after the count moved in the line, or was drawn again"
