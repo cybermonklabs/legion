@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // ErrSessionClosed is FreeSessionLock's answer for a connection that was closed before its unlock
@@ -29,10 +31,10 @@ var errLockNotHeld = errors.New("the unlock reports this session did not hold th
 // FreeSessionLockThenReset, which resets the connection's session between the unlock and the
 // release so a migration's leftover setting does not reach the pool's next caller.
 //
-// The unlock runs under a LeaseCall of its own, never the holder's context, for two reasons. A
-// lock must be given back after its holder's context has ended too. And an unbounded unlock on a
-// half-open connection would hold its caller here, and everything queued behind that caller,
-// until TCP gives the connection up.
+// The unlock runs under a LeaseCall of its own, with a timeout on clock.Real() and no link to
+// the holder's context. A lock must be given back after its holder's context has ended too.
+// And an unbounded unlock on a half-open connection would hold its caller here, and everything
+// queued behind that caller, until TCP gives the connection up.
 //
 // An unlock that fails, reaches that bound or answers false leaves what the session holds
 // unknown. The pool would hand such a connection to its next caller, which could take a lock the
@@ -44,14 +46,19 @@ var errLockNotHeld = errors.New("the unlock reports this session did not hold th
 // the unlock, and otherwise what failed, for the caller to log beside what the lock was for. conn
 // is released or closed whatever the answer, so the caller does not use it again.
 func FreeSessionLock(conn *pgxpool.Conn, unlock string, args ...any) error {
-	return FreeSessionLockThenReset(conn, nil, unlock, args...)
+	return freeSessionLock(clock.Real(), conn, nil, unlock, args...)
+}
+
+// FreeSessionLockOn is FreeSessionLock with the unlock and any connection close bounded on c.
+func FreeSessionLockOn(c clock.Clock, conn *pgxpool.Conn, unlock string, args ...any) error {
+	return freeSessionLock(c, conn, nil, unlock, args...)
 }
 
 // FreeSessionLockThenReset is FreeSessionLock with a reset step. reset runs on conn after the
-// unlock has answered true and before conn goes back to its pool, under a LeaseCall of its own and
-// the bound the unlock gets. A caller gives conn back through this when the connection carries
-// session state the pool's next caller must not meet: the migration runner's connection does,
-// because a migration's own text can run a SET without LOCAL and its stored code can call
+// unlock has answered true and before conn goes back to its pool. The unlock, reset and any
+// connection close each get their own LeaseCall timeout on clock.Real(). A caller gives conn
+// back through this when the connection carries session state the pool's next caller must not
+// meet: a migration's own text can run a SET without LOCAL and its stored code can call
 // set_config(…, false) (internal/pgmigrate, ResetSession).
 //
 // The order is fixed. The unlock runs first, then the reset. The migration runner's reset runs
@@ -60,13 +67,17 @@ func FreeSessionLock(conn *pgxpool.Conn, unlock string, args ...any) error {
 // what the session carries unknown, exactly as a failed unlock does, so the connection is hijacked
 // out of the pool and closed rather than returned, and the error comes back for the caller to log.
 //
-// reset is nil for a caller that needs no reset, which is how FreeSessionLock calls this.
+// reset is nil for a caller that needs no reset.
 func FreeSessionLockThenReset(conn *pgxpool.Conn, reset func(context.Context, *pgx.Conn) error, unlock string, args ...any) error {
+	return freeSessionLock(clock.Real(), conn, reset, unlock, args...)
+}
+
+func freeSessionLock(c clock.Clock, conn *pgxpool.Conn, reset func(context.Context, *pgx.Conn) error, unlock string, args ...any) error {
 	if conn.Conn().IsClosed() {
 		conn.Release()
 		return ErrSessionClosed
 	}
-	ctx, cancel := LeaseCall()
+	ctx, cancel := LeaseCallOn(c)
 	defer cancel()
 	freed := false
 	err := conn.QueryRow(ctx, unlock, args...).Scan(&freed)
@@ -74,7 +85,7 @@ func FreeSessionLockThenReset(conn *pgxpool.Conn, reset func(context.Context, *p
 		err = errLockNotHeld
 	}
 	if err == nil && reset != nil {
-		resetCtx, resetCancel := LeaseCall()
+		resetCtx, resetCancel := LeaseCallOn(c)
 		defer resetCancel()
 		err = reset(resetCtx, conn.Conn())
 	}
@@ -83,7 +94,7 @@ func FreeSessionLockThenReset(conn *pgxpool.Conn, reset func(context.Context, *p
 		return nil
 	}
 	dead := conn.Hijack()
-	closeCtx, closeCancel := LeaseCall()
+	closeCtx, closeCancel := LeaseCallOn(c)
 	defer closeCancel()
 	if closeErr := dead.Close(closeCtx); closeErr != nil {
 		return fmt.Errorf("%w; close its connection: %v", err, closeErr)

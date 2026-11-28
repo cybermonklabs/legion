@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Leases is the slice of a connection pool a lease needs, named here so this package depends on no
@@ -224,9 +226,14 @@ const leaseCallTimeout = 5 * time.Second
 // use it to run detached and bounded by leaseCallTimeout: a CI reconcile pass's start write
 // (internal/dispatch/cireconcile, beginPass), and its end write and the prune of old rows that
 // follows it on the same context (endPass). None may run on the pass's context, which a shutdown
-// cancels.
+// cancels. Its timeout runs on clock.Real().
 func LeaseCall() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), leaseCallTimeout)
+	return LeaseCallOn(clock.Real())
+}
+
+// LeaseCallOn is LeaseCall with its timeout on c, independent of the pass's context.
+func LeaseCallOn(c clock.Clock) (context.Context, context.CancelFunc) {
+	return c.WithTimeout(context.Background(), leaseCallTimeout)
 }
 
 // ExclusiveFunc is Exclusive's signature. A loop that gates its passes on a lease takes one of
@@ -289,14 +296,23 @@ type ExclusiveFunc func(ctx context.Context, logger *slog.Logger, leases Leases,
 // Every line it writes - a skip, a pass that ran or was cut short, a failure to take, read, record
 // or give back the lease - goes to logger. A nil logger is the default logger as it is when the
 // line is written.
+//
+// The bound of each lease statement (LeaseCall) runs on the wall clock, clock.Real().
 func Exclusive(ctx context.Context, logger *slog.Logger, leases Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
+	return exclusiveOn(ctx, clock.Real(), logger, leases, name, due, period, pass)
+}
+
+// exclusiveOn is Exclusive with the bound of each lease statement - the take, the period read,
+// the record and the free - on c (LeaseCallOn, FreeSessionLockOn), so a test can hold those
+// bounds still on a clocktest.Fake while it holds a lock the statements wait on.
+func exclusiveOn(ctx context.Context, c clock.Clock, logger *slog.Logger, leases Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
 	conn, err := leases.Acquire(ctx)
 	if err != nil {
 		reportFailure(logger, name, "dispatch duty: take the lease", err)
 		return false
 	}
 	var held bool
-	takeCtx, cancelTake := LeaseCall()
+	takeCtx, cancelTake := LeaseCallOn(c)
 	err = conn.QueryRow(takeCtx, takeLease, leaseNamespace, name).Scan(&held)
 	cancelTake()
 	if err != nil {
@@ -311,13 +327,13 @@ func Exclusive(ctx context.Context, logger *slog.Logger, leases Leases, name str
 	}
 	// Deferred, so a pass that panics gives its lease back on the way out rather than holding it
 	// for as long as the connection lives.
-	defer freeLeaseOn(logger, conn, name)
+	defer freeLeaseOn(c, logger, conn, name)
 	// Shutdown came while the lease was being taken: the period read would only delay giving the
 	// lease back.
 	if ctx.Err() != nil {
 		return false
 	}
-	readCtx, cancelRead := LeaseCall()
+	readCtx, cancelRead := LeaseCallOn(c)
 	boundary, served, err := periodServed(readCtx, conn, name, due, period)
 	cancelRead()
 	if err != nil {
@@ -368,7 +384,7 @@ func Exclusive(ctx context.Context, logger *slog.Logger, leases Leases, name str
 		logTo(logger).Info("dispatch duty: leased pass cut short by shutdown; its period is left unserved", "lease", name)
 		return false
 	}
-	recordPassOn(logger, conn, name, boundary, period)
+	recordPassOn(c, logger, conn, name, boundary, period)
 	// The boundary is the period this pass served. A row whose own run time passes its period
 	// leaves the next honest pass in the next period, so a reader counting passes over a whole
 	// run cannot tell two passes of one period - which the lease forbids - from one pass each of
@@ -448,14 +464,14 @@ func periodServed(ctx context.Context, conn *pgxpool.Conn, name string, due time
 // This comment said the opposite until INFRA-66's second round: that a pass cut short by shutdown
 // still ran and still served its period, which was the behaviour and was wrong both times it was
 // written. A record that never lands only costs one early pass, which is why its failure is
-// logged and not returned - and why it runs under LeaseCall, bounded as well as detached,
+// logged and not returned - and why it runs under LeaseCallOn, bounded as well as detached,
 // since an upsert that never answers costs this loop its goroutine and the lease behind it rather
 // than one record. A pass with no period records nothing. Its failure goes to logger (logTo).
-func recordPassOn(logger *slog.Logger, conn *pgxpool.Conn, name string, boundary time.Time, period time.Duration) {
+func recordPassOn(c clock.Clock, logger *slog.Logger, conn *pgxpool.Conn, name string, boundary time.Time, period time.Duration) {
 	if period <= 0 {
 		return
 	}
-	ctx, cancel := LeaseCall()
+	ctx, cancel := LeaseCallOn(c)
 	defer cancel()
 	if _, err := conn.Exec(ctx, recordPass, passKey(name, period), boundary, period.Nanoseconds(), name); err != nil {
 		logTo(logger).Error("dispatch duty: record the pass", "lease", name, "error", err)
@@ -472,7 +488,7 @@ func recordPassOn(logger *slog.Logger, conn *pgxpool.Conn, name string, boundary
 // DeadlineExceeded and never Canceled - so the check below logs a deadline rather than swallowing
 // it, and the two are not to be tidied into one condition. The record, the unlock and the close log
 // their own failures directly rather than through here. The acquire runs on the pass's own context;
-// the take and the period read run under LeaseCall, so neither is cancelled by shutdown.
+// the take and the period read run under LeaseCallOn, so neither is cancelled by shutdown.
 func reportFailure(logger *slog.Logger, name, message string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return
@@ -481,11 +497,11 @@ func reportFailure(logger *slog.Logger, name, message string, err error) {
 }
 
 // freeLeaseOn gives name's lease back on the connection that took it, and that connection back to
-// the lease pool (FreeSessionLock). It logs every failure to logger (logTo), ErrSessionClosed
-// included: a lease connection is closed before its unlock only by a statement under LeaseCall
+// the lease pool (FreeSessionLockOn). It logs every failure to logger (logTo), ErrSessionClosed
+// included: a lease connection is closed before its unlock only by a statement under LeaseCallOn
 // that failed, so the line says the lease went with its session rather than by its unlock.
-func freeLeaseOn(logger *slog.Logger, conn *pgxpool.Conn, name string) {
-	if err := FreeSessionLock(conn, freeLease, leaseNamespace, name); err != nil {
+func freeLeaseOn(c clock.Clock, logger *slog.Logger, conn *pgxpool.Conn, name string) {
+	if err := FreeSessionLockOn(c, conn, freeLease, leaseNamespace, name); err != nil {
 		logTo(logger).Error("dispatch duty: free the lease", "lease", name, "error", err)
 	}
 }

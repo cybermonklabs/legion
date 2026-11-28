@@ -3,6 +3,8 @@ package duty
 import (
 	"context"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // duty's tests live in package duty_test, because internal/dispatch/store imports duty - it gives
@@ -31,11 +33,13 @@ var PeriodBoundary = periodBoundary
 // JitterN points at the draw every jittered wait makes, so a test can fix it and put it back.
 var JitterN = &jitterN
 
-// RunLeasedUnderGate is RunLeased with exclusive in place of Exclusive and no lease pool, for a
-// test of the schedule alone: its ticks and the period each falls in, with no statement of a real
-// lease between them (ExclusiveFunc).
+// ExclusiveOn lets a test set the clock for Exclusive's lease calls.
+var ExclusiveOn = exclusiveOn
+
+// RunLeasedUnderGate runs the fixed schedule on clock.Real(), with a test's gate and no lease
+// pool. Inside a synctest bubble, the ticker runs on the bubble's clock.
 func RunLeasedUnderGate(ctx context.Context, name string, interval time.Duration, first FirstTick, exclusive ExclusiveFunc, pass func(context.Context)) {
-	runLeased(ctx, nil, name, interval, first, exclusive, pass)
+	runLeased(ctx, clock.Real(), nil, nil, name, interval, first, exclusive, pass)
 }
 
 // Run is WokenLoop.run, the loop with an Exclusive of the test's own in place of the real one.

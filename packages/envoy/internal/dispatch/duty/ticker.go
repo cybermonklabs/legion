@@ -13,8 +13,11 @@ package duty
 
 import (
 	"context"
+	"log/slog"
 	"math/rand/v2"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // jitterN draws a duration in [0, n), and zero for an n of zero or less. Every jittered wait in this
@@ -98,83 +101,95 @@ const (
 	TickAfterInterval
 )
 
-// RunLeased runs pass under the lease named name, once per tick, until ctx ends: each tick is one
-// Exclusive call, so pass runs only when this process takes the lease and no process has already
-// served the tick's period, which is always interval. first says whether the first tick is at
-// start or one interval after.
-//
-// The ticks are a ticker's, time.NewTicker(interval): TickAfterInterval starts at the ticker's
-// first tick, and TickAtStart makes one tick at the moment the loop starts before it. A tick's due
-// time, the moment it hands Exclusive, is the value the ticker delivered, the clock read at that
-// tick and not a moment worked out from a reading taken at start, so a step of the wall clock
-// while the loop runs moves the due times after it with it. The ticker's ticks are one interval
-// apart while each pass takes less than the interval, so a lone loop's due times fall in
-// consecutive periods on this process's clock (periodBoundary) and no period is lost. A tick armed
-// only once the pass before it returned would be due one interval plus that pass's time after it,
-// and as those delays add up its due times would drift across the period boundaries and jump over
-// a period no pass serves. A pass that overruns the interval gets what a ticker gives a slow
-// receiver (Go's runtime, time.go): the first tick it overran comes at once, with the moment it
-// was due, and only the ticks after it are dropped, so due times stay whole intervals apart and
-// overrun ticks are not run late one after another.
-//
-// ctx ending returns at once from a wait, and from a tick once its pass returns.
+// RunLeased runs the fixed-cadence loop of RunLeasedOn on clock.Real() with the default logger.
+// Its clock.Ticker delivers ticks as a time.Ticker does, with a tick at start if first is
+// TickAtStart.
 func RunLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
-	runLeased(ctx, leases, name, interval, first, Exclusive, pass)
+	RunLeasedOn(ctx, clock.Real(), nil, leases, name, interval, first, pass)
 }
 
-// runLeased is RunLeased with the gate handed in (ExclusiveFunc), so the schedule above - the
-// tick at start, the ticker's ticks after it, and the period each one is due in - can be tested
-// on a fake clock against a gate of the test's own, with no Postgres a synctest bubble would
-// have to wait on (ExclusiveFunc; redeliver.Sweeper.run is the same seam).
-func runLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, exclusive ExclusiveFunc, pass func(context.Context)) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	if first == TickAtStart {
-		// Read after the ticker started, so the ticker's first tick is no more than one interval
-		// after this one: in the next period, or in this one and refused, but never one beyond.
-		exclusive(ctx, nil, leases, name, time.Now(), interval, pass)
-	}
+// RunLeasedOn runs pass under the lease named name, once per tick of a clock.Ticker on c until
+// ctx ends. Each tick is one Exclusive call with logger (nil for the default logger), so pass
+// runs only when this process takes the lease and no process has already served the tick's period,
+// which is always interval. The lease calls themselves run on clock.Real().
+//
+// first selects a tick at start or one interval after start. Each tick hands Exclusive the
+// moment the ticker delivered, not the moment the loop took the tick. On clock.Real(), ticks
+// come as a time.Ticker's do: a step of the wall clock shifts the delivered due times without
+// moving the ticker's monotonic grid.
+//
+// Without a wall-clock step, a lone loop that keeps up with the ticker gets due times one
+// interval apart and serves consecutive periods (periodBoundary). Waiting a full interval
+// after each pass instead would add each pass's run time to the cadence, eventually skipping
+// a period. When a pass overruns, the first tick it overran comes at once with its original
+// due time, and any later ticks already due are dropped instead of replayed.
+//
+// Cancellation ends a wait at once. If a tick is in progress, the loop returns once its
+// Exclusive call, including the pass and lease cleanup, returns.
+func RunLeasedOn(ctx context.Context, c clock.Clock, logger *slog.Logger, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
+	runLeased(ctx, c, logger, leases, name, interval, first, Exclusive, pass)
+}
+
+// runLeased takes ticks from a clock.Ticker on c and arms the next tick only after the supplied
+// gate returns. A schedule test can supply its own gate and run without Postgres, including
+// inside a synctest bubble with clock.Real().
+func runLeased(ctx context.Context, c clock.Clock, logger *slog.Logger, leases Leases, name string, interval time.Duration, first FirstTick, exclusive ExclusiveFunc, pass func(context.Context)) {
+	ticks := clock.NewTicker(c, interval, first == TickAtStart)
+	defer ticks.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case due := <-ticker.C:
-			exclusive(ctx, nil, leases, name, due, interval, pass)
+		case due := <-ticks.C():
+			if ctx.Err() != nil {
+				return
+			}
+			ticks.Took()
+			exclusive(ctx, logger, leases, name, due, interval, pass)
+			ticks.Next()
 		}
 	}
 }
 
-// RunLeasedAfterEachPass runs pass under the lease named name as RunLeased does, one Exclusive
-// call per tick until ctx ends, for a loop paced by its own passes: its first tick is at start,
-// and each next tick comes the wait its pass returned after that pass returned, not after the tick
-// before it was due. pass is given the period of its tick, the span Exclusive gave it, and returns
-// that wait, which must be positive: the interval, or a wait of its own for a loop that speeds up
-// while work remains, as the block-index reconciliation steps two seconds after a full batch. A
-// tick whose pass did not run waits interval, and a pass that shutdown cut short still returns its
-// wait, which goes unused.
-//
-// The period of a tick, the span Exclusive gives it, is the wait before it - interval for the
-// first - and its due time is the moment its timer fired, a timer armed once the tick before it
-// has returned. So two consecutive ticks are due at least the later one's period apart, plus the
-// earlier tick's own time (its lease and its pass), and a lone loop's ticks always fall in
-// different periods on this process's clock (periodBoundary): no tick of a lone loop is refused
-// by its own previous pass. The cadence is therefore each wait plus each pass's time: a slow pass
-// delays the next tick by its own length, and a step is never cut short by the pass before it.
-//
-// ctx ending returns at once from a wait, and from a tick once its pass returns.
+// RunLeasedAfterEachPass runs the pass-paced loop of RunLeasedAfterEachPassOn on clock.Real()
+// with the default logger.
 func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
+	RunLeasedAfterEachPassOn(ctx, clock.Real(), nil, leases, name, interval, pass)
+}
+
+// RunLeasedAfterEachPassOn runs pass under the lease named name, starting at c.Now(). Each tick
+// calls Exclusive with logger (nil for the default logger). The lease calls run on clock.Real().
+// Once Exclusive returns, a timer on c waits the positive duration that pass returned, or
+// interval if the pass did not run. For example, block-index reconciliation asks for a
+// two-second wait after a full batch.
+//
+// Exclusive gets the wait before the tick as its period (interval for the first tick), and
+// pass receives that same period. The first due is the start reading; later dues are the times
+// the timers deliver. Without a wall-clock step, consecutive dues are at least the later tick's
+// period apart, so a lone loop's previous pass does not consume the next tick's period
+// (periodBoundary). A slow pass delays the next tick by its run time; it does not cut the wait
+// short.
+//
+// Cancellation stops the timer if waiting, or ends the loop once the Exclusive call in
+// progress returns. A pass cut short by cancellation still returns a wait, which goes unused.
+func RunLeasedAfterEachPassOn(ctx context.Context, c clock.Clock, logger *slog.Logger, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
 	period := interval
-	due := time.Now()
-	for {
+	due := c.Now()
+	for ctx.Err() == nil {
 		wait := interval
-		Exclusive(ctx, nil, leases, name, due, period, func(ctx context.Context) {
+		Exclusive(ctx, logger, leases, name, due, period, func(ctx context.Context) {
 			wait = pass(ctx, period)
 		})
 		period = wait
+		if ctx.Err() != nil {
+			return
+		}
+		timer := c.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case due = <-time.After(wait):
+		case due = <-timer.C():
 		}
 	}
 }
