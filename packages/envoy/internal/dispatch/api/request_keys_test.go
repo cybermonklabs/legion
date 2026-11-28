@@ -74,7 +74,7 @@ func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.R
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
-	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
+	mux.HandleFunc(http.MethodPost+" "+pattern, routeContext(served.keyedWrites(
 		http.MethodPost, pattern,
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
 		keyedRoute{},
@@ -387,7 +387,7 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}
 
 	owner, service := "Carol@example.com", "system:serviceaccount:legion:worker"
-	run := &oauthwire.CIRun{Repository: "example-org/example-repo", CheckRunID: "97"}
+	run := &oauthwire.Run{Repository: "example-org/example-repo", CheckRun: 97}
 	for name, test := range map[string]struct {
 		actor model.Actor
 		human bool

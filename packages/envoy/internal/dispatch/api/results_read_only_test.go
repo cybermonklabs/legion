@@ -189,15 +189,20 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		issue := pair.issue(t, "ROC", parityAfterMergeCheck)
 		pair.each(func(stack *parityStack) { recordMerge(t, stack.rig.database, parityRepo, 51, issue, "integration/x") })
 		pair.github.answersCompare(func(base, head string) (int, string) {
-			if base == "integration/x" && head == integrationCommit {
+			switch {
+			case base == "integration/x" && head == integrationCommit:
+				return http.StatusOK, "behind"
+			case base == integrationCommit && head == baseMergeCommit:
+				// integrationCommit holds the merge pull request 51 made (recordMerge).
 				return http.StatusOK, "behind"
 			}
 			return http.StatusOK, "diverged"
 		})
 		pair.record(t, issue, "m1", integrationCommit)
-		// A writer's read asks GitHub, stores the yes and puts the default-branch cache entry.
+		// A writer's read asks GitHub whether integration/x carries the commit and whether the
+		// commit holds the merge, stores both yeses and puts the default-branch cache entry.
 		stored := pair.writersRead(t, issue, "the writer's read that stores the yes")
-		stored.calls(t, parityCompare, 1)
+		stored.calls(t, parityCompare, 2)
 		pair.clock.advance(time.Minute)
 
 		read := pair.read(t, issue, "the read of the stored yes")
@@ -209,37 +214,34 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		pair := newParityPair(t, appKey)
 		issue := pair.issue(t, "ROD", parityAfterMergeCheck)
 		pair.each(func(stack *parityStack) { recordMerge(t, stack.rig.database, parityRepo, 52, issue, "integration/x") })
-		// integration/x is deleted, so GitHub answers every compare read against it 404. A
-		// compare read of main for integrationCommit fails, and every other says diverged.
+		// integration/x is deleted, so GitHub answers every compare read against it 404. The merge
+		// never reached main, so the walk asks about no other branch (branchesIn).
 		pair.github.answersCompare(func(base, head string) (int, string) {
-			switch {
-			case base == "integration/x":
+			if base == "integration/x" {
 				return http.StatusNotFound, ""
-			case head == integrationCommit:
-				return http.StatusBadGateway, ""
 			}
 			return http.StatusOK, "diverged"
 		})
 		pair.record(t, issue, "m1", strayCommit)
 		// The hold is made by a writer's read, on every stack: its compare read of strayCommit
 		// against integration/x is refused, which holds that branch as unseen for
-		// delivery.BranchCommitStaleAfter (delivery.Branches.markUnseen), and its compare read of
-		// main stores strayCommit's no.
+		// delivery.BranchCommitStaleAfter (delivery.Branches.markUnseen).
 		held := pair.writersRead(t, issue, "the writer's read that holds integration/x as unseen")
-		held.calls(t, parityCompare, 2)
+		held.calls(t, parityCompare, 1)
 		pair.record(t, issue, "m1", integrationCommit)
 		pair.clock.advance(time.Minute)
 
 		read := pair.read(t, issue, "the read inside the hold")
-		// integrationCommit, which nothing stored places: the hold answers integration/x unseen
-		// with no call, and the default branch's compare read fails, so the walk ends unknown.
-		stands := standsAt(t, read.writer, "m1", pair.writer.ids[1], "the writer's result no stored row places", model.CommitUnknown, false)
-		if stands.Reason != model.ReasonReadFailed {
-			t.Errorf("the writer's result no stored row places is unknown for %q, want %q", stands.Reason, model.ReasonReadFailed)
+		// strayCommit, whose read made the hold, and integrationCommit, which nothing stored
+		// places: the hold answers integration/x unseen for each with no call, so each walk ends
+		// unknown.
+		for index, name := range []string{"the writer's result whose read made the hold", "the writer's result no stored row places"} {
+			stands := standsAt(t, read.writer, "m1", pair.writer.ids[index], name, model.CommitUnknown, false)
+			if stands.Reason != model.ReasonReadFailed {
+				t.Errorf("%s is unknown for %q, want %q", name, stands.Reason, model.ReasonReadFailed)
+			}
 		}
-		standsAt(t, read.writer, "m1", pair.writer.ids[0], "the writer's result whose no is stored", model.CommitOtherCommit, false)
-		// The compare read of main for integrationCommit, and none against integration/x.
-		read.calls(t, parityCompare, 1)
+		read.calls(t, parityCompare, 0)
 	})
 
 	t.Run("8 a default_branch check whose repository's own read is unreadable", func(t *testing.T) {
@@ -372,17 +374,23 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 
 		read := pair.read(t, issue, "the first read")
 		// The newer result's compare read of integration/x is refused, and the older result is
-		// answered unseen there with no call; each result's compare read of main says no. That
-		// no hold stands afterwards is the read's own check of the server's in-process state.
+		// answered unseen there with no call. The merge never reached main, so neither result is
+		// asked about main (branchesIn), and each walk ends unknown. That no hold stands
+		// afterwards is the read's own check of the server's in-process state.
 		for index := range 2 {
-			standsAt(t, read.writer, "m1", pair.writer.ids[index], fmt.Sprintf("the writer's result %d", index), model.CommitOtherCommit, false)
+			name := fmt.Sprintf("the writer's result %d", index)
+			stands := standsAt(t, read.writer, "m1", pair.writer.ids[index], name, model.CommitUnknown, false)
+			if stands.Reason != model.ReasonReadFailed {
+				t.Errorf("%s is unknown for %q, want %q", name, stands.Reason, model.ReasonReadFailed)
+			}
 		}
-		read.calls(t, parityCompare, 3)
+		read.calls(t, parityCompare, 1)
 	})
 
 	// mergedIntoMain is the state of rows 14 and 15: an after_merge check of an issue merged into
 	// main, the repository's default branch, which the walk names outright, and two results on
-	// it: strayCommit, which main does not carry, and mergeCommit, which it does. With lapsed, the
+	// it: strayCommit, which main does not carry, and mergeCommit, which it does and which holds
+	// the merge (recordMerge's baseMergeCommit). With lapsed, the
 	// default-branch cache entry is put by a writer's read before any result is recorded, on every
 	// stack, and has lapsed by the read; without it, the process never read the repository.
 	mergedIntoMain := func(t *testing.T, lapsed bool) (*parityPair, string) {
@@ -391,7 +399,10 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		issue := pair.issue(t, "ROK", parityAfterMergeCheck)
 		pair.each(func(stack *parityStack) { recordMerge(t, stack.rig.database, parityRepo, 54, issue, "main") })
 		pair.github.answersCompare(func(base, head string) (int, string) {
-			if base == "main" && head == mergeCommit {
+			switch {
+			case base == "main" && head == mergeCommit:
+				return http.StatusOK, "behind"
+			case base == mergeCommit && head == baseMergeCommit:
 				return http.StatusOK, "behind"
 			}
 			return http.StatusOK, "diverged"
@@ -408,13 +419,14 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		return pair, issue
 	}
 	// fromMain asserts the answer of a read of mergedIntoMain's results: the default branch read
-	// once, a compare read of main for each result, mergeCommit on it and strayCommit off it.
+	// once, a compare read of main for each result and one of whether mergeCommit holds the merge,
+	// mergeCommit on main and strayCommit off it.
 	fromMain := func(t *testing.T, pair *parityPair, read parityRead) {
 		t.Helper()
 		standsAtBranch(t, read.writer, "m1", pair.writer.ids[1], "main")
 		standsAt(t, read.writer, "m1", pair.writer.ids[0], "the writer's result off the trunk", model.CommitOtherCommit, false)
 		read.calls(t, parityRepository, 1)
-		read.calls(t, parityCompare, 2)
+		read.calls(t, parityCompare, 3)
 	}
 
 	t.Run("14 an after_merge walk naming the default branch, its cache entry lapsed", func(t *testing.T) {
@@ -700,13 +712,18 @@ func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 		read := pair.read(t, issue, "the first read")
 		// The read-through of k1's result stores #10, merged, and the yes its merge commit is on
 		// integration/x, before any check is answered. k4 and k5 name their own repository's
-		// main as their basis, and their results are walked in acme/tools: k4's asks the branch
-		// the linked pull request merged into first, which carries the commit by the stored yes,
-		// and k5's asks acme/tools' main alone, which does not carry it, in one compare read.
+		// main and the acme/tools branch each counts the linked merge on as their bases, as
+		// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository
+		// reads them, and their results are walked in acme/tools: k4's is the merge commit
+		// integration/x carries by the stored yes, with no read, and the merge never reached
+		// acme/tools' main, so k5's is asked about no branch there.
 		standsAtParityBasis(t, read.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 10 at %.7s of %s", toolsHead, parityLinkedRepo))
-		for _, check := range []string{"k4", "k5"} {
-			if bases := parityBases(checkOf(t, read.writer, check)); !slices.Equal(bases, []string{"branch main"}) {
-				t.Errorf("the writer's %s compared with %v, want its own repository's main alone", check, bases)
+		for check, want := range map[string][]string{
+			"k4": {"branch main", "branch integration/x of " + parityLinkedRepo},
+			"k5": {"branch main", "branch main of " + parityLinkedRepo},
+		} {
+			if bases := parityBases(checkOf(t, read.writer, check)); !slices.Equal(bases, want) {
+				t.Errorf("the writer's %s compared with %v, want %v", check, bases, want)
 			}
 		}
 		standsAtParityBasis(t, read.writer, "k4", pair.writer.ids[1], "branch integration/x of "+parityLinkedRepo)
@@ -715,7 +732,7 @@ func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 			t.Errorf("the writer's result of k5 is at another commit of %q, want of %s", offTrunk.Repo, parityLinkedRepo)
 		}
 		read.calls(t, parityLinkedCall(parityPulls), 1)
-		read.calls(t, parityLinkedCall(parityCompare), 1)
+		read.calls(t, parityLinkedCall(parityCompare), 0)
 		read.calls(t, parityPulls, 0)
 		read.calls(t, parityCompare, 0)
 	})
@@ -886,6 +903,7 @@ type parityGitHub struct {
 	compare    func(base, head string) (int, string)
 	limited    map[int]bool
 	runs       map[string][]map[string]any
+	details    map[int]string
 	linked     *parityLinked
 }
 
@@ -1131,11 +1149,19 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 		}
 		number, _ := strconv.Atoi(r.PathValue("number"))
 		state := ""
+		detail := ""
 		script.mu.Lock()
+		if repoOf(r) == parityRepo {
+			detail = script.details[number]
+		}
 		if repoOf(r) == parityLinkedRepo {
 			state = script.linked.states[number]
 		}
 		script.mu.Unlock()
+		if detail != "" {
+			fmt.Fprint(w, detail)
+			return
+		}
 		switch state {
 		case "open":
 			fmt.Fprintf(w, `{"number":%d,"state":"open","merged":false,"merged_at":null}`, number)
@@ -1523,8 +1549,8 @@ func parityInProcess(stack *parityStack) string {
 	return fmt.Sprintf("%+v\n%+v", &stack.rig.served.commitPulls, &stack.rig.served.branches)
 }
 
-// parityStored is every pull_request_heads and branch_commits row database holds, whole, one row a
-// line in one order, and how many events it holds.
+// parityStored records every head, branch answer and commit-history answer, whole and ordered,
+// and the event count, so a read-only read cannot hide a write to either kind of cached fact.
 func parityStored(t *testing.T, database *store.Store) string {
 	t.Helper()
 	var stored string
@@ -1534,6 +1560,8 @@ func parityStored(t *testing.T, database *store.Store) string {
 			select 'pull request head ' || to_jsonb(head)::text as row from pull_request_heads head
 			union all
 			select 'branch answer ' || to_jsonb(answer)::text from branch_commits answer
+			union all
+			select 'commit history answer ' || to_jsonb(answer)::text from commit_holds answer
 			union all
 			select count(*)::text || ' events' from events
 		) held
@@ -1574,10 +1602,10 @@ func (s *parityStack) normalized(t *testing.T, body string) string {
 				}
 			}
 		case []any:
-			for index, inner := range value {
+			for place, inner := range value {
 				if id, isString := inner.(string); isString {
-					if place := slices.Index(s.ids, id); place >= 0 {
-						value[index] = fmt.Sprintf("result %d", place)
+					if index := slices.Index(s.ids, id); index >= 0 {
+						value[place] = fmt.Sprintf("result %d", index)
 					}
 					continue
 				}

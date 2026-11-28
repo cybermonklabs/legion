@@ -5,12 +5,15 @@ import type { LegionRole } from "@legion/contracts"
 import { daemonContract } from "@legion/contracts/daemon-contract"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
+import {
+  type ClaimCapability,
+  legionToolDescription,
+  PHASE_OP_SENTENCES,
+} from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import pkg, { name, version } from "../package.json" with { type: "json" }
-import * as legionTool from "../src/legion-tool"
-import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
+import { answerLegionTool, executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
  * checkout's. */
@@ -173,7 +176,7 @@ const grantRequest = {
   },
 }
 
-test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
+test("answerLegionTool tells the host an update answered and nothing of a completion or a look", async () => {
   const { client } = await daemon({ state: stateAtPhase("testing") })
   const calls: string[] = []
   const runtime = {
@@ -183,14 +186,11 @@ test("answerLegionTool closes only a step and answers an update without closing 
     branchHead: async () => "",
   }
   const hook = {
-    phaseClosed: () => {
-      calls.push("closed")
-    },
     updateAnswered: () => {
       calls.push("update")
     },
   }
-  await legionTool.answerLegionTool(
+  await answerLegionTool(
     runtime,
     {
       op: "handoff_complete",
@@ -200,11 +200,10 @@ test("answerLegionTool closes only a step and answers an update without closing 
     },
     hook,
   )
+  await answerLegionTool(runtime, { op: "handoff_complete", summary: "tested" }, hook)
   expect(calls).toEqual([])
-  await legionTool.answerLegionTool(runtime, { op: "handoff_complete", summary: "tested" }, hook)
-  expect(calls).toEqual(["closed"])
-  await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
-  expect(calls).toEqual(["closed", "update"])
+  await answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
+  expect(calls).toEqual(["update"])
 })
 
 test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
@@ -261,10 +260,17 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     },
     required: ["op"],
   })
-  expect(definition.description).toContain(
-    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
+  // The texts this host passes the shared template: the Envoy publish tool by its name as Claude
+  // Code shows it, and the phase-op sentences it puts before and after handoff_complete's
+  // contract. Where the template places each is the template's own test
+  // (packages/pi-shared/src/legion-phase-ops.test.ts).
+  expect(definition.description).toBe(
+    legionToolDescription({
+      envoyPublish: "mcp__legion__envoy_publish",
+      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
+      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+    }),
   )
-  expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
 
 test("handoff_complete finds the record and commit for the issue's phase and the claim's role, then mints its grant and posts them", async () => {

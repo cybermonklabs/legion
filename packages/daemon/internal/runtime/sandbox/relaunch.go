@@ -645,6 +645,7 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 			Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
 		if ownedBy(pod, s.UID) {
 			taken.PodUID = string(pod.UID)
+			taken.Repository = fetchRepositoryName(pod)
 		}
 		return taken
 	}
@@ -652,7 +653,7 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 		return nil
 	}
 	taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took,
-		Act: runtime.PodAct(string(pod.UID))}
+		Act: runtime.PodAct(string(pod.UID)), Repository: fetchRepositoryName(pod)}
 	if replacement != "" && ownsVolume {
 		// The launch deletes the Sandbox, and the volume with it, over the Sandbox's own pod, which
 		// goes with them (runtime.TakenPod.WithPod).
@@ -872,19 +873,18 @@ func (r *Runtime) startBound(s *sandbox) time.Duration {
 
 // awaitRoleLauncher waits until loc's role launcher has connected, reporting false, or loc's pod
 // has ended, reporting true, and returns the deadline the wait stood at when it stopped. The
-// launcher starts only once every init container of the pod has finished (an issue pod's two; the
-// controller's pod has none), and the three steps whose duration follows the repository's size —
-// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends while
-// it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their retries, and
-// the restarts the grace covers (fetchRestartGrace) — then workspace-init's shared clone of the
-// feed and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own
-// start, a sum that counts no term for the commands which keep CommandTimeout (ProvisionBound,
-// manifest.go). So until the wait first sees the pod provisioning (an init container running, or a
-// fetch between those restarts: provisioning) it gives the pod start, the pod's start bound
-// (startBound), which covers the image pull and, for a kept volume, the volume's move; from then
-// on, the boot timeout from the last moment it saw the pod provisioning, never past the boot
-// timeout plus ProvisionBound from the first (launcherDeadline). A pod that never provisions waits
-// its start bound alone, and the failure names that bound.
+// launcher starts only once workspace-init has finished (the controller's pod has none). The steps
+// whose duration follows the repository's size run in workspace-init: the fill's stream from the
+// repository cache, which no clock ends while it keeps receiving
+// (workspace.CacheStreamLowSpeedBytes), its transfers with their retries, the restarts the grace
+// covers (initRestartGrace), the fill's jj steps and the issue's checkout. They may take up to
+// ProvisionBound from workspace-init's start, a sum that counts no term for the commands which keep
+// CommandTimeout (ProvisionBound, manifest.go). So until the wait first sees the pod provisioning
+// (workspace-init running, or between those restarts: provisioning) it gives the pod start, the
+// pod's start bound (startBound), which covers the image pull and, for a kept volume, the volume's
+// move; from then on, the boot timeout from the last moment it saw the pod provisioning, never past
+// the boot timeout plus ProvisionBound from the first (launcherDeadline). A pod that never
+// provisions waits its start bound alone, and the failure names that bound.
 func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, start time.Duration) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
 	began := r.clock.Now()
@@ -942,13 +942,12 @@ func launcherDeadline(first, last time.Time, boot, bound time.Duration) time.Tim
 	return deadline
 }
 
-// stillFetching is what a launch that gives up on pod says of it while its workspace-fetch is
-// still running, or coming back from one of the restarts the grace covers (fetchRestartGrace):
-// so, with the state of the repository cache that fetch fills a fresh feed from (fetchCacheState),
-// since the fetch's own failure, which names why it ran so long, has not come. Nothing for a pod
-// past its fetch.
+// stillFetching is what a launch that gives up on pod says of it while workspace-init is still
+// running, or coming back from one of the restarts the grace covers (initRestartGrace): with the
+// state of the repository cache that fills the clone (fetchCacheState), since workspace-init's own
+// failure, which names why it ran so long, has not come. Nothing for a pod past workspace-init.
 func (r *Runtime) stillFetching(pod *corev1.Pod) string {
-	status := initContainerStatus(pod, fetchContainer)
+	status := initContainerStatus(pod, initContainer)
 	if status == nil {
 		return ""
 	}
@@ -961,7 +960,7 @@ func (r *Runtime) stillFetching(pod *corev1.Pod) string {
 	default:
 		return ""
 	}
-	return "; its " + fetchContainer + doing + r.fetchCacheState(pod)
+	return "; its " + initContainer + doing + r.fetchCacheState(pod)
 }
 
 // suspendFailedLaunch sets the Sandbox of a launch that failed once its Running patch was sent

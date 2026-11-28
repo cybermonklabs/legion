@@ -14,7 +14,7 @@
 // LEGION_TEST_PG_DSN names, and the script starts none.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin, by way of liveIssueProof's boot), so the proof exercises
+// whole-daemon harness (startDaemonLogging, by way of liveIssueProof's boot), so the proof exercises
 // the real configuration, the real store and its migrations, the real HTTP API, the real claim
 // supervision and its worker stream, the real openWorkflow, the real JetStream consumers, the real
 // admission pass and the real outbox lanes, the role-message lane that carries the phase-ended
@@ -99,6 +99,9 @@ type parentWaitsLive struct {
 // worker's completion of the ended phase refused, and the child's merge and done that take the
 // root back.
 func TestParentWaitsLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newParentWaitsLive(t)
 	r.step("step1-a-root-in-implementing-holds-a-slot-and-its-implementer-is-registered", r.rootHoldsASlot)
 	r.step("step2-a-released-child-moves-the-root-to-awaiting-children-and-its-worker-and-architect-are-told", r.releaseMovesTheRoot)

@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -47,6 +48,11 @@ var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
 // packages/envoy/internal/dispatch/text/refs.go) -- duplicated here rather than imported because
 // both are unexported in their own packages and this package does not depend on either.
 var issueKeyCandidate = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
+
+// intakeCaller is the caller kind of every call to GitHub the two intakes make for a webhook
+// event (githubrate.WithCaller), which the rate reading counts the process's own calls by: the
+// GitHub intake's handler (Intake.deliver) and the job intake's reads (JobIntake.Run).
+const intakeCaller = "webhook_intake"
 
 // Intake wires the NATS consumer to the database, the GitHub App client, the event broker the
 // issue.deployed events go through (RecordDeployedEvents) and the importer a push of a branch is
@@ -75,7 +81,7 @@ type Intake struct {
 // settings, and attributing each pull request by attributor, timed by tuning (intakeTuning):
 // production's values, which StartIntakes passes, or a test's. Each take-over first marks every
 // issue with an open head owed (markOpenHeadsOwed).
-func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
 	in.heldDurable = newHeldDurable(tuning, natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	in.heldDurable.beforeTakeOver = in.markOpenHeadsOwed
@@ -143,23 +149,24 @@ func (in *Intake) Run(ctx context.Context) {
 // handlePullRequestEnvelope, a settlement of a pull request's CI runs to handleChecksEnvelope, a
 // workflow run to routeWorkflowEnvelope, a push to handlePushEnvelope, any other kind nowhere. It
 // is the whole filter: the durable is handed every GitHub notification on the bus
-// (githubIntakeSubject), comments among them, and an envelope with no payload that a caller of the
-// listener's publish route can still put there. The payload is decoded once, into its fields. An
-// empty payload, or one of a kind route does not handle, is discarded before any GitHub call or
-// write; only the string fields of a kind it handles are read, as the flat string map its handler
-// takes (flatPayload), and every other member is skipped (a CI settlement's hold arrays and
-// groups, cistore.Summary). settings is what the settings cache holds when the envelope arrives,
-// nil while no delivery_settings row is saved: a pull request and a CI settlement are handed to
-// their handlers either way, since neither the head row nor the check states' owed mark reads a
-// setting, and a workflow run is the delivery timeline's alone, so with no settings it is
-// discarded before any GitHub call (routeWorkflowEnvelope). handled reports whether the kind is
-// one route hands to a handler of the delivery timeline, whatever that handler then decides, so
-// deliver records the event's time for a pull request that was not merged or another
-// repository's run as well; with no settings it is false, since the event freshness is a column
-// of the delivery_settings row (RecordEventAt). A push is no delivery fact: route hands it to its
-// handler and answers it not handled, with the handler's error, so it records no issue.deployed
-// and does not move the Delivery page's event freshness. A payload that is not a JSON object, and
-// a kind that is not a string, are errMalformedPayload.
+// (githubIntakeSubject), comments among them, and an envelope with no payload, which a NATS user
+// granted the lane can still put there (the listener's publish route refuses GitHub's lane by
+// name). The payload is decoded once, into its fields. An empty payload, or one of a kind route
+// does not handle, is discarded before any GitHub call or write; only the string fields of a kind
+// it handles are read, as the flat string map its handler takes (flatPayload), and every other
+// member is skipped (a CI settlement's hold arrays and groups, cistore.Summary). settings is what
+// the settings cache holds when the envelope arrives, nil while no delivery_settings row is saved:
+// a pull request and a CI settlement are handed to their handlers either way, since neither the
+// head row nor the check states' owed mark reads a setting, and a workflow run is the delivery
+// timeline's alone, so with no settings it is discarded before any GitHub call
+// (routeWorkflowEnvelope). handled reports whether the kind is one route hands to a handler of the
+// delivery timeline, whatever that handler then decides, so deliver records the event's time for a
+// pull request that was not merged or another repository's run as well; with no settings it is
+// false, since the event freshness is a column of the delivery_settings row (RecordEventAt). A
+// push is no delivery fact: route hands it to its handler and answers it not handled, with the
+// handler's error, so it records no issue.deployed and does not move the Delivery page's event
+// freshness. A payload that is not a JSON object, and a kind that is not a string, are
+// errMalformedPayload.
 //
 // An envelope whose handler stored a fact the issue.deployed rule reads (a pull request's row, a
 // run, its jobs) ends with recordDeployed, whether or not the handler then failed: a run written
@@ -229,6 +236,9 @@ func (in *Intake) recordDeployed(ctx context.Context, settings DeliverySettings)
 	}
 	if written > 0 {
 		in.tuning.log.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
+	}
+	if _, err := RecordProductionDeploys(ctx, in.pool, settings, in.events); err != nil {
+		slog.Error("dispatch delivery: record production deploys after an envelope", "error", err)
 	}
 }
 
@@ -453,7 +463,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
+	ctx, cancel := context.WithTimeout(githubrate.WithCaller(handling, intakeCaller), in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope

@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+    The volume sweep's removal no longer takes a name made in a directory just before its rmdir for a failure of that directory. The removal emptied a directory until a read found no names and then removed it, and a name a role's process made between that read and the rmdir made the rmdir fail with ENOTEMPTY. The sweep then logged `volume trim: removing "<path>" failed part way and the sweep passed it over: unlinkat "<entry>/<directory>": directory not empty`, passed the entry over, and inside one entry ranked that refusal as a lasting failure, ahead of another directory's answer. The removal now reads such a directory again, within its two passes over it: the entry goes once no name appears, and where names keep appearing the line ends `getdents "<entry>/<directory>": names were still appearing in it after 2 passes over its names`. A refusal whose next read finds no name is still logged as `directory not empty`.
+time: 2026-11-26T18:32:47Z
+custom:
+    Issue: pr5731

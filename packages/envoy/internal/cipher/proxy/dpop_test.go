@@ -9,10 +9,13 @@
 package proxy
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -25,11 +28,14 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
@@ -65,6 +71,15 @@ func dpopBinding(name, host string) proxyrules.Binding {
 		Ways:  []string{proxyrules.WayDPoP},
 	}}
 }
+
+// dpopGrants is the real-store grant reader of the DPoP test, with the live kind rules the test
+// drives. The minimal requests.Machine below has no policy, so its AirlockRules would be empty.
+type dpopGrants struct {
+	*rolledGrants
+	rules proxyrules.Rules
+}
+
+func (g *dpopGrants) AirlockRules() proxyrules.Rules { return g.rules }
 
 // mintedConnection is what the broker answers for a minted grant's placeholder: the grant, its
 // session, the minted mark, no enrollment, and the one name whose one slot is the placeholder.
@@ -617,5 +632,136 @@ func TestTheMintedTransportSendsNoPlaceholder(t *testing.T) {
 	request.Header.Set("Authorization", "DPoP "+mintedToken)
 	if _, err := transport.RoundTrip(request); err != nil || base.sent != 1 || base.last.Header.Get("DPoP") == "" || request.Header.Get("DPoP") != "" {
 		t.Fatalf("the grant's token: err = %v, %d sent; want it sent signed, and the caller's request left as it was", err, base.sent)
+	}
+}
+
+// memoryMinted is a requests.MintedGrants holding its grants in memory, keyed by the
+// placeholder's hash, as a kind's table holds them.
+type memoryMinted map[string]oauthstore.MintedGrant
+
+func (g memoryMinted) MintedByPlaceholder(_ context.Context, sha256Hex string) (oauthstore.MintedGrant, error) {
+	if grant, ok := g[sha256Hex]; ok {
+		return grant, nil
+	}
+	return oauthstore.MintedGrant{}, oauthstore.ErrMintedGrantNotLive
+}
+
+func (g memoryMinted) MintedByID(_ context.Context, id string) (oauthstore.MintedGrant, error) {
+	for _, grant := range g {
+		if grant.ID == id {
+			return grant, nil
+		}
+	}
+	return oauthstore.MintedGrant{}, oauthstore.ErrMintedGrantNotLive
+}
+
+// mint writes one live grant of the test kind under digest and answers its placeholder.
+func (g memoryMinted) mint(t *testing.T, digest string) string {
+	t.Helper()
+	held, err := placeholder.Mint(placeholder.MintedPrefix("testkind"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(held))
+	g[hex.EncodeToString(sum[:])] = oauthstore.MintedGrant{
+		ID: uuid.NewString(), PlaceholderSHA256: hex.EncodeToString(sum[:]), Session: mintedSession,
+		ExpiresAt: time.Now().Add(time.Hour), EntryDigest: digest,
+	}
+	return held
+}
+
+// TestAMintedConnectionCarryingAnotherMintedPlaceholderIsRefusedAsOnMain: two capabilities of one
+// kind, K1 and K2, whose dpop entry binds one host, are served by the real broker (its store, and
+// the kind's grants in memory). On K1's connection a request carries Authorization: DPoP <K2's
+// placeholder>. A minted grant is not one of the grants the one-connection swap reads, so the
+// request is refused 403 NO_PLACEHOLDER, as a request carrying any other string is, and no read
+// of other grants is made for it - a minted connection belongs to no enrollment, and the store
+// refuses an empty enrollment id, which would answer 503 "make the call again". It runs under the
+// dpop entry alone, and again with a stored secret's entry binding the same host, so a read would
+// have a name to ask for. The control is the same connection carrying a string that is no
+// placeholder, refused alike. It skips when BROKER_TEST_DATABASE_URL is unset (storetest.Open), so
+// the mutant run names the rig row below instead, which catches proxy-minted-reads-other-grants
+// with no database; TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant holds the dpop entry's
+// name out.
+func TestAMintedConnectionCarryingAnotherMintedPlaceholderIsRefusedAsOnMain(t *testing.T) {
+	const digest = "3333333333333333333333333333333333333333333333333333333333333333"
+	beside := dpopRules()
+	beside.Kinds = append(beside.Kinds, swapKind(workerKind, []string{boundHost}, "authorization"))
+	beside.Names = append(beside.Names, swapBinding(workerName, workerKind))
+	for _, rules := range []struct {
+		name  string
+		rules proxyrules.Rules
+	}{
+		{"the dpop entry alone", dpopRules()},
+		{"a stored secret's entry on the same host", beside},
+	} {
+		grants := memoryMinted{}
+		k1, k2 := grants.mint(t, digest), grants.mint(t, digest)
+		source := &dpopGrants{rolledGrants: &rolledGrants{}, rules: rules.rules}
+		source.machine.Store(&requests.Machine{
+			Store:  storetest.Open(t),
+			Minted: []requests.MintedKind{{Name: mintedName, Word: "testkind", Grants: grants, EntryDigest: digest}},
+		})
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := newRuledRig(t, rules.rules, Options{DPoPKey: key, Grants: source})
+		for _, c := range []struct{ name, authorization string }{
+			{"the control, a string that is no placeholder", "DPoP not-the-placeholder"},
+			{"another minted grant's placeholder", "DPoP " + k2},
+		} {
+			answer, body := r.do(r.client(k1), http.MethodPost, "https://"+boundHost+mintedPath, `{"verdict":"pass"}`, "Authorization", c.authorization)
+			refusedAs(t, rules.name+": "+c.name+" on K1's connection", answer, body, codeNoPlaceholder)
+		}
+		if seen := r.requests(); len(seen) != 0 {
+			t.Fatalf("%s: the service received %d requests; want none", rules.name, len(seen))
+		}
+	}
+}
+
+// TestAMintedConnectionReadsNoOtherGrant is the same case on the rig, with every read of the
+// session's other grants failing and a stored secret's entry binding the dpop host beside the
+// dpop entry, so a read would have a name to ask for: a minted connection carrying another
+// minted grant's placeholder is refused 403 NO_PLACEHOLDER and reads nothing. It needs no
+// database, where the real store's row above does. The named revert:
+// proxy-minted-reads-other-grants.
+func TestAMintedConnectionReadsNoOtherGrant(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := dpopRules()
+	rules.Kinds = append(rules.Kinds, swapKind(workerKind, []string{boundHost}, "authorization"))
+	rules.Names = append(rules.Names, swapBinding(workerName, workerKind))
+	r := newRuledRig(t, rules, Options{DPoPKey: key})
+	r.grants.setConnection(mintedPlaceholder, mintedConnection())
+	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
+	r.grants.failEnrollmentReads(databaseDown)
+	another := placeholder.MintedPrefix("testkind") + "AnotherAnotherAnotherAnotherAnot"
+	answer, body := r.postMinted("Authorization", "DPoP "+another)
+	refusedAs(t, "another minted grant's placeholder on a minted connection", answer, body, codeNoPlaceholder)
+	if reads := r.grants.enrollmentReads(); reads != 0 {
+		t.Fatalf("the request read the session's other grants %d time(s); want none", reads)
+	}
+}
+
+// TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant: a dpop entry's name is left out of the read
+// of the session's other grants - no grant released since the name became dpop holds it, and a
+// grant holding an older row of it is not read for that host, as on main - so a stored grant's
+// CONNECT to a dpop host reads nothing more and gets main's answer, a tunnel, even while every such
+// read fails. The named revert: proxy-bound-entries-keep-dpop.
+func TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant(t *testing.T) {
+	r, _ := newDPoPRig(t)
+	r.grants.failEnrollmentReads(databaseDown)
+	answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
+	if conn != nil {
+		conn.Close()
+	}
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("a stored grant's CONNECT to the dpop host answered %d with the reads failing; want 200 and a tunnel, as on main", answer.StatusCode)
+	}
+	if reads := r.grants.enrollmentReads(); reads != 0 {
+		t.Fatalf("the CONNECT read the session's other grants %d time(s); want none", reads)
 	}
 }

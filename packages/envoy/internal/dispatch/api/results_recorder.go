@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -97,7 +96,7 @@ func (input checkResultInput) refusalFor(credential *model.Credential, body []by
 // beyond ciJobResultInput's four is refused by name rather than ignored; a body that names one
 // is a caller that thinks it sets it. The commit is the run's, and the run is of a branch push,
 // whose branch its row names (ciJobCheckResult).
-func (input checkResultInput) ciJobRefusal(run *oauthwire.CIRun, body []byte) error {
+func (input checkResultInput) ciJobRefusal(run *oauthwire.Run, body []byte) error {
 	if undeclared := undeclaredMembers(&ciJobResultInput{}, body); len(undeclared) > 0 {
 		return errorf(http.StatusBadRequest, codeResultInput,
 			"a CI job's result takes check, commit, verdict and observed alone, and names %s: Dispatch reads who recorded a result from its token, never from its body",
@@ -129,7 +128,7 @@ func (input checkResultInput) ciJobRefusal(run *oauthwire.CIRun, body []byte) er
 
 // pushedBranch is the branch whose push run ran on: its ref without refs/heads/, and "" for a ref
 // that names no branch.
-func pushedBranch(run oauthwire.CIRun) string {
+func pushedBranch(run oauthwire.Run) string {
 	branch, ok := strings.CutPrefix(run.Ref, branchRefPrefix)
 	if !ok {
 		return ""
@@ -222,32 +221,30 @@ func refuseBranchOfAnotherIssue(ctx context.Context, q refs.Queryer, issueKey, b
 }
 
 // ciJobCheckRun is the check run a results token was minted in, as GitHub names it in the run's
-// repository, through the cache the project's results route reads it through (specCheckRun). A
-// GitHub that does not answer leaves the result unjudged: 503 CHECK_RUN_UNREADABLE, and the job
-// writes it again.
-func (s *server) ciJobCheckRun(ctx context.Context, ci oauthwire.CIRun) (githubapp.CheckRun, error) {
-	id, err := strconv.ParseInt(ci.CheckRunID, 10, 64)
-	if err != nil {
-		// The verifier admits no other (ciphertoken.shapeOf), so this is Dispatch's own fault.
-		return githubapp.CheckRun{}, fmt.Errorf("read the check run of a results token: %w", err)
-	}
+// repository, through the cache the project's results route reads it through (specCheckRun). The
+// check run's id is the run's own, read whole by the verifier (oauthwire.Run.CheckRun). A GitHub
+// that does not answer leaves the result unjudged: 503 CHECK_RUN_UNREADABLE, and the job writes it
+// again.
+func (s *server) ciJobCheckRun(ctx context.Context, ci oauthwire.Run) (githubapp.CheckRun, error) {
 	owner, name, _ := strings.Cut(ci.Repository, "/")
-	run, err := s.specCheckRun(ctx, &repositoryReader{s: s, owner: owner, name: name}, ci.Repository, id)
+	run, err := s.specCheckRun(ctx, &repositoryReader{s: s, owner: owner, name: name}, ci.Repository, ci.CheckRun)
 	if err != nil {
 		return githubapp.CheckRun{}, errorf(http.StatusServiceUnavailable, codeCheckRunUnreadable,
 			"GitHub did not answer the read of check run %d of %s, so the result was not judged; write it again: %v",
-			id, ci.Repository, err)
+			ci.CheckRun, ci.Repository, err)
 	}
 	return run, nil
 }
 
 // roleCheckResult is the row a role's result is stored as: each field as the role recorded it,
-// under the actor the request resolved to.
+// under the actor the request resolved to, and the check's marks as the block held them
+// (CheckSubject, CheckProgram), which a deploy reads to name the issues it reaches.
 func roleCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, issueKey string) model.CheckResult {
 	return model.CheckResult{
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: check.Version, CheckSHA256: check.SHA256,
+		CheckSubject: check.Attributes.Subject, CheckProgram: check.Attributes.Program,
 		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
 		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
@@ -272,17 +269,18 @@ func ciJobActor(actor model.Actor) model.Actor {
 // results route (cutObserved); its surface and negative control are the check's; its commit is
 // the run's, which ciJobRefusal held the body's to; its session and actor are the run's
 // (ciJobActor); and Branch is the branch whose push the run ran on. Attestation is the in-toto
-// statement of its run (attestedResult.statement), as the project's results route builds one:
-// attempt is the run's attempt (runNumbersOf), and principal the broker's principal of the run
-// (resultPrincipal).
-func ciJobCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, run githubapp.CheckRun, ci oauthwire.CIRun, attempt int, principal string, issueKey string) model.CheckResult {
+// statement of its run (attestedResult.statement), as the project's results route builds one,
+// from ci, the run its token proved, read whole by the verifier (oauthwire.Run). Its job is the
+// check run's whole name and it names no leg: this route reads no workflow file, and a name's
+// "(…)" suffix alone proves no leg (legOf, #4184's 8044330a38).
+func ciJobCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, run githubapp.CheckRun, ci oauthwire.Run, issueKey string) model.CheckResult {
 	session, observed := sessionOf(actor), cutObserved(input.Observed)
 	statement := attestedResult{
 		predicateType: checkBlockResultPredicateType, project: *actor.Project, check: check.Ref,
 		procedureDigest: check.SHA256,
 		test:            model.ResultTest{Job: check.Attributes.CICheck},
-		verdict:         input.Verdict, observed: observed, checkRunName: run.Name,
-		run: ci, attempt: attempt, session: session, principal: principal,
+		verdict:         input.Verdict, observed: observed, job: run.Name, leg: "",
+		run: ci, session: session,
 	}.statement()
 	return model.CheckResult{
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,

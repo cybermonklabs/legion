@@ -2,7 +2,7 @@
 // package's tests (startScratchDispatchOn), and a reader reads the records of the issue back with
 // GET /api/v1/issues/{key}/steps, the read `dispatch steps` and the tab Steps make.
 //
-// Each test boots the whole daemon (startDaemonWithin) over the package's broker, the real store,
+// Each test boots the whole daemon (startDaemonLogging) over the package's broker, the real store,
 // the real outbox and the real Dispatch client, and walks an issue, from planning to done or
 // through the part of the walk the records it reads need (planning alone, or a child of the walk's
 // issue from its review to its retro), through the transports production has: each role's agent

@@ -32,12 +32,12 @@ import { staleGitLockNote } from "./git-lock";
  * evidence is older. A record whose body does not parse, holds no `head`, or holds one of another
  * shape reports no commit for the planner and the reviewer, whose completion still goes; the
  * daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, and
- * `HANDOFF_HEAD_MERGED_FORWARD` when it is of reviewing once a merge forward of the issue's pull
- * request has landed, since a completion naming no commit says nothing about a head. The tester's
- * such record is refused here, before anything is posted, in the phase it works and in the one it
- * left alike, naming the new record to write: the testing move reads the check states at the head
- * the test record names and at no other, and the daemon refuses a tester's completion naming no
- * commit (`TESTED_HEAD_REQUIRED`), so posting it would change nothing.
+ * `HANDOFF_HEAD_MERGED_FORWARD` when it is of planning or reviewing once a merge forward of the
+ * issue's pull request has landed, since a completion naming no commit says nothing about a head.
+ * The tester's such record is refused here, before anything is posted, in the phase it works and
+ * in the one it left alike, naming the new record to write: the testing move reads the check
+ * states at the head the test record names and at no other, and the daemon refuses a tester's
+ * completion naming no commit (`TESTED_HEAD_REQUIRED`), so posting it would change nothing.
  *
  * While the issue stands in implementing, the phase the implementer works, its round is the
  * commit its workspace stands on, `@-`, so its record and its branch are held to that commit:

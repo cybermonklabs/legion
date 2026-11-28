@@ -40,6 +40,12 @@ func (p0BoundState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervis
 	return state, nil, err
 }
 
+// ObservedState answers the empty state for the observed view: the P0 bound commands read the
+// whole state.
+func (p0BoundState) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, nil
+}
+
 // newP0BoundCommandDaemon is a daemon of project LEGION as `legion project set-p0-bound`,
 // `clear-p0-bound` and `legion state` reach it: the real api.NewServer over the daemon's handler
 // chain (the workflow engine and admission) and a database of the test's own, on a loopback port,

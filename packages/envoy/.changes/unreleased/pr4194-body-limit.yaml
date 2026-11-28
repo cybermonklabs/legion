@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  Every listener route that reads a request body reads it to a limit: 4 MiB for the `/v1` routes,
+  25 MiB for the GitHub webhook (GitHub's own payload cap), and 1 MiB for the Slack and Ghost
+  Wispr webhooks. A body past the limit is answered 413 with a message that names the limit,
+  whatever the body holds and whether or not the request states its length, and the route does
+  nothing else. The Legion agent routes' limit rises from 1 MiB to 4 MiB.
+time: 2026-11-16T18:39:56Z
+custom:
+    Issue: pr4194

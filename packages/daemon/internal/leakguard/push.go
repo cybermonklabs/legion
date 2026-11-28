@@ -180,7 +180,8 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 	var held []string
 	heldRead := false
 	// from is what the refusal of a shallow push names to fetch from: the remote the push names,
-	// or for a push to a URL, that URL with its userinfo and its query removed, since a token in
+	// or for a push to a URL, that URL as the URL rule prints it (redact.URLCredentials): an
+	// authority holding a userinfo written as its mark, and its query removed, since a token in
 	// either is not to be printed.
 	from := ""
 	for _, update := range req.Updates {

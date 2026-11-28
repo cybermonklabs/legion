@@ -40,7 +40,7 @@ import {
 // packages/envoy/scripts/dev-airlock.sh runs two: each behind one `dev-proxy-stands front` for the
 // API ports and another for the proxy ports, a byte relay that hands each new connection to the
 // next broker in turn and carries a CONNECT tunnel as it carries anything else. A job reaches
-// Dispatch the way a job in production does: it holds the airlock placeholder of its run's result
+// Dispatch the way a job in production does: it holds the proxy placeholder of its run's result
 // grant, which `agent-secrets result-grant` gives the command it runs, and writes to Dispatch's
 // public URL, https://dispatch.ci-results.test, through the proxy front. Whichever broker takes
 // the tunnel reads the grant from the database, mints the run's results token bound to its own
@@ -66,6 +66,22 @@ const PROJECT = "ACME";
 const REPOSITORY = "local-org/local-repo";
 /** The workflow the result entry lists, as ci-results.yaml is listed in production. */
 const WORKFLOW = ".github/workflows/ci-results.yaml";
+/** The workflow file at each commit {@link CIResultsStack.setFiles} sets: the jobs go-checks and
+ *  lint, which the probe checks name, each with no matrix, so a check run named exactly the job
+ *  is that job's (Dispatch reads the file to know which job makes a check run, spec_results.go
+ *  `jobOfCheckRun`). */
+const WORKFLOW_FILE = `name: ci-results
+on: push
+jobs:
+  go-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go vet ./...
+`;
 /** The refs the entry takes: every branch of two segments, such as `refs/heads/topic/one`. */
 const REF_PATTERN = "refs/heads/*/*";
 /** The person the entry acts for, which a result entry needs (`exchange.checkGrant`) and which no
@@ -115,26 +131,47 @@ const DPOP_KEY_LINE = "broker: the proxy's DPoP key";
 const ACCESS_LINE = 'msg="dispatch: request"';
 
 /** The probe spec: one statement and its two program checks, each of another job. */
-const PROBE_SPEC = `:::requirement{#the-probe-tests-pass kind="behavior"}
-The two probe tests pass at each commit of a branch.
-:::
-
-:::check{#${PROBE_CHECK} serves="the-probe-tests-pass" subject="code" procedure="program" runner="go" selector="example.com/acme/probe TestProbe" job="go-checks"}
-Claim: The probe test passes.
-Procedure: The program runs the probe test one time.
-Failing example: A probe test that fails.
-:::
-
-:::check{#${OTHER_JOBS_CHECK} serves="the-probe-tests-pass" subject="code" procedure="program" runner="go" selector="example.com/acme/probe TestSecondProbe" job="lint"}
-Claim: The second probe test passes.
-Procedure: The program runs the second probe test one time.
-Failing example: A second probe test that fails.
-:::
+const PROBE_SPEC = `---
+type: requirement
+id: the-probe-tests-pass
+kind: behavior
+text:
+  - The two probe tests pass at each commit of a branch.
+---
+type: check
+id: ${PROBE_CHECK}
+serves: the-probe-tests-pass
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/probe TestProbe
+  job: go-checks
+claim: The probe test passes.
+procedure_text:
+  - The program runs the probe test one time.
+failing_example:
+  - A probe test that fails.
+---
+type: check
+id: ${OTHER_JOBS_CHECK}
+serves: the-probe-tests-pass
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/probe TestSecondProbe
+  job: lint
+claim: The second probe test passes.
+procedure_text:
+  - The program runs the second probe test one time.
+failing_example:
+  - A second probe test that fails.
 `;
 
-/** Writes the probe spec into `dir` as the one file `probe.md`, for {@link CIResultsStack.setFiles}. */
+/** Writes the probe spec into `dir` as the one file `probe.yaml`, for {@link CIResultsStack.setFiles}. */
 export function writeProbeSpec(dir: string): void {
-  writeFileSync(path.join(dir, "probe.md"), PROBE_SPEC);
+  writeFileSync(path.join(dir, "probe.yaml"), PROBE_SPEC);
 }
 
 /** The check of the seeded issue's Verification document that its ci_check gives to the job
@@ -166,8 +203,6 @@ export interface JobRun {
   readonly runAttempt: number;
   /** The job's check run, which Dispatch reads the job's name from. */
   readonly checkRunId: number;
-  /** The matrix values of the job's leg, which its check run's name carries in parentheses. */
-  readonly legName?: string;
   /** Whether the run's tokens are signed by a key the stand-in's issuer does not publish. */
   readonly forged?: boolean;
 }
@@ -253,7 +288,8 @@ export interface CIResultsStack {
    *  of the run, and starts `argv` with that placeholder alone in DISPATCH_RESULTS_TOKEN and the
    *  proxy front as its proxy, so the placeholder a row's command presents is one a broker minted. */
   jobCommand(argv: readonly string[]): string[];
-  /** The spec files of the commit `sha`: every `.md` file directly in `dir`. */
+  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`; and the workflow
+   *  file of the result entry at `sha`, whose jobs are the probe checks' go-checks and lint. */
   setFiles(sha: string, dir: string): void;
   /** The head of `branch` of the repository is `sha` from now on, as a push moves it. */
   setBranch(branch: string, sha: string): void;
@@ -681,8 +717,8 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       content: VERIFICATION,
     });
 
-    // One workflow run for each push of a ref at a commit, as GitHub numbers them: the attempts
-    // and the legs of one push share its run.
+    // One workflow run for each push of a ref at a commit, as GitHub numbers them: every attempt
+    // of one push shares its run.
     const runIds = new Map<string, number>();
     return {
       agentSecrets,
@@ -709,7 +745,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
           runId,
           runAttempt: run.runAttempt,
           checkRunId: run.checkRunId,
-          checkRunName: run.legName === undefined ? run.job : `${run.job} (${run.legName})`,
+          checkRunName: run.job,
           forged: run.forged === true,
         });
         return {
@@ -727,11 +763,12 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       setFiles(sha: string, dir: string): void {
         const files: Record<string, string> = {};
         for (const entry of readdirSync(dir, { withFileTypes: true })) {
-          if (entry.isFile() && entry.name.endsWith(".md")) {
+          if (entry.isFile() && entry.name.endsWith(".yaml")) {
             files[entry.name] = readFileSync(path.join(dir, entry.name), "utf8");
           }
         }
         github.setFiles(REPOSITORY, sha, SPEC_DIR, files);
+        github.setFile(REPOSITORY, sha, WORKFLOW, WORKFLOW_FILE);
       },
       setBranch(branch: string, sha: string): void {
         github.setBranch(REPOSITORY, branch, sha);

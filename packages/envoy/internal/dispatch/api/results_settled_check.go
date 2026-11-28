@@ -248,8 +248,9 @@ func settledCheckUnderLocks(ctx context.Context, q queryer, check checkBlockRef,
 }
 
 // checkBlocksOf is every `check` block of one Verification document as the block index holds it:
-// each with its attributes and its words read out of the text the index recorded at its changed
-// version, that version and its digest, its issue and its reference (results_settled_check.go).
+// each with its attributes and the references its `serves` attribute names (docs.CheckBlockOf),
+// its words read out of the text the index recorded at its changed version, that version and its
+// digest, its issue and its reference (results_settled_check.go).
 // They come in the order of the document's newest stored version, and a block the index holds that
 // that version does not, which its settlement has not indexed away yet, after them by id. A check
 // a browser wrote and its settlement has not indexed is no check of the read until it is, as it is

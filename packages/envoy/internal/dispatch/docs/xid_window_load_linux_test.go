@@ -270,15 +270,19 @@ func threadCPU(t *testing.T) time.Duration {
 // any other rig problem, beside a violation too. The decision itself, xidRuntimeWaitProblem, is
 // proven with no clock or load by storetest's TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown
 // and TestAWaitOnAPHandedToALockedThreadDecidesNothing; that analyzeXidWindows applies it is shown
-// only by this arm's runs that reach the UNKNOWN branch, which log it: envoy-go's step "Test what
-// the race build cannot run at all or at full size" runs this file's tests with -v, so its log
-// says which branch ran. A receive on a channel the code waits on for as long is a wait the code
+// only by this arm's runs that reach the UNKNOWN branch, which log it: envoy-go-alone's step "Test
+// the xid window rows, the API's issue-list bound and the auth service's storm, alone" runs this
+// file's tests with -v, so its log says which branch ran. A receive on a channel the code waits on
+// for as long is a wait the code
 // asked for (GoWaiting), and breaks D6. Each arm
 // first holds that the wait happened: its gap, read off the thread's clocks alone, is over the
 // bound, and in the spinner arm the goroutine waited on the runtime past that 5 ms bound too. The
 // one P is set inside the measured operation, since Measure runs its operation with idle Ps beside
 // it.
 func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also sets GOMAXPROCS to 1 inside the operation itself.
 	storetest.RequireXidGapJudgment(t)
 	for _, probe := range []struct {
 		name   string
@@ -354,6 +358,9 @@ const xidHandoffNice = 19
 // one P is set inside the measured operation, since Measure runs its operation with idle Ps beside
 // it.
 func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also sets GOMAXPROCS to 1 inside the operation itself.
 	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	crowded := crowdACPU(t)

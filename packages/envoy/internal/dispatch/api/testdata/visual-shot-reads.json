@@ -41,11 +41,13 @@
     "/api/v1/projects/{key}/artifacts",
     "/api/v1/projects/{key}/artifacts/{slug}",
     "/api/v1/projects/{key}/legion/daemon",
+    "/api/v1/reference-targets",
     "/api/v1/references",
     "/api/v1/settings/architecture-sources",
     "/api/v1/settings/delivery",
     "/api/v1/settings/project-default-assignees",
-    "/api/v1/signins"
+    "/api/v1/signins",
+    "/api/v1/whoami"
   ],
   "live": ["events", "measures", "pipeline", "timeline"],
   "auth": ["/auth/whoami"]

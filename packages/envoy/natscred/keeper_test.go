@@ -65,7 +65,7 @@ func TestAKeeperEndsWhenItsConnectionCloses(t *testing.T) {
 	t.Run("a service's keeper waiting for its renewal, closed with its ClosedCB cleared", func(t *testing.T) {
 		file := filepath.Join(t.TempDir(), "token")
 		require.NoError(t, os.WriteFile(file, []byte(platformToken(daemonAccount, time.Now().Add(time.Hour))), 0o600))
-		option, keeper := natscred.Service(natscred.ServiceFile(file))
+		option, keeper := natscred.Service(natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE"))
 		nc, err := connect(t, url, option)
 		require.NoError(t, err)
 		before := statusListeners(t, nc)

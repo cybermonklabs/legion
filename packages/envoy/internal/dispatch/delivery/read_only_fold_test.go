@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -9,7 +10,6 @@ import (
 	"go/token"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +34,7 @@ type resultsHeadsRead struct {
 	function string
 	// statement is the name of the package-level constant or variable that holds the read's one
 	// statement text, the text after its WITH list, or of the function that builds that text from
-	// an Attributor's rename pairs, as baseBranchMergedForQuery compares repositories under their
+	// an Attributor's rename pairs, as mergeOfIssueQuery compares repositories under their
 	// canonical names. function must reach it through the package's own functions and values, and
 	// no other exported function may reach it but through function.
 	statement string
@@ -50,20 +50,21 @@ func fixedText(statement string) func(refs.Renames) string {
 }
 
 // resultsHeadsReads is the registry of the reads of pull_request_heads on the results path: the
-// five reads of plan D30, whether a branch belongs to an issue, and the two reads a refresh of a
-// merged pull request reads back (Attributor.StoredMergeTime, headForStamp), each with its one
-// function and its one statement. TestEachHeadsReadOnTheResultsPathIsOneStatement holds the
-// package to it, and TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of it its
-// questions (foldQuestions).
+// reads of an issue's heads, its merges and their landings, whether a branch belongs to an issue,
+// and the two reads a refresh of a merged pull request reads back (MergedPullRequestOf,
+// headForRefresh), each with its one function and its one statement.
+// TestEachHeadsReadOnTheResultsPathIsOneStatement holds the package to it, and
+// TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of it its questions (foldQuestions).
 var resultsHeadsReads = []resultsHeadsRead{
 	{read: "headsAttributedQuery", function: "Attributor.HeadsAttributedTo", statement: "headsAttributedQuery", text: fixedText(headsAttributedQuery)},
 	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: fixedText(headStoredAtQuery)},
-	{read: "baseBranchMergedForQuery", function: "Attributor.BaseBranchMergedFor", statement: "baseBranchMergedForQuery", text: baseBranchMergedForQuery},
-	{read: "baseBranchMergedInQuery", function: "Attributor.BaseBranchMergedIn", statement: "baseBranchMergedInQuery", text: fixedText(baseBranchMergedInQuery)},
+	{read: "mergeOfIssueQuery", function: "Attributor.MergeOfIssue", statement: "mergeOfIssueQuery", text: mergeOfIssueQuery},
+	{read: "mergeInQuery", function: "Attributor.MergeIn", statement: "mergeInQuery", text: fixedText(mergeInQuery)},
 	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: fixedText(newestPullRequestHeadQuery)},
+	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: fixedText(landingQuery)},
+	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestOfQuery", text: fixedText(mergedPullRequestOfQuery)},
+	{read: "headForRefresh", function: "headForRefresh", statement: "headForRefreshQuery", text: fixedText(headForRefreshQuery)},
 	{read: "BranchOfIssue", function: "BranchOfIssue", statement: "branchOfIssueQuery", text: fixedText(branchOfIssueQuery)},
-	{read: "storedMergeTimeQuery", function: "Attributor.StoredMergeTime", statement: "storedMergeTimeQuery", text: fixedText(storedMergeTimeQuery)},
-	{read: "headForStamp", function: "headForStamp", statement: "headForStampQuery", text: fixedText(headForStampQuery)},
 }
 
 // answeredReads is the functions and methods besides the reads' own that take the request's
@@ -75,6 +76,8 @@ var resultsHeadsReads = []resultsHeadsRead{
 // and a method as Type.Method.
 var answeredReads = []string{
 	"headsStatement.query",
+	"readMerged",
+	"Attributor.ReadPullRequestHead",
 	"Branches.ReadCommitOnBranch",
 	"Branches.readCommitOnBranch",
 	"mergeLearnedOnBranch",
@@ -951,35 +954,22 @@ func foldWrite(t *testing.T, ctx context.Context, pool *store.Pool, attributor *
 
 // foldQuestions is every question the fold test asks of each read of resultsHeadsReads in a
 // history: the heads of each issue, whether each commit of each repository a step names heads a
-// stored pull request, the merged branch of each issue in deliveryRepo and gadgetsRepo and of
+// stored pull request, the merges of each issue in deliveryRepo and gadgetsRepo and of
 // foldLinkingIssue in deliveryRepo through its links, the newest head of each issue, whether each
-// branch a step names belongs to each issue, and the merge time and the stamped row of each pull
-// request a step names, under its own name and the name its read was asked under. A read it has no
+// branch a step names belongs to each issue, the landings of each branch a step names, and the
+// merged row and the row a refresh stamps of each pull request a step names. A read it has no
 // question for fails the test.
 func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 	t.Helper()
 	var questions []foldQuestion
 	issues := []string{foldIssue, foldLinkingIssue}
-	// pulls is each pull request a step names, under each name a step names it by, in order.
-	var pulls [][2]string
-	pulled := map[[2]string]bool{}
-	for _, step := range steps {
-		for _, head := range step.pulls.Heads {
-			for _, repo := range []string{head.Repo, step.pulls.storedUnder} {
-				if pull := [2]string{repo, strconv.Itoa(head.Number)}; !pulled[pull] {
-					pulled[pull] = true
-					pulls = append(pulls, pull)
-				}
-			}
-		}
-	}
 	for _, read := range resultsHeadsReads {
 		switch read.read {
 		case "headsAttributedQuery", "NewestPullRequestHead":
 			for _, issue := range issues {
 				questions = append(questions, foldQuestion{read: read.read, args: []string{issue}})
 			}
-		case "baseBranchMergedForQuery":
+		case "mergeOfIssueQuery":
 			for _, issue := range issues {
 				for _, repo := range []string{deliveryRepo, gadgetsRepo} {
 					questions = append(questions, foldQuestion{read: read.read, args: []string{issue, repo}})
@@ -995,7 +985,7 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 					}
 				}
 			}
-		case "baseBranchMergedInQuery":
+		case "mergeInQuery":
 			questions = append(questions, foldQuestion{read: read.read, args: []string{foldLinkingIssue, deliveryRepo}})
 		case "BranchOfIssue":
 			asked := map[string]bool{}
@@ -1009,9 +999,20 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 					}
 				}
 			}
-		case "storedMergeTimeQuery", "headForStamp":
-			for _, pull := range pulls {
-				questions = append(questions, foldQuestion{read: read.read, args: pull[:]})
+		case "LandingOf", "MergedPullRequestOf", "headForRefresh":
+			asked := map[[2]string]bool{}
+			for _, step := range steps {
+				for _, head := range step.pulls.Heads {
+					argument := head.HeadRef
+					if read.read != "LandingOf" {
+						argument = fmt.Sprint(head.Number)
+					}
+					key := [2]string{head.Repo, argument}
+					if !asked[key] {
+						asked[key] = true
+						questions = append(questions, foldQuestion{read: read.read, args: key[:]})
+					}
+				}
 			}
 		default:
 			t.Fatalf("the fold test asks nothing of the read %s", read.read)
@@ -1077,8 +1078,13 @@ func foldAnswerRuns(steps []foldStep) int {
 				renamedFrom = step.pulls.storedUnder
 			}
 			pull := fmt.Sprintf("%s#%d", head.Repo, head.Number)
-			answer := fmt.Sprintf("%s %s %s %s %s %t %s %s %s", head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
-				foldColumn(head.IssueKey), head.AttributionComplete, foldColumn(head.EventAt), foldColumn(head.storedMergedAt()), renamedFrom)
+			// HeadAnswers.Add holds no merge on a row that is not merged, as upsertHeadRow stores none.
+			mergeCommit, mergedAt := "", (*time.Time)(nil)
+			if head.State == "merged" {
+				mergeCommit, mergedAt = head.MergeCommitSHA, head.MergedAt
+			}
+			answer := fmt.Sprintf("%s %s %s %s %s %t %s %s %s %s", head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
+				foldColumn(head.IssueKey), head.AttributionComplete, foldColumn(head.EventAt), mergeCommit, foldColumn(mergedAt), renamedFrom)
 			if answer != last[pull] {
 				runs++
 			}
@@ -1108,36 +1114,39 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 	case "HeadStoredAt":
 		stored, err := HeadStoredAt(ctx, q, args[0], args[1], answers)
 		return fmt.Sprint(stored), err
-	case "baseBranchMergedForQuery":
-		branch, err := attributor.BaseBranchMergedFor(ctx, q, args[0], args[1], answers)
-		return fmt.Sprintf("%q", branch), err
-	case "baseBranchMergedInQuery":
-		branch, err := attributor.BaseBranchMergedIn(ctx, q, args[0], args[1], answers)
-		return fmt.Sprintf("%q", branch), err
+	case "mergeOfIssueQuery":
+		merged, err := attributor.MergeOfIssue(ctx, q, args[0], args[1], answers)
+		return fmt.Sprintf("%+v", merged), err
+	case "mergeInQuery":
+		merged, err := attributor.MergeIn(ctx, q, args[0], args[1], answers)
+		return fmt.Sprintf("%+v", merged), err
 	case "NewestPullRequestHead":
 		head, found, err := NewestPullRequestHead(ctx, q, args[0], answers)
 		return describeNewestHead(head, found), err
 	case "BranchOfIssue":
 		belongs, err := BranchOfIssue(ctx, q, args[0], args[1], answers)
 		return fmt.Sprint(belongs), err
-	case "storedMergeTimeQuery":
-		number, err := strconv.Atoi(args[1])
+	case "LandingOf":
+		merged, err := LandingOf(ctx, q, args[0], args[1], answers)
+		return fmt.Sprintf("%+v", merged), err
+	case "MergedPullRequestOf":
+		var number int
+		if _, err := fmt.Sscan(args[1], &number); err != nil {
+			return "", err
+		}
+		merged, found, err := MergedPullRequestOf(ctx, q, args[0], number, answers)
+		return fmt.Sprintf("%+v, %t", merged, found), err
+	case "headForRefresh":
+		var number int
+		if _, err := fmt.Sscan(args[1], &number); err != nil {
+			return "", err
+		}
+		head, found, err := headForRefresh(ctx, q, args[0], number, answers)
 		if err != nil {
 			return "", err
 		}
-		mergedAt, err := attributor.StoredMergeTime(ctx, q, args[0], number, answers)
-		return describeFoldTime(mergedAt), err
-	case "headForStamp":
-		number, err := strconv.Atoi(args[1])
-		if err != nil {
-			return "", err
-		}
-		head, found, err := headForStamp(ctx, q, args[0], number, answers)
-		if !found {
-			return "no row", err
-		}
-		return fmt.Sprintf("at %.7s on %s into %s %s issue %s updated %s merged %s", head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
-			foldColumn(head.IssueKey), describeFoldTime(head.EventAt), describeFoldTime(head.MergedAt)), err
+		value, err := json.Marshal(head)
+		return fmt.Sprintf("%s, %t", value, found), err
 	}
 	return "", fmt.Errorf("no read answers %s", question.read)
 }

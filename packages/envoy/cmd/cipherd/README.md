@@ -22,10 +22,19 @@ The broker takes no flags and reads its configuration from `BROKER_*` environmen
 (`BROKER_SECRETS_STORE`: AWS Secrets Manager, or Google Cloud Secret Manager under Application
 Default Credentials): every secret under `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier` (AWS
 tags, or Secret Manager annotations) and encrypted with the agent-secrets key
-(`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME`). It also needs its own OpenID
-Connect client, through which a person signs in to the approval page: `BROKER_SIGNIN_ISSUER`,
-`BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and `BROKER_SIGNIN_DOMAIN` are all
-required, and a broker missing any of them refuses to start, naming the missing ones.
+(`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME`). On Secret Manager, a deployment
+that moves its secrets to another prefix sets `BROKER_SECRETS_SECOND_PREFIX` to the other prefix of
+the move while it runs: a grant whose request froze a source under that prefix, with the same
+secret id after it and the same type, goes on releasing, and the release reads the value from the
+secret under `BROKER_SECRETS_PREFIX` alone. Nothing else of the broker reads the second prefix, and
+the broker refuses it under AWS Secrets Manager and when it equals or nests with
+`BROKER_SECRETS_PREFIX`. The deployment sets it before the move, swaps the two at the move, rewrites
+its live grants' frozen sources once no pod of the earlier setting serves, and removes it once none
+is left under the old prefix (the operate page's "Moving the store to another prefix"). It also
+needs its own OpenID Connect client, through which a person signs in to the approval page:
+`BROKER_SIGNIN_ISSUER`, `BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and
+`BROKER_SIGNIN_DOMAIN` are all required, and a broker missing any of them refuses to start, naming
+the missing ones.
 `GET /signin/status` reports what that sign-in has done, for an operator or a production check.
 The one broker that starts without them is one with `BROKER_SIGNIN=off`, which signs nobody in:
 it serves no approval page and denies at once every request a person would have to approve,
@@ -43,13 +52,18 @@ page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
 `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]`
 reads a profiles file with the broker's own code and exits 1, naming the kind or the profile and
-the field, or the parse position, when the broker would not serve that file, or when its start
-check of the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it. In a file that
-declares a kind, a `proxy` block of any kind but `dpop` is refused, naming `kinds`, which replaced
-it. A file that declares no kind is read as the broker before the kinds read it, until every
-deployment's file declares kinds: each block of no kind, `aws` or `azure` serves its profile's
-name behind the block's hosts, headers and `allow`, under a kind of its own that no `proxy` tag
-names, and a block's `judge` or `guidance` is refused, naming the source's tag that holds it now.
+the field, or the parse position, when the broker would not serve that file: its parser holds the
+results profile `DISPATCH_RESULTS_TOKEN` to a name and a proxy block of kind `dpop`, and the
+start's check of every `dpop` block holds each to one exact host, an allow list and the
+`Authorization` header alone.
+In a file that declares a kind, a `proxy` block of any kind but `dpop` is refused, naming `kinds`,
+which replaced it. A file that declares no kind is read as the broker before the kinds read it,
+until every deployment's file declares kinds: each block of no kind, `aws` or `azure` serves its
+profile's name behind the block's hosts, headers and `allow`, under a kind of its own that no
+`proxy` tag names, and a block's `judge` or `guidance` is refused, naming the source's tag that
+holds it now. The results profile `DISPATCH_RESULTS_TOKEN` is outside that older reading: its
+block is held to kind `dpop` in every file, since the broker mints and holds that credential and
+releases it to nobody.
 `--private-upstream` takes the value `BROKER_PROXY_PRIVATE_UPSTREAM` gives the broker, and holds
 each destination's address to the start's rule: an address no broker takes as a destination
 (loopback, link-local, a metadata server, an IPv6 form that carries an IPv4 address and the rest of

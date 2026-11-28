@@ -52,7 +52,7 @@ var waitingParentsAsk = record.MergeForwardMessage{Role: claim.RoleImplementer, 
 // testing, and its pull request #86 open at head sha-1 with no merge forward, since the move
 // dropped the one the conflict asked for (workflow's clearMergeForward). It drains on the caller's
 // goroutine and logs to the buffer it answers, as mergeForwardRunner's does.
-func waitingParentRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func waitingParentRunner(t *testing.T, publisher outboxNotices) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	runner, sup, pool, logs := mergeForwardRunner(t, publisher, nil)
 	waited := time.Now().UTC().Add(-time.Minute)
@@ -79,6 +79,7 @@ func waitingParentRunner(t *testing.T, publisher notify.Publisher) (*outbox, *su
 // attempt, since the record holds no merge forward any more (workflow.MergeForwardAt), with no
 // publish and no wake of the released implementer.
 func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
+	t.Parallel()
 	t.Run("the implementer's role message naming the dropped merge forward ends at a released implementer with no publish and no wake", func(t *testing.T) {
 		ctx := context.Background()
 		publisher := &outboxPublisher{}

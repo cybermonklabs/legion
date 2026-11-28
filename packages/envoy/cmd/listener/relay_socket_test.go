@@ -213,6 +213,8 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 // deadline is still ahead, keep the socket open. Each row's own control is the check of its case
 // removed, and the socket stays open.
 func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
+	// Not parallel: it requires each socket to close within 1 s (closeCode(time.Second)) of the
+	// broker's changed answer, and to stay open through quiet windows of 500 ms and 1 s.
 	type outcome struct {
 		code int
 		text string
@@ -306,6 +308,8 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 // socket of one session is refused 429 (control: the fourth opens); and a socket the listener
 // closes at its stop is closed 1012, and an upgrade after the stop is refused 503 by serve.
 func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
+	// Not parallel: it requires each socket the listener's stop closed to show its 1012 close
+	// within 2 s (closeCode(2 * time.Second)).
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_upgrade", "ses_not_the_tokens"
 	token := "access-token-of-the-upgrading-session"
@@ -415,6 +419,8 @@ func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
 // lock, or the watch writing its ping in line; the socket stays open until the blocked write's 10 s
 // run out, and the row fails naming how long it took.
 func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
+	// Not parallel: it requires the listener's stop to return within 2 s (relaySocketCloseGrace +
+	// 1 s) and the socket to drop within 2.2 s of a revoke.
 	for _, row := range []struct {
 		name  string
 		close func(t *testing.T, rig *relaySocketRig, token string)
@@ -462,6 +468,8 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 // consumer does. Control: end of code 0 closing nothing; the connection stays as long as the
 // client sends, and the row fails naming how long it waited.
 func TestARelaySocketWhoseWriteFailsIsDroppedAtOnce(t *testing.T) {
+	// Not parallel: it requires the socket to drop within 12 s (relaySocketWriteWait +
+	// relaySocketCloseGrace + 1 s) of its write blocking, a write whose own deadline is 10 s.
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30))
 	const session = "ses_edge_write_fails"
 	token := "access-token-of-a-socket-whose-write-fails"
@@ -509,6 +517,7 @@ func TestARelaySocketWhoseWriteFailsIsDroppedAtOnce(t *testing.T) {
 // (enqueue); the replica's budget is far past the flood, so nothing closes the socket, and the row
 // fails at the deadline naming the wait.
 func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withCloseGrace(time.Hour))
 	const session = "ses_edge_slow_consumer"
 	token := "access-token-of-a-slow-consumer"
@@ -557,6 +566,8 @@ const relaySocketFrameWire = 700 << 10
 // under its connection's write lock, and the frame's empty last fragment after it; the close waits
 // for all of the frame's data, which the client reads first, and the row names it.
 func TestARelaySocketsCloseGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
+	// Not parallel: it reads every goroutine's stack (runtime.Stack in awaitControlWriteWaiting)
+	// for a close waiting in WriteControl, which another test's socket would also match.
 	held := &heldWrites{}
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(2, 1<<30), withCloseGrace(time.Hour), withWriteWait(time.Hour), withHeldWrites(held))
 	const session = "ses_edge_held_writer"
@@ -603,6 +614,8 @@ func TestARelaySocketsCloseGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
 // handing gorilla each frame whole (WriteJSON); the ping waits for all of the frame's data, which
 // the client reads first, and the row names it.
 func TestARelaySocketsPingGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
+	// Not parallel: it reads every goroutine's stack (runtime.Stack in awaitControlWriteWaiting)
+	// for a ping waiting in WriteControl, which another test's socket would also match.
 	held := &heldWrites{}
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withWriteWait(time.Hour), withHeldWrites(held))
 	const session = "ses_edge_held_ping"
@@ -672,6 +685,8 @@ func TestARelaySocketsPingGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
 // Subscription.Dropped); the client reads the first frame and then that close, and the row fails
 // naming it.
 func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *testing.T) {
+	// Not parallel: it requires the socket to stay open through a 1 s quiet window
+	// (stillOpen(time.Second)) after nats.go dropped frames ahead of its queue.
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session, sent = "ses_edge_nats_drops", 6
 	client, _ := rig.open(t, session)
@@ -717,6 +732,7 @@ func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *tes
 // the frames it held for the sockets not yet closed are lost, so those sockets never close. Control:
 // the budget's check removed; the count passes the budget, and the row fails naming it.
 func TestARelaySocketsReplicaHoldsNoMoreThanItsBudget(t *testing.T) {
+	t.Parallel()
 	const budget, frames = 8 << 20, 20
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(budget))
 	sessions := []string{"ses_edge_budget_a", "ses_edge_budget_b", "ses_edge_budget_c", "ses_edge_budget_d"}
@@ -793,6 +809,7 @@ func TestARelaySocketsReplicaHoldsNoMoreThanItsBudget(t *testing.T) {
 // on which its client opens it on another replica. Control: once a socket closes, the same upgrade
 // opens.
 func TestARelaySocketPastTheListenersCapIsRefused503(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withMaxSockets(2))
 	first, _ := rig.open(t, "ses_edge_cap_a")
 	rig.open(t, "ses_edge_cap_b")
@@ -829,6 +846,8 @@ func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
 // on which its client opens it again after 5 s, on whichever replica answers. Control: the
 // subscription's check removed; the socket stays open, and the row fails naming it.
 func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
+	// Not parallel: it requires the socket to close within 2 s (closeCode(2 * time.Second)) of
+	// its NATS connection's close, its check running every 100 ms (relaySocketTestCheck).
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_lost_subscription"
 	client, _ := rig.open(t, session)
@@ -846,6 +865,8 @@ func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
 // broker's refusal. Control: the verdict reading only the broker's refusal as expired; the socket
 // stays open past the exp, and the row fails naming it.
 func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
+	// Not parallel: it requires the socket to close within 4 s (closeCode(4 * time.Second)) of
+	// opening with a token that expires in 2 s.
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session = "ses_edge_expiring"
 	token := "access-token-that-expires-in-two-seconds"
@@ -865,6 +886,8 @@ func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 // the connection to end's grace once end has run (read's conn.Close removed); each case's
 // connection ends a whole grace after the close, and the row fails naming how long.
 func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T) {
+	// Not parallel: it requires the connection to end within 250 ms (relaySocketCloseGrace/4) of
+	// the client's answer to the close.
 	for _, row := range []struct {
 		name  string
 		close func(rig *relaySocketRig, client *relaySocketClient, token string)

@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -65,8 +66,8 @@ const testOperatorToken = "operator-bearer-for-daemon-tests"
 // (testpg.Clone), one per test, so a test's rows, its advisory locks (the one lock every fact
 // applies under among them) and its daemons' sweeps are its own, and tests run beside each other.
 // Two calls with one t answer the one clone: a test that boots two daemons, of one project or of
-// two, boots them on one database. A pool opened on it, the daemon's under test among them, holds
-// testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// two, boots them on one database. A pool opened on it, the daemon's under test among them, keeps
+// the pool_max_conns LEGION_TEST_PG_DSN names, or testpool.PoolConns where it names none
 // (testdb.PoolBounded). The daemon has no in-memory mode: what it does on a boot is what its store
 // recorded, and a boot migrates Legion's schema into whatever database it is given, which on a
 // clone of the migrated template finds nothing left to do. A test that sets LEGION_TEST_PG_DSN
@@ -119,7 +120,10 @@ func testConfig(t *testing.T) config.Config {
 	// is pinned by TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort.
 	port := holdPortOn(t, "127.0.0.1")
 	return config.Config{
-		Project:                                 "TEST" + randomSuffix(t),
+		// A key Dispatch can hold (projects.key, `^[A-Z][A-Z0-9]{1,9}$`), which a workflow daemon
+		// refuses to boot without (claim.IsProjectKey, its boot event): nine of randomSuffix's hex
+		// digits, 36 random bits, keep each test's project its own.
+		Project:                                 "T" + randomSuffix(t)[:9],
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
 		PostgresDSN:                             testDSN(t),
@@ -1170,26 +1174,24 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
-// against a boot that never serves, not its speed, so it is a minute, or the test binary's own
-// deadline less a second (testwait.Bounded): a fixed 10 s failed a test about the stranded report (1 of
-// 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
-// other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
-func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
-	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
-}
-
-// startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
-// within the given time. A test that points its workflow at no GitHub of its own gets
-// repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
-// rather than from github.com.
+// startDaemonLogging is startDaemon writing the daemon's log to log. A test that points its
+// workflow at no GitHub of its own gets repositoriesGitHub, so every launch on a repository reads
+// its default branch from a stand-in rather than from github.com.
+//
+// It waits for the daemon's own signal that it serves HTTP, not for a poll of /healthz to pass
+// within a fixed time: the boot takes what the machine's load makes it take, and a bound of the
+// helper's own failed a test whose daemon was only slow. The signal is the
+// seam the boot runs once the goroutine that serves the API has begun (beforeServingLatched,
+// wrapped here around any hook the test set). The wait ends there, at the daemon's exit, which
+// fails the test naming the exit's error, or when testwait.Context ends at the test binary's
+// deadline less testwait's margin; with no deadline (-timeout 0) it has no end but those two.
+// Once the daemon serves, one GET /healthz confirms the route answers 200.
 //
 // The daemon's own log is kept beside log, and printed when the test fails, its stop included,
 // since a test's own logger is most often quietLogger. Once the daemon answers /healthz, the test
 // logs how long that took and when each boot stage began (bootStages), so a run's output says
 // what the boots of its tests spent their time on.
-func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
+func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
@@ -1213,30 +1215,36 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
 		base:   "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
 	}
+	serving := make(chan struct{})
+	held := o.beforeServingLatched
+	o.beforeServingLatched = func(hold context.Context) {
+		close(serving)
+		if held != nil {
+			held(hold)
+		}
+	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
 	t.Cleanup(d.stop)
-	// Each poll is bounded by a second, so within bounds the wait whatever a poll meets: until the
-	// daemon serves, the held listener queues the connection unanswered.
-	poll := &http.Client{Transport: transport, Timeout: time.Second}
-	var err error
-	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
-		var response *http.Response
-		response, err = poll.Get(d.base + "/healthz")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		select {
-		case exited := <-d.done:
-			d.stopped.Store(true)
-			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
-		default:
-		}
-		return false
-	}) {
-		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
+	wait := testwait.Context(t)
+	select {
+	case <-serving:
+	case exited := <-d.done:
+		d.stopped.Store(true)
+		t.Fatalf("the daemon exited after %s, before it served HTTP: %v", time.Since(started).Round(time.Millisecond), exited)
+	case <-wait.Done():
+		t.Fatalf("the daemon did not serve HTTP on %s before testwait.Context ended after %s", d.base, time.Since(started).Round(time.Millisecond))
+	}
+	request, err := http.NewRequestWithContext(wait, http.MethodGet, d.base+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		t.Fatalf("the daemon serves HTTP on %s, and GET /healthz failed: %v", d.base, err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the daemon serves HTTP on %s, and GET /healthz answered %s", d.base, response.Status)
 	}
 	t.Logf("the daemon answered /healthz %s after it started; boot stages: %s", time.Since(started).Round(time.Millisecond), bootStages(kept.String(), started))
 	return d
@@ -1569,14 +1577,20 @@ func liveTreeBoard(t *testing.T, project string) string {
 // Apps or its read error): the boot itself reads GitHub for no repository here, since the record
 // carries its repository columns and no `repository_renames` pair is configured (so neither the
 // backfill nor the rename pass reads one), and the preparation runs once the API serves
-// (prepareAtStart, INFRA-4401 D4).
+// (prepareAtStart, INFRA-4401 D4). The daemon's Envoy listener is a notice listener that takes
+// every publish (newNoticeListener): a workflow daemon publishes its state events through it, its
+// boot event first, and a publish nothing answers is an ERROR line of the outbox's own, which a
+// caller reading the log for ERROR lines would read whenever the state lane ran before its read.
 func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, *daemon, api.LiveRepositoryView) {
 	t.Helper()
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
+	listener := httptest.NewServer(newNoticeListener())
+	t.Cleanup(listener.Close)
+	cfg.EnvoyURL = listener.URL
 	root := seedLiveTreeOn(t, cfg, repo)
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens, o.githubAPI = tokens, githubAPI
-	d := startDaemonWithin(t, cfg, o, log, 20*time.Second)
+	d := startDaemonLogging(t, cfg, o, log)
 	var entry api.LiveRepositoryView
 	settled(t, d, "name "+repo+" with what GitHub answered for it", func(state api.State) bool {
 		for _, live := range state.Repositories.Live {

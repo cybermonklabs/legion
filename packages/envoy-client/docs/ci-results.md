@@ -6,11 +6,11 @@ part of the `dispatch` command, which the package's [README](../README.md)
 
 `dispatch result --project <KEY> --check <id> --verdict pass|fail|could_not_run --commit <sha>`
 is a CI job's record of its result of a check of the spec files, and the one call that is no
-session's (`ownIdentityResult` in `dispatch-cli.ts`). It reads no `DISPATCH_HOST`, no envoy.json
+session's (`jobResultCommand` in `dispatch-commands/job-result.ts`). It reads no `DISPATCH_HOST`, no envoy.json
 and no session state, and it asks no AskGate and no listener. A refusal is written to a session's
 ledger only where the environment names a session id, as every refusal of the command is. The job
 runs it under `agent-secrets result-grant -- …`, which exchanges the run's token at the secrets
-broker for the airlock's placeholder of a result grant and gives it to the command in
+broker for the proxy placeholder of a result grant and gives it to the command in
 `DISPATCH_RESULTS_TOKEN`, beside the airlock proxy's settings. Dispatch is `DISPATCH_URL`, and the
 credential is that placeholder alone (`ownIdentityDispatch` in `dispatch-config.ts`,
 `airlockCredential` in `airlock-credential.ts`): the write carries it as its one `Authorization`
@@ -49,18 +49,23 @@ prints `{"write_outcome_unknown":"<code>"}`, the code of its last failure such a
 each result. The command refuses an empty `--project`, `--check` or `--commit` before any request,
 with exit 2, and names the flag. An empty variable of the step gives such a value.
 
-The airlock proxy can refuse the write itself, and then nothing reached Dispatch. A tunnel it
-refuses at the CONNECT reaches the command as Bun's `ERR_PROXY_TUNNEL`, whose message carries the
-status line alone: a 407 for a grant that ended, or a proxy password that names none, ends the
-write at once and prints `AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407
-Proxy Authentication Required); nothing was sent to Dispatch`, and a 503 is a connection that
-never opened, asked again within the write's bound as a refused connection is, and then printed
-the same way. An answer the proxy gives itself inside an open connection, before any byte of the
-write left it, carries `Cipher-Proxy-Forwarded: false` and its `Cipher-Proxy-Code`: it prints
-`<code>: <the proxy's words>; nothing was stored`, with each copy of the placeholder in the words
-redacted, and only its `503 GRANT_UNREADABLE` is asked again within the bound. Each exits 1, and
-none is a `write_outcome_unknown`, but where an earlier attempt of the same write may have
-reached Dispatch, which leaves its outcome unknown. An answer the proxy gives itself after the
+The airlock proxy can refuse the write itself, and then nothing reached Dispatch. Before any byte
+of the write left the proxy, an outage (`outage`: a 408, a 429 or a 5xx) is asked again within
+the write's bound, and every other status ends the write at once. A tunnel it refuses at the
+CONNECT reaches the command as Bun's `ERR_PROXY_TUNNEL`, whose message carries the status line: a
+407 for a grant that ended, or a proxy password that names none, ends the write at once and prints
+`AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication
+Required); nothing was sent to Dispatch`, and an outage, such as a 503, is a connection that never
+opened, asked again within the write's bound as a refused connection is, and then printed the same
+way. An answer the proxy gives itself inside an open connection, before any byte of the write
+left it, carries `Cipher-Proxy-Forwarded: false` and its `Cipher-Proxy-Code`: it prints `<code>:
+<the proxy's words>; nothing was stored`, the words quoted through the client's bounded excerpt,
+one line with each piece of the placeholder redacted; an outage of it (`503 GRANT_UNREADABLE`,
+`502 UPSTREAM_UNREACHABLE` for a dial to Dispatch that failed) is asked again within the bound
+first, since nothing reached Dispatch and the write is keyed, and any other status ends the write
+at once. Each exits 1, and none is a `write_outcome_unknown`, but where an earlier attempt of the
+same write may have reached Dispatch, which leaves its outcome unknown. An answer the proxy gives
+itself after the
 write may have reached Dispatch, a connection to Dispatch that broke after the write was sent
 (`502 UPSTREAM_UNREACHABLE`) or a grant that ended while Dispatch held the call (`407
 GRANT_NOT_LIVE`), carries `Cipher-Proxy-Forwarded: unknown` and its `Cipher-Proxy-Code`: the
@@ -149,7 +154,7 @@ The broker needs its result-workflow entry, the existing airlock proxy and certi
 }
 ```
 
-The profile is a name and a proxy block and nothing else: the broker refuses a profiles file whose profile of kind `dpop` sets a `source`, `tier`, `requesters`, `maxGrant`, `github` or `google`. The allow list names a `POST` under `/api/v1/projects/` and one under `/api/v1/issues/`, as the local stack's profile (`test/ci-results-stack.ts`) and the broker's tests do: a job's `--project` write goes under `/api/v1/projects/`, and its `--issue` write under `/api/v1/issues/`. Dispatch's results list names two routes, `POST /api/v1/projects/{key}/results` and `POST /api/v1/issues/{key}/results`, and a prefix covers other routes too (`POST /api/v1/projects/{key}/artifacts` matches); Dispatch answers a results token `403 RESULTS_ONLY_TOKEN` on every route its results list does not name (`resultsScopeRoutes`, `routes_table.go`), so the allow list bounds where the placeholder goes and Dispatch's list bounds what it may do there.
+The profile is a name and a proxy block and nothing else: the broker refuses a profiles file whose profile of kind `dpop` sets a `source`, `tier`, `requesters`, `maxGrant`, `github` or `google`. The allow list names a `POST` under `/api/v1/projects/` and one under `/api/v1/issues/`, as the local stack's profile (`test/ci-results-stack.ts`) and the broker's tests do: a job's `--project` write goes under `/api/v1/projects/`, and its `--issue` write under `/api/v1/issues/`. Dispatch's results list names two routes, `POST /api/v1/projects/{key}/results` and `POST /api/v1/issues/{key}/results`, and a prefix covers other routes too (`POST /api/v1/projects/{key}/artifacts` matches); Dispatch answers a results token `403 RESULTS_ONLY_TOKEN` on every route its results list does not name (the routes whose declaration states `ResultsScope`, `routeDecl.ResultsScope` in each route's file under `internal/dispatch/api`), so the allow list bounds where the placeholder goes and Dispatch's list bounds what it may do there.
 
 The proxy block carries the placeholder only in `Authorization`, and the proxy sends only the requests its allow list names. Every broker with a profiles file checks the profile at start, whether or not it has result-workflow entries, since every broker with an airlock port serves every minted grant of its database: its proxy block is of kind `dpop`, and, as every `dpop` block, it binds one exact host (Dispatch's, with no `*.` name, since the run's token and a proof of the pod's key go to every host the block binds) that an entry of `BROKER_PROXY_PRIVATE_UPSTREAM` names, has a non-empty allow list none of whose entries names every path (the path prefix `""` or `/`), has `Authorization` as its one header, and no proxy block of another kind binds that host; each entry of `BROKER_PROXY_PRIVATE_UPSTREAM` names the host of a `dpop` block. A broker with a result-workflow entry and no such profile refuses to start too. `envoy-broker profiles check <file> --private-upstream '<host>=<url> ...' --cluster-ranges <CIDR prefixes>` runs the same check on the file, and the start's check of each destination's address, given the broker's values of `BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`; a destination whose address the start refuses exits 2, as a value the setting does not take. A deployment's pull-request check of its profiles file passes both values as the deployment renders them for its broker: without `--cluster-ranges`, an address outside the private ranges, which only those ranges can admit, is reported as not judged rather than refused. Each result grant records the profile and the destination it was made under, and a broker of another profile or destination refuses the grant's writes, so the brokers that share one database need the same profile and the same destination. The profile does not grant a project or choose a run: the broker derives those from the verified GitHub identity and its result-workflow entry. A workflow authorized only for ordinary credentials cannot obtain a placeholder through this endpoint. Use HTTPS outside the isolated loopback test environment.
 

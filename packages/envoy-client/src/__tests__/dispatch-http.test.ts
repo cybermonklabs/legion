@@ -854,6 +854,95 @@ describe("DispatchClient", () => {
     expect(error.message).not.toContain("/login");
   });
 
+  // fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization`
+  // alone), and Dispatch answers no API route with a redirect, so no request of the client follows
+  // one: the 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
+  test("a read a redirect to another origin answers is not followed there, so its credential's proof never leaves", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
+        return jsonResponse({ key: "DSP-1", title: "Elsewhere", status: "todo" });
+      },
+    });
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${other.port}/api/v1/issues/DSP-1` },
+        }),
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
+    };
+    try {
+      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch);
+      const refusal = await client.getIssue("DSP-1").then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal).toBeInstanceOf(DispatchGatewayError);
+      expect((refusal as DispatchGatewayError).status).toBe(302);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      dispatch.stop(true);
+      other.stop(true);
+    }
+  });
+
+  // The refusal says where the redirect points, for a read and a write alike, so an operator who
+  // wrote `http://` for an `https://` Dispatch fixes the URL from the line: the scheme and the host
+  // of the target, never its path, its query, its fragment or its user, any of which can carry a
+  // secret; a relative Location names Dispatch's own origin.
+  test("a refused redirect names the origin it points at, and nothing else of its target", async () => {
+    // A target that carries a user and a secret, built from its parts; the secret is made for
+    // this run, so no line of the test holds a credential.
+    const hidden = crypto.randomUUID();
+    const withUser = new URL("https://dispatch.example.com/api/v1/issues/DSP-1");
+    withUser.username = "user";
+    withUser.password = hidden;
+    for (const [location, origin] of [
+      [
+        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
+        "https://sso.example.com:8443",
+      ],
+      [withUser.href, "https://dispatch.example.com"],
+      ["/login?next=%2Fapi", "http://dispatch.test"],
+    ] as const) {
+      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        fetchImpl,
+        {
+          sleep: async () => undefined,
+        }
+      );
+      for (const call of [
+        () => client.getIssue("DSP-1"),
+        () => client.comment("DSP-1", { body: "Review", actor }),
+      ]) {
+        const refusal = await call().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        const message = refusal instanceof Error ? refusal.message : String(refusal);
+        expect(message, location).toContain(
+          `answered 302 (a redirect to ${origin}, which this client does not follow) with `
+        );
+        for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
+          expect(message, location).not.toContain(part);
+        }
+      }
+    }
+  });
+
   // Red team 7 and 4 (the review of 4dad905e68): a read's 2xx that is not JSON is a
   // DispatchGatewayError, with its status, advice that a retry may succeed, and `transient` saying
   // so too: a portal or a proxy in the way, which a later request can get past, and which never
@@ -903,12 +992,13 @@ describe("DispatchClient", () => {
     expect(await read()).toBe("");
   });
 
-  // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
-  // a retry there can post a message twice: the write is told to check what took effect. A 408 or
-  // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the
-  // write never reached Dispatch and a retry may succeed. Any other status still gets the same
-  // advice as a read, since the request never got past the gateway either. Each status is one
-  // write's last attempt here; how the attempts before it are made is dispatch-keyed-writes.test.ts.
+  // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, and so can a
+  // 408, which a gateway can send when its own timeout runs out after it forwarded the request, so
+  // advising a retry there can post a message twice: the write is told to check what took effect.
+  // A 429 is the gateway's own rate limit, sent before it forwards the request, so the write never
+  // reached Dispatch and a retry may succeed. Any other status still gets the same advice as a
+  // read, since the request never got past the gateway either. Each status is one write's last
+  // attempt here; how the attempts before it are made is dispatch-keyed-writes.test.ts.
   test("tells a write a gateway answered whether it may have reached Dispatch", async () => {
     const page = (status: number, statusText: string) =>
       new Response(`<html><body><h1>${status} ${statusText}</h1></body></html>`, {
@@ -939,33 +1029,34 @@ describe("DispatchClient", () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     const page404 = `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")`;
 
-    // A 502 can come after Dispatch committed the write, so with no ask left the write ends
-    // unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
-    const badGateway = await refusal();
-    expect(badGateway).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(badGateway.message).toBe(
-      `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
-        `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
-        "it may or may not have taken effect. Dispatch finishes an attempt it received whatever this " +
-        "command does, so read the write back before you send it again: a new command sends it under a new key."
-    );
-    expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
-      expect.objectContaining({ mayHaveReachedDispatch: true })
-    );
+    // A 502 or a 408 can come after Dispatch committed the write, so with no ask left the write
+    // ends unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
     for (const [status, statusText] of [
+      [502, "Bad Gateway"],
       [408, "Request Timeout"],
-      [429, "Too Many Requests"],
     ] as const) {
-      const refused = await refusal();
-      expect(refused.message).toBe(
+      const unsettled = await refusal();
+      expect(unsettled).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect(unsettled.message).toBe(
         `${request}${status} ${statusText} with a body that is not Dispatch's error JSON ` +
-          `("${status} ${statusText}")${gateway}, so the write did not reach Dispatch, and a ` +
-          "retry may succeed."
+          `("${status} ${statusText}")${gateway} (its only attempt), and an attempt of the write ` +
+          "may have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an " +
+          "attempt it received whatever this command does, so read the write back before you send " +
+          "it again: a new command sends it under a new key."
       );
-      expect(refused).toEqual(
-        expect.objectContaining({ transient: true, mayHaveReachedDispatch: false })
+      expect((unsettled as DispatchWriteUnsettledError).last).toEqual(
+        expect.objectContaining({ mayHaveReachedDispatch: true })
       );
     }
+    const tooMany = await refusal();
+    expect(tooMany.message).toBe(
+      `${request}429 Too Many Requests with a body that is not Dispatch's error JSON ` +
+        `("429 Too Many Requests")${gateway}, so the write did not reach Dispatch, and a retry ` +
+        "may succeed."
+    );
+    expect(tooMany).toEqual(
+      expect.objectContaining({ transient: true, mayHaveReachedDispatch: false })
+    );
     expect((await refusal()).message).toBe(
       `${page404}${gateway}, so a retry gets the same answer until the Dispatch URL, or whatever ` +
         "answers in its place, is fixed."
@@ -2359,95 +2450,5 @@ describe("a path value that is empty", () => {
       expect((refusal as Error).message, place).toContain(place);
     }
     expect(asked).toEqual([]);
-  });
-});
-
-// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
-// and Dispatch answers no API route with a redirect, so no request of the client follows one: the
-// 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
-describe("a redirect to another origin", () => {
-  test("a read is not followed there, so its credential's proof never leaves", async () => {
-    const elsewhere: string[] = [];
-    const other = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
-        return jsonResponse({ key: "DSP-1", title: "Elsewhere", status: "todo" });
-      },
-    });
-    const dispatch = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch: () =>
-        new Response(null, {
-          status: 302,
-          headers: { Location: `http://127.0.0.1:${other.port}/api/v1/issues/DSP-1` },
-        }),
-    });
-    const credential: RequestCredential = {
-      ...bearerCredential("secret"),
-      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
-    };
-    try {
-      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch);
-      const refusal = await client.getIssue("DSP-1").then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal).toBeInstanceOf(DispatchGatewayError);
-      expect((refusal as DispatchGatewayError).status).toBe(302);
-      expect(elsewhere).toEqual([]);
-    } finally {
-      dispatch.stop(true);
-      other.stop(true);
-    }
-  });
-
-  // The refusal says where the redirect points, so an operator who wrote `http://` for an
-  // `https://` Dispatch fixes the URL from the line: the scheme and the host of the target, never
-  // its path, its query or its user, any of which can carry a secret.
-  test("a refused redirect names the origin it points at, and nothing else of its target", async () => {
-    // A target that carries a user and a secret, built from its parts; the secret is made for
-    // this run, so no line of the test holds a credential.
-    const hidden = crypto.randomUUID();
-    const withUser = new URL("https://dispatch.example.com/api/v1/issues/DSP-1");
-    withUser.username = "user";
-    withUser.password = hidden;
-    for (const [location, origin] of [
-      [
-        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
-        "https://sso.example.com:8443",
-      ],
-      [withUser.href, "https://dispatch.example.com"],
-      ["/login?next=%2Fapi", "http://dispatch.test"],
-    ] as const) {
-      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
-      const client = new DispatchClient(
-        "http://dispatch.test",
-        bearerCredential("secret"),
-        fetchImpl,
-        {
-          sleep: async () => undefined,
-        }
-      );
-      for (const call of [
-        () => client.getIssue("DSP-1"),
-        () => client.comment("DSP-1", { body: "Review", actor }),
-      ]) {
-        const refusal = await call().then(
-          () => undefined,
-          (error: unknown) => error
-        );
-        const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect(message, location).toContain(
-          `answered 302 (a redirect to ${origin}, which this client does not follow) with `
-        );
-        for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
-          expect(message, location).not.toContain(part);
-        }
-      }
-    }
   });
 });

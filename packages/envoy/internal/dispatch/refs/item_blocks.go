@@ -637,6 +637,20 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
 }
 
+// BlockText is the whole text of block blockID as the index leaves it, where Block gives the
+// excerpt its row stores: the text a reply's quote of that block is checked against. found is
+// false when the body holds no such block.
+func (i ItemIndexing) BlockText(blockID string) (text string, found bool) {
+	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
+		for _, row := range rows {
+			if row.id == blockID {
+				return row.text, true
+			}
+		}
+	}
+	return "", false
+}
+
 // SettlingForms is the index settling what the forms queue holds for the item (RefsFormsOwed)
 // in the statement that records it indexed (queueRecordIndexed), so the settle costs the write no
 // statement of its own. A writer asks for it where this index is the last of the writes that index

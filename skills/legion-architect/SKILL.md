@@ -31,14 +31,14 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 1. Read `STRATEGY.md` where the repository has one, and its design principles (`AGENTS.md` here).
    Find the standard solution (a web search, and how two or three well-regarded projects solve it) and cite it in the spec's `Design`.
-   Ask a person only what neither settles, with a recommendation.
+   Ask a person only what neither settles.
 
 2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
 
 3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
    A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
 
-4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says.
+4. Decompose, adopt, split across repositories or record a wait on other work as `skill://legion-architect/references/decomposition.md` says.
 
 5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
    a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.

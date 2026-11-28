@@ -32,9 +32,10 @@ type AirlockSettings struct {
 	// ProxyURL is BROKER_AIRLOCK_PROXY_URL.
 	ProxyURL string
 	// ProxyRoots answers the roots the proxy's certificates chain to, PEM blocks one after the
-	// other, read at each trade as a release of names reads them (requests.Machine.ProxyRoots): a
-	// pod on a pool learns its root from its first intermediate, after the start, and a rollout
-	// carries two roots. nil, or an answer of "", hands the run no root.
+	// other, read at each trade as a release of names reads them (requests.Machine.ProxyRoots)
+	// and as an approve trade does (ApproveSettings.ProxyRoots): a pod on a pool learns its root
+	// from its first intermediate, after the start, and a rollout carries two roots. nil, or an
+	// answer of "", hands the run no root.
 	ProxyRoots func() string
 	// ResultHosts are the hosts DISPATCH_RESULTS_TOKEN's entry binds.
 	ResultHosts []string
@@ -53,7 +54,7 @@ type AirlockSettings struct {
 	GrantLifetime time.Duration
 }
 
-// proxyRoots is the roots a run's release hands over, and "" where the settings answer none, as
+// proxyRoots is the roots a trade hands the run now, and "" where the settings answer none, as
 // a deployment whose pod holds no intermediate yet does (ApproveSettings.proxyRoots).
 func (s *AirlockSettings) proxyRoots() string {
 	if s.ProxyRoots == nil {

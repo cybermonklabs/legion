@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -488,7 +489,7 @@ func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variables forkReadBound (pushVisibilityReadEnv), leakCheckStdin (leakCheck) and leakguardCurl (pushVisibilityReadEnv).
 	const token = "FAKEtok3nZQ9x"
 	remote := "https://" + token + "@github.com/" + noSuchRepo + ".git"
-	shown := "the push to https://github.com/" + noSuchRepo + ".git"
+	shown := "the push to https://" + redact.URLWithCredentials + "/" + noSuchRepo + ".git"
 	root, defaultDir := gitCredentialBundle(t)
 	refusedPush := func(t *testing.T, check, message string) (int, string) {
 		dir, line := aPushFixture(t, message)

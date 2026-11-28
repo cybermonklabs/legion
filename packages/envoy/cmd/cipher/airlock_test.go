@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // testAirlockPlaceholder is one placeholder in the broker's own shape: placeholder.Prefix and
@@ -222,6 +224,30 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 	}
 }
 
+// TestAFixedNoProxyEntryOverABoundHostIsDropped: a fixed NO_PROXY entry is held to the bound hosts
+// as an inherited one is. With Dispatch's tailnet name bound, `.ts.net` leaves the list, so a
+// write to it goes through the proxy rather than straight out with a placeholder in it; the
+// broker's own tailnet name, which the release does not bind, stays, and so does every other fixed
+// entry. A grant bound to a host outside the tailnet keeps `.ts.net`.
+func TestAFixedNoProxyEntryOverABoundHostIsDropped(t *testing.T) {
+	environ := []string{"AGENT_SECRETS_URL=https://secrets.example-tailnet.ts.net"}
+	entries := func(hosts ...string) []string {
+		return strings.Split(airlockNoProxy(environ, testRelease("DISPATCH_RESULTS_TOKEN", hosts, map[string]string{"value": testAirlockPlaceholder})), ",")
+	}
+	dispatch := entries("dispatch.example-tailnet.ts.net")
+	if slices.Contains(dispatch, ".ts.net") || !slices.Contains(dispatch, "secrets.example-tailnet.ts.net") {
+		t.Fatalf("with Dispatch's tailnet name bound, NO_PROXY = %q; want no .ts.net and the broker's own name", dispatch)
+	}
+	for _, fixed := range airlockFixedNoProxy {
+		if fixed != ".ts.net" && !slices.Contains(dispatch, fixed) {
+			t.Errorf("with Dispatch's tailnet name bound, NO_PROXY = %q; want the fixed entry %q kept", dispatch, fixed)
+		}
+	}
+	if github := entries("api.github.com"); !slices.Contains(github, ".ts.net") {
+		t.Fatalf("with api.github.com bound, NO_PROXY = %q; want .ts.net kept", github)
+	}
+}
+
 // TestAirlockNoProxyReachesBothSpellings: a client reads one spelling or the other, so the child
 // carries the same list under both.
 func TestAirlockNoProxyReachesBothSpellings(t *testing.T) {
@@ -293,7 +319,8 @@ func TestAirlockRefusesTwoAWSNames(t *testing.T) {
 
 // TestAirlockProxyURLCarriesThePasswordAndParsesBack: the proxy reads the password of a Basic
 // credential, so the URL must carry it and every client must be able to parse it out again,
-// whether or not the placeholder holds a character a URL must escape.
+// whether or not the placeholder holds a character a URL must escape. The URL is one
+// cipheraddr.NamesAirlockProxy knows as the airlock's.
 func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
 	t.Parallel()
 	for _, password := range []string{
@@ -313,8 +340,8 @@ func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
 		if parsed.User == nil {
 			t.Fatalf("the proxy URL %q carries no credential", got)
 		}
-		if parsed.User.Username() != "agent-secrets" {
-			t.Errorf("the proxy URL's user is %q, want agent-secrets", parsed.User.Username())
+		if !cipheraddr.NamesAirlockProxy(got) {
+			t.Errorf("the proxy URL's user is %q, which cipheraddr.NamesAirlockProxy does not know as the airlock's", parsed.User.Username())
 		}
 		back, set := parsed.User.Password()
 		if !set || back != password {
@@ -927,29 +954,5 @@ func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	}
 	if env["AGENT_SECRETS_URL"] != broker.URL {
 		t.Errorf("the command's AGENT_SECRETS_URL is %q, want the session's broker %q", env["AGENT_SECRETS_URL"], broker.URL)
-	}
-}
-
-// TestAFixedNoProxyEntryOverABoundHostIsDropped: a fixed NO_PROXY entry is held to the bound hosts
-// as an inherited one is. With Dispatch's tailnet name bound, `.ts.net` leaves the list, so a
-// write to it goes through the proxy rather than straight out with a placeholder in it; the
-// broker's own tailnet name, which the release does not bind, stays, and so does every other fixed
-// entry. A grant bound to a host outside the tailnet keeps `.ts.net`.
-func TestAFixedNoProxyEntryOverABoundHostIsDropped(t *testing.T) {
-	environ := []string{"AGENT_SECRETS_URL=https://secrets.example-tailnet.ts.net"}
-	entries := func(hosts ...string) []string {
-		return strings.Split(airlockNoProxy(environ, testRelease("DISPATCH_RESULTS_TOKEN", hosts, map[string]string{"value": testAirlockPlaceholder})), ",")
-	}
-	dispatch := entries("dispatch.example-tailnet.ts.net")
-	if slices.Contains(dispatch, ".ts.net") || !slices.Contains(dispatch, "secrets.example-tailnet.ts.net") {
-		t.Fatalf("with Dispatch's tailnet name bound, NO_PROXY = %q; want no .ts.net and the broker's own name", dispatch)
-	}
-	for _, fixed := range airlockFixedNoProxy {
-		if fixed != ".ts.net" && !slices.Contains(dispatch, fixed) {
-			t.Errorf("with Dispatch's tailnet name bound, NO_PROXY = %q; want the fixed entry %q kept", dispatch, fixed)
-		}
-	}
-	if github := entries("api.github.com"); !slices.Contains(github, ".ts.net") {
-		t.Fatalf("with api.github.com bound, NO_PROXY = %q; want .ts.net kept", github)
 	}
 }

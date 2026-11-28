@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/httpoutage"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -297,8 +298,9 @@ func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRo
 // out, or a TLS failure of Dispatch's transport (dispatch.TransportRefusal), which stops the start,
 // even beside a read of the issue Dispatch did not answer, as it does at every other boot probe of
 // Dispatch. Every other error is logged, naming the issue as what (`a root`), and passes over the
-// issue: after catchUpAttempts reads for an error Dispatch may stop giving (a 5xx, 408, 429), and
-// at once for a credential refusal (401, 403) or anything else.
+// issue: after catchUpAttempts reads for an error Dispatch may stop giving on its own, an outage
+// (httpoutage.Is: a 5xx, a 408 or a 429), and at once for a credential refusal (401, 403), which
+// waits on an operator, or a coded 4xx, which waits on nothing at all.
 func (w *workflowRuntime) readWithRetries(ctx context.Context, key, what string, read func(context.Context) error) (bool, error) {
 	bound := w.catchUpRootTimeout
 	if bound == 0 {
@@ -320,7 +322,7 @@ func (w *workflowRuntime) readWithRetries(ctx context.Context, key, what string,
 			return false, nil
 		case dispatch.TransportRefusal(err):
 			return false, err
-		case answered && retriable(refusal) && attempt < catchUpAttempts:
+		case answered && httpoutage.Is(refusal.Status) && attempt < catchUpAttempts:
 			w.log.Warn("boot catch-up reads "+what+" again after Dispatch refused it", "issue", key, "attempt", attempt, "error", err)
 			select {
 			case <-ctx.Done():
@@ -351,12 +353,6 @@ func dispatchAnswered(err error) (*dispatch.Error, bool) {
 		return nil, false
 	}
 	return refusal, true
-}
-
-// retriable says whether Dispatch may stop giving refusal on its own: a 5xx, 408 or 429. A
-// credential refusal (401, 403) waits on an operator, and a coded 4xx on nothing at all.
-func retriable(refusal *dispatch.Error) bool {
-	return refusal.Status >= 500 || refusal.Status == http.StatusRequestTimeout || refusal.Status == http.StatusTooManyRequests
 }
 
 // catchUpRoot catches up one root: it reads the issue's latest sequence on Dispatch, mirrors the

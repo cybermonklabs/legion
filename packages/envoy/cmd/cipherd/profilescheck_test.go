@@ -540,7 +540,7 @@ func resultsProfileOf(name, hosts, headers, allow, kind string) string {
 
 // TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile: `profiles check` holds the
 // results profile, DISPATCH_RESULTS_TOKEN, to the boot's own check of it. Every shape the file
-// alone decides (config.ResultsEntryRules, then config.MintedEntryRules, the rules of every dpop
+// alone decides (policy.ParseProfiles' rule of the results profile, then config.MintedEntryRules, the rules of every dpop
 // block) is refused, with --private-upstream and without it, exit 1 with one line on stderr naming
 // the file, the profile and the fault, and no report: a "*." host, two hosts, no kind, kind aws, no
 // allow list, an empty one, a header other than Authorization, another profile, not of kind dpop,
@@ -610,8 +610,8 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 	}{
 		{"a *. host", file(resultsProfileOf(name, `"*.ci-results.test"`, headers, allow, "dpop")), []string{name, `"*.ci-results.test"`}, []string{"must bind one exact host"}},
 		{"two hosts", file(resultsProfileOf(name, bound+`, "`+otherResultsHost+`"`, headers, allow, "dpop")), []string{name, otherResultsHost}, []string{"must bind one exact host"}},
-		{"no kind", file(resultsProfileOf(name, bound, headers, allow, "")), []string{name}, []string{"no longer read", "kinds"}},
-		{"kind aws", file(resultsProfileOf(name, bound, headers, allow, "aws")), []string{name}, []string{"no longer read", "kinds"}},
+		{"no kind", file(resultsProfileOf(name, bound, headers, allow, "")), []string{name}, []string{"must be a proxy block of kind dpop"}},
+		{"kind aws", file(resultsProfileOf(name, bound, headers, allow, "aws")), []string{name}, []string{"must be a proxy block of kind dpop"}},
 		{"no allow list", file(resultsProfileOf(name, bound, headers, "", "dpop")), []string{name}, []string{"non-empty allow list"}},
 		{"an empty allow list", file(resultsProfileOf(name, bound, headers, "[]", "dpop")), []string{name}, []string{"non-empty allow list"}},
 		{"the header X-Token", file(resultsProfileOf(name, bound, `["X-Token"]`, allow, "dpop")), []string{name, "X-Token"}, []string{"Authorization header alone"}},
@@ -697,7 +697,7 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 }
 
 // TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule: --private-upstream holds each
-// destination to the address rule the boot holds it to (config.PrivateUpstreamAddressRules,
+// destination to the address rule the boot holds it to (config.PrivateUpstreamRefusedOnEveryBroker,
 // netaddr.DestinationRefusal), and --cluster-ranges, the value BROKER_AIRLOCK_CLUSTER_RANGES gives
 // the broker, makes it the boot's whole rule. A destination the boot refuses is no value
 // BROKER_PROXY_PRIVATE_UPSTREAM takes, so its refusal is a usage error, as the setting's parser's

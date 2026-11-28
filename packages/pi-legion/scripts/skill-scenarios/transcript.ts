@@ -23,6 +23,8 @@ export const SessionEntry = z.looseObject({
       toolName: z.string().optional(),
       toolCallId: z.string().optional(),
       isError: z.boolean().optional(),
+      stopReason: z.string().optional(),
+      errorMessage: z.string().optional(),
       details: z.unknown().optional(),
       content: z
         .array(
@@ -54,8 +56,9 @@ function sessionFile(runDir: string): string | undefined {
     : undefined;
   return file === undefined ? undefined : path.join(dir, file);
 }
-/** A transcript file, parsed whole. A line that does not parse is the rig's fault. */
-export function parseSession(full: string): SessionEntry[] {
+/** A transcript file, parsed whole. A line that does not parse is the rig's fault. Every reader of
+ * a transcript file parses it through this. */
+export function parsedSession(full: string): SessionEntry[] {
   return readFileSync(full, "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "")
@@ -71,7 +74,7 @@ export function parseSession(full: string): SessionEntry[] {
  * that does not parse is the rig's fault. */
 export function session(runDir: string): SessionEntry[] {
   const full = sessionFile(runDir);
-  return full === undefined ? [] : parseSession(full);
+  return full === undefined ? [] : parsedSession(full);
 }
 
 /** Each subagent the run's session started, by its name, with its transcript parsed whole. Oh My Pi
@@ -89,7 +92,7 @@ export function subagentSessions(runDir: string): { name: string; entries: Sessi
     .sort()
     .map((name) => ({
       name: name.replace(/\.jsonl$/, ""),
-      entries: parseSession(path.join(dir, name)),
+      entries: parsedSession(path.join(dir, name)),
     }));
 }
 

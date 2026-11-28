@@ -180,6 +180,7 @@ func TestEachHeadAtOneCommitNamesTheResultItsOwnRunDerived(t *testing.T) {
 		{"failure", "no", "fail"},
 	} {
 		t.Run(each.conclusion, func(t *testing.T) {
+			t.Parallel()
 			rig := newCIRepositoryRig(t)
 			rig.write("acme/widgets", 70, ciRepositoryShared)
 			rig.write("acme/infra", 9, ciRepositoryShared)
@@ -261,6 +262,7 @@ func TestTheCIReadNamesItsHeadAndTheResultItDerived(t *testing.T) {
 	ciReadWants(t, "c1's own read", read.CI, map[string]any{"state": "no_result", "commit": ciEachHeadH2, "repo": "acme/widgets", "result": nil})
 
 	t.Run("no head", func(t *testing.T) {
+		t.Parallel()
 		rig := newCIRepositoryRig(t)
 		read := rig.read(t)
 		ciReadWants(t, "c1's read with no pull request", read.CI,

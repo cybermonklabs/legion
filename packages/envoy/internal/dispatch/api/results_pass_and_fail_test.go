@@ -36,12 +36,12 @@ type passAndFailCheck struct {
 // passAndFailRig is a Dispatch whose issue has pull request #70 open at passAndFailHead, and the
 // check k1, a `before_merge` check that no CI job proves.
 type passAndFailRig struct {
-	*ciJobRig
+	headRuleRig
 }
 
 func newPassAndFailRig(t *testing.T) passAndFailRig {
 	t.Helper()
-	rig := newCIJobRig(t)
+	rig := newHeadRuleRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, passAndFailHead, "open", rig.issue)
 	return passAndFailRig{rig}
 }
@@ -130,24 +130,28 @@ func TestAPassAndAFailAtOneHeadReadNotKnown(t *testing.T) {
 	// The case production printed as a pass from tester and implementer: the tester's pass at one
 	// commit, then its fail at the same commit under the same words.
 	t.Run("a pass then a fail", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		pass := rig.record(t, "tester", "pass")
 		fail := rig.record(t, "tester", "fail")
 		rig.head(t, "the tester's pass, then its fail", "unknown", "pass_and_fail", []string{pass, fail})
 	})
 	t.Run("a fail then a pass", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "fail")
 		rig.record(t, "tester", "pass")
 		rig.head(t, "the tester's fail, then its pass", "unknown", "pass_and_fail", nil)
 	})
 	t.Run("a pass of the implementer and a fail of the tester", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		rig.record(t, "implementer", "pass")
 		rig.record(t, "tester", "fail")
 		rig.head(t, "the implementer's pass and the tester's fail", "unknown", "pass_and_fail", nil)
 	})
 	t.Run("a later pass", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "pass")
 		fail := rig.record(t, "tester", "fail")
@@ -155,6 +159,7 @@ func TestAPassAndAFailAtOneHeadReadNotKnown(t *testing.T) {
 		rig.head(t, "a pass after the pass and the fail", "unknown", "pass_and_fail", []string{later, fail})
 	})
 	t.Run("a read at the commit", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "pass")
 		rig.record(t, "tester", "fail")
@@ -163,12 +168,14 @@ func TestAPassAndAFailAtOneHeadReadNotKnown(t *testing.T) {
 		}
 	})
 	t.Run("the fail retracted", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		pass := rig.record(t, "tester", "pass")
 		rig.retract(t, rig.record(t, "tester", "fail"))
 		rig.head(t, "the pass, with the fail retracted", "yes", "", []string{pass})
 	})
 	t.Run("the pass retracted", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		pass := rig.record(t, "tester", "pass")
 		fail := rig.record(t, "tester", "fail")
@@ -184,6 +191,7 @@ func TestAPassAndAFailAtOneHeadReadNotKnown(t *testing.T) {
 func TestAHeadNamesTheNewestResultsThatDecideIt(t *testing.T) {
 	t.Parallel()
 	t.Run("the newest pass and the newest fail", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "pass")
 		rig.record(t, "tester", "fail")
@@ -192,6 +200,7 @@ func TestAHeadNamesTheNewestResultsThatDecideIt(t *testing.T) {
 		rig.head(t, "two passes and two fails", "unknown", "pass_and_fail", []string{pass, fail})
 	})
 	t.Run("the newest pass of each role", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "pass")
 		tester := rig.record(t, "tester", "pass")
@@ -199,6 +208,7 @@ func TestAHeadNamesTheNewestResultsThatDecideIt(t *testing.T) {
 		rig.head(t, "two tester passes and an implementer pass", "yes", "", []string{implementer, tester})
 	})
 	t.Run("the newest of two fails", func(t *testing.T) {
+		t.Parallel()
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "fail")
 		fail := rig.record(t, "implementer", "fail")

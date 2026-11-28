@@ -140,7 +140,7 @@ func childVar(stdout, name string) (string, bool) {
 }
 
 // TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy: the run's token is traded at the
-// broker's token endpoint for the airlock placeholder, with a DPoP proof the endpoint takes; the
+// broker's token endpoint for the proxy placeholder, with a DPoP proof the endpoint takes; the
 // command runs with the placeholder in DISPATCH_RESULTS_TOKEN, the proxy in HTTPS_PROXY with the
 // placeholder as its password, and the trust bundle, and with no machine identity of its own to
 // trade.

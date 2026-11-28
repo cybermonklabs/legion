@@ -57,6 +57,7 @@ func listenerHeldText(person string) string {
 // Control: the Verifier leaving Caller.Held false whatever the answer says; the held token is
 // served 200 and the test fails naming it.
 func TestAPIAuthRefusesAHeldBrokerToken(t *testing.T) {
+	t.Parallel()
 	broker := ciphertokentest.NewStubBroker(t)
 	caller, stranger := ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t)
 	clock := &listenerClock{now: time.Now()}
@@ -124,6 +125,7 @@ const brokerUnavailableText = "whether this token's person may still act could n
 // test fails naming it); refuseLapsedBrokerToken with no Retry-After (the 503 carries none, and the
 // test fails naming it).
 func TestAPIAuthRefusesAnExpiredStanding(t *testing.T) {
+	t.Parallel()
 	broker := ciphertokentest.NewStubBroker(t)
 	caller := ciphertokentest.NewCaller(t)
 	clock := &listenerClock{now: time.Now()}

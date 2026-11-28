@@ -216,7 +216,7 @@ func newDispatchVerifier(t *testing.T) (*ciphertokentest.StubBroker, *ciphertoke
 	}
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL:      broker.Server.URL,
-		Account:        ciphertoken.NewAccountToken(accountToken),
+		Account:        ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountToken),
 		Origins:        []string{dispatchOrigin},
 		Replay:         unusedProofs{},
 		Address:        auth.ForwardedAddress,

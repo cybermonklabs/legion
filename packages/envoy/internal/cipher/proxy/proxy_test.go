@@ -90,13 +90,15 @@ func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 
 // TestABoundHostGetsTheValueSwappedIntoTheHeaderTheEntryNames is the airlock itself: the command
 // holds a placeholder, the service receives the value, and what the command sent in any other
-// place is sent on as it was.
+// place is sent on as it was. A placeholder anywhere but the header its entry names is refused
+// (TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused); the body is not read, so a
+// placeholder there travels as the command wrote it.
 func TestABoundHostGetsTheValueSwappedIntoTheHeaderTheEntryNames(t *testing.T) {
 	r := newRig(t, Options{})
 	client := r.client(workerPlaceholder)
-	answer, body := r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things?token="+workerPlaceholder, "the body holds "+workerPlaceholder,
+	answer, body := r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things?token=query-text", "the body holds "+workerPlaceholder,
 		"Authorization", "Bearer "+workerPlaceholder,
-		"X-Other", "carried: "+workerPlaceholder)
+		"X-Other", "carried: other-text")
 	if answer.StatusCode != http.StatusOK {
 		t.Fatalf("the call answered %d %q; want 200 from the service", answer.StatusCode, body)
 	}
@@ -108,12 +110,12 @@ func TestABoundHostGetsTheValueSwappedIntoTheHeaderTheEntryNames(t *testing.T) {
 	if want := "Bearer " + workerValue; got.Header.Get("Authorization") != want {
 		t.Errorf("the service saw Authorization %q; want %q: the entry names that header, so the value goes in it", got.Header.Get("Authorization"), want)
 	}
-	// Everything the entry does not name travels as the command wrote it, placeholder and all:
-	// the airlock swaps the headers of the entry and nothing else.
-	if want := "carried: " + workerPlaceholder; got.Header.Get("X-Other") != want {
+	// Everything the entry does not name travels as the command wrote it: the airlock swaps the
+	// headers of the entry and nothing else.
+	if want := "carried: other-text"; got.Header.Get("X-Other") != want {
 		t.Errorf("the service saw X-Other %q; want %q: a header the entry does not name is not swapped", got.Header.Get("X-Other"), want)
 	}
-	if want := "token=" + workerPlaceholder; got.Query != want {
+	if want := "token=query-text"; got.Query != want {
 		t.Errorf("the service saw the query %q; want %q: the airlock changes no query", got.Query, want)
 	}
 	if want := "the body holds " + workerPlaceholder; got.Body != want {
@@ -977,18 +979,14 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 	}
 
 	// A request that carries both is handled for the first candidate, and for that one alone:
-	// the decision is over one secret, so the other's placeholder travels on as the command
-	// wrote it rather than being swapped beside it.
-	r.get(client, "https://"+boundHost+"/v1/both", "Authorization", "Bearer "+alphaPlaceholder, "X-Beta", "Token "+betaPlaceholder)
-	seen = r.requests()
-	if len(seen) != 3 {
-		t.Fatalf("the service saw %d requests; want three", len(seen))
+	// the decision is over one secret, so the other's placeholder would leave the proxy as the
+	// command wrote it, and the request is refused rather than sent.
+	answer, body := r.get(client, "https://"+boundHost+"/v1/both", "Authorization", "Bearer "+alphaPlaceholder, "X-Beta", "Token "+betaPlaceholder)
+	if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
+		t.Errorf("the request carrying both answered %d %q; want 403: one request is handled for one name, and beta's placeholder would leave the proxy", answer.StatusCode, body)
 	}
-	if want := "Bearer " + alphaValue; seen[2].Header.Get("Authorization") != want {
-		t.Errorf("the service saw Authorization %q; want %q", seen[2].Header.Get("Authorization"), want)
-	}
-	if want := "Token " + betaPlaceholder; seen[2].Header.Get("X-Beta") != want {
-		t.Errorf("the service saw X-Beta %q; want %q: one request is handled for one name", seen[2].Header.Get("X-Beta"), want)
+	if seen := r.requests(); len(seen) != 2 {
+		t.Errorf("the service saw %d requests; want the two above alone", len(seen))
 	}
 }
 
@@ -1695,24 +1693,17 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 		r.grants.setConnection(alphaPlaceholder, withheld)
 
 		answer, body := r.get(client, "https://"+boundHost+"/v1/things", "X-Beta", "Token "+betaPlaceholder)
-		if answer.StatusCode != http.StatusOK {
-			t.Fatalf("the call carrying the withheld name's placeholder answered %d %q; want it decided for alpha and forwarded", answer.StatusCode, body)
+		if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
+			t.Fatalf("the call carrying the withheld name's placeholder answered %d %q; want 403: beta is withheld, so no name swaps its placeholder and it does not leave the proxy", answer.StatusCode, body)
 		}
-		seen := r.requests()
-		if len(seen) != 2 {
-			t.Fatalf("the service saw %d requests; want two", len(seen))
-		}
-		if got := seen[1].Header.Get("X-Beta"); got != "Token "+betaPlaceholder {
-			t.Fatalf("the service saw X-Beta %q; want the placeholder as the command wrote it: beta is withheld, so nothing of beta is swapped in", got)
-		}
-		if line := r.logs.callsAtLeast(t, 2)[1]; line.fields["secret"] != alphaName {
-			t.Fatalf("the second call logged the secret %v; want %s, the one name the grant still carries", line.fields["secret"], alphaName)
+		if seen := r.requests(); len(seen) != 1 {
+			t.Fatalf("the service saw %d requests; want the first alone", len(seen))
 		}
 
 		// And alpha's own placeholder on that same connection still gets alpha's value.
 		r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+alphaPlaceholder)
-		seen = r.requests()
-		if got, want := seen[2].Header.Get("Authorization"), "Bearer "+alphaValue; got != want {
+		seen := r.requests()
+		if got, want := seen[1].Header.Get("Authorization"), "Bearer "+alphaValue; got != want {
 			t.Fatalf("the service saw Authorization %q; want %q: the grant's other name goes on", got, want)
 		}
 	})

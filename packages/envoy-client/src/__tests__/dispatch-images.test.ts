@@ -8,12 +8,13 @@ import { keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchServiceError } from "../dispatch-http";
 import {
   forgetShownPictures,
   readPictures,
   shownPictureAddresses,
   shownPictures,
+  textWithPictures,
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
@@ -525,6 +526,32 @@ describe("sending pictures", () => {
     expect(failure.message).toEndWith(". Nothing was posted.");
     expect(failure.message).not.toContain("..");
     expect(server.posted).toEqual([]);
+  });
+
+  // Whether a refusal says the upload never took effect is the one rule of whether a request may
+  // have reached the server (`mayHaveReachedServer`), as `writeMayHaveLanded` reads it: Dispatch's
+  // own 408 may come after it stored the upload, as its 5xx may, and its 413 may not.
+  test.each([
+    [408, "may or may not have been uploaded"],
+    [503, "may or may not have been uploaded"],
+    [413, "was not uploaded"],
+  ] as const)("an upload Dispatch answered %i %s", async (status, outcome) => {
+    const shot = file(`status-${status}.png`, PNG);
+    const failure = await refusal(
+      textWithPictures(
+        "Look.",
+        [{ path: shot, name: path.basename(shot), file: Bun.file(shot, { type: "image/png" }) }],
+        "DSP-41",
+        async () => {
+          throw new DispatchServiceError("REFUSED", status, "the upload was answered so");
+        },
+        { kind: "session", id: session }
+      )
+    );
+
+    expect(failure.message).toBe(
+      `images: ${shot} ${outcome}: REFUSED: the upload was answered so. Nothing was posted.`
+    );
   });
 
   // A picture is uploaded before the call's own write. A repeat of that upload that Dispatch

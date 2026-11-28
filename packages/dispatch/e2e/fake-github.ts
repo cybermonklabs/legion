@@ -30,6 +30,8 @@ interface FakePull {
   /** The commit the base branch stood at in GitHub's pull-request answer. */
   readonly base_sha?: string;
   readonly updated_at?: string;
+  readonly merge_commit_sha?: string;
+  readonly merged_at?: string;
 }
 
 /** One check run of a commit, in the check suite `check_suite_id` names. GitHub always answers
@@ -271,14 +273,19 @@ const server = Bun.serve({
       }
       return Response.json({
         base: { ref: seeded.base_ref ?? "main", sha: seeded.base_sha },
+        body: seeded.body ?? "",
         head: {
+          ref: seeded.head_ref ?? `branch-${pull[3]}`,
           repo: { full_name: seeded.head_repo ?? `${pull[1]}/${pull[2]}` },
           sha: seeded.head_sha,
         },
         merged: seeded.merged ?? false,
+        merge_commit_sha: seeded.merge_commit_sha ?? null,
+        merged_at: seeded.merged_at ?? null,
         number: Number(pull[3]),
         state: seeded.state,
         title: seeded.title,
+        updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
       });
     }
 
@@ -344,6 +351,8 @@ const server = Bun.serve({
               },
               html_url: `https://github.com/${commitPulls[1]}/${commitPulls[2]}/pull/${number}`,
               merged: seeded.merged ?? false,
+              merge_commit_sha: seeded.merge_commit_sha ?? null,
+              merged_at: seeded.merged_at ?? null,
               number,
               state: seeded.state,
               title: seeded.title,

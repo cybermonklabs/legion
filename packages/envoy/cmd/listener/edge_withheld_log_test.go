@@ -83,6 +83,7 @@ func requireWithheldLine(t *testing.T, logged, message, subject, reason string) 
 // carrying another project's role mark, each with a mark in its payload; the control is a Dispatch
 // frame of the token's project, which passes, unlogged and uncounted.
 func TestAWithheldFrameIsLoggedWithItsSubjectAndReasonAndCounted(t *testing.T) {
+	t.Parallel()
 	own := contracts.LegacyAgentSubject(payloadSession)
 	control := routed(t, issueEvent("PRIV", "comment.created", comment("PRIV-1", withheldPayloadMark+" PRIV's comment")), own, "")
 

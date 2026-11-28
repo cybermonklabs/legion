@@ -1,6 +1,6 @@
 package textcheck
 
-//ci:reads packages/envoy/**/*.go !**/*_test.go !packages/envoy/**/testdata/** TestOnlyTestFilesImportSpecgraphtest calls nonTestImporters on ../.., whose walk passes over testdata, vendor and node_modules and parses each .go file but the test files
+//ci:reads packages/envoy/**/*.go !**/*_test.go !packages/envoy/**/testdata/** TestOnlyTestFilesImportSpecgraphtest and TestOnlyTestFilesImportTheDeliveryAndLegionSeeders call nonTestImporters on ../.., whose walk passes over testdata, vendor and node_modules and parses each .go file but the test files
 
 import (
 	"go/parser"
@@ -32,6 +32,26 @@ func TestOnlyTestFilesImportSpecgraphtest(t *testing.T) {
 			len(importers), read, support, strings.Join(importers, "\n\t"))
 	}
 	t.Logf("%d Go files that are no test files read under ../.., none of them an importer of %s", read, support)
+}
+
+// internal/dispatch/delivery/deliverytest and internal/dispatch/legion/legiontest are test
+// support too: the seeders of the delivery and Legion histories the tests of several packages
+// read. Only test files may import them, for the reason specgraphtest's test gives.
+func TestOnlyTestFilesImportTheDeliveryAndLegionSeeders(t *testing.T) {
+	t.Parallel()
+	for _, support := range []string{
+		"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest",
+		"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest",
+	} {
+		importers, read := nonTestImporters(t, "../..", support)
+		if read == 0 {
+			t.Fatal("read no Go file that is no test file under ../..")
+		}
+		if len(importers) > 0 {
+			t.Errorf("%d of the %d Go files that are no test files import %s, which only test files import:\n\t%s",
+				len(importers), read, support, strings.Join(importers, "\n\t"))
+		}
+	}
 }
 
 // nonTestImporters is each Go file under root, a testdata folder's aside, that is no _test.go file

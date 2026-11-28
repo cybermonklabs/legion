@@ -165,7 +165,10 @@ if [ -n "$work" ]; then
   mkdir -p "$home" "$work/outside-e2e-$nonce"
   session_dir=$(cd "$work/outside-e2e-$nonce" && pwd -P)
 fi
-[ -z "$work" ] || real_tools "$work/tools" bun omp tmux
+# A program real_tools could not link: the rows that start children under section (c)'s PATH read
+# UNKNOWN naming it, through P1, which every one of them follows.
+tools_problem=''
+[ -z "$work" ] || tools_problem=$(real_tools "$work/tools" bun omp tmux)
 
 session_env=(
   "PATH=$work/tools:$PATH"
@@ -259,6 +262,8 @@ elif [ -z "$work" ]; then
   row P1 "$want1" "mktemp -d made no scratch directory" UNKNOWN
 elif problem=$(tool_problem omp bun) && [ -n "$problem" ]; then
   row P1 "$want1" "$problem" UNKNOWN
+elif [ -n "$tools_problem" ]; then
+  row P1 "$want1" "$tools_problem" UNKNOWN
 else
   [ -n "$target" ] || target="@sjawhar/pi-envoy@$version"
   say "P1: omp plugin install $target"

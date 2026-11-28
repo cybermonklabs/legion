@@ -12,15 +12,16 @@ import (
 // requests), so the attribution writes the issue's key on a merged row of another repository
 // (attributionHeldFor). That row's base branch is a branch of that repository, and only a result
 // whose commit that repository holds is walked there (linkedBranchBases). The issue's own
-// repository holds no merge of the issue, so its check is compared with its default branch alone,
-// and a branch of its own that has the linked branch's name says nothing about the work.
+// repository holds no merge of the issue, so no commit of its branches counts, and a branch of
+// its own that has the linked branch's name says nothing about the work.
 //
 // ACME's repository is acme/widgets. Its linked pull request acme/tools#10 merged into
-// integration/x of acme/tools, and its row carries the issue's key, as the attribution writes it.
-// acme/widgets has a branch integration/x too, which carries ownCommit and which no work of the
-// issue merged into. A result at ownCommit stands at another commit, and the check names
-// acme/widgets' main alone. A result at linkedMerge, the merge commit of acme/tools#10, stands at
-// integration/x of acme/tools.
+// integration/x of acme/tools as linkedMerge, and its row carries the issue's key and that merge
+// commit, as the attribution writes them. acme/widgets has a branch integration/x too, which
+// carries ownCommit and which no work of the issue merged into. The check is compared with
+// acme/widgets' main, which holds no merge of the work, and then with integration/x of
+// acme/tools at linkedMerge (comparison.served). A result at ownCommit stands at another commit,
+// and one at linkedMerge stands at integration/x of acme/tools.
 func TestALinkedPullRequestsMergeBranchIsWalkedOnlyInItsOwnRepository(t *testing.T) {
 	t.Parallel()
 	const (
@@ -46,8 +47,9 @@ func TestALinkedPullRequestsMergeBranchIsWalkedOnlyInItsOwnRepository(t *testing
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/10")
 	// The merge as the attribution holds it once it judged the row: a row of acme/tools that
-	// carries the issue's key, since the issue links the pull request by its URL.
-	writeHeadOnBase(t, database, "acme/tools", 10, newHeadCommit, "merged", issue, "integration/x")
+	// carries the issue's key, since the issue links the pull request by its URL, and the merge
+	// commit the merge itself wrote, so no read of GitHub is needed to name it.
+	writeKnownMergeOnBase(t, database, "acme/tools", 10, newHeadCommit, issue, "integration/x", linkedMerge)
 
 	own := recordStored(t, handler, issue, "k4", ownCommit)
 	onLinked := recordStored(t, handler, issue, "k4", linkedMerge)
@@ -56,10 +58,15 @@ func TestALinkedPullRequestsMergeBranchIsWalkedOnlyInItsOwnRepository(t *testing
 	}
 
 	read := readResults(t, handler, issue)
-	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 1 || compared[0].Branch != "main" ||
-		compared[0].Repo != "" {
-		t.Errorf("the after_merge check compared with %+v, want its own repository's main alone: "+
+	compared := checkOf(t, read, "k4").ComparedWith
+	if len(compared) != 2 || compared[0].Branch != "main" || compared[0].Repo != "" || compared[0].MergeCommit != "" {
+		t.Errorf("the after_merge check compared first with %+v, want its own repository's main with no merge to hold: "+
 			"acme/widgets holds no merge of the issue", compared)
+	}
+	if len(compared) != 2 || compared[1].Branch != "integration/x" || compared[1].Repo != "acme/tools" ||
+		compared[1].MergeCommit != linkedMerge {
+		t.Errorf("the after_merge check compared then with %+v, want integration/x of acme/tools at the merge commit %s",
+			compared, linkedMerge)
 	}
 	standsAt(t, read, "k4", own.ID,
 		"an after_merge result at a commit only acme/widgets' own integration/x carries, a branch no work of the issue merged into",

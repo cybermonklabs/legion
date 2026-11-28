@@ -6,6 +6,9 @@
 // placeholder as the proxy's password and as `Authorization: DPoP <placeholder>`, trusting the
 // route's authority, and with no proof of any key of this process. A credential with no approve
 // route sends the review as before, and a Dispatch URL the route does not reach sends nothing.
+// Either way the review is a keyed write: each stand-in of Dispatch answers through its keyed
+// layer (`keyedLayer`), which names the write's key back on each 2xx, and the 2xx is the route's
+// declared answer (`routeAnswer`), which the client reads into the review's row.
 
 import { expect, test } from "bun:test";
 import { createServer } from "node:net";
@@ -30,15 +33,10 @@ const ROUTE: ApproveRoute = {
   caCertificate: AUTHORITY,
   hosts: ["dispatch.example"],
 };
-/** The review Dispatch answers, as the versioned review route declares it (`routeAnswer`): the
- *  members the client's write row reads (`WRITE_ROWS.reviewArtifact`) are among them. */
 const REVIEW = routeAnswer("POST /api/v1/artifacts/{id}/versions/{number}/reviews", {
-  id: "review-1",
   artifact_id: "artifact-1",
   version: 3,
   state: "approved",
-  actor: { kind: "user", id: "ada@example.com" },
-  created_at: "2026-11-23T12:00:00Z",
 });
 
 /** A credential whose own headers are a bearer's, with `route` as its approve route. */
@@ -64,16 +62,15 @@ interface Sent {
   readonly init: RequestInit & { readonly proxy?: string; readonly tls?: { readonly ca?: string } };
 }
 
-/** A fetch that answers `status` with `body` and keeps what it was sent. Its answer is Dispatch's,
- *  a 2xx or a refusal its keyed layer judged, so it names the review's key back (`keyedLayer`). */
+/** A fetch that answers `status` with `body` through Dispatch's keyed layer and keeps what it was
+ *  sent. */
 function recordingFetch(status: number, body: unknown): typeof fetch & { readonly sent: Sent[] } {
   const sent: Sent[] = [];
   const impl = keyedLayer(
     async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
       sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
       return Response.json(body, { status });
-    },
-    { judged: () => true }
+    }
   );
   return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
     readonly sent: Sent[];
@@ -151,8 +148,8 @@ const NO_WAIT: DispatchWriteRetry = {
 };
 
 /** A fetch that rejects the first `failures` requests as a fetch that reached no server does (a
- *  TypeError), then answers 201 with the review behind Dispatch's keyed layer (`keyedLayer`), and
- *  keeps what each request was sent. */
+ *  TypeError), then answers 201 with the review through Dispatch's keyed layer, and keeps what
+ *  each request was sent. */
 function unreachableThen(failures: number): typeof fetch & { readonly sent: Sent[] } {
   const sent: Sent[] = [];
   const impl = keyedLayer(
@@ -216,9 +213,9 @@ function proxyAnswer(status: number, code: string, forwarded: "false" | "unknown
   });
 }
 
-/** A fetch that answers each request with the next of `answers` (the last one from then on), and
- *  keeps what it was sent. A 2xx is Dispatch's, behind its keyed layer, so it names the review's
- *  key back (`keyedLayer`); the proxy's own answers are no answer of that layer and name none. */
+/** A fetch that answers each request with the next of `answers` (the last one from then on)
+ *  through Dispatch's keyed layer, which names the key back on a 2xx alone, and keeps what it was
+ *  sent. */
 function scriptedFetch(answers: readonly (() => Response)[]): typeof fetch & {
   readonly sent: Sent[];
 } {
@@ -289,20 +286,53 @@ test("the proxy's refusal that echoes the placeholder is told without it", async
   expect(refusal.message).not.toContain(PLACEHOLDER);
 });
 
-test("the proxy's own failure, before anything left it, is asked again under the write's key", async () => {
-  const fetchImpl = scriptedFetch([
-    () => proxyAnswer(502, "UPSTREAM_UNREACHABLE", "false"),
-    () => Response.json(REVIEW, { status: 201 }),
-  ]);
-  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
-    writeRetry: NO_WAIT,
+// The proxy's own answer before anything left it is read by the one outage rule
+// (`@legion/contracts/http-status`'s `outage`): a 408, a 429 or a 5xx is asked again under the key,
+// and any other status is the proxy's refusal, sent once. The proxy writes a 408 or a 429 itself
+// only where it passes on a token endpoint's status (`TOKEN_EXCHANGE_REFUSED`).
+for (const [status, code] of [
+  [408, "TOKEN_EXCHANGE_REFUSED"],
+  [429, "TOKEN_EXCHANGE_REFUSED"],
+  [500, "TOKEN_EXCHANGE_REFUSED"],
+  [502, "UPSTREAM_UNREACHABLE"],
+  [503, "TOKEN_EXCHANGE_REFUSED"],
+] as const) {
+  test(`the proxy's own ${status} ${code}, before anything left it, is asked again under the write's key`, async () => {
+    const fetchImpl = scriptedFetch([
+      () => proxyAnswer(status, code, "false"),
+      () => Response.json(REVIEW, { status: 201 }),
+    ]);
+    const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+      writeRetry: NO_WAIT,
+    });
+    const review = await client.reviewArtifact("artifact-1", 3, { state: "approved" });
+    expect(review as unknown).toEqual(REVIEW);
+    const keys = fetchImpl.sent.map((sent) =>
+      new Headers(sent.init.headers).get("Idempotency-Key")
+    );
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
   });
-  const review = await client.reviewArtifact("artifact-1", 3, { state: "approved" });
-  expect(review as unknown).toEqual(REVIEW);
-  const keys = fetchImpl.sent.map((sent) => new Headers(sent.init.headers).get("Idempotency-Key"));
-  expect(keys).toHaveLength(2);
-  expect(keys[1]).toBe(keys[0]);
-});
+}
+
+for (const status of [400, 403, 409]) {
+  test(`the proxy's own ${status}, before anything left it, is its refusal, sent once`, async () => {
+    const fetchImpl = scriptedFetch([
+      () => proxyAnswer(status, "TOKEN_EXCHANGE_REFUSED", "false"),
+      () => Response.json(REVIEW, { status: 201 }),
+    ]);
+    const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+      writeRetry: NO_WAIT,
+    });
+    const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(fetchImpl.sent).toHaveLength(1);
+    expect(refused).toBeInstanceOf(DispatchServiceError);
+    expect((refused as DispatchServiceError).status).toBe(status);
+  });
+}
 
 test("the proxy's answer after the review may have reached Dispatch leaves the review unsettled, with its key", async () => {
   const fetchImpl = scriptedFetch([() => proxyAnswer(407, "GRANT_NOT_LIVE", "unknown")]);

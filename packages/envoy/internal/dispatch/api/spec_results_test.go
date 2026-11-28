@@ -42,41 +42,160 @@ const (
 	specResultsCheckRun = 97
 )
 
-// The checks of specResultsFiles: one of job go-checks, one of job envoy-go, and one of the
-// matrix job m.
+// The checks of specResultsFiles: one of job go-checks, one of job envoy-go, one of the matrix job
+// m, one of the job named `foo (bar)`, which has no matrix, and one of the matrix job build.
 const (
-	probeCheck     = "probe-passes"
-	otherJobsCheck = "second-probe-passes"
-	matrixCheck    = "matrix-probe-passes"
+	probeCheck         = "probe-passes"
+	otherJobsCheck     = "second-probe-passes"
+	matrixCheck        = "matrix-probe-passes"
+	parenthesizedCheck = "parenthesized-probe-passes"
+	buildCheck         = "build-probe-passes"
 )
 
-// specResultsFiles is .dispatch/spec at specResultsCommit: one statement and its three program
-// checks, probeCheck, otherJobsCheck and matrixCheck. It is a tree the graph logic takes
-// (specgraph.Judge finds no problem in it), as the files of a commit a job reports on must be.
+// specResultsFiles is .dispatch/spec at specResultsCommit: one statement and its five program
+// checks, probeCheck, otherJobsCheck, matrixCheck, parenthesizedCheck and buildCheck. It is a tree
+// the graph logic takes (specgraph.Judge finds no problem in it), as the files of a commit a job
+// reports on must be.
 var specResultsFiles = map[string]string{
-	"probe.md": `:::requirement{#the-probe-holds kind="behavior"}
-The probe test passes on each commit.
-:::
-
-:::check{#probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestP" job="go-checks"}
-Claim: The probe test passes.
-Procedure: The program runs the probe test one time.
-Failing example: A probe test that fails.
-:::
-
-:::check{#second-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestQ" job="envoy-go"}
-Claim: The second probe test passes.
-Procedure: The program runs the second probe test one time.
-Failing example: A second probe test that fails.
-:::
-
-:::check{#matrix-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestM" job="m"}
-Claim: The matrix probe test passes on each leg.
-Procedure: The program runs the matrix probe test on each leg.
-Failing example: A matrix probe test that fails on one leg.
-:::
+	"probe.yaml": `---
+type: requirement
+id: the-probe-holds
+kind: behavior
+text:
+  - The probe test passes on each commit.
+---
+type: check
+id: probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestP
+  job: go-checks
+claim: The probe test passes.
+procedure_text:
+  - The program runs the probe test one time.
+failing_example:
+  - A probe test that fails.
+---
+type: check
+id: second-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestQ
+  job: envoy-go
+claim: The second probe test passes.
+procedure_text:
+  - The program runs the second probe test one time.
+failing_example:
+  - A second probe test that fails.
+---
+type: check
+id: matrix-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestM
+  job: m
+claim: The matrix probe test passes on each leg.
+procedure_text:
+  - The program runs the matrix probe test on each leg.
+failing_example:
+  - A matrix probe test that fails on one leg.
+---
+type: check
+id: parenthesized-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestR
+  job: foo (bar)
+claim: The parenthesized probe test passes.
+procedure_text:
+  - The program runs the parenthesized probe test one time.
+failing_example:
+  - A parenthesized probe test that fails.
+---
+type: check
+id: build-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestB
+  job: build
+claim: The build probe test passes on each leg.
+procedure_text:
+  - The program runs the build probe test on each leg.
+failing_example:
+  - A build probe test that fails on one leg.
 `,
 }
+
+// specPaddingFile is a spec file of size bytes that the graph logic takes (specgraph.Judge finds
+// no problem in it): one term, padding-term<n>, as print writes it, whose definition is a run of
+// letters as long as the size needs. A size below the shortest such file fails the test.
+func specPaddingFile(t *testing.T, n, size int) string {
+	t.Helper()
+	term := specgraph.Term{ID: fmt.Sprintf("padding-term%04d", n), Name: "padding", Definition: "a"}
+	shortest, err := term.Print()
+	if err != nil || size < len(shortest) {
+		t.Fatalf("a padding file of %d bytes: the shortest is %d bytes (%v)", size, len(shortest), err)
+	}
+	term.Definition = strings.Repeat("a", size-len(shortest)+1)
+	printed, err := term.Print()
+	if err != nil || len(printed) != size {
+		t.Fatalf("the padding file is %d bytes, want %d (%v)", len(printed), size, err)
+	}
+	return printed
+}
+
+// specResultsWorkflowPath is the workflow file of the default run, the path its workflow_ref names.
+const specResultsWorkflowPath = ".github/workflows/ci-results.yaml"
+
+// specResultsWorkflow is the workflow file at specResultsCommit: the jobs go-checks and envoy-go
+// with no matrix, the matrix job m, the job foo named `foo (bar)` with no matrix, and the matrix
+// job build, one of whose matrix values holds parentheses of its own.
+const specResultsWorkflow = `name: ci-results
+on: push
+jobs:
+  go-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+  envoy-go:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+  m:
+    strategy:
+      matrix:
+        leg: [a, b]
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+  foo:
+    name: foo (bar)
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+  build:
+    strategy:
+      matrix:
+        os: [linux, "linux (arm)"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: go test ./...
+`
 
 // specCheckDigest is the procedure digest the files give check id, read with the graph logic's
 // one reading of spec files, as the route must, which finds no problem in them.
@@ -103,22 +222,26 @@ type specCheckRunAnswer struct {
 }
 
 // specGitHub is the GitHub the route reads: the installation of the repository, its check runs by
-// id, and the tree and blobs of .dispatch/spec at a commit. A status set in checkRunStatus or
-// filesStatus answers every read of that kind with it. truncated marks each tree listing
-// truncated, as GitHub marks one past its own bounds, and padding lists that many entries beside
-// the files that are no spec files (nested directories). It counts each read, so a test can see a
-// cached read made once, and a file read that never happened.
+// id, the tree and blobs of .dispatch/spec at a commit, and workflow files by commit and path. A
+// status set in checkRunStatus, filesStatus or workflowStatus answers every read of that kind with
+// it. truncated marks each tree listing truncated, as GitHub marks one past its own bounds, and
+// padding lists that many entries beside the files that are no spec files (nested directories). It
+// counts each read, so a test can see a cached read made once, and a file read that never
+// happened, and keeps each workflow file asked for as "<commit> <path>".
 type specGitHub struct {
 	mu             sync.Mutex
 	checkRuns      map[int64]specCheckRunAnswer
 	files          map[string]map[string]string
+	workflows      map[string]map[string]string
 	checkRunStatus int
 	filesStatus    int
+	workflowStatus int
 	truncated      bool
 	padding        int
 	checkRunReads  int
 	treeReads      int
 	blobReads      int
+	workflowsAsked []string
 }
 
 func (g *specGitHub) serve(t *testing.T) string {
@@ -189,6 +312,30 @@ func (g *specGitHub) serve(t *testing.T) string {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(content)), "encoding": "base64"})
 	})
+	// The contents read as GitHub answers it under the object media type: a file of over 1 MB is
+	// served with its size, no content and the encoding "none".
+	mux.HandleFunc("GET /repos/{owner}/{repo}/contents/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		commit, path := r.URL.Query().Get("ref"), r.PathValue("path")
+		g.workflowsAsked = append(g.workflowsAsked, commit+" "+path)
+		if g.workflowStatus != 0 {
+			w.WriteHeader(g.workflowStatus)
+			fmt.Fprint(w, `{"message":"Server Error"}`)
+			return
+		}
+		content, ok := g.workflows[commit][path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		answer := map[string]any{"type": "file", "path": path, "size": len(content), "encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content))}
+		if len(content) > 1<<20 {
+			answer["encoding"], answer["content"] = "none", ""
+		}
+		_ = json.NewEncoder(w).Encode(answer)
+	})
 	return githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 }
 
@@ -216,6 +363,7 @@ func newSpecResultsRigOn(t *testing.T, serving testServerOptions) *specResultsRi
 	github := &specGitHub{
 		checkRuns: map[int64]specCheckRunAnswer{specResultsCheckRun: {name: "go-checks", headSHA: specResultsCommit}},
 		files:     map[string]map[string]string{specResultsCommit: specResultsFiles},
+		workflows: map[string]map[string]string{specResultsCommit: {specResultsWorkflowPath: specResultsWorkflow}},
 	}
 	_, pemText := githubapptest.Key(t)
 	serving.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}
@@ -395,7 +543,9 @@ func TestAResultNamesItsRunAndNoPerson(t *testing.T) {
 // repository and without "@" and the run's own ref (oauthwire.WorkflowPath), and Dispatch stores
 // the recorder by that same rule. A workflow file's name and a branch's name can each hold an
 // "@", so a cut at the first or the last "@" stores a principal the broker did not authenticate,
-// or one that two workflows share. The plain row is the control.
+// or one that two workflows share. The plain row is the control. The stand-in GitHub serves the
+// run's workflow file at the path each row's workflow_ref names, the file in which go-checks, the
+// job of the check, is a plain job.
 func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct{ name, path, ref string }{
@@ -406,6 +556,7 @@ func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
+			rig.github.workflows[specResultsCommit][row.path] = specResultsWorkflow
 			workflow := specResultsRepository + "/" + row.path
 			token := rig.token(func(answer *ciphertoken.Introspection) {
 				answer.Session = "ci-results:" + workflow
@@ -472,22 +623,22 @@ func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
 		name, file, content, first string
 	}{
 		{
-			name: "an unclosed block in another file", file: "broken.md",
-			content: ":::requirement{#broken kind=\"behavior\"}\nThis block never closes.\n",
-			first:   ".dispatch/spec/broken.md:1: broken: leaf-without-check: no statement is under it and no check serves it",
+			name: "a statement no check serves, in another file", file: "broken.yaml",
+			content: "---\ntype: requirement\nid: broken\nkind: behavior\ntext:\n  - No check serves this statement.\n",
+			first:   ".dispatch/spec/broken.yaml:1: broken: leaf-without-check: no statement is under it and no check serves it",
 		},
 		{
-			name: "a check without its failing example", file: "probe.md",
-			content: strings.Replace(specResultsFiles["probe.md"], "Failing example: A probe test that fails.\n", "", 1),
-			first:   ".dispatch/spec/probe.md:5: probe-passes: no-failing-example: the check has no failing example",
+			name: "a check without its failing example", file: "probe.yaml",
+			content: strings.Replace(specResultsFiles["probe.yaml"], "failing_example:\n  - A probe test that fails.\n", "", 1),
+			first:   ".dispatch/spec/probe.yaml:7: probe-passes: schema: node: missing property 'failing_example'",
 		},
 		{
-			name: "a spec file that holds a NUL byte", file: "nul.md", content: "# A heading\n\x00\n",
-			first: ".dispatch/spec/nul.md:2: -: bad-encoding: a spec file is UTF-8 text with no NUL byte",
+			name: "a spec file that holds a NUL byte", file: "nul.yaml", content: "# A heading\n\x00\n",
+			first: ".dispatch/spec/nul.yaml:2: -: bad-yaml: control characters are not allowed",
 		},
 		{
-			name: "a spec file over the size bound", file: "big.md", content: strings.Repeat("\n", notes.MaxFileSize+1),
-			first: "file too large: .dispatch/spec/big.md is 1048577 bytes (limit 1048576)",
+			name: "a spec file over the size bound", file: "big.yaml", content: strings.Repeat("\n", notes.MaxFileSize+1),
+			first: "file too large: .dispatch/spec/big.yaml is 1048577 bytes (limit 1048576)",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -512,11 +663,11 @@ func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
 	t.Parallel()
 	rig := newSpecResultsRig(t)
 	files := maps.Clone(specResultsFiles)
-	files["big-b.md"] = strings.Repeat("\n", notes.MaxFileSize+2)
-	files["big-a.md"] = strings.Repeat("\n", notes.MaxFileSize+1)
+	files["big-b.yaml"] = strings.Repeat("\n", notes.MaxFileSize+2)
+	files["big-a.yaml"] = strings.Repeat("\n", notes.MaxFileSize+1)
 	rig.github.files[specResultsCommit] = files
 	refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusConflict, "SPEC_FILES_REFUSED")
-	const want = "have 2 problems, so they hold no check to write a result for. The first: file too large: .dispatch/spec/big-a.md is 1048577 bytes (limit 1048576)"
+	const want = "have 2 problems, so they hold no check to write a result for. The first: file too large: .dispatch/spec/big-a.yaml is 1048577 bytes (limit 1048576)"
 	if !strings.Contains(refusal.Error, want) {
 		t.Fatalf("the refusal %q does not say %q", refusal.Error, want)
 	}
@@ -530,21 +681,21 @@ func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
 // write their result.
 func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 	t.Parallel()
-	// The probe spec and blank files up to count files in all.
-	padded := func(count int) map[string]string {
+	// The probe spec and padding files up to count files in all, each a file the graph logic takes.
+	padded := func(t *testing.T, count int) map[string]string {
 		files := maps.Clone(specResultsFiles)
 		for i := 0; len(files) < count; i++ {
-			files[fmt.Sprintf("n%04d.md", i)] = "\n"
+			files[fmt.Sprintf("n%04d.yaml", i)] = specPaddingFile(t, i, 100)
 		}
 		return files
 	}
-	// The probe spec and files of blank lines, each within notes.MaxFileSize, summing to total.
-	summing := func(total int) map[string]string {
+	// The probe spec and padding files, each within notes.MaxFileSize, summing to total.
+	summing := func(t *testing.T, total int) map[string]string {
 		files := maps.Clone(specResultsFiles)
-		left := total - len(files["probe.md"])
+		left := total - len(files["probe.yaml"])
 		for i := 0; left > 0; i++ {
 			size := min(left, notes.MaxFileSize)
-			files[fmt.Sprintf("blank-%02d.md", i)] = strings.Repeat("\n", size)
+			files[fmt.Sprintf("padding-%02d.yaml", i)] = specPaddingFile(t, i, size)
 			left -= size
 		}
 		return files
@@ -555,8 +706,8 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 		files map[string]string
 		want  string
 	}{
-		{name: "one file over MaxFiles", files: padded(notes.MaxFiles + 1), want: refusedAs + "1001 files (limit 1000)"},
-		{name: "one byte over MaxSetSize", files: summing(notes.MaxSetSize + 1), want: refusedAs + "16777217 bytes in its files (limit 16777216)"},
+		{name: "one file over MaxFiles", files: padded(t, notes.MaxFiles+1), want: refusedAs + "1001 files (limit 1000)"},
+		{name: "one byte over MaxSetSize", files: summing(t, notes.MaxSetSize+1), want: refusedAs + "16777217 bytes in its files (limit 16777216)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
@@ -576,8 +727,8 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 		name  string
 		files map[string]string
 	}{
-		{name: "MaxFiles files", files: padded(notes.MaxFiles)},
-		{name: "files summing MaxSetSize", files: summing(notes.MaxSetSize)},
+		{name: "MaxFiles files", files: padded(t, notes.MaxFiles)},
+		{name: "files summing MaxSetSize", files: summing(t, notes.MaxSetSize)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
@@ -638,6 +789,201 @@ func TestACheckOfAnotherJobIsRefused(t *testing.T) {
 	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(otherJobsCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 }
 
+// checkRunNamed has the stand-in GitHub hold check run id at the default commit, named name, and
+// answers a results token of that check run.
+func (r *specResultsRig) checkRunNamed(id int64, name string) string {
+	r.github.checkRuns[id] = specCheckRunAnswer{name: name, headSHA: specResultsCommit}
+	return r.token(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = fmt.Sprint(id) })
+}
+
+// workflowsAsked is each workflow file the stand-in GitHub was asked for, as "<commit> <path>".
+func (r *specResultsRig) workflowsAsked() []string {
+	r.github.mu.Lock()
+	defer r.github.mu.Unlock()
+	return slices.Clone(r.github.workflowsAsked)
+}
+
+// TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck: GitHub names a job's check run by the job's
+// name, and a name may end in parentheses with no matrix behind them: the job foo is named
+// `foo (bar)` and has no matrix. Its check run writes the check that names the job `foo (bar)`,
+// with no leg. GitHub is asked for the run's workflow file once, which says that one job is named
+// `foo (bar)` and that no matrix job can make that name for a leg.
+func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
+	rig := newSpecResultsRig(t)
+	result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(31, "foo (bar)"), passOf(parenthesizedCheck)))
+	if p := result.Attestation.Predicate; p.Job != "foo (bar)" || p.Leg != "" {
+		t.Fatalf("the result is of job %q, leg %q; want the job %q and no leg", p.Job, p.Leg, "foo (bar)")
+	}
+	if asked, want := rig.workflowsAsked(), []string{specResultsCommit + " " + specResultsWorkflowPath}; !slices.Equal(asked, want) {
+		t.Fatalf("GitHub was asked for the workflow files %q, want %q, once", asked, want)
+	}
+}
+
+// TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob: a matrix job test whose matrix holds the
+// value unit makes a check run named `test (unit)` for that leg, and a plain job named
+// `test (unit)` makes a check run of that same name. So the name does not say which of the two
+// jobs ran, and a check run of that name is refused the check that names the job `test (unit)`,
+// 409 CHECK_NOT_THIS_JOBS, saying which matrix job can make the name. The control is the same file
+// with the matrix job renamed tests, whose legs make no check run of that name: the plain job's
+// check run writes the check, with no leg.
+func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
+	const check = "unit-probe-passes"
+	files := maps.Clone(specResultsFiles)
+	files["probe.yaml"] += "---\ntype: check\nid: " + check + "\nserves: the-probe-holds\nsubject: code\nprocedure: program\n" +
+		"test:\n  runner: go\n  selector: example.com/m/p TestU\n  job: test (unit)\n" +
+		"claim: The unit probe test passes.\nprocedure_text:\n  - The program runs the unit probe test one time.\n" +
+		"failing_example:\n  - A unit probe test that fails.\n"
+	workflow := func(matrixJob string) string {
+		return "jobs:\n" +
+			job(matrixJob, "    strategy:\n      matrix:\n        suite: [unit]\n") +
+			job("other", "    name: test (unit)\n")
+	}
+	rigWith := func(t *testing.T, matrixJob string) *specResultsRig {
+		rig := newSpecResultsRig(t)
+		rig.github.files[specResultsCommit] = files
+		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = workflow(matrixJob)
+		return rig
+	}
+	t.Run("a matrix job test beside the plain job test (unit)", func(t *testing.T) {
+		rig := rigWith(t, "test")
+		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(71, "test (unit)"), passOf(check)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
+		if says := `the matrix job "test" in ` + specResultsWorkflowPath + " at " + specResultsCommit + ` can make a check run of that name for its leg "unit"`; !strings.Contains(refusal.Error, says) {
+			t.Fatalf("the refusal %q does not say %q", refusal.Error, says)
+		}
+	})
+	t.Run("the control: the matrix job named tests", func(t *testing.T) {
+		rig := rigWith(t, "tests")
+		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(71, "test (unit)"), passOf(check)))
+		if p := result.Attestation.Predicate; p.Job != "test (unit)" || p.Leg != "" {
+			t.Fatalf("the result is of job %q, leg %q; want the job %q and no leg", p.Job, p.Leg, "test (unit)")
+		}
+	})
+}
+
+// TestALegOfAMatrixJobWritesItsJobsCheck: the job build has a matrix in the workflow file of the
+// run at the run's commit, so its check run `build (<values>)` is the leg <values> of build and
+// writes the check that names the job build. The leg is all that the parentheses after
+// `build (` hold, a matrix value that holds parentheses of its own included. GitHub is asked for
+// the workflow file once for the commit, at the path the run's workflow_ref names, and a matrix
+// written as an expression is a matrix too.
+func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
+	t.Run("a matrix of values", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		for i, leg := range []string{"linux", "linux (arm)"} {
+			result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(int64(41+i), "build ("+leg+")"), passOf(buildCheck)))
+			if p := result.Attestation.Predicate; p.Job != "build" || p.Leg != leg {
+				t.Fatalf("the result is of job %q, leg %q; want the job build and the leg %q", p.Job, p.Leg, leg)
+			}
+		}
+		if asked, want := rig.workflowsAsked(), []string{specResultsCommit + " " + specResultsWorkflowPath}; !slices.Equal(asked, want) {
+			t.Fatalf("GitHub was asked for the workflow files %q, want %q, once", asked, want)
+		}
+	})
+	t.Run("a matrix written as an expression", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + job("build", "    strategy:\n      matrix: ${{ fromJSON(needs.setup.outputs.legs) }}\n")
+		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(41, "build (linux)"), passOf(buildCheck)))
+		if p := result.Attestation.Predicate; p.Job != "build" || p.Leg != "linux" {
+			t.Fatalf("the result is of job %q, leg %q; want the job build and the leg linux", p.Job, p.Leg)
+		}
+	})
+}
+
+// job is one job of a workflow file, as the rows of this file write one: its id, whatever body
+// the row gives it (a name, a matrix, or neither), and the runner and the one step every such
+// job has.
+func job(id, body string) string {
+	return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
+}
+
+// linuxMatrix is the matrix body the rows below give a job: one value of one name, which is all a
+// job needs to be a matrix job, the one thing the route reads of a matrix.
+const linuxMatrix = "    strategy:\n      matrix:\n        os: [linux]\n"
+
+// TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt: GitHub does not keep a name that ends in
+// parentheses for the legs of a matrix. A check run named `build (linux)` is a leg of the job
+// build only where the workflow file of the run at its commit makes build a matrix job, so the
+// check of the job build is refused 409 CHECK_NOT_THIS_JOBS, saying why, where build has no
+// matrix or an empty one, where no job is named build, where the job's name is an expression,
+// where a job named `build (linux)` with no matrix makes a check run of that very name, and where
+// the file is over notes.MaxFileSize or does not read as a workflow file.
+func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
+	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit + " "
+	for _, row := range []struct {
+		name, workflow, says string
+	}{
+		{name: "the job build has no matrix", workflow: "jobs:\n" + job("build", ""), says: `no job named "build"` + at + "has a matrix"},
+		{name: "the job build has an empty matrix", workflow: "jobs:\n" + job("build", "    strategy:\n      matrix: {}\n"), says: `no job named "build"` + at + "has a matrix"},
+		{name: "no job is named build", workflow: "jobs:\n" + job("test", linuxMatrix), says: `no job named "build"` + at + "has a matrix"},
+		{name: "the job's name is an expression", workflow: "jobs:\n" + job("build", "    name: ${{ 'build' }}\n"+linuxMatrix), says: "a job" + at + "is named by an expression"},
+		{
+			name:     "a job named build (linux) with no matrix beside the matrix job build",
+			workflow: "jobs:\n" + job("build", linuxMatrix) + job("other", "    name: build (linux)\n"),
+			says:     `the job named "build (linux)"` + at + "has no matrix",
+		},
+		{
+			name:     "a workflow file over the size bound",
+			workflow: "jobs:\n" + job("build", linuxMatrix) + strings.Repeat("#", notes.MaxFileSize+1-len("jobs:\n"+job("build", linuxMatrix))),
+			says:     "file too large: " + specResultsWorkflowPath + " is 1048577 bytes (limit 1048576)",
+		},
+		{name: "a file that does not read as a workflow file", workflow: "jobs: [\n", says: "does not read as a workflow file"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = row.workflow
+			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(51, "build (linux)"), passOf(buildCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
+			if !strings.Contains(refusal.Error, row.says) {
+				t.Fatalf("the refusal %q does not say %q", refusal.Error, row.says)
+			}
+		})
+	}
+}
+
+// TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg: legOf reads the check run `build (linux) (x64)`
+// as the leg `linux) (x64` of the matrix job build, and the matrix job named `build (linux)` can
+// make that same name for its leg x64; a second matrix job named build can make `build (linux)`
+// for its own leg linux. Dispatch reads no matrix values, so in each case the name does not say
+// which job ran, and the check of the job build is refused 409 CHECK_NOT_THIS_JOBS, saying which
+// other matrix job can make the name. The control is the same name with build the one matrix job
+// that can make it: the leg writes build's check.
+func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
+	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit
+	build := job("build", linuxMatrix)
+	for _, row := range []struct {
+		name, workflow, checkRun, says string
+	}{
+		{
+			name:     "the matrix job build (linux) beside the matrix job build",
+			workflow: "jobs:\n" + build + job("other", "    name: build (linux)\n    strategy:\n      matrix:\n        arch: [x64]\n"),
+			checkRun: "build (linux) (x64)",
+			says:     `the matrix job "build (linux)"` + at + ` can make a check run of that name for its leg "x64"`,
+		},
+		{
+			name:     "a second matrix job named build",
+			workflow: "jobs:\n" + build + job("other", "    name: build\n    strategy:\n      matrix:\n        arch: [x64]\n"),
+			checkRun: "build (linux)",
+			says:     `the matrix job "build"` + at + ` can make a check run of that name for its leg "linux"`,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = row.workflow
+			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, row.checkRun), passOf(buildCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
+			if !strings.Contains(refusal.Error, row.says) {
+				t.Fatalf("the refusal %q does not say %q", refusal.Error, row.says)
+			}
+		})
+	}
+	t.Run("the control: build is the one matrix job that can make the name", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + build + job("other", "    name: test\n    strategy:\n      matrix:\n        arch: [x64]\n")
+		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, "build (linux) (x64)"), passOf(buildCheck)))
+		if p := result.Attestation.Predicate; p.Job != "build" || p.Leg != "linux) (x64" {
+			t.Fatalf("the result is of job %q, leg %q; want the job build and the leg %q", p.Job, p.Leg, "linux) (x64")
+		}
+	})
+}
+
 // TestACheckRunOfAnotherCommitIsRefused: GitHub names another commit for the token's check run,
 // so the check run is no job of this run.
 func TestACheckRunOfAnotherCommitIsRefused(t *testing.T) {
@@ -668,11 +1014,26 @@ func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
 	rig.refusedWith(t, rig.asPerson(t, http.MethodPost, "/api/v1/projects/"+specResultsProject+"/results", passOf(probeCheck)), http.StatusForbidden, "RESULTS_SCOPE_REQUIRED")
 }
 
-// TestAProjectNotTheTokensIsRefused: a results token writes the results of its own project alone.
+// TestAProjectNotTheTokensIsRefused: a results token writes the results of its own project alone,
+// a public project's included. The token names ACME, and a write to the public project OTHER is
+// refused 403 PROJECT_SCOPE before the handler runs. So it is where OTHER's default repository is
+// the run's repository, where the handler would take the run as OTHER's and store its result under
+// OTHER.
 func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 	t.Parallel()
-	rig := newSpecResultsRig(t)
-	rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
+	t.Run("a public project", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
+	})
+	t.Run("a public project whose default repository is the run's", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		for _, set := range []struct{ project, repository string }{{specResultsProject, "example-org/another-repo"}, {"OTHER", specResultsRepository}} {
+			if written := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+set.project+"/default-repository", map[string]any{"repo": set.repository}); written.Code != http.StatusOK {
+				t.Fatalf("set %s's default repository to %s: status=%d body=%s", set.project, set.repository, written.Code, written.Body.String())
+			}
+		}
+		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
+	})
 }
 
 // TestARepositoryTheProjectDoesNotMapIsRefused: the token's run is of a repository that is not
@@ -784,20 +1145,41 @@ func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
 	}
 }
 
-// TestGitHubUnreadableIsAServiceError: a check run or files GitHub does not answer leave the
-// result unjudged, so the route answers 503 and stores nothing, and the job writes it again.
+// TestGitHubUnreadableIsAServiceError: a check run, files or a workflow file GitHub does not
+// answer leave the result unjudged, so the route answers 503 and stores nothing, and the job
+// writes it again. GitHub's 403 or 404 for the check run or the workflow file is GitHub refusing
+// Dispatch the read for good (githubapp.ErrRepositoryUnreadable): the App cannot see it, or the
+// commit does not hold it, and a write again is answered the same. So it is a final refusal that
+// does not ask for the write again, 403 CHECK_RUN_NOT_SHOWN for the check run, the token's own
+// run, and 409 WORKFLOW_NOT_SHOWN for the workflow file, which says which job made the check run.
+// A workflow file the stand-in does not hold is GitHub's 404 too.
 func TestGitHubUnreadableIsAServiceError(t *testing.T) {
 	t.Parallel()
-	t.Run("the check run", func(t *testing.T) {
-		rig := newSpecResultsRig(t)
-		rig.github.checkRunStatus = http.StatusBadGateway
-		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusServiceUnavailable, "CHECK_RUN_UNREADABLE")
-	})
-	t.Run("the files", func(t *testing.T) {
-		rig := newSpecResultsRig(t)
-		rig.github.filesStatus = http.StatusBadGateway
-		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusServiceUnavailable, "FILES_UNREADABLE")
-	})
+	for _, row := range []struct {
+		name   string
+		setUp  func(*specGitHub)
+		status int
+		code   string
+	}{
+		{name: "the check run, GitHub answering 502", setUp: func(g *specGitHub) { g.checkRunStatus = http.StatusBadGateway }, status: http.StatusServiceUnavailable, code: "CHECK_RUN_UNREADABLE"},
+		{name: "the check run, GitHub answering 500", setUp: func(g *specGitHub) { g.checkRunStatus = http.StatusInternalServerError }, status: http.StatusServiceUnavailable, code: "CHECK_RUN_UNREADABLE"},
+		{name: "the check run, GitHub answering 404", setUp: func(g *specGitHub) { g.checkRunStatus = http.StatusNotFound }, status: http.StatusForbidden, code: "CHECK_RUN_NOT_SHOWN"},
+		{name: "the check run, GitHub answering 403", setUp: func(g *specGitHub) { g.checkRunStatus = http.StatusForbidden }, status: http.StatusForbidden, code: "CHECK_RUN_NOT_SHOWN"},
+		{name: "the files, GitHub answering 502", setUp: func(g *specGitHub) { g.filesStatus = http.StatusBadGateway }, status: http.StatusServiceUnavailable, code: "FILES_UNREADABLE"},
+		{name: "the workflow file, GitHub answering 500", setUp: func(g *specGitHub) { g.workflowStatus = http.StatusInternalServerError }, status: http.StatusServiceUnavailable, code: "WORKFLOW_UNREADABLE"},
+		{name: "the workflow file, GitHub answering 404", setUp: func(g *specGitHub) { g.workflowStatus = http.StatusNotFound }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
+		{name: "the workflow file, GitHub answering 403", setUp: func(g *specGitHub) { g.workflowStatus = http.StatusForbidden }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
+		{name: "a workflow file the commit does not hold", setUp: func(g *specGitHub) { g.workflows = nil }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newSpecResultsRig(t)
+			row.setUp(rig.github)
+			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, "build (linux)"), passOf(buildCheck)), row.status, row.code)
+			if again := strings.Contains(refusal.Error, "write it again"); again != (row.status == http.StatusServiceUnavailable) {
+				t.Fatalf("the refusal %q asks for the write again: %v, want %v", refusal.Error, again, row.status == http.StatusServiceUnavailable)
+			}
+		})
+	}
 }
 
 // storedRow is one row of spec_check_results as Postgres holds it, as text.
@@ -812,7 +1194,8 @@ func storedRow(t *testing.T, rig *specResultsRig, id string) string {
 
 // TestAResultIsAppendedAndNeverEdited: a second result of one check at one commit is a second
 // row with a higher record number, and the first row's bytes stay as they were. GitHub is read
-// once for the check run and once for the files: both reads are cached for the process.
+// once for the check run, once for the files and once for the run's workflow file: each read is
+// cached for the process.
 func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
 	t.Parallel()
 	rig := newSpecResultsRig(t)
@@ -832,8 +1215,10 @@ func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
 	}
 	rig.github.mu.Lock()
 	defer rig.github.mu.Unlock()
-	if rig.github.checkRunReads != 1 || rig.github.treeReads != 1 {
-		t.Fatalf("GitHub was read %d times for the check run and %d for the files, want once each", rig.github.checkRunReads, rig.github.treeReads)
+	workflow := []string{specResultsCommit + " " + specResultsWorkflowPath}
+	if rig.github.checkRunReads != 1 || rig.github.treeReads != 1 || !slices.Equal(rig.github.workflowsAsked, workflow) {
+		t.Fatalf("GitHub was read %d times for the check run, %d for the files and for the workflow files %q, want once, once and %q once",
+			rig.github.checkRunReads, rig.github.treeReads, rig.github.workflowsAsked, workflow)
 	}
 }
 
@@ -853,15 +1238,19 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	workflow := ".github/workflows/ci-results.yaml"
+	run := oauthwire.Run{
+		Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/" + workflow + "@refs/heads/topic",
+		Ref: "refs/heads/topic", SHA: specResultsCommit, EventName: "push", RunnerEnvironment: "github-hosted",
+		Workflow: workflow, ID: 7, Attempt: 1, CheckRun: specResultsCheckRun,
+	}
 	for range 2 {
 		row := specCheckRow{
 			result: attestedResult{
 				predicateType: specCheckResultPredicateType, project: specResultsProject, check: probeCheck,
-				procedureDigest: specCheckDigest(t, probeCheck), verdict: "pass", checkRunName: "go-checks",
-				run:     oauthwire.CIRun{Repository: specResultsRepository, SHA: specResultsCommit},
-				attempt: 1, session: "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
+				procedureDigest: specCheckDigest(t, probeCheck), verdict: "pass", job: "go-checks",
+				run: run, session: "ci-results:" + specResultsRepository + "/" + workflow,
 			},
-			checkRunID: specResultsCheckRun, runID: 7,
 		}
 		stored, err := insertSpecCheckResult(ctx, tx, row)
 		if err != nil {
@@ -885,6 +1274,7 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 
 // TestEveryAttemptAndLegIsKept: each leg of the matrix job m and each attempt of a leg is a row
 // of its own, with the job and the leg from its check run's name, and none is marked or dropped.
+// The workflow file that makes m a matrix job is read of GitHub once for the commit.
 func TestEveryAttemptAndLegIsKept(t *testing.T) {
 	t.Parallel()
 	rig := newSpecResultsRig(t)
@@ -916,6 +1306,9 @@ func TestEveryAttemptAndLegIsKept(t *testing.T) {
 	want := []kept{{"m", "a", "pass", 2}, {"m", "b", "pass", 1}, {"m", "a", "fail", 1}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("the read answered %v, want %v newest first", got, want)
+	}
+	if asked := rig.workflowsAsked(); len(asked) != 1 {
+		t.Fatalf("GitHub was asked for the workflow files %q, want one read for the commit", asked)
 	}
 }
 

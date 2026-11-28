@@ -15,7 +15,7 @@ import {
 import { harnessPorts } from "../../../dispatch/e2e/harness-ports";
 import { headsCases } from "./heads-scenarios";
 import { RIG_WORLD } from "./rig-world";
-import { agentPost, IMPLEMENTER } from "./seed-requests";
+import { agentPost, IMPLEMENTER } from "./seed-dispatch";
 
 /** The repository of the heads scenarios' world and its default branch, rig-world.json's. */
 const HEADS_REPO = RIG_WORLD.repository;

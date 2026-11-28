@@ -19,6 +19,8 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 //     set it (Client.Branch), GET .../commits/{sha}, which holds every commit (Client.HasCommit),
 //     GET .../commits/{sha}/check-runs, which names no run, and GET .../commits/{sha}/pulls,
 //     which names no pull request;
+//   - GET /repos/{owner}/{repo}/contents/{path}?ref={sha}, the read of githubapp.Client.File, by
+//     which Dispatch reads the run's workflow file to know which job makes the run's check run;
 //   - the App installation of a repository and the installation token Dispatch mints there.
 //
 // Every route answers what this process set and nothing else, as GitHub's 404 for the rest.
@@ -76,6 +78,8 @@ export interface FakeGitHubActions {
   ): void;
   /** The head of `branch` of `repository` is `sha` from now on, as a push moves it. */
   setBranch(repository: string, branch: string, sha: string): void;
+  /** The one file at `path` at `sha`, as the contents read answers it. */
+  setFile(repository: string, sha: string, path: string, content: string): void;
   stop(): Promise<void>;
 }
 
@@ -117,6 +121,8 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   const blobs = new Map<string, string>();
   // "<owner>/<name>:<branch>" → the branch's head.
   const branches = new Map<string, string>();
+  // "<owner>/<name>@<sha>:<path>" → content, for the contents read.
+  const contents = new Map<string, string>();
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -282,6 +288,21 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
             encoding: "base64",
           });
         }
+        // `contents/{path}?ref={sha}`, each part of the path percent-encoded, as the Go client
+        // escapes it; GitHub's 404 both for a path the commit does not hold and for no such ref.
+        const file = rest.match(/^contents\/(.+)$/);
+        if (file !== null) {
+          const path = (file[1] ?? "").split("/").map(decodeURIComponent).join("/");
+          const sha = url.searchParams.get("ref") ?? "";
+          const content = contents.get(`${repository}@${sha}:${path}`);
+          if (content === undefined) return notFound(`${path} at ${sha}`);
+          return Response.json({
+            type: "file",
+            size: Buffer.byteLength(content),
+            encoding: "base64",
+            content: Buffer.from(content).toString("base64"),
+          });
+        }
       }
 
       return notFound(`${request.method} ${url.pathname}`);
@@ -308,6 +329,9 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
     },
     setBranch(repository, branch, sha): void {
       branches.set(`${repository}:${branch}`, sha);
+    },
+    setFile(repository, sha, path, content): void {
+      contents.set(`${repository}@${sha}:${path}`, content);
     },
     async stop(): Promise<void> {
       await server.stop(true);

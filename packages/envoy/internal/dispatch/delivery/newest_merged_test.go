@@ -29,9 +29,9 @@ func mergedPullEnvelope(issue string, number int, action, base, mergedAt, update
 // highest number and not the one whose last event is newest. #9 merged into integration/nine first,
 // then #8, opened before it, merged into integration/eight; then #9 was edited, which moves its
 // updated_at (event_at) past #8's merge. NewestPullRequestHead, the head a check CI proves is read
-// at, answers #8, where the highest number answered #9; BaseBranchMergedFor, the branch an
-// `after_merge` result is measured against, answers integration/eight, where the newest event
-// answered #9's integration/nine. The control: an envelope of #8 from a listener that carries no
+// at, answers #8, where the highest number answered #9; MergeOfIssue, the merges an `after_merge`
+// result is measured against, lists #8 into integration/eight first, where the newest event put
+// #9's integration/nine first. The control: an envelope of #8 from a listener that carries no
 // merge time, edited later still, leaves #8's merge time as it was, so the answers do not move.
 func TestTheNewestMergedPullRequestIsTheOneThatMergedLast(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
@@ -56,10 +56,10 @@ func TestTheNewestMergedPullRequestIsTheOneThatMergedLast(t *testing.T) {
 		if err != nil || !found || head.Number != 8 {
 			t.Errorf("%s: NewestPullRequestHead(%s) = %+v, %v, %v; want #8, which merged after #9", when, issue, head, found, err)
 		}
-		branch, err := unrenamed().BaseBranchMergedFor(ctx, pool, issue, "acme/widgets", HeadAnswers{})
-		if err != nil || branch != "integration/eight" {
-			t.Errorf("%s: BaseBranchMergedFor(%s) = %q, %v; want integration/eight, the branch #8 merged into after #9 merged",
-				when, issue, branch, err)
+		merges, err := unrenamed().MergeOfIssue(ctx, pool, issue, "acme/widgets", HeadAnswers{})
+		if err != nil || len(merges) == 0 || merges[0].BaseRef != "integration/eight" {
+			t.Errorf("%s: MergeOfIssue(%s) = %+v, %v; want #8 into integration/eight first, which merged after #9",
+				when, issue, merges, err)
 		}
 	}
 

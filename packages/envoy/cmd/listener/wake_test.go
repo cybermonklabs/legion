@@ -215,6 +215,8 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 // of the reports in flight held all that time: the grant refuses it again however often it is
 // sent.
 func TestAWakeReportTheGrantRefusesIsGivenUpAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// deniedGrantClient).
 	client := deniedGrantClient(t, bus.LegionWakeTopic)
 	logs := &lockedBuffer{}
 	lifetime, cancel := context.WithTimeout(context.Background(), 30*time.Second)

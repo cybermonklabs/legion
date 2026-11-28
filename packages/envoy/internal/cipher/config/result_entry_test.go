@@ -39,11 +39,9 @@ func resultsDestination() PrivateUpstream {
 
 // resultsStart is the start check of the results capability as cmd/cipherd makes it: the results
 // profile's own rules (ResultsEntryRules), then every dpop block's (ProxyMintedRules) against the
-// private destinations given. These tests build the rules themselves rather than reading a
-// profiles file, so no block is one a file of no kinds read as before the kinds: readsAsBlock is
-// false, and cmd/cipherd's profiles-check tests hold that case.
+// private destinations given.
 func resultsStart(rules proxyrules.Rules, upstreams []PrivateUpstream, resultWorkflows bool) error {
-	if err := ResultsEntryRules(rules, false, resultWorkflows); err != nil {
+	if err := ResultsEntryRules(rules, resultWorkflows); err != nil {
 		return err
 	}
 	return ProxyMintedRules(rules, upstreams)
@@ -54,10 +52,12 @@ func resultsStart(rules proxyrules.Rules, upstreams []PrivateUpstream, resultWor
 // with result entries, refuses profiles with no DISPATCH_RESULTS_TOKEN profile, one whose proxy
 // block binds no host, one that binds a `*.` name or more than one host (the run's token and a
 // proof of the pod's key go to every host the profile binds, so it binds Dispatch's one host and
-// nothing else), one not of kind dpop, one with no allow list or an empty one, and one carried in
-// any header but Authorization alone, each refusal naming BROKER_PROFILES_FILE and what is
-// missing. The profile whole, and the one with the default header (Authorization), are taken with
-// the private destination of its host.
+// nothing else), one with no allow list or an empty one, and one carried in any header but
+// Authorization alone, each refusal naming BROKER_PROFILES_FILE and what is missing. A profile not
+// of kind dpop is no file the profiles parser reads (policy.ParseProfiles, which
+// TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile drives), so it reaches no rule here.
+// The profile whole, and the one with the default header (Authorization), are taken with the
+// private destination of its host.
 func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	e := withResultsAirlock(validEnv())
 	e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
@@ -89,8 +89,6 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 		{"a second, wildcard host", "one exact host", func(s *proxyrules.Binding) {
 			s.Inline.Hosts = []string{"dispatch.example", "*.attacker.example"}
 		}},
-		{"no kind", "kind dpop", func(s *proxyrules.Binding) { s.Way = "" }},
-		{"another kind", "kind dpop", func(s *proxyrules.Binding) { s.Way = proxyrules.WaySign }},
 		{"no allow list", "allow list", func(s *proxyrules.Binding) { s.Inline.Allow = nil }},
 		{"an empty allow list", "allow list", func(s *proxyrules.Binding) { s.Inline.Allow = []proxyrules.Allow{} }},
 		{"another header", "Authorization", func(s *proxyrules.Binding) { s.Inline.Headers = []string{"X-Token"} }},

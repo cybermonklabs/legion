@@ -81,10 +81,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
-	if !ok {
+	// The caller's credential rides with the actor the create records, which carries none
+	// (model.Actor.Recorded), for the p0 check below. The one project the credential names rides
+	// with the writer too (callerProject), for the project checks, as the PATCH reads it.
+	caller, err := s.requestWriter(r, input.Actor)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
+	actor := caller.actor
 	blockers, err := normalizeIssueBlockers(input.BlockedBy)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -133,8 +138,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// that names none, which is answered as before. The dependency lock step, the parent's read
 	// and writeBlockedBy below read it again, because neither a blocked_by target's project nor
 	// the parent's is part of this address.
-	callerProject, scoped := s.callerProject(r)
-	if scoped && projectKeyPattern.MatchString(input.Project) {
+	callerProject := caller.callerProject
+	if callerProject != "" && projectKeyPattern.MatchString(input.Project) {
 		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, input.Project)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -151,7 +156,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// parent or a target that no issue holds, or of a private project that the credential does
 	// not name, gets here the 400 of a parent or a target that does not exist. The lock step and
 	// the reads under the locks ask again, the final check.
-	if scoped && (parentKey != "" || len(blockers) > 0) {
+	if callerProject != "" && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -213,6 +218,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	priority, _, err := parseIssuePriority(input.Priority)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// A create that names priority 0 makes its new issue's own priority P0, which needs the p0
+	// scope (p0_scope.go): a priority the issue's parent has is none of the new issue's own. The
+	// check is here, after the answer for an external ref Dispatch already imported, which makes
+	// no new issue and changes no priority, and before the near-copy gate, which writes a
+	// near_copy_checks row at its 409, and before everything else the create writes.
+	if err := refuseP0WithoutScope(caller.credential, priority, nil); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

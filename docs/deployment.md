@@ -321,14 +321,31 @@ checkout`) authenticates through the helper gh names after it, `legion gh auth g
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
 and with gh's update check, prompts and telemetry off and its editor a program that fails
 (`/bin/false`), whatever the caller names. Its environment is built from an allowlist of the
-caller's (`ghChildEnviron` and `ghChildKeeps`, `packages/daemon/cmd/legion/gh.go`): the paths,
+caller's (`ghChildEnviron` and `ghChildKeeps`, `packages/daemon/cmd/legion/gh_child.go`): the paths,
 the terminal, the locale, the proxy variables, gh's state directories, `GH_REPO`, how gh prints,
 git's identity, and Legion's wrapper variables, each kept for a read gh or go-gh makes of it. No
 trust store, editor, browser or pager variable of the caller's reaches gh: a proxy sees only the
 TLS tunnel gh opens through it, and cannot read the token. A deployment whose proxy inspects TLS
 with a CA of its own must install that CA in the system's trust store, which gh, git and curl read
 by default; naming it in `SSL_CERT_FILE` or `SSL_CERT_DIR` reaches a pane, but not the gh `legion
-gh` runs, and gh's requests then fail certificate verification. The git gh runs reads no global
+gh` runs, and gh's requests then fail certificate verification. Inside an `agent-secrets` command,
+whose `HTTPS_PROXY` and `https_proxy` name the secrets broker's airlock proxy in place of any proxy
+the caller had there, what gh keeps depends on whose token it sends (`leakguard.TokenChildKeeps`
+says why). With its directory's token, Legion's installation token in a pod, gh keeps no proxy
+variable that names the airlock and no `ALL_PROXY`, so it connects to GitHub directly; the
+guard's curl read and `legion git-credential`'s fork read do the same. With the caller's own
+`GH_TOKEN` or `GITHUB_TOKEN`, which under `agent-secrets GH_TOKEN` is the airlock's placeholder,
+gh keeps the airlock's proxy, which alone puts the real token in its place: that read works where
+the machine's trust store holds the airlock's roots and fails verifying the airlock where it does
+not. The airlock is known by its URL's user, `agent-secrets` (`cipheraddr.NamesAirlockProxy`), a
+convention and no proof: any proxy URL with that user is left out the same way. Two limits
+follow. A deployment whose only route to GitHub is a proxy has none for a read with a directory's
+token inside such a command, for one of two causes: `agent-secrets` replaced a proxy named in
+`HTTPS_PROXY` or `https_proxy` with the airlock's, and the guard itself leaves out a proxy named
+in `ALL_PROXY` or `all_proxy`, which `agent-secrets` does not touch. Such a read fails to connect.
+And where the machine's trust store does hold the airlock's roots, a read with a directory's token
+still leaves the airlock out, which would read that token, rather than take the route that works.
+The git gh runs reads no global
 or system configuration file (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), takes of
 the caller's `GIT_CONFIG_*` pairs only those the runtime sets, and gets `http.sslVerify=true` and
 submodule recursion off (`submodule.recurse=false`, `fetch.recurseSubmodules=false`,
@@ -1113,11 +1130,15 @@ provider_keys:
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
-- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
-  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
-  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
-  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
-  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+  An issue of `owner` takes the plan its owner gives with `register_plan`.
+  An issue of `default` runs the project's `default_steps`.
+  Legion takes from its owner only a version that changes nothing but the text of its running
+  task `default`.
+  Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
+  owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
+  notice.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
   whatever the file says later.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
@@ -1159,6 +1180,10 @@ provider_keys:
   every pane carries and a key whose `_FILE` pointer every pane carries.
   The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
   `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
+  The variable must be upper case (upper-case letters, digits and underscores, not starting with
+  a digit), as every provider's variable is: one with a lowercase letter refuses the load as
+  `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment
+  variable name …`, so rename it, and the `models.yml` or overlay that reads it, to upper case.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs
@@ -1213,6 +1238,12 @@ daemon's user: a colocated `jj git clone https://github.com/<owner>/<repo>` into
 then `jj -R <clone> --ignore-working-copy config set --repo git.abandon-unreachable-commits false`.
 A directory there without `.jj` is removed and cloned again; one without `.git` is not a store.
 Boot rewrites every store's credential helper to `legion git-credential`.
+
+When Dispatch moves an admitted issue onto another repository, the daemon corrects its record
+([An issue's repository](kubernetes.md#operator-configuration)) and replaces nothing here, because
+a pane runs in no pod: each pane goes on in the workspace of the repository the issue left until
+its next launch, which provisions the new repository's workspace, as above. Whatever that pane
+never pushed stays in the old workspace directory.
 
 ## Moving a project onto tmux
 

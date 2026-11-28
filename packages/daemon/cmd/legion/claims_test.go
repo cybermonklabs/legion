@@ -989,7 +989,7 @@ func TestClaimsFindsTheDaemonFromTheConfiguration(t *testing.T) {
 	d := newOperatorDaemon(t)
 	dir := t.TempDir()
 	config := filepath.Join(dir, "legion.yaml")
-	body := fmt.Sprintf("project: demo\nbind: 127.0.0.1\nport: %d\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: %s\n", d.port, dir)
+	body := fmt.Sprintf("project: DEMO\nbind: 127.0.0.1\nport: %d\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nstate_dir: %s\n", d.port, dir)
 	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
 		t.Fatalf("write the config: %v", err)
 	}
@@ -1048,7 +1048,9 @@ func TestClaimsRefusesAMissingFlagBeforeReachingTheDaemon(t *testing.T) {
 
 // The bearer is read by config.ReadPrivateSecretPointer's rules: a token file that cannot be read,
 // holds nothing but whitespace, is not a regular file, or that its group or others can read fails
-// the command naming the path, and nothing is sent.
+// the command, and nothing is sent. A file that was opened is named by its path; one that could not
+// be read by the flag and the system's reason alone, since the flag is where a person who pasted
+// the token itself puts it.
 func TestClaimsRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 	t.Parallel()
 	files := map[string]func(t *testing.T) string{
@@ -1100,8 +1102,12 @@ func TestClaimsRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 				}
 				want := "legion claims " + sub[0] + ": --operator-token-file "
 				if !strings.HasPrefix(errb, want+"names "+path+", which ") &&
-					!strings.HasPrefix(errb, want+path+" is readable by its group or others (mode 0640); chmod 0600 it") {
-					t.Fatalf("stderr = %q, want it to start %q and name the path", errb, want)
+					!strings.HasPrefix(errb, want+path+" is readable by its group or others (mode 0640); chmod 0600 it") &&
+					!strings.HasPrefix(errb, want+"names a file that could not be read: ") {
+					t.Fatalf("stderr = %q, want it to start %q and name the path or the reason", errb, want)
+				}
+				if strings.Contains(errb, "could not be read") && strings.Contains(errb, path) {
+					t.Fatalf("stderr = %q names the path of a file that could not be read", errb)
 				}
 				d.wantNothingReached()
 			})

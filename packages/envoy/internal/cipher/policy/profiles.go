@@ -174,14 +174,15 @@ type profileEntry struct {
 // at least a second; a github block of GitHub logins, repositories of those accounts, at most
 // githubname.MaxNarrowedRepositories of them and, where it names any, one of each account at
 // least, and permissions at levels GitHub gives, metadata at read among them; a google block of
-// scope names; never both; and a proxy key that names one of the file's kinds, or is a proxy block
-// of kind dpop whose hosts are in the one grammar a rules host is written in (rulehost.Refusal),
-// which proxyrules.Validate, the Lean model's answer, accepts, and which sets no judge and no
-// guidance. A proxy block of another kind is refused, naming kinds, which replaced it, in a file
-// that declares a kind; a file that declares none reads it as the broker before the kinds did
-// (readsBlocks, checkBlock). It also holds each profile to the minted shape (checkMinted): no
-// source, tier, requesters, maxGrant, github, google or allow on a profile whose proxy block is of
-// kind dpop, and a proxy block on the results capability's profile oauthwire.AirlockResultsName.
+// scope names; never both; the minted shape (checkMinted): the results capability's profile,
+// oauthwire.AirlockResultsName, held to a proxy block of kind dpop in every file, and no source,
+// tier, requesters, maxGrant, github, google or allow on a profile whose proxy block is of kind
+// dpop; and a proxy key that names one of the file's kinds, or is a proxy block of kind dpop whose
+// hosts are in the one grammar a rules host is written in (rulehost.Refusal), which
+// proxyrules.Validate, the Lean model's answer, accepts, and which sets no judge and no guidance.
+// A proxy block of another kind is refused, naming kinds, which replaced it, in a file that
+// declares a kind; a file that declares none reads it as the broker before the kinds did
+// (readsBlocks, checkBlock).
 // Who decides a request, and the guidance the judge reads whole, are the source key's tags, not
 // fields of the block. Each refusal names the kind or the profile by its index and name and the
 // field it refuses.
@@ -403,10 +404,10 @@ func (e profileEntry) check(i int, seen map[string]int, kinds []proxyrules.Kind)
 	if err := e.Google.check(refuse); err != nil {
 		return err
 	}
-	if err := e.checkProxy(kinds, refuse); err != nil {
+	if err := e.checkMinted(refuse); err != nil {
 		return err
 	}
-	return e.checkMinted(refuse)
+	return e.checkProxy(kinds, refuse)
 }
 
 // checkKinds holds the file's kinds to what the proxy serves, each refusal naming the kind by its
@@ -491,17 +492,19 @@ func (e *proxyEntry) checkBlock(name, source string, refuse func(field, why stri
 // an allow of the profile's own beside the block's would be a second list the block's binding
 // never reads. It goes with the dpop block, once the minted capabilities are a kind of the file.
 //
-// The results capability's profile, oauthwire.AirlockResultsName, is one such profile and so has
-// a proxy block: without one it has no inline binding in the airlock's rules (FileRules), so a
-// stored secret of that name could be served by it and released as its value, where under its
-// entry of kind dpop no release of it is ever made (requests' ErrMintedOnly). That the block is of
-// kind dpop is the results capability's start check's (config.ResultsEntryRules), which reads the
-// rules.
+// The results capability's profile, oauthwire.AirlockResultsName, is one such profile in every
+// file, whatever kinds it declares, so it is held to a proxy block of kind dpop before checkProxy
+// reads any block: the broker mints and holds its credential and releases it to nobody, which is
+// what that block binds. With no block it has no inline binding in the airlock's rules
+// (FileRules), so a stored secret of that name could be served by it and released as its value,
+// and a block of another kind would serve the capability's name as a kind of its own. That result
+// entries need the profile at all is the start check's (config.ResultsEntryRules).
 func (e profileEntry) checkMinted(refuse func(field, why string) error) error {
-	if e.Name == oauthwire.AirlockResultsName && (e.Proxy == nil || e.Proxy.block == nil) {
-		return refuse("proxy", "is required: "+e.Name+" is the results capability the broker mints for a CI run's result grant, a name and a proxy block of kind "+proxyrules.WayDPoP)
+	dpop := e.Proxy != nil && e.Proxy.block != nil && e.Proxy.block.Kind == proxyrules.WayDPoP
+	if e.Name == oauthwire.AirlockResultsName && !dpop {
+		return refuse("proxy", "must be a proxy block of kind "+proxyrules.WayDPoP+": "+e.Name+" is the results capability the broker mints and holds for a CI run's result grant, a name and a proxy block of kind "+proxyrules.WayDPoP)
 	}
-	if e.Proxy == nil || e.Proxy.block == nil || e.Proxy.block.Kind != proxyrules.WayDPoP {
+	if !dpop {
 		return nil
 	}
 	for _, f := range []struct {

@@ -147,7 +147,7 @@ describe.skipIf(!dispatchStackEnabled)(
     // of the job's check run, which a matrix value sets, holding a line break and ::warning.
     test("a refusal of Dispatch that quotes a check run name holding a line break and ::warning", async () => {
       const printed = await recordAs(
-        pushAt("b".repeat(40), 302, { legName: "x\n::warning::y" }),
+        pushAt("b".repeat(40), 302, { job: "go-checks (x\n::warning::y)" }),
         CI_CHECK
       );
       noWorkflowCommand(printed);
@@ -157,7 +157,10 @@ describe.skipIf(!dispatchStackEnabled)(
     }, 120_000);
 
     test("the control: a refusal with no line break prints exactly its one line", async () => {
-      const printed = await recordAs(pushAt("c".repeat(40), 303, { legName: "x" }), CI_CHECK);
+      const printed = await recordAs(
+        pushAt("c".repeat(40), 303, { job: "go-checks (x)" }),
+        CI_CHECK
+      );
       expect(printed).toEqual([
         `CHECK_NOT_THIS_JOBS: check ${CI_CHECK} names CI job "go-checks", and this token's check run is "go-checks (x)": a job records results only for the checks whose ci_check names its check run`,
       ]);

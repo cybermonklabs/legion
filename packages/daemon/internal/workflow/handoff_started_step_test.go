@@ -34,9 +34,9 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 			if which == "cleared issue" || which == "cleared tree" {
 				seedRecord(t, pool, func(tx pgx.Tx) error {
 					if which == "cleared tree" {
-						return record.NewStore().ClearTreeGeneration(t.Context(), tx, issue.Tree, time.Now())
+						return engine.ClearTreeGeneration(t.Context(), tx, issue.Tree, time.Now())
 					}
-					return record.NewStore().ClearGeneration(t.Context(), tx, issue.Key, time.Now())
+					return engine.ClearGeneration(t.Context(), tx, issue, time.Now())
 				})
 				issue.Generation++
 				seedIssue(t, pool, issue)

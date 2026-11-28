@@ -84,7 +84,7 @@
     "yjs": "^13.6.20"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "happy-dom": "^20.14.0",

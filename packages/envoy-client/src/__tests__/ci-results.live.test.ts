@@ -25,7 +25,7 @@ import { dispatchStackEnabled } from "../../test/dispatch-stack";
 
 // The v-recorder path over its whole length: a CI job's own GitHub token, traded by the real
 // `agent-secrets result-grant` at the real secrets broker (./cmd/cipherd) under a real result
-// entry for the airlock placeholder of a result grant, which the real `dispatch` CLI of this
+// entry for the proxy placeholder of a result grant, which the real `dispatch` CLI of this
 // checkout, run as its child process, presents through the broker's airlock proxy to the real
 // Dispatch server (./cmd/dispatch); the proxy puts the run's results token, which the broker
 // minted bound to its own key, in its place. Dispatch reads the job's check run and the spec files
@@ -62,9 +62,9 @@ function commit(digit: string): string {
 const stackDirectory = useCIResultsStackDirectory();
 const cliState = temporaryDirectory("ci-results-cli-state");
 const specFiles = temporaryDirectory("ci-results-spec");
-/** The probe spec beside a file whose block never closes, and the probe spec with its check's
- *  failing example left out: two trees the graph logic refuses (specgraph.Judge). */
-const unclosedFiles = temporaryDirectory("ci-results-unclosed-spec");
+/** The probe spec beside a file whose statement no check serves, and the probe spec with its
+ *  check's failing example left out: two trees the graph logic refuses (specgraph.Judge). */
+const unservedFiles = temporaryDirectory("ci-results-unserved-spec");
 const lackingFiles = temporaryDirectory("ci-results-lacking-spec");
 /** The observed texts the rows below read from files, as a job's step writes its log. */
 const observedFiles = temporaryDirectory("ci-results-observed");
@@ -99,7 +99,7 @@ interface Ran {
   readonly stderr: string;
 }
 
-/** The prefix of every result grant's airlock placeholder (placeholder.MintedPrefix("result")). */
+/** The prefix of every result grant's proxy placeholder (placeholder.MintedPrefix("result")). */
 const RESULT_PLACEHOLDER_PREFIX = "agent-secrets-placeholder-result-";
 /** The line the proxy logs for each call to a bound host it carried (proxy's callMessage). */
 const CALL_LINE = "airlock proxy: a call to a bound host";
@@ -288,16 +288,16 @@ describe.skipIf(!dispatchStackEnabled)(
 
     beforeAll(async () => {
       writeProbeSpec(specFiles);
-      writeProbeSpec(unclosedFiles);
+      writeProbeSpec(unservedFiles);
       writeFileSync(
-        join(unclosedFiles, "broken.md"),
-        ':::requirement{#broken kind="behavior"}\nThis block never closes.\n'
+        join(unservedFiles, "broken.yaml"),
+        "---\ntype: requirement\nid: broken\nkind: behavior\ntext:\n  - No check serves this statement.\n"
       );
       writeProbeSpec(lackingFiles);
-      const probe = await Bun.file(join(lackingFiles, "probe.md")).text();
+      const probe = await Bun.file(join(lackingFiles, "probe.yaml")).text();
       writeFileSync(
-        join(lackingFiles, "probe.md"),
-        probe.replace("Failing example: A probe test that fails.\n", "")
+        join(lackingFiles, "probe.yaml"),
+        probe.replace("failing_example:\n  - A probe test that fails.\n", "")
       );
       stack = await startCIResultsStack({ work: stackDirectory });
     }, 600_000);
@@ -490,7 +490,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const at = commit("9");
       const project = running().project;
 
-      // A separate real child receives only the airlock placeholder and uses it on four other
+      // A separate real child receives only the proxy placeholder and uses it on four other
       // routes. The rule allows POST under /api/v1/projects/ and under /api/v1/issues/ alone, so
       // the proxy refuses the first three itself, before it dials, and says so
       // (Cipher-Proxy-Forwarded: false and its Cipher-Proxy-Code): a POST to /api/v1/issues is
@@ -551,8 +551,13 @@ console.log(JSON.stringify(answers));
     // (specgraph.Judge), so a tree they refuse holds no check to write a result for.
     test("a result for a check of files the graph logic refuses is refused, and nothing is stored", async () => {
       for (const [at, files, checkRunId, problem] of [
-        [commit("b"), unclosedFiles, 108, "broken.md:1: broken: leaf-without-check"],
-        [commit("c"), lackingFiles, 109, `probe.md:5: ${PROBE_CHECK}: no-failing-example`],
+        [commit("b"), unservedFiles, 108, "broken.yaml:1: broken: leaf-without-check"],
+        [
+          commit("c"),
+          lackingFiles,
+          109,
+          `probe.yaml:7: ${PROBE_CHECK}: schema: node: missing property 'failing_example'`,
+        ],
       ] as const) {
         const ran = await writeResult(runAt(at, checkRunId, {}, files), at);
 

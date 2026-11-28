@@ -51,6 +51,12 @@ const ROW_TEXTS: readonly EditedText[] = ["description"];
  * the keys every table is walked with (`j`, `k`, `x`, `o`, Enter) are this table's alone. The
  * reader's own texts kept beside a priority's description (`ChangedMeanwhile`) stand beside its
  * row, or above the table while the view leaves the row out.
+ *
+ * Its groups, in this order, each on a line of its own: Toolbar (search, filters, columns and New
+ * priority), Kept texts (the reader's texts kept for rows the view leaves out,
+ * `ChangedMeanwhile`) and Table (the rows, in their own box that scrolls sideways with its key
+ * columns pinned at the left, the data-table exception of the Layout rule in `web/src/AGENTS.md`,
+ * then the pager).
  */
 export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): ReactNode {
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
@@ -255,7 +261,9 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
               const { description, id } = item.priority;
               const known = usedOn(text, mine, (one) => descriptionMadeOn(id, one));
               keepDescription(id, NOTHING_KEPT);
-              onDescribe(item, text, description, known ?? description);
+              // Nothing here reads whether it landed, and the promise never rejects
+              // (`writeText` in ./priority-writes.ts).
+              void onDescribe(item, text, description, known ?? description);
             }}
           />
         ))}

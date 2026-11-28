@@ -15,7 +15,7 @@ import (
 
 // Walk is the line of phases an issue's run walks, and where its task stands on it. A run with
 // plan rows (record.Store.Plan at the issue's generation) walks the line of its one task's steps
-// (plan.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
+// (record.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
 // with none, which is every issue that ran before plan rows existed, walks today's line,
 // phase.Order, as the steps of the task default (todaysSteps), with Stored false, and its table is
 // Table, row for row. Every behaviour that differs from today reads Stored and nothing else; the
@@ -34,6 +34,9 @@ type Walk struct {
 	Text string
 	// Steps are the task's steps, by place from 1: todaysSteps where the run has no plan rows.
 	Steps []record.PlanStep
+	// Needs are the tasks the task needs, each by its id (record.PlanTask.Needs), which the run's
+	// plan node carries (planNode); nil where it needs none or the run has no plan rows.
+	Needs []string
 	// Line is the phases the task walks: one for each step, then retro and merging.
 	Line []phase.Phase
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
@@ -48,10 +51,6 @@ type Walk struct {
 	// the run has no plan rows.
 	Version record.PlanVersion
 }
-
-// builtinDeployment is the roles a step of this release runs as (plan.BuiltinRoles): the one
-// Deployment the walk reads a stored step's phase from.
-var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
 
 // todaysSteps is the steps of the task default of a run with no plan rows, which walks today's
 // line, phase.Order: the default steps of a project that names none (config.Project.RunsByDefault),
@@ -69,7 +68,21 @@ func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line
 // rule for the task a run is on), or a step whose role runs as no phase, is an error: no plan
 // this release takes writes one (plan.Validate, plan.Supported).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	return readWalk(ctx, e.store, tx, issue)
+}
+
+// LineOf is the line of phases issue's run walks (Walk.Line), as store holds it in tx: the one
+// order a reader outside the engine names the task's steps in, such as the news of an approved
+// design, whose answer for an issue in accepting names the phases a move back reaches
+// (acceptingAnswer).
+func LineOf(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) ([]phase.Phase, error) {
+	w, err := readWalk(ctx, store, tx, issue)
+	return w.Line, err
+}
+
+// readWalk is the walk of issue's run as store holds it in tx (walk).
+func readWalk(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (Walk, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return todaysWalk(), err
 	}
@@ -78,23 +91,12 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 		return Walk{}, fmt.Errorf("walk %s: %w", issue.Key, err)
 	}
 	steps := stored.Steps[task.Task]
-	line := plan.Line(namedSteps(steps), builtinDeployment)
+	line := record.Line(steps)
 	if at := slices.Index(line, ""); at >= 0 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
-	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
+	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Needs: task.Needs, Line: line, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, Version: stored.Version}, nil
-}
-
-// namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
-// names: what a walk's line is read from (plan.Line), what its plan node and a started worker's
-// task write (plan.Words) and what a later version is compared with (heldPlan).
-func namedSteps(steps []record.PlanStep) []plan.Step {
-	named := make([]plan.Step, len(steps))
-	for i, step := range steps {
-		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
-	}
-	return named
 }
 
 // PlaceOf is where the task stands while its issue stands in p: the step of the line that runs
@@ -113,12 +115,10 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	return record.TaskPlace{}, false
 }
 
-// steps is the part of the line each step runs: all of it but the retro and the merge.
+// steps is the part of the line each step runs: all of it but the retro and the merge
+// (record.LineSteps).
 func (w Walk) steps() []phase.Phase {
-	if len(w.Line) < 2 {
-		return nil
-	}
-	return w.Line[:len(w.Line)-2]
+	return record.LineSteps(w.Line)
 }
 
 // MovesBack says whether a move of w's task from the phase from to the phase to goes back by the
@@ -130,38 +130,13 @@ func (w Walk) steps() []phase.Phase {
 // steps `implementer reviewer tester`), and not the review's approval from reviewing to testing,
 // which moves it on.
 func (w Walk) MovesBack(from, to phase.Phase) bool {
-	back := slices.Index(w.Line, to)
-	return back >= 0 && back < slices.Index(w.Line, from)
-}
-
-// issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
-// for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
-// place, which is the phase of an issue out of the workflow; the phase of the step at place, retro
-// or merging at the task's retro or merge; and admitted for a task at no act, which has not
-// started. A task stopped or held keeps its place, and the hold overlays this phase
-// (record.Hold.From). A step place the line does not hold derives no phase.
-func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.Phase {
-	if state == record.TaskDone || state == record.TaskLeft {
-		return phase.Done
-	}
-	switch place.Kind {
-	case record.PlaceRetro:
-		return phase.Retro
-	case record.PlaceMerge:
-		return phase.Merging
-	case record.PlaceStep:
-		if steps := w.steps(); place.Position >= 1 && place.Position <= len(steps) {
-			return steps[place.Position-1]
-		}
-		return ""
-	}
-	return phase.Admitted
+	return phase.MovesBackOn(w.Line, from, to)
 }
 
 // moveTask is the one writer of where a task stands: it moves w's task to the place of to in state
 // (record.Store.MoveTask), keeping its place on a move to done and standing it at no act on a move
 // to admitted, where a task waits for its first step (waitForFirstStep), and sets issue.Phase to the
-// phase that place derives (issuePhaseOf), in the caller's transaction and before the caller's write
+// phase that place derives (record.PhaseAt), in the caller's transaction and before the caller's write
 // of issue (WriteIssue). w then stands where the task does, for whatever the caller reads of it after
 // the move. A run with no plan rows has no task to move, and issue.Phase is to, as it always was. A
 // move to where the task already stands writes nothing. The caller clears or keeps issue.Hold
@@ -189,7 +164,7 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		}
 		w.Place, w.State = place, state
 	}
-	issue.Phase = issuePhaseOf(*w, place, state)
+	issue.Phase = record.PhaseAt(w.Line, place, state)
 	return nil
 }
 
@@ -197,7 +172,7 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 // and of admission: no other code of either package calls a store's PutIssue. issues.phase and the
 // place of the run's task are two records of where the issue stands, and WriteIssue refuses a
 // write in which they disagree: the issue stands in the phase its task's place and state derive
-// (issuePhaseOf), a hold overlays that phase and names it (record.StandsAt), and a root that
+// (record.PhaseAt), a hold overlays that phase and names it (record.StandsAt), and a root that
 // waits on a person
 // before its first step stands in awaiting_person over the admitted of a task at no act. That root
 // stands there itself: no hold is from awaiting_person, which the issues table refuses
@@ -224,7 +199,7 @@ func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 // in the same transaction.
 func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if w.Stored {
-		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
+		at, task := record.StandsAt(issue), record.PhaseAt(w.Line, w.Place, w.State)
 		stands := string(at)
 		switch {
 		case issue.Phase == phase.AwaitingChildren && issue.ChildrenWait != nil:
@@ -343,7 +318,7 @@ func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Ph
 	at, _ := w.PlaceOf(failed)
 	if at.Kind != record.PlaceStep {
 		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so this completion names no step of the task to return to; send the completion again without returnTo; nothing was recorded",
-			n, w.Task, issue.Key, failed, strings.Join(plan.Words(namedSteps(w.Steps)), " "))
+			n, w.Task, issue.Key, failed, strings.Join(plan.Words(record.NamedSteps(w.Steps)), " "))
 	}
 	role := w.Steps[at.Position-1].Role
 	switch {
