@@ -123,9 +123,9 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 }
 
 // subscribersOf is every session whose Envoy interests deliver the events published under base,
-// newest heartbeat first: what the /api/v1 subscriber lists answer (writeSubscribers) and GET
-// /api/v2/artifacts/{id}/subscribers pages. It writes the listener's refusal itself and answers
-// false.
+// newest heartbeat first: what the /api/v1 subscriber lists answer (writeSubscribers), and what
+// GET /api/v2/issues/{key}/subscribers and GET /api/v2/artifacts/{id}/subscribers page. It writes
+// the listener's refusal itself and answers false.
 func (s *server) subscribersOf(w http.ResponseWriter, r *http.Request, base string) ([]subscriber, bool) {
 	if s.deps.Envoy == nil {
 		writeError(w, r, apicode.EnvoyUnavailable, "ENVOY_URL is not configured")

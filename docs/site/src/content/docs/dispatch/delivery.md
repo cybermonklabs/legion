@@ -253,8 +253,9 @@ names it; the timeline's `session_groups` lists every group with its name and se
 /api/v2/session-groups` (`{name, sessions}`) makes a group, `PATCH
 /api/v2/session-groups/{id}` (`{name?, add?, remove?}`) changes one, and `DELETE` removes it; a
 `PATCH` or `DELETE` whose id names no group answers `404 SESSION_GROUP_NOT_FOUND`. `/api/v1`
-serves them as `/api/v1/delivery/session-groups` until it ends. Any signed-in person or agent token
-may write them. A session another group holds is `409
+serves them as `/api/v1/delivery/session-groups` until it ends, where such an id answers
+`404 NOT_FOUND` and one that is not a UUID `400 SESSION_GROUP_ID_INPUT`. Any signed-in person or
+agent token may write them. A session another group holds is `409
 SESSION_IN_GROUP`, a name another group has `409 SESSION_GROUP_NAME_TAKEN`, and a name that is the
 title of a session outside the group `409 SESSION_GROUP_NAME_IS_SESSION_TITLE`, each naming what it
 refers to. The [HTTP API reference](/legion/dispatch/reference/api/) lists them with every other

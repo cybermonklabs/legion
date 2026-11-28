@@ -2325,10 +2325,11 @@ func positiveSetting(env settingValues, name string) (int, error) {
 	return value, nil
 }
 
-// apiV1End reads DISPATCH_API_V1_END, the instant /api/v1 ends, as time.RFC3339 parses it (and
-// as envoy-infra's gcp:Dispatch checks its apiV1End input before it renders the variable), with
-// whitespace at either end ignored; unset or empty, it is the zero time, no end. A value it cannot
-// read refuses startup, since serving on would keep /api/v1 past the end the deployment set.
+// apiV1End reads DISPATCH_API_V1_END, the instant /api/v1 ends, as time.RFC3339 parses it once
+// whitespace at either end is trimmed (envoy-infra's gcp:Dispatch parses its apiV1End input the
+// same way but untrimmed, so it refuses a value with such whitespace before it renders the
+// variable); unset or empty, it is the zero time, no end. A value it cannot read refuses startup,
+// since serving on would keep /api/v1 past the end the deployment set.
 func apiV1End(env settingValues) (time.Time, error) {
 	raw := strings.TrimSpace(env.get("DISPATCH_API_V1_END"))
 	if raw == "" {

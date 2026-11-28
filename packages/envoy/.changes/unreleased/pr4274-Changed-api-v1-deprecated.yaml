@@ -2,11 +2,13 @@ kind: Changed
 custom:
   Issue: pr4274
 body: |-
-  `/api/v1` is deprecated and keeps its answers: each `/api/v1` answer carries a `Deprecation`
-  header (RFC 9745) and a `Link` header with `rel="successor-version"` naming the `/api/v2` route
-  that answers for it, or `GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s
-  freeze until its `/api/v2` route lands (`GET` and `POST /api/v1/projects/{key}/results` at this
-  release). The deprecation date marks this change, not the configured sunset.
+  `/api/v1` is deprecated; its answers change only where this release's changelog entries say so,
+  and each `/api/v1` answer carries a `Deprecation` header (RFC 9745) and a `Link` header with
+  `rel="successor-version"` naming the `/api/v2` route that answers for it, or `GET /api/v2` for a
+  `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2` route lands (`GET`
+  and `POST /api/v1/projects/{key}/results` at this release), for an unknown path, for the
+  cookie-origin guard's refusal and for the `410` after the end. The deprecation date marks this
+  change, not the configured sunset.
   `DISPATCH_API_V1_END`, an RFC 3339 instant, ends `/api/v1`, and `envoy-infra`'s
   `gcp:Dispatch` sets it from its new `apiV1End` input: while the instant is ahead each `/api/v1`
   answer carries a `Sunset` header (RFC 8594), and once it has passed every path under `/api/v1`

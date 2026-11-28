@@ -160,9 +160,9 @@ const (
 // The document arm is a named piece of its own (searchDocumentKeywordLeg), so that it can be
 // ranked, read and measured apart from the four arms beside it.
 //
-// Every arm narrows its rows to the one project $2 names, or to none where $2 is empty, and by a
-// date window of its start alone; the statements of a search naming several projects, or an end
-// to the window, take searchKeywordLegsIn's other forms.
+// Every arm narrows its rows to the one project $2 names, or keeps every project's where $2 is
+// empty, and by a date window of its start alone; the statements of a search naming several
+// projects, or an end to the window, take searchKeywordLegsIn's other forms.
 func searchKeywordLegs(rank func(searchColumn string) string) string {
 	return searchKeywordLegsIn(rank, searchOneProject, searchSince)
 }
@@ -1437,8 +1437,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // searchTextProblem is the refusal of a search's q, already trimmed, that both versions of the
 // search route answer: a q of fewer than two characters, and one past the cap `dispatch search`
 // caps it at, counted after trimming so a query the command sends is never refused here. Nil for
-// a q they take. It rides in the URL, as the projects do; packages/contracts/AGENTS.md "Search
-// limits" says what keeps it short.
+// a q they take. It rides in the URL, as the projects do; the URL budget in SEARCH_QUERY_MAX's doc
+// comment (packages/contracts/src/dispatch-tools.ts) says what keeps it short.
 func searchTextProblem(searchText string) *apiError {
 	if utf8.RuneCountInString(searchText) < 2 {
 		return errorf(apicode.InvalidQuery, "q must be at least 2 characters")

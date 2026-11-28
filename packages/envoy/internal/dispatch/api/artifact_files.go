@@ -33,14 +33,15 @@ import (
 // made first, from the pool and locking nothing (refuseUploadBeforeItsObject, the writer's check of
 // who writes an issue's Verification document among them, and refuseFileBase for a token the upload
 // names, against the version newestFileVersion reads; an issue that is closed or missing is refused
-// before the body is read, refuseUploadToAClosedIssue): nothing deletes an object, and one a
-// refused upload left would be named by no row. Deleting it on refusal instead is not safe, since
-// the store is keyed by the bytes' hash and another version, or another upload in flight, can name
-// the same object. The transaction's own checks still decide: an upload this check passes that a
-// concurrent write then makes refusable (another upload taking its name with another kind, the
-// issue closing, a role-holder publication), or whose insert fails, leaves an object no row names,
-// which a later upload of the same bytes reuses. The row records the hash the object is keyed by,
-// and the bytes too only while a live server process has no bucket (fleetServesFilesFromRows).
+// before the body is spooled or parsed, refuseUploadToAClosedIssue): nothing deletes an object,
+// and one a refused upload left would be named by no row. Deleting it on refusal instead is not
+// safe, since the store is keyed by the bytes' hash and another version, or another upload in
+// flight, can name the same object. The transaction's own checks still decide: an upload this
+// check passes that a concurrent write then makes refusable (another upload taking its name with
+// another kind, the issue closing, a role-holder publication), or whose insert fails, leaves an
+// object no row names, which a later upload of the same bytes reuses. The row records the hash the
+// object is keyed by, and the bytes too only while a live server process has no bucket
+// (fleetServesFilesFromRows).
 func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer specWriter, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
 	if kind == "doc" || s.deps.Files == nil {
 		return true

@@ -13,9 +13,10 @@ import (
 // passes, while every broker token a machine holds, which holds no approve, is then answered on
 // it. This pins the rows themselves: a review, a decision's Keep, a credential's approve, deny and
 // machine lookup, the revoke of a credential grant, a machine login and a sign-in, and a personal
-// token's mint, change and revoke. Each is pinned at /api/v1 (routeScopes) and at the /api/v2
-// route that answers it, on that row's own scopes or, for the decision a credential request's
-// state sets, on the rule of that state (its Authorities): /api/v2 grants nothing /api/v1 refuses.
+// token's mint, change and revoke. Each is pinned at /api/v1 (its declaration's OAuthScopes) and
+// at the /api/v2 route that answers it, on that row's own scopes or, for the decision a credential
+// request's state sets, on the rule of that state (its Authorities): /api/v2 grants nothing
+// /api/v1 refuses.
 func TestEveryRowThatSettlesWhatAPersonSettlesNeedsApprove(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{

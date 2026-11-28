@@ -578,12 +578,13 @@ func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T
 
 // Answering an approval request approves the document it names, so it needs the approve scope
 // beside the person scope the route's own row declares. Two credentials hold person alone: a
-// personal token its person narrowed, and a broker-issued token acting for its person, which never
-// holds approve (brokerTokenActor). Each passes the row's gate and is refused inside the answer
-// (answerAsk) exactly as the gate refuses it - the code, the scope named and the challenge header -
-// with the request left open. Each answers any other kind of ask, so it is the ask's kind alone
-// that refuses. The broker-issued token is held to the same on PUT /api/v2/asks/{id}/state, the
-// /api/v2 route that answers an ask: /api/v2 grants nothing /api/v1 refuses.
+// personal token its person narrowed, and a person-scoped broker-issued token acting for that
+// person, which holds person and never approve (brokerPersonScopes). Each passes the row's gate
+// and is refused inside the answer (answerAsk) exactly as the gate refuses it - the code, the
+// scope named and the challenge header - with the request left open. Each answers any other kind
+// of ask, so it is the ask's kind alone that refuses. The broker-issued token is held to the same
+// on PUT /api/v2/asks/{id}/state, the /api/v2 route that answers an ask: /api/v2 grants nothing
+// /api/v1 refuses.
 func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 	t.Parallel()
 	for _, credential := range []struct {

@@ -33,7 +33,7 @@ import (
 func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 	tour := newRouteTour(t)
 
-	t.Run("an upload to a closed issue is refused before its body is read", func(t *testing.T) {
+	t.Run("an upload to a closed issue is refused before its body is parsed", func(t *testing.T) {
 		// A body that is no JSON object: the route refuses it 400 once it parses it, so a 409
 		// ISSUE_CLOSED for it is an answer made before the body was parsed.
 		const unreadable = `{"name": "late.md", "content": `

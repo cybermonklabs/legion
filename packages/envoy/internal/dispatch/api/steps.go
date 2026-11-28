@@ -153,8 +153,9 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 // checked, before the transaction and the issue's lock, as the package refuses a required field it
 // lacks: the store takes a step write with no rating, so this route alone holds one required. A
 // reason the body leaves out is "", which the store refuses as a rating_reason left out, after it
-// has checked the write's other fields and the rating. /api/v2's decoder refuses either left out
-// before the handler runs.
+// has checked the write's other fields and the rating. /api/v2 refuses either the same way: its
+// decoder holds no member required, so putIssueStepRatingV2 reaches this check with the body as
+// sent.
 func (s *server) putIssueStepRatingFrom(w http.ResponseWriter, r *http.Request, input stepRatingInput, unmade apicode.Code, unchanged func(workflowstore.StepRead) bool) {
 	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
 	if !ok {

@@ -199,14 +199,16 @@ var (
 // file of its own, route_<path>+<method>.go (internal/dispatch/routefile says how a pattern is
 // written into the name, and TestEachRouteIsDeclaredInTheFileItsNameNames holds each file to it),
 // and that file holds one declaration, `var _ = declareRoute(routeDecl{...})` for /api/v1 or
-// `var _ = declareRow(func(s *server) routeRow { ... })` for /api/v2, whose fields are every fact
-// Dispatch knows of the route: two changes that add different routes touch no file in common.
+// `var _ = declareRow(func(s *server) routeRow { ... })` for /api/v2 (for both, in the nine row
+// files of the INFRA-979 tree, OfINFRA979), whose fields are every fact Dispatch knows of the
+// route: two changes that add different routes touch no file in common.
 // routeDecl is a /api/v1 route as /api/v2 began, or one another pull request merged into main
-// before /api/v2 merged, each naming the /api/v2 route that answers it (Successor) but a route a
-// merge on main added after /api/v2's freeze, which testdata/v1-awaiting-v2-routes.txt holds: it
-// names none until its /api/v2 route lands (Successor). Add a route as a routeRow in a row file
-// route_api_v2_<path>+<method>.go holding one declareRow, never as a routeDecl file and never as
-// a mux.HandleFunc line (routes()).
+// before /api/v2 merged, each naming the /api/v2 route that answers it (Successor) but a test
+// hook, whose successor is its own /api/v2/_test path (testHookRoutes), and a route a merge on
+// main added after /api/v2's freeze, which testdata/v1-awaiting-v2-routes.txt holds: it names
+// none until its /api/v2 route lands (Successor). Add a route as a routeRow in a row file
+// route_api_v2_<path>+<method>.go holding one declareRow, never as a routeDecl file (but a test
+// hook, which is one) and never as a mux.HandleFunc line (routes()).
 type routeDecl struct {
 	Method      string
 	Pattern     string
@@ -222,9 +224,10 @@ type routeDecl struct {
 	// file but two kinds states one: a test hook's successor is its own /api/v2/_test path
 	// (testHookRoutes), and a route a merge on main added after /api/v2's freeze names none until
 	// its /api/v2 route lands, which testdata/v1-awaiting-v2-routes.txt holds it to, and its Link
-	// names GET /api/v2. A route added here is served at /api/v1 alone: a route added for both
-	// versions is a routeRow in a row file route_api_v2_<path>+<method>.go holding one declareRow
-	// (routes()).
+	// names GET /api/v2. A route added here is served at /api/v1 alone, but a test hook, which is
+	// served at its /api/v1 path and at its /api/v2/_test path (testHookRoutes): a route added for
+	// both versions is a routeRow in a row file route_api_v2_<path>+<method>.go holding one
+	// declareRow (routes()).
 	Successor successor
 
 	// TestHook is a route mounted only with Deps.TestHooksEnabled: a hook a test arms or reads,
@@ -499,15 +502,17 @@ func threadPageDescription(entries, filters string) string {
 // pattern and then method (byPatternThenMethod, byRowPatternThenMethod), so every reader walks one
 // table in one order, whichever order the route files were initialized in. Add a route as a
 // routeRow in a row file route_api_v2_<path>+<method>.go holding one declareRow, never as a
-// routeDecl file and never as a mux.HandleFunc line: /api/v1 alone serves a routeDecl file, and
-// TestAV1OnlyRowOutsideTheFrozenListFails refuses one testdata/v1-only-routes.txt does not hold. A
-// routeRow served in both versions is decoded and gated at both paths, its Query, its Body and its
-// Authorities included (apiRoute.decoded); one that answers for /api/v1 routes which keep their own
-// answer at /api/v1 is served at /api/v2 alone (Versions: onlyV2). register mounts what this
-// answers and refuses a table whose facts it cannot decide (undecidableWrites, shapelessRoutes,
-// undecidedIDRoutes, undecodableRoutes, readClassRefusals). It refuses an approve list that does
-// not map onto the table itself (applyApprovePolicy), by panic as it builds the table, with each
-// fault, which names its kind and its route, so no reader of the table meets one.
+// routeDecl file (but a test hook, which is one) and never as a mux.HandleFunc line: /api/v1 alone
+// serves a routeDecl file that is no test hook, and TestAV1OnlyRowOutsideTheFrozenListFails
+// refuses one testdata/v1-only-routes.txt does not hold. A routeRow served in both versions
+// outside the INFRA-979 tree is decoded and gated at both paths, its Query, its Body and its
+// Authorities included (apiRoute.decoded), and a row of that tree (OfINFRA979), today's only kind
+// served in both, is decoded and gated at neither; one that answers for /api/v1 routes which keep
+// their own answer at /api/v1 is served at /api/v2 alone (Versions: onlyV2). register mounts what
+// this answers and refuses a table whose facts it cannot decide (undecidableWrites,
+// shapelessRoutes, undecidedIDRoutes, undecodableRoutes, readClassRefusals). It refuses an approve
+// list that does not map onto the table itself (applyApprovePolicy), by panic as it builds the
+// table, with each fault, which names its kind and its route, so no reader of the table meets one.
 func (s *server) routes() []apiRoute {
 	replays := s.keyedReplays()
 	declared := slices.SortedFunc(slices.Values(routeRegistry), byPatternThenMethod)

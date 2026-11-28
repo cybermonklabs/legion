@@ -982,7 +982,8 @@ new identity. One change no identity sees is the broker binding another person t
 between two trades of one write; the broker does not do that today. When the write ends unsettled,
 the error says Dispatch finishes an attempt it received, and to read the write back before sending
 it again, since a new command sends it under a new key. A call that writes nothing (the markdown
-round trip, the related search) never leaves "nothing sent", so it keeps its own answers.
+round trip, the related search, a result's dry run) never leaves "nothing sent", so it keeps its
+own answers.
 
 The write-state table (`write-outcome.ts`) uses declared answer rows (`dispatch-write-rows.ts`). Each POST or PATCH declares the row its callers read and whether it stores anything. The markdown round trip, related-item check and result dry run store nothing. A successful answer is usable only when the table settles on it (it names this call's key back, and its body, read whole, is JSON or a bodiless 204 or 205) and it matches the row; extra members from a newer server are allowed. Such a 2xx proves commitment even when its JSON is not the row, or it carries no body where the row needs one: it is `DispatchWriteLandedError` with `ANSWER_LOST`, not a retry. An echoed `KEY_COMMITTED` or replayed `ANSWER_NOT_KEPT` is also a landing. A non-storing route instead reports `DispatchAnswerMissingError`. A 2xx without the matching key cannot settle a storing write.
 
@@ -1006,7 +1007,9 @@ would read as nothing written. A fleet commit that names `b1c42d1d7d` while a ro
 going does not prove that every replica runs it. Do not roll Dispatch back below that build while
 sessions use this client; fix forward instead.
 
-A non-2xx answer is thrown as `DispatchServiceError`, unless it leaves a write unsettled (below).
+A non-2xx answer is thrown as `DispatchServiceError`, unless it leaves a write unsettled or is a
+`409 KEY_COMMITTED` (a `DispatchWriteLandedError`, or a `DispatchAnswerMissingError` for a call
+that stores nothing; below).
 Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
@@ -1025,7 +1028,8 @@ part is text is named
 by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
 answers the same until the Dispatch URL, or whatever
 answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, as may
-a POST whose route stores nothing (the markdown round trip, the related search), and so
+a POST whose route stores nothing (the markdown round trip, the related search, a result's dry
+run), and so
 may a write answered 429, the gateway's own rate limit, which it sends before it forwards anything
 (`mayHaveReachedDispatch` false); a write answered 5xx or 408 may or may not have reached Dispatch,
 since a gateway can time a request out after it forwarded it, so the advice is to check whether it
@@ -1060,9 +1064,11 @@ before running it again - a new command is a new key. `key` is the key every att
 `last` what ended the write, so a caller still reads a 5xx's code and status there; its `answer`
 is the message's first clause, which a caller with its own account of the write, such as
 `dispatch issue-update`'s close path, joins that account to in place of the rest. A write that
-ends with no answer at all names the request: its last attempt failed on the network after it went
-out ("failed on its last attempt (<the failure>)"), was cut off for silence ("made no progress for
-20 s, so it was cut off"), or the call's deadline ended it while an attempt was out or after one
+ends with no answer at all names the request: its last attempt failed on the network ("failed on
+its last attempt (<the failure>)"), was cut off for silence ("made no progress for 20 s, so it was
+cut off"), could not present its credential for another attempt ("could not present its credential
+for another attempt (<the failure>)"), was stopped by its caller ("was stopped by its caller with
+no definitive answer"), or the call's deadline ended it while an attempt was out or after one
 that may have reached Dispatch ("had no definitive answer when its deadline ended it"). The client
 throws a transport failure as a `DispatchUnreachableError`, naming the configured URL and the
 failure's class, never the runtime's message, and the advice for a moved URL ("Dispatch at <url>
@@ -1082,8 +1088,12 @@ not have reached Dispatch, and its caller's cancellation in flight and a transpo
 reached no server, such as a refused connection or a CONNECT the airlock proxy refused
 (`AirlockTunnelRefusedError`), are thrown as they are. A GET is never unsettled. The POSTs whose
 routes store nothing (`rowStores`), the markdown round trip, the related search and a result's
-dry run, keep their key and their attempts but are no writes, so each of their endings is thrown
-as a read's would be, with none of these words.
+dry run, keep their key and their attempts but are no writes, so none of their endings is a
+`DispatchWriteUnsettledError`: a refusal or a transport failure is thrown as a read's would be,
+with none of these words; a silence cut names the request ("<request> made no progress for 20 s,
+so it was cut off."); an answer that is not their row, a `409 KEY_COMMITTED` among them, is a
+`DispatchAnswerMissingError`; and a second replay Dispatch kept no copy of is a
+`DispatchAnswerNotKeptError`.
 
 A write Dispatch made whose answer is gone is a `DispatchWriteLandedError` (`code`, a
 `DispatchLandedCode`, and
@@ -1364,7 +1374,8 @@ the broker's words, unless an attempt of a keyed write may have landed: then tha
 on its pacing, and with no ask left it is `DispatchWriteUnsettledError`. `dispatch api`'s request,
 its GET or its write, goes through one `#send`: one resend after `401 BROKER_TOKEN_NOT_ACTIVE`, and
 never on a pacing. Its GET is never `DispatchWriteUnsettledError`. Its write is one, of one attempt
-and no key, where Dispatch answers it with its own 5xx or where it got no answer after it went out,
+and no key, where Dispatch answers it with its own 5xx, but for its `503 BROKER_UNAVAILABLE`, or
+where it got no answer after it went out or its answer's body broke off after the status came,
 but for the caller's own stop in flight and a transport failure that reached no server, which are
 thrown as they are (`#send`, above). Dispatch's answer of no route does not repeat it, and the
 command prints a refusal, the broker's refusal of the trade among them, as it came.
@@ -1564,8 +1575,9 @@ does not hold, because `--force` uploads a new document; under a name the owner 
 replacement holds those rules for the blocks it adds or changes, and refuses a rendering that
 grows past the bytes one document holds over the version it replaces. A check Dispatch adds to
 the upload reaches the dry run with no change here. An unmarked answer says nothing of the text,
-whatever its status. The upload's `--name`, not its path, decides which `--path` file Dispatch
-stores as a Markdown document, which the upload carries as `text/markdown` (`uploadIsDocument`). A
+whatever its status. The upload's `--name`, and its path only where the name has no extension,
+decides which `--path` file Dispatch stores as a Markdown document, which the upload carries as
+`text/markdown` (`uploadIsDocument`). A
 name's trailing extensions of the digits 0 to 9 alone do not count, so the name `plan.md.1` reads
 as .md and `Plan v1.2` has no extension. A name whose extension is .md or .markdown makes one
 whatever the path, a name with another extension makes a file whatever the path (`cases.txt` sent
@@ -1762,7 +1774,8 @@ credential goes to no other server and no other route. It sends the request once
 only after Dispatch answers that the token it presented is not live (Dispatch authenticated
 nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. A write may or may
 not have taken effect when it failed in transport after it went out, its answer's body broke off
-after the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx: it
+after the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx
+other than its `503 BROKER_UNAVAILABLE`: it
 exits 1 with the message of a `DispatchWriteUnsettledError` of one attempt and no key (`#send`),
 which says so and to check whether it took effect before retrying it. On a 2xx answer it exits 0
 and prints Dispatch's JSON, indented as every command prints it;

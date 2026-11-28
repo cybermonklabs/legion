@@ -465,19 +465,25 @@ the API with its token as `Authorization: Bearer <token>`. A session under
 
 On `/api/v2` every list answers `{items, total, limit, offset}` and every refusal `{code, error}`,
 its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` declares for the route
-(`x-refusal-codes`). A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`,
-naming the key and every key the route declares, so a misspelt filter is never read as no filter,
+(`x-refusal-codes`), but for the codes the router answers in front of every route
+(`ORIGIN_REFUSED`, `HOST_MISMATCH`), a write a test hook slowed (`SLOW_WRITE_CUT_OFF`) and a server
+built with no store (`DATABASE_UNAVAILABLE`). A query key the route does not declare is refused
+`400 QUERY_KEY_UNKNOWN`, naming the key and every key the route declares, so a misspelt filter is
+never read as no filter,
 and every write takes an `Idempotency-Key`. Nine delivery and Legion routes are the exception:
 `GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`,
 `GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`,
 `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and
 `DELETE /api/v2/projects/{key}/legion/daemon` keep their `/api/v1` shape, so the document declares
 no refusal codes for them, a query key they do not declare is not refused, and their `PUT` and
-`DELETE` take no `Idempotency-Key`.
+`DELETE` take no `Idempotency-Key`. The test hooks under `/api/v2/_test/`, which a server serves
+only with `DISPATCH_TEST_HOOKS=1`, keep their `/api/v1` rules the same way.
 
-`/api/v1` is deprecated. Its routes keep their answers, each answer carries a `Link` header
+`/api/v1` is deprecated. Its routes keep their answers but for a few fixes of this release (the
+`unsettled` member a document's text read adds among them), each answer carries a `Link` header
 (`rel="successor-version"`) naming the `/api/v2` route that answers for it (or `GET /api/v2` for a
-post-freeze `/api/v1` route awaiting its `/api/v2` route), and a deployment ends it on a date it
+post-freeze `/api/v1` route awaiting its `/api/v2` route, an unknown path, the cookie-origin
+guard's refusal and the `410` after its end), and a deployment ends it on a date it
 sets, after which every `/api/v1` path answers `410 API_V1_ENDED`
 ([HTTP API v1](/legion/dispatch/reference/api-v1/)). The `dispatch` command still calls `/api/v1`
 at that release, and names itself and its release in its `User-Agent`
@@ -518,27 +524,31 @@ or a fresh answer that has a stored 4xx other than 401, 408 or 429, and is none 
 `KEY_COMMITTED` or `KEY_REUSED`. This holds once every Dispatch replica runs `b1c42d1d7d`. Every
 other ending, a last answer that is Dispatch's own 5xx among them (which it sends when a write fails,
 and can send after the write committed), says the write may or may not have taken effect: read it
-back before you run the command again, since a new command is a new key. A refusal Dispatch decided,
-such as a 4xx with its code, prints that refusal and none of those words: the write did not take
-effect. Reads, the `PUT` and `DELETE` of `dispatch follow` and `dispatch project-update`, the
+back before you run the command again, since a new command is a new key. A refusal Dispatch
+decided that settles the write, such as a 4xx with its code where no attempt may have landed yet,
+prints that refusal and none of those words: the write did not take effect. Reads, the `PUT` and
+`DELETE` of `dispatch follow` and `dispatch project-update`, the
 `DELETE` of `dispatch claim --release`, and the `DELETE` of
 `dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
 only where Dispatch did nothing with it: once more after Dispatch calls the token it presented
 dead, and on an old build's "no route" during a rolling release. Such a `PUT` or `DELETE` may or
 may not have taken effect too when it failed in transport after it went out, its answer's body
 broke off after the status came, the command's deadline ended it in flight or it got Dispatch's
-own 5xx, and the command says so and to check whether it did before retrying it.
+own 5xx other than `503 BROKER_UNAVAILABLE`, and the command says so and to check whether it did
+before retrying it.
 `dispatch api`'s request, a write too, carries no key either: it goes once, and once more only after
 Dispatch calls the token it presented dead. Its write (any method but `GET`) may or may not have
 taken effect too when it failed in transport after it went out, its answer's body broke off after
-the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx, and the
+the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx other than
+`503 BROKER_UNAVAILABLE`, and the
 command says so: read what the write would have changed before you send it again. Its `GET` never
 ends that way. The markdown round trip `dispatch artifact` asks before
 it uploads inline text, and the search `dispatch related` runs, are `POST`s that store nothing: they
 are keyed and asked again like a write, but a failure of either is told as a read's, with none of
 those words. A script that calls the API directly can send its own key on any `POST`, `PATCH`, `PUT`
-or `DELETE` of `/api/v2`, and on any `POST` or `PATCH` of `/api/v1`: 1 to 128 letters, digits, `.`,
-`_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
+or `DELETE` of `/api/v2` but the `PUT` and `DELETE` of the exceptions above, and on any `POST` or
+`PATCH` of `/api/v1`: 1 to 128 letters, digits, `.`, `_`, `:` and `-`, the same on every retry of
+one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused `422 KEY_REUSED`,
 and so is one key sent to a `/api/v1` route and then to its `/api/v2` route, which are two routes
 and so two requests. On `/api/v2` a repeat of a comment's or an issue message's edit or delete, or

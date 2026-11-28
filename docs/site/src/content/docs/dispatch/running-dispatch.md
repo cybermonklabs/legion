@@ -851,21 +851,25 @@ delivery and Legion routes are the exception: `GET /api/v2/delivery/measures`,
 `PUT /api/v2/settings/delivery`, `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and
 `DELETE /api/v2/projects/{key}/legion/daemon` keep their `/api/v1` shape, so the OpenAPI document
 lists no refusal codes for them, a query key they do not declare is not refused, and their `PUT`
-and `DELETE` take no `Idempotency-Key`.
+and `DELETE` take no `Idempotency-Key`. The test hooks under `/api/v2/_test/`, which a server
+serves only with `DISPATCH_TEST_HOOKS=1`, keep their `/api/v1` rules the same way.
 `GET /api/v2` lists every route with its method, who may call it, what it serves and a
 description, with no credential, and the [HTTP API reference](/legion/dispatch/reference/api/) is
 the same list.
 
 `/api/v1` is deprecated. `GET /api/v1` and the
 [HTTP API v1 reference](/legion/dispatch/reference/api-v1/) list its routes, which keep the
-answers they had, and from that release on each answer carries a `Deprecation` header and a
+answers they had but for a few fixes of this release (the `unsettled` member a document's text
+read adds among them), and from that release on each answer carries a `Deprecation` header and a
 `Link` header (`rel="successor-version"`) naming the `/api/v2` route that answers for it, or
 `GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2`
-route lands (`GET` and `POST /api/v1/projects/{key}/results` at that release). At that
-release the web app, the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion
-daemon and the Secrets Broker still call `/api/v1`. Each but the web app names itself and its
-release in its `User-Agent` (`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`,
+route lands (`GET` and `POST /api/v1/projects/{key}/results` at that release), for an unknown
+path, for the cookie-origin guard's refusal and for the `410` after the end below. At that
+release the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the
+Legion daemon and the Secrets Broker still call `/api/v1`. Each but the web app names itself and
+its release in its `User-Agent` (`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`,
 `pi-legion/<version>`, `claude-envoy/<version>`, `claude-envoy-hooks/<version>`,
+`codex-envoy/<version>`, `codex-envoy-hooks/<version>`,
 `legion-daemon/<release>`, `envoy-broker-judge/<commit>`, `envoy-broker-project-access/<commit>`,
 `envoy-broker-project-repositories/<commit>`), so the `user_agent` of Dispatch's access log shows
 which of them still call it. The web app sets no `User-Agent` of its own: its requests carry its

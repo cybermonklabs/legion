@@ -4,32 +4,36 @@ package api
 // dispatch://INFRA-4071/spec). Three kinds of declaration feed it, and routes() makes one apiRoute
 // of each (version, route) pair they declare:
 //
-//   - A route file's declaration (routeDecl, route_<path>+<method>.go) is a route of /api/v1 as it
-//     stood when /api/v2 began, at its literal /api/v1 pattern. Its facts are its declaration's
-//     fields - its write class, its ID, its scopes, its read class, its shape, its approve facts
-//     and the route that answers it under /api/v2 (Successor) - and, for the keyed layer, the side
-//     maps keyed by "<method> <pattern>" (keyedReplays, keyedRereads, answerHoldsSecret,
-//     keyedUploads) and the pattern constants (issueUploadRoute, handoffWriteRoute,
-//     markdownRoundTripRoute, fileRoundTripRoute). The routes with a body limit of their own
-//     (routeBody) are the three uploads of keyedUploads, issueUploadRoute among them, and the
-//     routes of the other three constants; issueUploadRoute is also the route that refuses a
-//     closed owner (RefusesClosedOwner). /api/v1 alone serves it, and
-//     testdata/v1-only-routes.txt holds every one of them: those routes go when /api/v1 ends.
+//   - A route file's declaration (routeDecl, route_<path>+<method>.go) is a /api/v1 route as
+//     /api/v2 began, or one another pull request merged into main before /api/v2 merged, at its
+//     literal /api/v1 pattern. Its facts are its declaration's fields - its write class, its ID,
+//     its scopes, its read class, its shape, its approve facts and the route that answers it
+//     under /api/v2 (Successor), which a post-freeze route on testdata/v1-awaiting-v2-routes.txt
+//     does not name yet - and, for the keyed layer, the side maps keyed by "<method> <pattern>"
+//     (keyedReplays, keyedRereads, answerHoldsSecret, keyedUploads) and the pattern constants
+//     (issueUploadRoute, handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute). The
+//     routes with a body limit of their own (routeBody) are the three uploads of keyedUploads,
+//     issueUploadRoute among them, and the routes of the other three constants; issueUploadRoute
+//     is also the route that refuses a closed owner (RefusesClosedOwner). /api/v1 alone serves
+//     it, and testdata/v1-only-routes.txt holds every one of them: those routes go when /api/v1
+//     ends.
 //   - A routeRow (each in a row file route_api_v2_<path>+<method>.go holding one declareRow) is a
 //     route written once, with a version-free pattern, and every fact a wrapper of register or a
 //     reader of the route reads is one of its named columns. It is served at /api/v2 and, unless
 //     its Versions says otherwise, at /api/v1 too: a row a later change adds is served in both
-//     versions by one
-//     declaration (R2), and the decoder and the authority gate read and hold its Query, its Body
-//     and its Authorities at both paths (apiRoute.decoded). A row that answers for /api/v1 routes
-//     which keep their own answer is served at /api/v2 alone (Versions: onlyV2).
+//     versions by one declaration (R2), and, unless it is a row of the INFRA-979 tree
+//     (OfINFRA979), the decoder and the authority gate read and hold its Query, its Body and its
+//     Authorities at both paths (apiRoute.decoded). A row that answers for /api/v1 routes which
+//     keep their own answer is served at /api/v2 alone (Versions: onlyV2).
 //   - A test hook's declaration (routeDecl.TestHook) is served at its /api/v1 path and at
 //     /api/v2/_test/<that path without /api/v1 and /_test>, both only when Deps.TestHooksEnabled
 //     (testHookRoutes). Its facts are its declaration's, as a route file's are.
 //
-// Every wrapper of register reads the apiRoute and never a string key: routes() copies a
-// declaration's facts into the columns of the routeRow its apiRoute carries (v1Route), so a
-// wrapper reads one field whichever kind of declaration declared the route.
+// Every wrapper of register reads the apiRoute's columns, but for three that compare its
+// "<method> <pattern>" with a route they name (addChangedToRefusals, timedAnswersReads and
+// readAnswersCut, in routeHandler and refuseLimitedToken): routes() copies a declaration's facts
+// into the columns of the routeRow its apiRoute carries (v1Route), so a wrapper that reads a
+// column reads one field whichever kind of declaration declared the route.
 
 import (
 	"encoding/json"
@@ -159,26 +163,28 @@ const (
 	// limit and offset (R1.4); a POST to it creates an item (R1.7).
 	kindCollection resourceKind = "collection"
 	// kindLog is a collection read in order by its position field, after and before (R1.5): an
-	// issue's events, a document's, the global event log, the references and the caller's
-	// dismissed threads.
+	// issue's events, a document's, the global event log, the references, the caller's dismissed
+	// threads and a post's corrections.
 	kindLog resourceKind = "log"
 	// kindItem is one item, at its collection's path and its key (R1.2).
 	kindItem resourceKind = "item"
 	// kindSingleton is one object with no key of its own: a deployment setting
-	// (/settings/<name>), a project's record of its own (/projects/{key}/settings/<name>), an
-	// issue's claim, the caller (/me).
+	// (/settings/<name>), the limit set (/limit-set), an issue's claim and its role-holder set, a
+	// retro's rating and a run's experiment, a repository's app installation, the caller (/me).
 	kindSingleton resourceKind = "singleton"
 	// kindState is an item's state, …/{id}/state, which a PUT moves with a typed body for each
 	// state (R1.7).
 	kindState resourceKind = "state"
 	// kindReport is a read computed from what Dispatch stores that is no list: an issue's
-	// coverage, the counts of the related checks. It answers no envelope (R1.4).
+	// coverage, a document's changes, a project's architecture, the counts of the related checks,
+	// the search coverage. It answers no envelope (R1.4).
 	kindReport resourceKind = "report"
 	// kindComputation is a computation that stores nothing, one route (R1.7): the related
-	// search, the markdown round trip, the machine-login lookup.
+	// search, the two markdown round trips, the machine-login lookup and a result's dry run.
 	kindComputation resourceKind = "computation"
-	// kindBytes is a read that answers bytes: a file's version, or a document version that
-	// answers the document's JSON or a file's bytes by what the artifact is (R1.4).
+	// kindBytes is a read that answers bytes: a file's version, a document version that answers
+	// the document's JSON or a file's bytes by what the artifact is, or the block schema's
+	// pre-rendered JSON (GET /block-schema) (R1.4).
 	kindBytes resourceKind = "bytes"
 	// kindStream is a read that answers an event stream (server-sent events), which no envelope
 	// can carry (R1.4).
@@ -396,8 +402,9 @@ type routeRow struct {
 	// Handler answers the route.
 	Handler http.HandlerFunc
 	// Versions is which versions serve the row; its zero value is both, and a row served in both
-	// is decoded and gated at both paths (apiRoute.decoded). A row that answers for /api/v1 routes
-	// which keep their own answer at /api/v1 names onlyV2; a row a later change adds, which has no older
+	// is decoded and gated at both paths unless it is a row of the INFRA-979 tree (OfINFRA979),
+	// which neither path decodes (apiRoute.decoded). A row that answers for /api/v1 routes which
+	// keep their own answer at /api/v1 names onlyV2; a row a later change adds, which has no older
 	// /api/v1 answer to keep, takes the zero value and is served at both by its one declaration.
 	Versions routeVersions
 	// OfINFRA979 marks a row of the INFRA-979 tree, whose row file states OfINFRA979: true and
@@ -436,7 +443,10 @@ type routeRow struct {
 
 	// Query is a zero value of the struct the route's query is decoded into, each field tagged
 	// `query:"<key>"` (and `enum:"…"`, `default:"…"`, `min:"…"`, `max:"…"` where the value is held
-	// to them); nil for a route that reads no query. A key it does not declare is refused (R4).
+	// to them); nil for a route that reads no query. A key it does not declare is refused (R4) on a
+	// route the decoder reads (apiRoute.decoded); a row of the INFRA-979 tree states its Query for
+	// the OpenAPI documents and the route index alone, and its handler ignores a key it does not
+	// read.
 	Query any
 	// Body is the route's request body and how it is written.
 	Body requestBody

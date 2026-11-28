@@ -73,7 +73,7 @@ Each item below names a variable, then its purpose.
   Once it has passed, a check in front of every route answers every path under `/api/v1`, an unknown path and a test hook's included, `410 {"code":"API_V1_ENDED","error":"/api/v1 ended at <end>; GET /api/v2 lists every route","hint":"GET /api/v2"}` with `Link: </api/v2>; rel="successor-version"`.
   The check reads the clock on each request, so the end takes effect at that instant on every process, with no restart.
   Set it only once no client a deployment runs still calls `/api/v1`:
-  at the first `legion-envoy` release that carries pull request #4274, the web app, the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion daemon and the secrets broker all still do, and each but the web app names itself in its `User-Agent`, which the access log records (Access log, below).
+  at the first `legion-envoy` release that carries pull request #4274, the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the Legion daemon and the secrets broker all still do, and each but the web app names itself in its `User-Agent`, which the access log records (Access log, below).
   The web app sets no `User-Agent` of its own, so its requests carry its browser's and the access log does not name it.
 
 - `DISPATCH_TEST_HOOKS`
@@ -323,7 +323,7 @@ The token may call, on `/api/v2`, the route each of them has as its successor in
 A successor that takes several operations by the body's `state` takes the token for the states the list's entries name: `PUT /api/v2/credential-requests/{id}/state` for `approved` and `denied` and not `dismissed`, `PUT /api/v2/asks/{id}/state` for `answered` and not `resolved`, `retracted` or `declined`, and `PUT /api/v2/issues/{key}/decisions/{block_id}/state` for `kept`.
 Any other state such a route declares is `403 APPROVE_ONLY_TOKEN` once the decoder has read the body within the route's bound: after the route's scope, login, project and session checks, and before the authority gate's rules, the keyed layer and the handler (`gateApproveOnlyStates`).
 A state the route does not declare is the decoder's `400 STATE_INVALID` for every caller, the token included.
-The `/api/v2` document lists the `403` on every operation the token may not call whole.
+The `/api/v2` document lists the `403` on every operation the token may not call whole but those of the nine delivery and Legion rows of the INFRA-979 tree and of the test hooks, which list no refusal codes.
 The list is compiled against the route table once, as the table is built (`applyApprovePolicy`), and the table's rows carry what it admits: the checks and the refusal's text read those rows and derive nothing.
 A table the list does not map onto is refused when it is built, so Dispatch does not start: an entry that names a route the table does not mount or names a route twice, a successor that is missing, deleted or not mounted, a state the successor does not declare or a state for a successor that takes none, a state for a successor the decoder does not read, where no state check holds the token, and no state for a successor that takes several operations by state.
 Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes and everything else it does, and the message names both versions' routes.
@@ -4763,7 +4763,7 @@ The dashboard mints one per press and the `dispatch` CLI one per command's write
 a failed fetch, an attempt silent too long, a 5xx, a 408, a 429 and a `409 KEY_IN_FLIGHT`.
 No route requires the header: a write without one runs as it always did, unkeyed, so a script or the Legion daemon's outbox keeps working.
 On `/api/v1` a `PUT` and a `DELETE` take no key, being idempotent already, so no `/api/v1` answer changes;
-on `/api/v2` they are keyed like every other write, so a repeated `PUT` or `DELETE` is answered as its first was, and the nine routes of the INFRA-979 tree (`/api/v2/delivery/…`, `/api/v2/settings/delivery`, `/api/v2/projects/{key}/legion/…`), which keep their `/api/v1` shape, keep `/api/v1`'s rule: the `PUT` of `/api/v2/settings/delivery` and the `PUT` and `DELETE` of `/api/v2/projects/{key}/legion/daemon` take no key.
+on `/api/v2` they are keyed like every other write, so a repeated `PUT` or `DELETE` is answered as its first was, and the nine routes of the INFRA-979 tree (`/api/v2/delivery/…`, `/api/v2/settings/delivery`, `/api/v2/projects/{key}/legion/…`), which keep their `/api/v1` shape, and the test hooks keep `/api/v1`'s rule: the `PUT` of `/api/v2/settings/delivery`, the `PUT` and `DELETE` of `/api/v2/projects/{key}/legion/daemon` and the `PUT` and `DELETE` of `/api/v2/_test/artifacts/{id}/live-write-pauses/{point}` take no key.
 A `/api/v2` `PUT` whose whole body equals the object's present state and fields, sent by the caller the object records as having set them (anyone, for an object that records no setter: a follower, an architecture source; for a credential request, a caller the broker would let decide it, `record.MayDecide`), answers `200` with the object and writes nothing (`putChangesNothing`), and it is held first to every scope and authority the write it stands in for needs, so a caller the write would not let write is refused as the write refuses it;
 every `/api/v2` `PUT` answers `200` with the object, the follower `PUT` included, which `/api/v1` answers `204`.
 The fingerprint holds the route's pattern, so one key sent to a `/api/v1` route and then to its `/api/v2` route is two requests under one key, `422 KEY_REUSED`.
@@ -4984,8 +4984,10 @@ and `packages/contracts/schemas/dispatch-openapi-v2.json` for `/api/v2`, from ea
 `--version 1` or `--version 2` takes that version's document alone, and `--out <path>`, which needs `--version`, writes it to that file instead (`-` for standard output), or with `--check` compares that file.
 The `/api/v2` document lists, for the operation of each `/api/v2` row, the refusal codes it can answer with their statuses (`x-refusal-codes`), and every code `/api/v2` can answer, once, under `components.x-refusal-codes`; the operations of the test hooks (`/api/v2/_test/…`) list none.
 The nine delivery and Legion rows of the INFRA-979 tree are the exception (`GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`, `GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`, `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and `DELETE /api/v2/projects/{key}/legion/daemon`): they keep their `/api/v1` shape, so their operations list no refusal codes, a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
+The test hooks keep their `/api/v1` rules the same way: a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
 The clients' TypeScript types are rendered from the committed documents (`@legion/contracts` from the `/api/v1` one, `@legion/contracts/dispatch-api-v2` from the `/api/v2` one), so a route added to the table reaches them with no type hand-written for it.
-Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it): each `/api/v1` route holds one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`), the `/api/v2` route that answers it among them (`Successor`), and each `/api/v2` route holds one `declareRow(func(s *server) routeRow { ... })`, whose named columns state every fact of it (`routes_versions.go`).
+Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it): each `/api/v1` route but the nine of the INFRA-979 tree holds one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`), the `/api/v2` route that answers it among them (`Successor`), and each `/api/v2` route but a test hook's holds one `declareRow(func(s *server) routeRow { ... })`, whose named columns state every fact of it (`routes_versions.go`).
+A row of the INFRA-979 tree serves both versions from the one `declareRow` of its `route_api_v2_<path>+<method>.go` file, and a test hook's `/api/v2/_test` route comes from its `/api/v1` declaration, which names no `Successor`: `testHookRoutes` makes that route the successor of the hook's `/api/v1` path.
 A `/api/v1` route a merge on main added after `/api/v2`'s freeze names no `Successor` until its `/api/v2` route lands, and `internal/dispatch/api/testdata/v1-awaiting-v2-routes.txt` lists each such route, exactly (`TestAwaitingV2RoutesMatchTheAwaitingList`): today `GET` and `POST /api/v1/projects/{key}/results`.
 A branch made before routes moved into files adopts that layout in its merge of main with the adopter, run from `packages/envoy` of a checkout that holds it, with the branch's worktree on a clean tree:
 
@@ -4997,14 +4999,14 @@ go run ./cmd/dispatch-route-adopt -C <the branch's worktree> <revision>  # or me
 It makes the merge itself, so do not merge first: it refuses a tree that is mid-merge or holds a change, naming the commands that return it (`git merge --abort`; under jj `jj abandon @`, then `jj edit` of the merge's first parent) and what they cost.
 It reads both sides and the merge base before it merges, writes the branch's route changes into route files, takes `routes_table.go` and `routes_shapes.go` from main, and lists what is left for the person; its package comment (`cmd/dispatch-route-adopt/main.go`) gives every step.
 
-Every `/api/v2` route but the INFRA-979 tree's keeps one shape.
+Every `/api/v2` route but the INFRA-979 tree's and the test hooks' keeps one shape.
 Each item below names a rule, then what a caller meets.
 
 - Lists
 
   Every list answers `{items, total, limit, offset}`, with the route's own `limit` bounds (50 and 200 where it had none): a `limit` outside them is `400 INVALID_LIMIT` naming the bound, and an `offset` that is no integer of 0 or more `400 INVALID_OFFSET`.
   The global event log (`GET /api/v2/events`) and the caller's dismissed threads (`GET /api/v2/me/threads?state=dismissed`) answer `total: null`, since counting the global log costs about ten times its page and counting the dismissed threads counts every thread the caller has ever dismissed; every other list, every other log among them, answers an exact `total`.
-  A log reads `after` and `before` in its one position field (`seq` for an issue's and a document's events, `id` for the global log, `source_seq` for the references, `<time>,<id>` for the caller's dismissed threads); an `after` past the log's last position, or a value not written as that field is, is `400 POSITION_INVALID` naming the parameter and the field, and a `before` past the end answers the newest page.
+  A log reads `after` and `before` in its one position field (`seq` for an issue's and a document's events, `id` for the global log, `source_seq` for the references, `<time>,<id>` for the caller's dismissed threads and for a comment's or a message's corrections); an `after` past the log's last position, or a value not written as that field is, is `400 POSITION_INVALID` naming the parameter and the field, and a `before` past the end answers the newest page.
 
 - Refusals
 
@@ -5014,7 +5016,7 @@ Each item below names a rule, then what a caller meets.
 - The query and the body
 
   One decoder reads every route's query and body from the types its row declares.
-  A query key the route does not declare is `400 QUERY_KEY_UNKNOWN` with the `key` and the keys the route `declared`, before any lookup or write; a body member it does not declare is ignored.
+  A query key the route does not declare is `400 QUERY_KEY_UNKNOWN` with the `key` and the keys the route `declared`, before any lookup or write; a body member it does not declare is ignored, but for a member a `replace` operation does not take, which `POST /api/v2/artifacts/{id}/edits` refuses `400 REPLACE_FIELDS`.
 
 - Writes
 
@@ -5023,14 +5025,15 @@ Each item below names a rule, then what a caller meets.
 - Objects a path names
 
   A path that names an object Dispatch stores, which does not exist, answers `404` with that object's code (`ISSUE_NOT_FOUND`, `PROJECT_NOT_FOUND`, `ASK_NOT_FOUND`, `VERSION_NOT_FOUND`, `BLOCK_NOT_FOUND`, …);
-  a `{session_id}` and a repository's app installation keep `/api/v1`'s answer, since Dispatch cannot tell a session that never existed from one that has gone, and GitHub answers alike for a missing repository and one the App cannot see.
+  a `{session_id}` and a repository's app installation keep `/api/v1`'s answer, since Dispatch cannot tell a session that never existed from one that has gone, and GitHub answers alike for a missing repository and one the App cannot see;
+  and the `PUT` of a plan (`/api/v2/issues/{key}/plans/{id}`) and of an architecture source (`/api/v2/projects/{key}/architecture-sources/{owner}/{repo}`) makes the object its path names.
 
 - An unknown path
 
   An unknown path under `/api/v2` is a JSON 404 `{"code":"NO_ROUTE","error":"no route for GET /api/v2/issue","hint":"GET /api/v2 lists every route"}`.
 
 Every `/api/v1` answer, an unknown `/api/v1` path's included, but dev sign-in's host refusal (below), carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
-and `Link: </api/v2/…>; rel="successor-version"`, the `/api/v2` route that answers for it, filled from the request's own path values and carrying that route's query where the `/api/v1` route became a filter of it (`GET /api/v1/issues/{key}/artifacts/{slug}` links `/api/v2/issues/{key}/artifacts?slug={slug}`).
+and a `Link`: a route's answer carries `Link: </api/v2/…>; rel="successor-version"`, the `/api/v2` route that answers for it, filled from the request's own path values and carrying that route's query where the `/api/v1` route became a filter of it (`GET /api/v1/issues/{key}/artifacts/{slug}` links `/api/v2/issues/{key}/artifacts?slug={slug}`), and an unknown path's answer, the cookie-origin guard's refusal and the `410` carry `Link: </api/v2>; rel="successor-version"`, which the router sets before any route runs (`endAPIV1`).
 Where the `/api/v2` path needs a value the `/api/v1` request does not carry, an artifact's id or an issue's key, the handler records the one it resolved;
 an answer that holds none, a request refused before its handler resolves one, links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`, and a keyed write's replay of the answer its key kept links what the first answer linked.
 `GET /api/v1/settings/architecture-sources`, every project's sources, carries one `Link` value per project its answer holds, `</api/v2/projects/{key}/architecture-sources>`, and `</api/v2/projects>` when it holds none.
@@ -5085,7 +5088,7 @@ Each item below names a path with its method and identity, then its purpose.
   Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400 AUTH_STATE_INVALID` ("invalid or expired state") when the state cookie is missing, does not verify, has lapsed or names another state;
-  `400 AUTH_PARAMS_INVALID` ("missing code or state in callback", or "the callback's code is longer than 2048 bytes"), before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
+  `400 AUTH_PARAMS_INVALID` ("sign-in callback <error>: <description>", "missing code or state in callback", or "the callback's code is longer than 2048 bytes"), before any request to the issuer, when the callback carries the issuer's `error` (such as `access_denied`), no code or state, or a code longer than 2048 bytes;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
   `502 SIGNIN_FAILED` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
   `500 SIGNIN_RECORD_FAILED` or `500 SESSION_FAILED` when the person or the session generation cannot be recorded;
@@ -5097,7 +5100,7 @@ Each item below names a path with its method and identity, then its purpose.
   The caller lookup (`identity.WriteError`) answers `401 NO_IDENTITY` for a caller who is not signed in, `503 SIGNIN_UNAVAILABLE` when confirming the caller needs the sign-in issuer and it cannot be reached, and `500 IDENTITY_ERROR` when the caller cannot be looked up;
   `500 SESSION_FAILED` when the sessions cannot be ended.
   Like every unsafe request a browser credential carries, from another origin it is `403 ORIGIN_REFUSED` (`enforceCookieOrigin`).
-  Every refusal of the `/auth` routes, and of the router's own guard and dashboard files (`STATIC_NOT_FOUND`, `DASHBOARD_NOT_BUILT`, `STATIC_READ_FAILED`, `ASSET_STORE_UNAVAILABLE`, `ASSET_STORE_BUSY`), is `{code, error}`, but one: `/auth/callback` refuses a person the sign-in rule does not admit with its 403 HTML page (`writeSignInRefusedPage`), which carries no code.
+  Every refusal of the `/auth` routes, and of the router's own guard and dashboard files (`STATIC_NOT_FOUND`, `DASHBOARD_NOT_BUILT`, `STATIC_READ_FAILED`, `ASSET_STORE_UNAVAILABLE`, `ASSET_STORE_BUSY`), is `{code, error}`, but the 403 HTML page `/auth/callback` answers a person the sign-in rule does not admit (`writeSignInRefusedPage`), which carries no code, and the plain-text errors net/http writes as it serves a dashboard file (`http.ServeContent`, `http.ServeFile`): a `416` for a range the file does not hold, a `412` for a precondition the file fails, and a `404`, `403` or `500` for a file gone or unreadable after its stat.
 
 - `/auth/whoami` (GET; cookie or trusted header)
 
@@ -7008,14 +7011,15 @@ Each item below names a status and code, then its meaning.
 
 - `400 QUERY_KEY_UNKNOWN`
 
-  On `/api/v2`, and on the `/api/v1` path of a row served in both versions: the query names a key the route does not declare, a misspelt filter among them.
+  On `/api/v2` but the nine rows of the INFRA-979 tree and the test hooks (`/api/v2/_test/…`), and on the `/api/v1` path of a decoded row served in both versions (none today): the query names a key the route does not declare, a misspelt filter among them.
   The body is `{code, error, key, declared}`, `key` the key and `declared` every key the route declares, sorted, `session` among them; nothing is read or written.
   Every other `/api/v1` route still ignores a key it does not read.
 
 - `400 INVALID_QUERY`, `400 INVALID_LIMIT`, `400 INVALID_OFFSET`
 
-  On `/api/v2`, and on the `/api/v1` path of a row served in both versions, a query value outside what its key takes, named with the key and what it takes: a value no `enum` lists, a boolean that is not `true` or `false`, a time that is not RFC 3339, an integer outside its bounds, a `sort` field the route does not sort by, a key given twice that takes one value;
+  On `/api/v2` but the nine rows of the INFRA-979 tree and the test hooks, and on the `/api/v1` path of a decoded row served in both versions (none today), a query value outside what its key takes, named with the key and what it takes: a value no `enum` lists, a boolean that is not `true` or `false`, a time that is not RFC 3339, an integer outside its bounds, a `sort` field the route does not sort by, a key given twice that takes one value;
   a `limit` outside the route's bounds (`INVALID_LIMIT`, naming the bound), or an `offset` that is no integer of 0 or more (`INVALID_OFFSET`).
+  A delivery read of the INFRA-979 tree answers `400 INVALID_QUERY` at both versions only for a time its own handler cannot take: a `from`, `to` or `at` that is not RFC 3339, or a window that is empty or longer than 84 days.
 
 - `400 POSITION_INVALID`
 
@@ -7023,7 +7027,7 @@ Each item below names a status and code, then its meaning.
 
 - `400 STATE_INVALID`, `400 INVALID_KIND`
 
-  On `/api/v2`, and on the `/api/v1` path of a row served in both versions, a body keyed by `state` (a `PUT` to a `…/state` route) whose `state` names no state the route takes, or none, and a mark whose `kind` names no kind it takes, each naming the ones it takes.
+  On `/api/v2`, and on the `/api/v1` path of a decoded row served in both versions (none today), a body keyed by `state` (a `PUT` to a `…/state` route) whose `state` names no state the route takes, or none, and a mark whose `kind` names no kind it takes, each naming the ones it takes.
 
 - `404 NO_ROUTE`
 

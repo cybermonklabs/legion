@@ -1147,7 +1147,8 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 	if route.Method+" "+route.Pattern == statusChangeRoute {
 		handler = addChangedToRefusals(handler)
 	}
-	// The access-log line is outermost but for the mount, so it records what every layer
+	// The access-log line is outermost but for the mount and, on /api/v1, the Link writer
+	// (linkSuccessor), which answers nothing itself, so it records what every layer
 	// answered - a keyed replay, a refused login, an early answer the drain held - and the
 	// caller the first of them resolved. Compression sits just inside it, with nothing between
 	// them but the answers read's timing below, so every one of those answers is compressed for a

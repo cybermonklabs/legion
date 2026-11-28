@@ -1429,11 +1429,13 @@ reads the setting, the first `legion-envoy` release that carries pull request #4
 one, the release that first serves `/api/v2`: an older one ignores it, as it ignores every
 variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Whatever
 this input says, every `/api/v1` answer of such a release carries a `Deprecation` header and a
-`Link` header naming the `/api/v2` route that answers for it, or `GET /api/v2` for a `/api/v1`
-route added on `main` after `/api/v2`'s freeze until its `/api/v2` route lands (`GET` and
-`POST /api/v1/projects/{key}/results` at that release). Arm the end only once no client the
-deployment runs still calls `/api/v1`: at that release the web app, the `dispatch` command, the
-Oh My Pi and Claude Code plugins, the Legion daemon and the secrets broker still do. The web app
+`Link` header: a route's own answer names the `/api/v2` route that answers for it, or
+`GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2`
+route lands (`GET` and `POST /api/v1/projects/{key}/results` at that release), and an unknown
+path's answer, the cookie-origin guard's refusal and, once the end has passed, the `410` name
+`GET /api/v2`. Arm the end only once no client the deployment runs still calls `/api/v1`: at that
+release the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the
+Legion daemon and the secrets broker still do. The web app
 sets no `User-Agent` of its own, so its requests carry its browser's and Dispatch's access log
 does not name it; each of the others names itself in its `User-Agent`, which the access log
 records. Setting, changing or unsetting it replaces the app's pods as any change to its pod
