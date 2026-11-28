@@ -17,10 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // finalWords is how every refusal ends: that the request will not be granted, and whom to tell.
@@ -646,9 +648,9 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
 
-	waitFor(t, "the run Consider started to apply its decision", 10*time.Second, func() bool {
+	testwait.Until(t, "the run Consider started to apply its decision", func() (int, bool) {
 		applied, _ := machine.rows()
-		return len(applied) == 1
+		return len(applied), len(applied) == 1
 	})
 }
 
@@ -684,16 +686,12 @@ func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	model.delay = runBudget
 	// The row's own transaction, which has to commit inside what is left of the budget.
 	machine.writeTakes = 2 * time.Second
-	started := time.Now()
 	runner.Consider(citedPending())
 
-	waitFor(t, "the slowest run there is to write its row", runBudget+5*time.Second, func() bool {
+	testwait.Until(t, "the slowest run there is to write its row", func() (int, bool) {
 		_, logged := machine.rows()
-		return len(logged) == 1
+		return len(logged), len(logged) == 1
 	})
-	if took := time.Since(started); took < dispatchBound+modelBound {
-		t.Errorf("the run wrote its row after %s; want it to have spent both bounds, %s", took, dispatchBound+modelBound)
-	}
 	phase := machine.phaseTimes()
 	switch {
 	case phase.end.IsZero():
@@ -707,8 +705,10 @@ func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	if row["asked"] != true {
 		t.Errorf("the row reads asked %v; want the model asked", row["asked"])
 	}
-	if _, carries := row["error"].(string); !carries {
-		t.Errorf("the row carries error %v; want the model call's own timeout", row["error"])
+	// The row's record of what ended the model call: agentloop's own time fault, naming the bound
+	// it went past, so the call ran out its whole modelBound after the phase had spent its own.
+	if fault := fmt.Sprintf("the model run ended in %s: the run went past %s", agentloop.FaultTime, modelBound); !strings.Contains(fmt.Sprint(row["error"]), fault) {
+		t.Errorf("the row carries error %v; want the model call's own timeout, %q", row["error"], fault)
 	}
 	if failed := failedCheck(t, row); failed != "" {
 		t.Errorf("the row names %q as a failed check; want every check passed before the model", failed)
@@ -728,22 +728,22 @@ func TestASlowProjectReadStillWritesItsJudgedRow(t *testing.T) {
 	machine.projectTakes = 9 * time.Second
 	dispatch.delay = dispatchBound/2 - 50*time.Millisecond
 	model.delay = runBudget
-	started := time.Now()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(citedPending())
 
-	waitFor(t, "the run whose project read was slow to write its row", runBudget+5*time.Second, func() bool {
+	testwait.Until(t, "the run whose project read was slow to write its row", func() (int, bool) {
 		_, logged := machine.rows()
-		return len(logged) == 1
+		return len(logged), len(logged) == 1
 	})
-	if took := time.Since(started); took >= machine.projectTakes {
-		t.Errorf("the run wrote its row after %s; want the phase's bound, %s, to have cut the read short", took, dispatchBound)
-	}
 	row := theOneRow(t, machine)
 	if failed := failedCheck(t, row); failed != checkProject {
 		t.Fatalf("the row names %q as the check that failed; want %q, the read the bound cut short", failed, checkProject)
 	}
-	if detail := failedDetail(t, row); !strings.Contains(detail, context.DeadlineExceeded.Error()) {
-		t.Errorf("the project check reads %q; want it to say the read ran out of time", detail)
+	// The row's record of why the check failed: whether the project is private could not be read,
+	// the read ended by a deadline. A read that answered, after projectTakes, passes the check (the
+	// stand-in answers not private), and one that refused names a private project. The only
+	// deadline short of projectTakes is the phase's dispatchBound, so the bound cut the read short.
+	if detail := failedDetail(t, row); !strings.Contains(detail, "could not be read: "+context.DeadlineExceeded.Error()) {
+		t.Errorf("the project check reads %q; want it to say the read could not finish, cut by a deadline", detail)
 	}
 	if row["asked"] != false || model.asked() != 0 || len(dispatch.got()) != 0 {
 		t.Errorf("the row reads asked %v, the model got %d requests and Dispatch %d; want a hand-over that asked nothing more", row["asked"], model.asked(), len(dispatch.got()))

@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -187,6 +188,10 @@ type Service struct {
 	// CredentialLifetime is how long a minted credential lasts, and how far each refresh of its
 	// device login moves its expiry.
 	CredentialLifetime time.Duration
+	// Clock is what an approval stamps its credential's expiry from, CredentialLifetime past its
+	// present; nil is the wall clock (clock.Real), and a test hands it a clocktest.Fake to read
+	// that expiry exactly.
+	Clock clock.Clock
 
 	// OAuth is the device grant a person's machine logs in through; nil when the broker runs none.
 	// ApplyDecision records each decision on it, so the machine's token poll learns the outcome.
@@ -602,7 +607,7 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 			}
 		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
-			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second), account, approvedScopes)
+			s.credentialClock().Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second), account, approvedScopes)
 		if enroll.KeyHeld(err) {
 			return "", "", ErrKeyHoldsLiveCredential
 		}
@@ -744,6 +749,14 @@ func (s *Service) Refreshed(ctx context.Context, credentialID string) (time.Time
 		return time.Time{}, ErrNotLive
 	}
 	return expires, err
+}
+
+// credentialClock is Clock, or the wall clock when it is nil.
+func (s *Service) credentialClock() clock.Clock {
+	if s.Clock == nil {
+		return clock.Real()
+	}
+	return s.Clock
 }
 
 // Live holds a launcher credential's row lock until the transaction ctx carries

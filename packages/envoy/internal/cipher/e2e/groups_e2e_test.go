@@ -215,7 +215,10 @@ func TestGroupOwnersEndToEnd(t *testing.T) {
 		serviceAccounts: map[string]string{"FED_ADMIN": federationAccount},
 		now:             clock.Now,
 	})
-	testwait.Eventually(t, "the first policy load's read of the group", func() bool { _, fresh := ts.Groups.Membership(approversGroup, ""); return fresh })
+	testwait.Until(t, "the first policy load's read of the group", func() (bool, bool) {
+		_, fresh := ts.Groups.Membership(approversGroup, "")
+		return fresh, fresh
+	})
 	if log := ts.Log.String(); !strings.Contains(log, groups.ReadMessage+" group="+approversGroup+" members=1 result=ok") {
 		t.Fatalf("the broker logged no successful read of %s:\n%s", approversGroup, log)
 	}

@@ -232,8 +232,8 @@ func AwaitLockWaiters(t *testing.T, q Querier, holder pgx.Tx, n int) []uint32 {
 // LockWaitersBehind is every backend that waits on a lock behind pid's backend, read once and in
 // pid order: one waiting on a lock pid's backend holds, or on one a backend already counted holds
 // or is ahead of it for, as AwaitLockWaiters counts them. It is the read AwaitLockWaiters polls,
-// for a test whose other way out is the waiter returning, which AwaitLockWaiters would fail after
-// ten seconds with no waiter.
+// for a test whose other way out is the waiter returning, which AwaitLockWaiters would not see: it
+// waits for its waiters through testwait.Until until the shared wait's bound.
 func LockWaitersBehind(t testing.TB, q Querier, pid uint32) []int32 {
 	t.Helper()
 	var waiting []int32

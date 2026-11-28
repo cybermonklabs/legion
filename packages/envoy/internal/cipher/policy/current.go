@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Current is the live policy. The first load must succeed; a later load that fails keeps the
@@ -118,6 +119,17 @@ type valueOutcome struct {
 // for each interval. A reload that fails once ctx has ended, the broker shutting down, is no
 // failed load and writes nothing.
 func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Current, error) {
+	return NewCurrentOn(ctx, loader, every, clock.Real())
+}
+
+// NewCurrentOn is NewCurrent with its reload ticker and each reload's bound on clk: clock.Real
+// from NewCurrent, and a test's clocktest.Fake, on which the policy reloads only where the test
+// moves it. A nil clk is clock.Real. The ticker is clock.Ticker, whose ticks fall on a grid one
+// interval apart and which arms the next of them once a reload has returned.
+func NewCurrentOn(ctx context.Context, loader Loader, every time.Duration, clk clock.Clock) (*Current, error) {
+	if clk == nil {
+		clk = clock.Real()
+	}
 	c := &Current{loader: loader, mu: make(chan struct{}, 1), recent: map[string]time.Time{}, values: map[string]*valueState{}, now: time.Now}
 	// The loader weighs a secret waiting for its value by c's clock, which PendingValue reads too,
 	// so the two never answer differently. Load and LoadOne run under the writer lock, which SetNow
@@ -127,15 +139,16 @@ func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Curre
 		return nil, err
 	}
 	go func() {
-		ticker := time.NewTicker(every)
-		defer ticker.Stop()
+		ticks := clock.NewTicker(clk, every, false)
+		defer ticks.Stop()
 		failing := false
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				reload, cancel := context.WithTimeout(ctx, every)
+			case <-ticks.C():
+				ticks.Took()
+				reload, cancel := clk.WithTimeout(ctx, every)
 				err := c.Refresh(reload)
 				cancel()
 				switch {
@@ -147,6 +160,7 @@ func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Curre
 					slog.Info(LoadRecoveredMessage)
 					failing = false
 				}
+				ticks.Next()
 			}
 		}
 	}()

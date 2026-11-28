@@ -40,6 +40,20 @@ const Channel = "broker_secret_reread"
 // than that is one the pod's own five-minute reload is the backstop for.
 const refreshTimeout = 30 * time.Second
 
+// ReadMessage is the line a pod logs once it has run the reread of a secret a peer fanned out to
+// it, and CauseFanOut the cause it names. A pod reads a secret again for one of three reasons: its
+// own POST /v1/secrets/{name}/reread, this fan-out, or its own policy reload. Each counts in
+// broker_policy_store_reads_total (policy.NewStoreReads), a reread of either kind as a
+// read="describe" and a reload as a read="list" (with a describe for each name it re-describes),
+// and neither the route nor the reload logs a line for a read that ran, so this line is what tells
+// a reader which of a pod's reads a peer fanned out to it. It is written for every Refresh that
+// answers nil (notified), a name the policy refuses included. Nothing but the cause is new: the
+// read itself is the Listener's Refresh.
+const (
+	ReadMessage = "broker: reread a secret a peer fanned out"
+	CauseFanOut = "fan-out"
+)
+
 // notification is what one reread sends: the secret's name, and the sender id of the process that
 // sent it, so a pod can tell its own notification from another's. Both halves marshal and parse it
 // through this one definition.
@@ -157,12 +171,14 @@ func (l *Listener) onConnected() {
 // notified rereads the secret one notification names, on the listener's goroutine. A payload this
 // build cannot read, and a Refresh that fails, are each dropped with one WARN and nothing else: a
 // notification is a hint to read a secret again, so there is nothing to retry and nobody to
-// answer. A name the policy refuses is neither: RefreshOne answers it with a Lookup carrying the
-// reason and a nil error, which the Refresh this package is given discards, so it is the policy's
-// own refusal line that records it and nothing here fires. Neither line carries the payload's own text, which an unreadable payload makes
-// arbitrary bytes, and each names the fan-out rather than repeating the HTTP reread's own
-// "broker: reread secret failed", so an operator alarming on that line still reads one pod's
-// own request path alone.
+// answer. A Refresh that answers nil is a reread that ran, and writes one ReadMessage line naming
+// the secret, the sender and CauseFanOut. A name the policy refuses is such a reread: RefreshOne
+// answers it with a Lookup carrying the reason and a nil error, and the Refresh this package is
+// given (cmd/cipherd's peerReread) discards the Lookup and answers nil, so the policy's own refusal
+// line records the refusal and ReadMessage the read. Neither WARN line carries the payload's own
+// text, which an unreadable payload makes arbitrary bytes, and each names the fan-out rather than
+// repeating the HTTP reread's own "broker: reread secret failed", so an operator alarming on that
+// line still reads one pod's own request path alone.
 func (l *Listener) notified(ctx context.Context, payload string) {
 	note, err := parse(payload)
 	if err != nil {
@@ -176,5 +192,7 @@ func (l *Listener) notified(ctx context.Context, payload string) {
 	defer cancel()
 	if err := l.Refresh(refresh, note.Name); err != nil {
 		slog.Warn("broker: a notification's reread of a secret did not run", "secret", note.Name, "sender", note.Sender, "error", err)
+		return
 	}
+	slog.Info(ReadMessage, "secret", note.Name, "sender", note.Sender, "cause", CauseFanOut)
 }

@@ -19,9 +19,12 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // idPattern is an answer id: 16 random bytes in hex.
@@ -39,6 +42,15 @@ type rig struct {
 func newRig(t *testing.T, next http.Handler) *rig {
 	t.Helper()
 	return newRigOf(t, next, answer.Middleware)
+}
+
+// newRigOn is newRig with the recorder reading each arrival on clk (answer.MiddlewareOn, nil for
+// clock.Real()).
+func newRigOn(t *testing.T, clk clock.Clock, next http.Handler) *rig {
+	t.Helper()
+	return newRigOf(t, next, func(next http.Handler, answers *metrics.Counter) http.Handler {
+		return answer.MiddlewareOn(next, answers, clk)
+	})
 }
 
 // newRigOf is newRig behind the recorder middleware builds: answer.Middleware or
@@ -325,24 +337,26 @@ func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
 	}
 }
 
-// Arrived is when Middleware first saw the request, before the handler ran, and, on a request no
-// Recorder records, the moment it is asked.
+// Arrived is when Middleware first saw the request, on the clock it was given, before the handler
+// ran, and, on a request no Recorder records, the present of the clock it is asked on.
 func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
+	fake := clocktest.New(time.Now())
+	reached := fake.Now()
 	var arrived, handled time.Time
-	before := time.Now()
-	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-		arrived, handled = answer.FromContext(req.Context()).Arrived(), time.Now()
+	r := newRigOn(t, fake, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// The handler's own work before it reads the arrival, a proof check say, takes 50 ms on
+		// the recorder's clock.
+		fake.Advance(50 * time.Millisecond)
+		arrived, handled = answer.FromContext(req.Context()).Arrived(fake), fake.Now()
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	r.serve(httptest.NewRequest(http.MethodGet, "/", nil))
-	if arrived.Before(before) || handled.Sub(arrived) < 50*time.Millisecond {
-		t.Errorf("Arrived() = %s, want at or after %s and at least 50 ms before the handler read it at %s", arrived, before, handled)
+	if !arrived.Equal(reached) || handled.Sub(arrived) != 50*time.Millisecond {
+		t.Errorf("Arrived() = %s, want %s, when the recorder saw the request, 50 ms before the handler read it at %s", arrived, reached, handled)
 	}
-	asked := time.Now()
-	got := answer.FromContext(context.Background()).Arrived()
-	if after := time.Now(); got.Before(asked) || got.After(after) {
-		t.Errorf("Arrived() on no Recorder = %s, want the moment it was asked, from %s to %s", got, asked, after)
+	fake.Advance(time.Second)
+	if got := answer.FromContext(context.Background()).Arrived(fake); !got.Equal(fake.Now()) {
+		t.Errorf("Arrived() on no Recorder = %s, want the present of the clock it is asked on, %s", got, fake.Now())
 	}
 }
 
@@ -950,6 +964,12 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	// The read below takes the shared wait's moment as its deadline (testwait.GiveUpAt).
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		if err := conn.SetReadDeadline(end); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: example\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +977,7 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 	if err != nil || status != "HTTP/1.1 101 Switching Protocols\r\n" {
 		t.Fatalf("the hijacked connection answered %q, %v", status, err)
 	}
-	<-returned
+	testwait.Receive(t, "the recorder to return from the hijacked answer", returned)
 	if got := hijacked.count(t, `outcome="served",code="HTTP_101",caller_class="public"`); got != "1" {
 		t.Errorf("a hijacked answer counted %s served HTTP_101 answers, want 1", got)
 	}

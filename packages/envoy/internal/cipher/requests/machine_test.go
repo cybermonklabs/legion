@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fixtureOperator is the person whose machine the fixture's session runs on.
@@ -960,10 +961,10 @@ func TestValuesHoldsNoPooledConnectionWhileReadingSecrets(t *testing.T) {
 		_, err := m.Values(ctx, *req.GrantID, enr, ReleaseCall{})
 		done <- err
 	}()
-	awaitEntered(t, reader.entered, "the secret read")
+	testwait.Receive(t, "the secret read to start", reader.entered)
 	acquired := m.Store.Pool.Stat().AcquiredConns()
 	close(reader.gate)
-	if err := <-done; err != nil {
+	if err := testwait.Receive(t, "Values to return once the secret read is let go", done); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if acquired != 0 {
@@ -983,16 +984,6 @@ func (g gatedReader) Read(ctx context.Context, source string) (string, error) {
 	g.entered <- struct{}{}
 	<-g.gate
 	return g.Reader.Read(ctx, source)
-}
-
-// awaitEntered waits for one announcement on entered, failing t after five seconds.
-func awaitEntered(t *testing.T, entered <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("%s never started", what)
-	}
 }
 
 // TestRevokeByApproverIsLimitedToTheApproverOrOperator pins that a human may end only a grant they

@@ -120,9 +120,10 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 // is left out of the live policy, and that the reload after its value is put serves it, with no
 // restart. The first load writes its refusal once, marked first_load, the reloads that find it
 // still without a value write nothing, and the reload that serves it writes the one line that
-// says so (now=servable). Its synctest bubble waits for the reload goroutine to return.
+// says so (now=servable). Its synctest bubble (testwait.Bubble) waits for the reload goroutine
+// to return.
 func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	testwait.Bubble(t, func(t testing.TB) {
 		store := memory.New(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, ""))
 		logged := policytest.CaptureLog(t)
 		cur, err := policy.NewCurrent(t.Context(), policytest.Loader(store), 10*time.Millisecond)
@@ -140,7 +141,10 @@ func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
 		}
 
 		store.Put(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, "seeded-v1"))
-		await(t, func() bool { return cur.Get().Secrets["SEEDED_LATER"].Name == "SEEDED_LATER" })
+		awaitQuiet(t, "the reload after its value was put to serve SEEDED_LATER", func() (string, bool) {
+			name := cur.Get().Secrets["SEEDED_LATER"].Name
+			return name, name == "SEEDED_LATER"
+		})
 		if want := refused + servableLine(policytest.ID("SEEDED_LATER"), policy.ReasonNoCurrentValue, owner, "servable"); logged.String() != want {
 			t.Fatalf("logged:\n%s\nwant:\n%s", logged, want)
 		}
@@ -168,10 +172,10 @@ func (f *failingSecrets) List(ctx context.Context, prefix string) ([]secretstore
 // TestReloadKeepsThePolicyWhenSecretsManagerFails pins the live policy across reloads: a tag edit
 // takes effect on the next tick, a reload that cannot reach Secrets Manager logs the exact
 // LoadFailedMessage line and keeps the previous policy, and a first load that fails fails the
-// broker's boot. Its synctest bubble waits for the reload goroutine to return, so no failed
-// reload logs into a later test's capture.
+// broker's boot. Its synctest bubble (testwait.Bubble) waits for the reload goroutine to return,
+// so no failed reload logs into a later test's capture.
 func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	testwait.Bubble(t, func(t testing.TB) {
 		store := &failingSecrets{Store: memory.New(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
 		loader := policy.Loader{Store: store, Prefix: policytest.Prefix}
 		logged := policytest.CaptureLog(t)
@@ -182,7 +186,10 @@ func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 		first := cur.Get()
 
 		store.Put(policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "v"))
-		await(t, func() bool { return cur.Get().Secrets["DEEL_API_KEY"].Tier == policy.TierHuman })
+		awaitQuiet(t, "the reload after the tag edit to serve DEEL_API_KEY at the human tier", func() (string, bool) {
+			tier := cur.Get().Secrets["DEEL_API_KEY"].Tier
+			return tier, tier == policy.TierHuman
+		})
 		if cur.Get().Version == first.Version {
 			t.Fatalf("a tag edit left the version at %s", first.Version)
 		}
@@ -192,7 +199,10 @@ func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 		store.failing = true
 		store.mu.Unlock()
 		const failed = "ERROR agent secret policy load failed; previous policy kept error=\"list secrets under " + policytest.Prefix + ": ThrottlingException: Rate exceeded\"\n"
-		await(t, func() bool { return strings.Contains(logged.String(), failed) })
+		awaitQuiet(t, "the failed reload's line", func() (string, bool) {
+			log := logged.String()
+			return log, strings.Contains(log, failed)
+		})
 		if cur.Get() != edited {
 			t.Fatalf("a failed reload replaced the policy: %+v", cur.Get())
 		}
@@ -203,11 +213,16 @@ func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 	})
 }
 
-func await(t *testing.T, done func() bool) {
+// awaitQuiet waits, inside a bubble testwait.Bubble runs, until read holds, asking it only once
+// every other goroutine of the bubble is durably blocked (synctest.Wait), so it reads what a
+// reload left once that reload has run to its end. It is testwait.Until, whose pace steps the
+// bubble's clock and so the reload ticker, at no cost in real time.
+func awaitQuiet[T any](t testing.TB, what string, read func() (T, bool)) T {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, done) {
-		t.Fatal("condition not met within 5s")
-	}
+	return testwait.Until(t, what, func() (T, bool) {
+		synctest.Wait()
+		return read()
+	})
 }
 
 // TestVersionNamesThePolicyNotItsValues pins that the version is a function of the served policy

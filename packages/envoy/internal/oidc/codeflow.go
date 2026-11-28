@@ -122,6 +122,12 @@ func NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain string, c clock.
 	}
 }
 
+// SpaceFailuresOn makes the wait between two failed reads of the issuer's discovery document
+// (discoveryRetrySpacing), and the rate of the lines that say so, run on c rather than the wall
+// clock, for a test that moves c past that wait. Call it before the flow's first use; a flow it
+// is never called on keeps the wall clock.
+func (f *CodeFlow) SpaceFailuresOn(c clock.Clock) { f.discovery.now = c.Now }
+
 // discoverCodeFlow reads issuer's discovery document. An issuer whose document names no
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
 // no revocation_endpoint is accepted, and Revoke fails against it. One whose revocation_endpoint

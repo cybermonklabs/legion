@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestGCPLive runs the store against a real Secret Manager project under Application Default
@@ -36,8 +37,7 @@ func TestGCPLive(t *testing.T) {
 	if err := ValidKeyName(key); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	client, err := NewClient(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -105,24 +105,19 @@ func TestGCPLive(t *testing.T) {
 	}
 
 	// The listing is eventually consistent; the broker's policy anchors on that too.
-	var byID map[string]secretstore.Listing
-	deadline := time.Now().Add(90 * time.Second)
-	for {
+	byID := testwait.Until(t, "Secret Manager to list the 4 secrets with no expire_time", func() (map[string]secretstore.Listing, bool) {
 		listings, err := store.List(ctx, prefix)
 		if err != nil {
 			t.Fatal(err)
 		}
-		byID = map[string]secretstore.Listing{}
+		found := map[string]secretstore.Listing{}
 		for _, ls := range listings {
-			byID[ls.ID] = ls
+			found[ls.ID] = ls
 		}
-		if len(byID) == 4 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(3 * time.Second)
-	}
-	if _, listed := byID[expiring]; len(byID) != 4 || listed {
-		t.Fatalf("List answered %d secrets within 90s, want the 4 with no expire_time: %+v", len(byID), byID)
+		return found, len(found) == 4
+	})
+	if _, listed := byID[expiring]; listed {
+		t.Fatalf("List answered the secret with an expire_time: %+v", byID)
 	}
 	onKey := func(ls secretstore.Listing) bool {
 		t.Helper()

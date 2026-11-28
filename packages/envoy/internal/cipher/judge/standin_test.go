@@ -834,19 +834,6 @@ func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeReque
 	}
 }
 
-// waitFor blocks until done answers true, which is how a test reads the work Consider put on a
-// goroutine of its own. within is how long it waits: a run that spends its bounds takes most of
-// runBudget, and a run against stand-ins that answer at once takes milliseconds.
-func waitFor(t *testing.T, what string, within time.Duration, done func() bool) {
-	t.Helper()
-	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
-		if done() {
-			return
-		}
-	}
-	t.Fatalf("waited %s for %s", within, what)
-}
-
 // theOneRow is the single detail object a run wrote through LogJudged — a run that decided
 // nothing, which hands the request to its person — and fails when the run wrote anything else, a
 // refusal included.

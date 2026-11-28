@@ -2,22 +2,22 @@ package reread
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// delivered is how long a notification that must arrive is given, and the only wait in this file.
-// It is also what bounds the two notifications that must NOT reach the reread function: each is
-// sent before a good one, and Postgres delivers to one listening session in the order the sends
-// committed, so the good one arriving proves the listener was alive, the channel delivering and
-// the earlier notification already handled - and the reread function having heard only the good
-// one's name proves the earlier one was dropped. Two seconds is far longer than a local round
-// trip and short enough to fail a hung listener inside any test timeout.
-const delivered = 2 * time.Second
+// The two notifications that must NOT reach the reread function are proved dropped by order
+// rather than by any wait: each is sent before a good one, and Postgres delivers to one
+// listening session in the order the sends committed, so the good one arriving proves the
+// listener was alive, the channel delivering and the earlier notification already handled — and
+// the reread function having heard only the good one's name proves the earlier one was dropped.
 
 // listener opens a store on a database of its own and runs a reread listener against it under
 // sender, returning that store and the channel its reread function reports each name on. The
@@ -50,27 +50,17 @@ func listener(t *testing.T, sender string) (*store.Store, <-chan string) {
 	go func() { defer close(stopped); l.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the listener to return once its context ended", stopped)
 	})
 
-	select {
-	case <-listening:
-	case <-time.After(delivered):
-		t.Fatal("the listener did not listen on its channel")
-	}
+	testwait.Receive(t, "the listener to listen on its channel", listening)
 	return st, refreshed
 }
 
-// next answers the name the listener next rereads, failing t when none arrives.
+// next answers the name the listener next rereads.
 func next(t *testing.T, refreshed <-chan string) string {
 	t.Helper()
-	select {
-	case name := <-refreshed:
-		return name
-	case <-time.After(delivered):
-		t.Fatal("no secret was reread")
-		return ""
-	}
+	return testwait.Receive(t, "the next secret to be reread", refreshed)
 }
 
 // TestARereadAnotherPodSentIsRunHere is the fan-out's whole point: a notification one pod's
@@ -84,6 +74,37 @@ func TestARereadAnotherPodSentIsRunHere(t *testing.T) {
 	}
 	if name := next(t, refreshed); name != "AGENT_SECRET_ONE" {
 		t.Fatalf("reread %q, want AGENT_SECRET_ONE", name)
+	}
+}
+
+// TestAFannedOutRereadLogsItsReadWithItsCause pins the one line a pod writes for a reread a peer
+// fanned out to it (ReadMessage): once Refresh has run for the name a notification carries, the
+// line names that secret, the peer that sent it and the cause, fan-out, which is what tells a
+// read from the fan-out from the pod's own reread route and its own reloads. The line is read off
+// the log's stream, so the wait ends at the line however late the listener's goroutine writes it.
+//
+// The named revert: notified writes no line after a Refresh that ran; this row then gives up
+// waiting for it.
+func TestAFannedOutRereadLogsItsReadWithItsCause(t *testing.T) {
+	logs := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+		if len(groups) == 0 && a.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return a
+	}}))
+	st, refreshed := listener(t, "pod-a")
+	if err := Notifier(st.Pool, "pod-b")(context.Background(), "FANNED_OUT_KEY"); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if name := next(t, refreshed); name != "FANNED_OUT_KEY" {
+		t.Fatalf("reread %q, want FANNED_OUT_KEY", name)
+	}
+	const want = `level=INFO msg="` + ReadMessage + `" secret=FANNED_OUT_KEY sender=pod-b cause=` + CauseFanOut
+	if line := testwait.Next(t, "the fan-out's read line", logs.Stream(), func(line string) bool {
+		return strings.Contains(line, ReadMessage)
+	}); line != want {
+		t.Fatalf("the fan-out's read line is\n%s\nwant\n%s", line, want)
 	}
 }
 

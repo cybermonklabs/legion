@@ -35,7 +35,9 @@ import (
 
 // pollInterval is the interval a Client's device-code exchange polls on, overriding the one the
 // device authorization answered: every code a test exchanges has already been approved, so the
-// first poll is the only one, and a second of it is all the delay a row should pay.
+// first poll is the only one, and a second of it is all the delay a row should pay. The timer it
+// sets is x/oauth2's own (DeviceAccessToken's wait between polls), which no clock of Envoy's
+// reaches, and no row reads whether it fired.
 const pollInterval = 1
 
 // Client drives one broker over genuine HTTP: every URL it builds, signs and sends names

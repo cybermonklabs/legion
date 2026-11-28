@@ -45,6 +45,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -133,6 +135,15 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 // none for "", as the broker's BROKER_PROFILES_FILE is set or not.
 func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *testServer {
 	t.Helper()
+	return newTestServerOf(t, file, nil, adjust)
+}
+
+// newTestServerOf is newProfiledTestServer on clk: the clock the answer recorder reads each
+// request's arrival on (answer.MiddlewareOn) and the server counts a held read's wait on
+// (api.Deps.Clock), nil for clock.Real(). A test of the hold hands it a clocktest.Fake
+// (newHoldServer).
+func newTestServerOf(t *testing.T, file string, clk clock.Clock, adjust func(*api.Deps)) *testServer {
+	t.Helper()
 	st := storetest.Open(t)
 
 	local := memory.New(
@@ -152,7 +163,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	// withRequestDeadline, counting on a registry of the server's own, so every answer a test reads
 	// is the one a deployment sends.
 	registry := metrics.New()
-	handler := answer.Middleware(mux, answer.NewAnswers(registry))
+	handler := answer.MiddlewareOn(mux, answer.NewAnswers(registry), clk)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -218,6 +229,8 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t),
 		// The page signs people in at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
+		// The recorder above reads each arrival on the same clock.
+		Clock: clk,
 	}
 	adjust(&deps)
 	api.Register(mux, deps)
@@ -726,7 +739,10 @@ func TestLauncherProofRejectedOnSessionAuthRoute(t *testing.T) {
 // approveRecord dispatching to the machine kind (refusing any login but the record's approver),
 // createEnrollment, and deleteEnrollment.
 func TestMachineLoginApprovalMintsAKeyBoundLauncherCredentialForEnrollment(t *testing.T) {
-	ts := newTestServer(t)
+	// The approval stamps the credential's expiry from the machine-login service's clock, a fake
+	// standing at a moment Postgres keeps whole (microseconds), so the expiry is read exactly.
+	approvals := clocktest.New(time.Now().Truncate(time.Microsecond))
+	ts := newTestServerWith(t, func(d *api.Deps) { d.MachineLogin.Clock = approvals })
 	machineKey := newSigningKey(t)
 	login := struct{ Code string }{ts.openMachineLogin(t, machineKey, testApprover, "example-host-devbox")}
 
@@ -771,8 +787,8 @@ func TestMachineLoginApprovalMintsAKeyBoundLauncherCredentialForEnrollment(t *te
 	if err := ts.Store.Pool.QueryRow(context.Background(), `select expires_at from launcher_credentials where id=$1`, credentialID).Scan(&minted); err != nil {
 		t.Fatalf("read the minted credential's expiry: %v", err)
 	}
-	if want := time.Now().Add(7 * 24 * time.Hour); minted.Before(want.Add(-time.Minute)) || minted.After(want) {
-		t.Fatalf("minted credential expires %s, want CredentialLifetime from the approval, about %s", minted, want)
+	if want := approvals.Now().Add(7 * 24 * time.Hour); !minted.Equal(want) {
+		t.Fatalf("minted credential expires %s, want CredentialLifetime from the approval on the service's clock, %s", minted, want)
 	}
 	if decided := ts.record(t, looked.RecordID).Decided; decided == nil || decided.CredentialID != credentialID {
 		t.Fatalf("decided machine record = %+v, want its decision to name credential %s", decided, credentialID)
@@ -998,8 +1014,10 @@ func TestAgentSecretRequestLifecycle(t *testing.T) {
 	if listed.DecidedBy == nil || *listed.DecidedBy != testApprover {
 		t.Fatalf("listed grant decided_by = %v, want %s, who approved it", listed.DecidedBy, testApprover)
 	}
-	if listed.ExpiresAt == nil || listed.ExpiresAt.Sub(time.Now()) > 15*time.Minute || listed.ExpiresAt.Sub(time.Now()) < 13*time.Minute {
-		t.Fatalf("listed grant expires_at = %v, want about 15 minutes from now, the default for a human-tier request naming no lifetime", listed.ExpiresAt)
+	// Judged on the clock that stamped it: the grant's created_at and expires_at come from one
+	// now() of the transaction that wrote it (requests' insertGrant), and the listing carries both.
+	if listed.ExpiresAt == nil || !listed.ExpiresAt.Equal(listed.CreatedAt.Add(15*time.Minute)) {
+		t.Fatalf("listed grant expires_at = %v, want 15 minutes after the grant was made at %s, the default for a human-tier request naming no lifetime", listed.ExpiresAt, listed.CreatedAt)
 	}
 
 	// Revoking by approver takes the grant's approver or its enrollment's operator (both
@@ -1631,7 +1649,13 @@ func TestRenewAndReadSelf(t *testing.T) {
 	renewed := decode[struct {
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}](t, body)
-	if renewed.LeaseExpiresAt.Before(time.Now()) {
+	// Judged by the clock that decides whether a lease is live, which is the database's own
+	// now() and never this process's.
+	var live bool
+	if err := ts.Store.Pool.QueryRow(context.Background(), `select $1::timestamptz > now()`, renewed.LeaseExpiresAt).Scan(&live); err != nil {
+		t.Fatalf("read the renewed lease against the database's clock: %v", err)
+	}
+	if !live {
 		t.Fatalf("renewed lease %v is not in the future", renewed.LeaseExpiresAt)
 	}
 

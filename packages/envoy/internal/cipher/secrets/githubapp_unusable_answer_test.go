@@ -19,11 +19,11 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // tokenAnswerFault is how the answer to a token request breaks on its way back from GitHub. Each
@@ -106,6 +106,13 @@ type breakingGitHub struct {
 	faults           []tokenAnswerFault
 	// received is told each time GitHub has received an answerWriteFails request whole.
 	received chan struct{}
+	// bound is the test's own context (testwait.Context): a write that waits for received, and an
+	// answerStalled answer the caller never hangs up on, wait until it ends.
+	bound context.Context
+	// endCaller, where a row sets it, is called once the minter has read every byte of an
+	// answerStalled answer that the stand-in sent, while its read waits for the rest: the row ends
+	// the caller's context there (stallWatch).
+	endCaller func()
 
 	mu       sync.Mutex
 	asked    int
@@ -122,7 +129,7 @@ func newBreakingGitHub(t *testing.T, refuseRevokes bool, faults ...tokenAnswerFa
 		t.Fatalf("start the GitHub stand-in: %v", err)
 	}
 	t.Cleanup(service.Close)
-	g := &breakingGitHub{service: service, faults: faults, refusing: refuseRevokes, received: make(chan struct{}, 8)}
+	g := &breakingGitHub{service: service, faults: faults, refusing: refuseRevokes, received: make(chan struct{}, 8), bound: testwait.Context(t)}
 	dialer := &net.Dialer{}
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		connection, err := dialer.DialContext(ctx, network, address)
@@ -174,7 +181,7 @@ func newBreakingGitHub(t *testing.T, refuseRevokes bool, faults ...tokenAnswerFa
 			g.received <- struct{}{}
 			fault = answerLost
 		}
-		breakAnswer(w, fault, members)
+		breakAnswer(g.bound, w, fault, members)
 		return true
 	})
 	return g
@@ -205,7 +212,9 @@ func (g *breakingGitHub) peek() tokenAnswerFault {
 // answerUnresolved or answerUntrusted fails as a refused dial, a name that did not resolve or a
 // certificate the broker does not trust does, and reaches nothing; one whose fault is
 // answerBadRecord or answerAlert reaches GitHub, which mints and answers, and then fails with a
-// TLS record error or alert; every other request goes on to next.
+// TLS record error or alert; one whose fault is answerStalled has its answer's body read through
+// a stallWatch when the row ends the caller's context during it; every other request goes on to
+// next.
 type unreachableFirst struct {
 	github *breakingGitHub
 	next   http.RoundTripper
@@ -234,6 +243,12 @@ func (u unreachableFirst) RoundTrip(request *http.Request) (*http.Response, erro
 			return nil, tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}
 		}
 		return nil, &net.OpError{Op: "remote error", Err: tls.AlertError(20)}
+	case answerStalled:
+		response, err := u.next.RoundTrip(request)
+		if err == nil && u.github.endCaller != nil {
+			response.Body = &stallWatch{ReadCloser: response.Body, end: u.github.endCaller}
+		}
+		return response, err
 	default:
 		return u.next.RoundTrip(request)
 	}
@@ -311,9 +326,32 @@ func (b closingBody) Close() error {
 	return err
 }
 
+// stallWatch is the body of an answerStalled answer as the minter reads it. Once the minter has
+// read every byte the stand-in sent, the part that ends with cutAfter, it calls end, and the
+// minter's read then waits for the rest, which never comes: the moment a row ends the caller's
+// context, so the context ends during the read and after the token has arrived whole.
+type stallWatch struct {
+	io.ReadCloser
+	end  func()
+	read []byte
+}
+
+func (s *stallWatch) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	if s.end != nil {
+		s.read = append(s.read, p[:n]...)
+		if bytes.HasSuffix(s.read, []byte(cutAfter)) {
+			s.end()
+			s.end = nil
+		}
+	}
+	return n, err
+}
+
 // writeFailing is a connection to the stand-in whose write of the last bytes of an answerWriteFails
 // token request - its JSON body, the one body any request of this test carries - reports an error,
-// once GitHub has received the request whole and minted for it.
+// once GitHub has received the request whole and minted for it. A write whose request GitHub never
+// receives waits until the test's own context ends, and then reports that.
 type writeFailing struct {
 	net.Conn
 	github *breakingGitHub
@@ -328,17 +366,22 @@ func (c writeFailing) Write(p []byte) (int, error) {
 	select {
 	case <-c.github.received:
 		return n, io.ErrUnexpectedEOF
-	case <-time.After(5 * time.Second):
+	case <-c.github.bound.Done():
 		return n, fmt.Errorf("the stand-in never received the request")
 	}
 }
 
-// breakAnswer writes the stand-in's minted answer, members, broken as fault says.
-func breakAnswer(w http.ResponseWriter, fault tokenAnswerFault, members map[string]json.RawMessage) {
+// cutAfter is what an answerCut or answerStalled answer ends with: the name of the member after
+// the token, so the token has arrived whole and the answer breaks before its expiry.
+const cutAfter = `,"expires_at"`
+
+// breakAnswer writes the stand-in's minted answer, members, broken as fault says. bound is the
+// test's own context, which ends an answerStalled answer whose caller never hangs up.
+func breakAnswer(bound context.Context, w http.ResponseWriter, fault tokenAnswerFault, members map[string]json.RawMessage) {
 	whole := orderedAnswer(members, "token", "expires_at", "permissions", "repository_selection", "repositories")
 	padding := []byte(`"padding":"` + strings.Repeat("x", pastTheCap) + `"`)
 	// The token member whole and the start of the next one: the answer GitHub began, cut off.
-	pastToken := len(`{"token":`) + len(members["token"]) + len(`,"expires_at"`)
+	pastToken := len(`{"token":`) + len(members["token"]) + len(cutAfter)
 	switch fault {
 	case answerWhole, answerBadRecord, answerAlert:
 		w.WriteHeader(http.StatusCreated)
@@ -367,9 +410,9 @@ func breakAnswer(w http.ResponseWriter, fault tokenAnswerFault, members map[stri
 		fmt.Fprintf(buffered, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", len(whole))
 		_, _ = buffered.Write(whole[:pastToken])
 		_ = buffered.Flush()
-		// Nothing more until the caller hangs up, or ten seconds: a caller whose context ends
-		// closes the connection, which ends this read.
-		_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+		// Nothing more until the caller hangs up, which ends this read, or the test ends.
+		stop := context.AfterFunc(bound, func() { _ = connection.Close() })
+		defer stop()
 		_, _ = io.Copy(io.Discard, connection)
 		_ = connection.Close()
 	case answerPastCap:
@@ -527,9 +570,10 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		// registered has the minter reach GitHub through an *http.Transport whose http protocol
 		// is registered to that wrapper.
 		registered bool
-		// deadline ends the caller's context that long after the run starts, and zero leaves it
-		// the test's own.
-		deadline time.Duration
+		// endsCaller ends the caller's context once the minter has read every byte of an
+		// answerStalled answer that the stand-in sent, while its read waits for the rest
+		// (stallWatch); false leaves it the test's own.
+		endsCaller bool
 		// requests is the token requests GitHub served, each of which minted a token, but for the
 		// 500s of answerCut500, which mint none.
 		requests int
@@ -554,9 +598,9 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		{name: "an answer cut off, to a release", scope: lean, faults: []tokenAnswerFault{answerCut, answerCut, answerCut}, requests: 3},
 		{name: "an answer cut off and then a whole one, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerCut}, requests: 1},
 		{name: "an answer cut off and then a whole one, to a release", scope: lean, faults: []tokenAnswerFault{answerCut}, requests: 2, live: 1, released: true},
-		{name: "an answer the caller's context ends during, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerStalled}, deadline: 300 * time.Millisecond, requests: 1},
-		{name: "an answer the caller's context ends during, to a release", scope: lean, faults: []tokenAnswerFault{answerStalled}, deadline: 300 * time.Millisecond, requests: 1},
-		{name: "a release of two accounts whose caller's context ends during the second answer", faults: []tokenAnswerFault{answerWhole, answerStalled}, deadline: 300 * time.Millisecond, requests: 2},
+		{name: "an answer the caller's context ends during, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerStalled}, endsCaller: true, requests: 1},
+		{name: "an answer the caller's context ends during, to a release", scope: lean, faults: []tokenAnswerFault{answerStalled}, endsCaller: true, requests: 1},
+		{name: "a release of two accounts whose caller's context ends during the second answer", faults: []tokenAnswerFault{answerWhole, answerStalled}, endsCaller: true, requests: 2},
 		{name: "an answer past the cap, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
 		{name: "an answer past the cap, to a release", scope: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
 		{name: "an answer past the cap with its token after it, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerPastCapTokenLast}, requests: 1, live: 1, unrevokable: true},
@@ -621,10 +665,11 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: client, Retry: retry}
 
 			ctx := t.Context()
-			if tc.deadline > 0 {
+			if tc.endsCaller {
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, tc.deadline)
+				ctx, cancel = context.WithCancel(ctx)
 				defer cancel()
+				github.endCaller = cancel
 			}
 			scope := tc.scope
 			if scope == nil {

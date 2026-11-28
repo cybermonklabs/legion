@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type wakeCall struct {
@@ -81,7 +82,6 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 		Machine:       m,
 		MachineLogins: machineLogins,
 		OAuth:         oauthstore.New(m.Store.Pool),
-		Interval:      time.Hour,
 		Wake: func(_ context.Context, enrollmentID, requestID, state string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -153,7 +153,7 @@ func TestSweeperTickDeletesExpiredBrowserSessions(t *testing.T) {
 		}
 	}
 
-	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour}
+	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool)}
 	sweeper.Tick(ctx)
 
 	rowOf := func(hash [sha256.Size]byte) bool {
@@ -285,7 +285,7 @@ func TestSweeperEndsLapsedEnrollments(t *testing.T) {
 	}
 
 	var woken []wakeCall
-	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour,
+	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool),
 		Wake: func(_ context.Context, enrollmentID, requestID, state string) {
 			woken = append(woken, wakeCall{enrollmentID, requestID, state})
 		}}
@@ -369,7 +369,7 @@ func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			ctx := context.Background()
-			sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour}
+			sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool)}
 			replay := m.Replay
 			// Create calls Replay after it reads the enrollment and before it writes.
 			m.Replay = func(ctx context.Context, jti string, expires time.Time) (bool, error) {
@@ -424,11 +424,6 @@ func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
 	if err := lockPendingNames(ctx, holdAdvisory, enr, []string{"DEEL_API_KEY"}); err != nil {
 		t.Fatalf("hold the advisory locks: %v", err)
 	}
-	var lease time.Time
-	if err := m.Store.Pool.QueryRow(ctx, `update enrollments set lease_expires_at = now() + interval '1500 milliseconds' where id=$1
-		returning lease_expires_at`, enr).Scan(&lease); err != nil {
-		t.Fatalf("shorten the lease: %v", err)
-	}
 	signed := signRequest(t, m, key, "racing the sweep", "DEEL_API_KEY")
 	createDone := make(chan struct{})
 	var created Request
@@ -439,12 +434,13 @@ func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
 	}()
 	createPID := storetest.AwaitLockWaiters(t, watch, holdAdvisory, 1)[0]
 
-	// The lease lapses; the sweep locks the enrollment, marks it ended, and waits on the grant row
-	// held here.
-	for lapsed := false; !lapsed; time.Sleep(10 * time.Millisecond) {
-		if err := watch.QueryRow(ctx, `select $1 <= now()`, lease).Scan(&lapsed); err != nil {
-			t.Fatalf("read the clock: %v", err)
-		}
+	// The lease lapses between the two transactions' now(), the clock enrollment_lease_live reads:
+	// after the start of Create's, which still reads it live and so waits for the sweep below
+	// rather than refusing at once, and before the start of the sweep's, which begins after this
+	// update and reads it lapsed. pg_stat_activity names when Create's transaction began.
+	if tag, err := watch.Exec(ctx, `update enrollments set lease_expires_at = started + (clock_timestamp() - started) / 2
+		from (select xact_start as started from pg_stat_activity where pid = $2) create_tx where id = $1`, enr, int32(createPID)); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("lapse the lease between Create's transaction and the sweep's = %v, %v; want one enrollment updated", tag, err)
 	}
 	grantHolder := connect()
 	holdGrant, err := grantHolder.Begin(ctx)
@@ -473,8 +469,8 @@ func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
 	if err := holdGrant.Rollback(ctx); err != nil {
 		t.Fatalf("release the grant row: %v", err)
 	}
-	<-sweepDone
-	<-createDone
+	testwait.Receive(t, "the sweep to return once the grant row is let go", sweepDone)
+	testwait.Receive(t, "Create to return behind the sweep", createDone)
 
 	if sweepErr != nil || len(ended) != 1 || ended[0].ID != enr {
 		t.Fatalf("EndLapsed = %+v, %v; want it to end %s", ended, sweepErr, enr)

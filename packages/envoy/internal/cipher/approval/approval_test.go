@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 // TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn pins A1: a person with no session is sent to
@@ -715,9 +716,12 @@ func TestABatchDecidesEachRecordOnItsOwn(t *testing.T) {
 // a 503 naming its issuer. The read that failed is oidc's, shared by every caller and not read
 // again for five seconds (internal/oidc/discovery.go's discoveryRetrySpacing), so a page load
 // during the outage is answered from that failure at once rather than queued behind a read of
-// its own; the first load after that wait reads the provider again and signs the person in.
+// its own; the first load after that wait reads the provider again and signs the person in. The
+// wait runs on the sign-in's clock, a fake the row moves: a nanosecond short of the five seconds
+// the failure still answers, and at them the provider is read afresh.
 func TestASignInWhoseProviderCannotBeReached(t *testing.T) {
-	r := newRig(t)
+	spacing := clocktest.New(time.Now())
+	r := newRig(t, withSignInClock(spacing))
 	enrollmentID, key := r.benSession(t, "ben-box")
 	p := r.request(t, enrollmentID, key, "deploy", nil, "", "TEST_SECRET")
 	r.issuer.FailDiscovery(http.StatusInternalServerError)
@@ -730,20 +734,13 @@ func TestASignInWhoseProviderCannotBeReached(t *testing.T) {
 	if res := b.Get(t, "/approve/"+p.recordID); res.Status != http.StatusServiceUnavailable {
 		t.Fatalf("the page right after the provider came back = %d, want 503 from the failed read oidc still holds", res.Status)
 	}
-	start := time.Now()
-	for {
-		res := b.Get(t, "/approve/"+p.recordID)
-		if res.Status == http.StatusFound {
-			t.Logf("the sign-in was reached again %s after the provider came back", time.Since(start).Round(time.Millisecond))
-			break
-		}
-		if res.Status != http.StatusServiceUnavailable {
-			t.Fatalf("the page while oidc waits to read again = %d, want 503 or the sign-in's 302:\n%s", res.Status, res.Body)
-		}
-		if time.Since(start) > 30*time.Second {
-			t.Fatalf("the sign-in was still unavailable %s after the provider came back", time.Since(start))
-		}
-		time.Sleep(100 * time.Millisecond)
+	spacing.Advance(5*time.Second - time.Nanosecond)
+	if res := b.Get(t, "/approve/"+p.recordID); res.Status != http.StatusServiceUnavailable {
+		t.Fatalf("the page a nanosecond short of oidc's five-second wait = %d, want 503 from the failed read oidc still holds", res.Status)
+	}
+	spacing.Advance(time.Nanosecond)
+	if res := b.Get(t, "/approve/"+p.recordID); res.Status != http.StatusFound {
+		t.Fatalf("the page once oidc's five-second wait has passed = %d, want the sign-in's 302 from a fresh read:\n%s", res.Status, res.Body)
 	}
 	b.SignIn(t, p.recordID, person(ada))
 	r.requirePending(t, p.recordID)

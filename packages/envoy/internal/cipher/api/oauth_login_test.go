@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deviceMachine is one machine logging in: its key, the OAuth client it logs in with, and the
@@ -85,7 +86,10 @@ func (m *deviceMachine) login(t *testing.T) *oauth2.DeviceAuthResponse {
 	return da
 }
 
-// poll exchanges an approved device code for its tokens, polling at once.
+// poll exchanges an approved device code for its tokens in one poll: the code is already approved,
+// so the first poll is the only one. x/oauth2 sends it once the interval has passed, a second on
+// its own ticker (DeviceAccessToken waits the interval before each poll), which no clock of
+// Envoy's reaches.
 func (m *deviceMachine) poll(t *testing.T, da *oauth2.DeviceAuthResponse) *oauth2.Token {
 	t.Helper()
 	da.Interval = 1
@@ -317,18 +321,23 @@ func TestARefreshMovesTheCredentialsExpiry(t *testing.T) {
 	if _, err := rig.Store.Pool.Exec(ctx, `update launcher_credentials set expires_at = now() + interval '1 day' where id=$1`, credentialID); err != nil {
 		t.Fatal(err)
 	}
-	before := time.Now()
+	// Judged on the clock that moves it: Refreshed sets expires_at to its transaction's now() plus
+	// the lifetime, a moment between the database's readings before and after the refresh.
+	var before time.Time
+	if err := rig.Store.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
 	refreshed, err := m.refresh(tok)
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	var expires time.Time
-	if err := rig.Store.Pool.QueryRow(ctx, `select expires_at from launcher_credentials where id=$1`, credentialID).Scan(&expires); err != nil {
+	var expires, after time.Time
+	if err := rig.Store.Pool.QueryRow(ctx, `select expires_at, clock_timestamp() from launcher_credentials where id=$1`, credentialID).Scan(&expires, &after); err != nil {
 		t.Fatal(err)
 	}
 	lifetime := 7 * 24 * time.Hour
-	if expires.Before(before.Add(lifetime-time.Minute)) || expires.After(time.Now().Add(lifetime+time.Minute)) {
-		t.Fatalf("expires_at after the refresh = %s, want about now + %s", expires, lifetime)
+	if expires.Before(before.Add(lifetime)) || expires.After(after.Add(lifetime)) {
+		t.Fatalf("expires_at after the refresh = %s, want %s past the refresh, from %s to %s", expires, lifetime, before.Add(lifetime), after.Add(lifetime))
 	}
 	if got, _ := refreshed.Extra("credential_id").(string); got != credentialID {
 		t.Fatalf("refreshed credential_id = %v, want %s", refreshed.Extra("credential_id"), credentialID)
@@ -521,7 +530,7 @@ func TestADeviceCodeOfARevokedLoginIsRefused(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("revoke = %d: %s", status, body)
 	}
-	da.Interval = 1
+	da.Interval = 1 // x/oauth2's own poll interval, as in poll above
 	_, err := m.config.DeviceAccessToken(m.ctx, da)
 	if code, _ := oauthErrorCode(t, err); code != "invalid_grant" {
 		t.Fatalf("poll of a revoked login = %s, want invalid_grant", code)
@@ -538,7 +547,7 @@ func TestADeniedDeviceLoginIsAccessDenied(t *testing.T) {
 	m := newDeviceMachine(t, rig)
 	da := m.login(t)
 	rig.DecideMachineLogin(t, da.UserCode, false)
-	da.Interval = 1
+	da.Interval = 1 // x/oauth2's own poll interval, as in poll above
 	_, err := m.config.DeviceAccessToken(m.ctx, da)
 	if code, _ := oauthErrorCode(t, err); code != "access_denied" {
 		t.Fatalf("poll of a denied login = %s, want access_denied", code)
@@ -593,11 +602,11 @@ func TestDeviceLoginsNeedOnlyTheirTransactionsConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// bound is how long each call may take: far below the broker's 45 s request deadline, and
-	// what ends a call the pool never serves.
-	const bound = 10 * time.Second
+	// Each call is bounded by the shared wait's bound alone (testwait.Context), which ends a call
+	// the pool never serves.
+	bounded := testwait.Context(t)
 	client := func(m *deviceMachine) context.Context {
-		return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: bound, Transport: cipherclient.NewDPoPTransport(m.key, http.DefaultTransport)})
+		return context.WithValue(bounded, oauth2.HTTPClient, &http.Client{Transport: cipherclient.NewDPoPTransport(m.key, http.DefaultTransport)})
 	}
 	logins := make(chan error, 3)
 	for i := range 3 {
@@ -615,7 +624,12 @@ func TestDeviceLoginsNeedOnlyTheirTransactionsConnection(t *testing.T) {
 	}
 	health := make(chan error, 1)
 	go func() {
-		resp, err := (&http.Client{Timeout: bound}).Get(rig.URL + "/healthz")
+		request, err := http.NewRequestWithContext(bounded, http.MethodGet, rig.URL+"/healthz", nil)
+		if err != nil {
+			health <- err
+			return
+		}
+		resp, err := http.DefaultClient.Do(request)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
@@ -625,18 +639,18 @@ func TestDeviceLoginsNeedOnlyTheirTransactionsConnection(t *testing.T) {
 		health <- err
 	}()
 	for range 3 {
-		if err := <-logins; err != nil {
+		if err := testwait.Receive(t, "a device authorization on the two-connection pool to answer", logins); err != nil {
 			t.Errorf("device authorization on a two-connection pool: %v", err)
 		}
 	}
-	if err := <-health; err != nil {
+	if err := testwait.Receive(t, "/healthz to answer while the logins ran", health); err != nil {
 		t.Errorf("/healthz while the logins ran: %v", err)
 	}
 }
 
 // lockCredential opens a transaction on its own connection holding credentialID's row lock, as a
-// revoke or a refresh holds it, and answers that transaction's backend pid.
-func lockCredential(t *testing.T, rig *ciphertest.Rig, credentialID string) (pgx.Tx, int) {
+// revoke or a refresh holds it.
+func lockCredential(t *testing.T, rig *ciphertest.Rig, credentialID string) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := rig.Store.Pool.Begin(ctx)
@@ -644,32 +658,11 @@ func lockCredential(t *testing.T, rig *ciphertest.Rig, credentialID string) (pgx
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
-	var pid int
-	if err := tx.QueryRow(ctx, `select pg_backend_pid() from launcher_credentials where id=$1 for no key update`, credentialID).Scan(&pid); err != nil {
+	var locked bool
+	if err := tx.QueryRow(ctx, `select true from launcher_credentials where id=$1 for no key update`, credentialID).Scan(&locked); err != nil {
 		t.Fatal(err)
 	}
-	return tx, pid
-}
-
-// awaitWaiters waits until n backends wait, directly or behind another waiter, on holder's lock.
-func awaitWaiters(t *testing.T, rig *ciphertest.Rig, holder, n int) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var waiting int
-		if err := rig.Store.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity a
-			where $1 = any(pg_blocking_pids(a.pid)) or exists (select 1 from pg_stat_activity b
-				where $1 = any(pg_blocking_pids(b.pid)) and b.pid = any(pg_blocking_pids(a.pid)))`, holder).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting >= n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d backends wait on the credential's lock, want %d", waiting, n)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return tx
 }
 
 // revokeAsync revokes credentialID as the rig's operator through the route Dispatch relays to,
@@ -723,19 +716,19 @@ func activeTokens(t *testing.T, rig *ciphertest.Rig, credentialID string) int {
 func TestARevokeQueuedBehindARefreshEndsItsNewTokens(t *testing.T) {
 	rig := ciphertest.NewRig(t)
 	m, tok, credentialID := approvedLogin(t, rig)
-	holder, pid := lockCredential(t, rig, credentialID)
+	holder := lockCredential(t, rig, credentialID)
 	refreshed := refreshAsync(m, tok)
-	awaitWaiters(t, rig, pid, 1)
+	storetest.AwaitLockWaiters(t, rig.Store.Pool, holder, 1)
 	revoked := revokeAsync(rig, credentialID)
-	awaitWaiters(t, rig, pid, 2)
+	storetest.AwaitLockWaiters(t, rig.Store.Pool, holder, 2)
 	if err := holder.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	r := <-refreshed
+	r := testwait.Receive(t, "the refresh ahead of the revoke to answer", refreshed)
 	if r.err != nil {
 		t.Fatalf("refresh ahead of the revoke: %v", r.err)
 	}
-	if status := <-revoked; status != http.StatusOK {
+	if status := testwait.Receive(t, "the revoke behind the refresh to answer", revoked); status != http.StatusOK {
 		t.Fatalf("revoke behind the refresh = %d, want 200", status)
 	}
 	if n := activeTokens(t, rig, credentialID); n != 0 {
@@ -752,18 +745,18 @@ func TestARevokeQueuedBehindARefreshEndsItsNewTokens(t *testing.T) {
 func TestARefreshQueuedBehindARevokeIsRefused(t *testing.T) {
 	rig := ciphertest.NewRig(t)
 	m, tok, credentialID := approvedLogin(t, rig)
-	holder, pid := lockCredential(t, rig, credentialID)
+	holder := lockCredential(t, rig, credentialID)
 	revoked := revokeAsync(rig, credentialID)
-	awaitWaiters(t, rig, pid, 1)
+	storetest.AwaitLockWaiters(t, rig.Store.Pool, holder, 1)
 	refreshed := refreshAsync(m, tok)
-	awaitWaiters(t, rig, pid, 2)
+	storetest.AwaitLockWaiters(t, rig.Store.Pool, holder, 2)
 	if err := holder.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if status := <-revoked; status != http.StatusOK {
+	if status := testwait.Receive(t, "the revoke ahead of the refresh to answer", revoked); status != http.StatusOK {
 		t.Fatalf("revoke ahead of the refresh = %d, want 200", status)
 	}
-	r := <-refreshed
+	r := testwait.Receive(t, "the refresh behind the revoke to answer", refreshed)
 	if code, _ := oauthErrorCode(t, r.err); code != "invalid_grant" {
 		t.Fatalf("refresh behind the revoke = %s, want invalid_grant", code)
 	}

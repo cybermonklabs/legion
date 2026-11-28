@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The migration runner's warning for a lock attempt that timed out now names the lock timeout it
+  set for that attempt (`lock_timeout`).
+time: 2026-11-28T16:00:44Z
+custom:
+    Issue: pr6051

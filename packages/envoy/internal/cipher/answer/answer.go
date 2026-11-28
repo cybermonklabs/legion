@@ -39,8 +39,8 @@
 // (NoteCallerEnded). A request with no Recorder notes nothing, so a handler notes whether or not
 // it runs behind Middleware.
 //
-// It is a leaf: the standard library and internal/metrics, so the packages that note on it
-// (api, approval, oauth, requests) take nothing else through it.
+// It is a leaf: the standard library, internal/metrics and internal/clock, so the packages that
+// note on it (api, approval, oauth, requests) take nothing else through it.
 package answer
 
 import (
@@ -62,6 +62,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -184,8 +185,8 @@ type Recorder struct {
 	// correlation is the caller's X-Correlation-Id, clipped (CorrelationID); empty when it sent
 	// none.
 	correlation string
-	// arrived is when Middleware first saw the request, before the mux routed it or any route
-	// authenticated its caller (Arrived).
+	// arrived is when Middleware first saw the request, on the clock it was given, before the mux
+	// routed it or any route authenticated its caller (Arrived).
 	arrived time.Time
 
 	// mu guards the notes: a handler may note from a goroutine of its own while the answer is
@@ -223,22 +224,33 @@ const PortEdge = "edge"
 // scanner sends at its own rate) and the refusals a handler marks NoteQuiet are counted and write
 // no line.
 func EdgeMiddleware(next http.Handler, answers *metrics.Counter) http.Handler {
-	return middleware(next, answers, PortEdge)
+	return middleware(next, answers, PortEdge, clock.Real())
 }
 
 // Middleware records every answer next writes: it gives the answer its id, counts it on answers
 // (nil counts nothing), writes a refusal's line, and adds answer_id to a JSON refusal body that
 // does not hold it. The line's route is the Pattern the mux sets on the request it is handed, read
 // from the request Middleware hands next, so next is the mux itself: a handler between the two
-// that hands the mux a request of its own (r.WithContext) leaves every line's route empty.
+// that hands the mux a request of its own (r.WithContext) leaves every line's route empty. It
+// reads each request's arrival on the wall clock (MiddlewareOn with a nil clock).
 func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
-	return middleware(next, answers, "")
+	return MiddlewareOn(next, answers, nil)
 }
 
-// middleware is Middleware for the port port names: "" for the API port, PortEdge for the edge.
-func middleware(next http.Handler, answers *metrics.Counter, port string) http.Handler {
+// MiddlewareOn is Middleware with clk the clock each request's arrival is read on (Arrived): the
+// one the port's handlers count a promised answer's time on, nil for clock.Real().
+func MiddlewareOn(next http.Handler, answers *metrics.Counter, clk clock.Clock) http.Handler {
+	if clk == nil {
+		clk = clock.Real()
+	}
+	return middleware(next, answers, "", clk)
+}
+
+// middleware is Middleware for the port port names, "" for the API port and PortEdge for the edge,
+// with each arrival read on clk.
+func middleware(next http.Handler, answers *metrics.Counter, port string, clk clock.Clock) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), arrived: time.Now(), class: CallerPublic, port: port}
+		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), arrived: clk.Now(), class: CallerPublic, port: port}
 		// The request the mux is handed, whose Pattern names the route once next has returned.
 		r = r.WithContext(context.WithValue(r.Context(), recorderKey{}, rec))
 		completed := false
@@ -291,12 +303,13 @@ func (rec *Recorder) ID() string {
 }
 
 // Arrived is when the request reached the broker's code, before its route authenticated its
-// caller: the moment a handler that promises an answer by a time counts that time from. On a nil
-// Recorder, a request served outside Middleware, it is the moment it is asked, so such a request
+// caller, on the clock Middleware was given: the moment a handler that promises an answer by a
+// time counts that time from, on that same clock, which clk is. On a nil Recorder, a request
+// served outside Middleware, it is clk's present, the moment it is asked, so such a request
 // counts from there.
-func (rec *Recorder) Arrived() time.Time {
+func (rec *Recorder) Arrived(clk clock.Clock) time.Time {
 	if rec == nil {
-		return time.Now()
+		return clk.Now()
 	}
 	return rec.arrived
 }

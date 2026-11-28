@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -97,6 +98,14 @@ type rigSetup struct {
 	// hold builds, on the rig's own store, the hold gate the broker's approval page and its routes
 	// ask; nil is a broker with no gate, which holds nobody.
 	hold func(*store.Store) *hold.Gate
+	// signInClock is what the page's sign-in spaces its failed discovery reads on; nil is the
+	// wall clock.
+	signInClock clock.Clock
+}
+
+// withSignInClock has the page's sign-in space its failed discovery reads on c.
+func withSignInClock(c clock.Clock) func(*rigSetup) {
+	return func(s *rigSetup) { s.signInClock = c }
 }
 
 // withHold gives the broker the hold gate build makes on the rig's store, as cmd/cipherd gives one
@@ -167,7 +176,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
-	page := ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine, ciphertest.WithApprovalHold(gate))
+	page := ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine, ciphertest.WithApprovalHold(gate), ciphertest.WithApprovalClock(setup.signInClock))
 	api.Register(mux, api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
@@ -184,7 +193,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	return &rig{
 		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine, page: page, enrollments: enr,
-		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool), Interval: time.Hour},
+		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool)},
 		accountToken: issuer.Mint(t, key, claims),
 	}
 }
