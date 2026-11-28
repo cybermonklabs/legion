@@ -654,11 +654,13 @@ func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 // after identityRecheckInterval, a failed boot pass as the whole pass since it may have failed
 // before its later steps: every step is idempotent and safe beside a live write, so nothing is
 // lost by waiting. A boot pass whose report alone failed has done every step, so it does not
-// fail (coverPass). The context ending returns at once.
+// fail (coverPass). The context ending returns at once. The wait between runs is a timer on the
+// queue's clock (Deps.Clock).
 //
 // After each pass that succeeded it reports the wait it settles into to a test of this package
 // (reportParked).
 func runCoverage(ctx context.Context, deps Deps) {
+	c := deps.clock()
 	pass := coverPass
 	for {
 		steps, err := pass(ctx, deps)
@@ -674,13 +676,13 @@ func runCoverage(ctx context.Context, deps Deps) {
 				answered = deps.proven.answered()
 			}
 		}
-		timer := time.NewTimer(duty.Jittered(deps.identityRecheck))
+		timer := c.NewTimer(duty.Jittered(deps.identityRecheck))
 		deps.reportParked(err, answered)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-timer.C:
+		case <-timer.C():
 		case <-answered:
 			timer.Stop()
 		}

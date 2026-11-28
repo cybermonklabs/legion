@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -178,7 +179,7 @@ func TestAWaitWhoseRenewalsAreSlowStillEnds(t *testing.T) {
 					time.Sleep(took)
 					return nil
 				}
-				waitOutDebt(ctx, 3*renewClaimInterval, renewal)
+				waitOutDebt(ctx, clock.Real(), 3*renewClaimInterval, renewal)
 				ended := time.Now()
 				if err := ctx.Err(); err != nil {
 					t.Fatalf("the wait ended only with its context (%v), after %v and %d renewals; want it to end by itself", err, ended.Sub(started), len(renewed)-1)

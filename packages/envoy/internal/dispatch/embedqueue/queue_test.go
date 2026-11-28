@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -702,7 +703,7 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 		return write(ctx, rows)
 	}
 
-	waitOutDebt(ctx, 4*interval, renewal)
+	waitOutDebt(ctx, clock.Real(), 4*interval, renewal)
 	ended := time.Since(before)
 
 	if len(renewed) == 0 || renewed[0] >= ended-interval {

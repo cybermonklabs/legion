@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -73,6 +74,18 @@ type Deps struct {
 	// loop does not wait for it to start: it scans at start whatever the listener's state. Nil
 	// leaves the loop with its start, its own due times and the coverage pass's rows.
 	Wake <-chan struct{}
+	// Clock is the time the queue's own timers, waits and stamps run on: the scan loop's one
+	// timer and its gap (duty.WokenLoop.Clock), the floor a scan pass holds its due time to
+	// (scanPass), the pauses between batches and after a throttle (pauseFor), the pace's wait and
+	// a reservation's wait on the shared token budget (waitOutDebt), each Embed call's bound
+	// (embed.Bounded), a claim's age (claimRenewal), the moment a failed row's retry is counted
+	// from (retryRows), and the coverage loop's wait for its next identity recheck (runCoverage).
+	// clock.Real() when nil; a test sets a clocktest.Fake, whose timers fire only where the test
+	// moves it. No deployment sets it. The times the database stamps itself - a claim's
+	// next_attempt_at, pending_since, embedded_at - are its own clock's, which no fake reaches,
+	// and it judges every next_attempt_at, retryRows' too, against its own now(). The bound on a
+	// coverage transaction's rollback (coverageRollbackTimeout) stays on the wall clock.
+	Clock clock.Clock
 	// proven records that an Embed call this process's queue made has succeeded (embedDocuments
 	// records it), which is what lets Cover act on rows another identity left with no canary of
 	// its own, and what wakes Run's coverage loop to run the identity steps a pass skipped. Run
@@ -95,6 +108,12 @@ type Deps struct {
 	// caller that builds Deps itself; a test of this package sets them.
 	idle           func()
 	coverageParked func(awaitingAnswer bool)
+	// scanWaiting, when set, is told each time Run's scan loop is about to wait
+	// (duty.WokenLoop.Waiting): at is the moment the loop's one timer is armed for, with ok true,
+	// or the zero time with ok false when the loop rests with nothing owed and nothing due. A test
+	// of this package reads through it where the scan loop's timer stands. Nil in production and
+	// for a caller that builds Deps itself.
+	scanWaiting func(at time.Time, ok bool)
 	// identityRecheck is the coverage loop's interval between runs. Run sets it to
 	// identityRecheckInterval unless a test of the recheck has set a shorter one, to run its own
 	// Run's in seconds beside tests whose Run keeps ten minutes.
@@ -107,15 +126,24 @@ type Deps struct {
 	pace *embed.RateLimitedEmbedder
 }
 
+// clock is the time Deps' timers, waits and stamps run on: Clock, or clock.Real() when it is nil.
+func (d Deps) clock() clock.Clock {
+	if d.Clock == nil {
+		return clock.Real()
+	}
+	return d.Clock
+}
+
 // Paced returns d with its embedder paced: d keeps an embed.RateLimitedEmbedder around Embedder,
 // each of whose calls the queue bounds at callBound (embed.Bounded), as its pace (Deps.pace),
-// which every Embed call the queue makes goes through (embedDocuments). Embedder stays as given:
-// the queue reads only its Identity and Limits, which the pace answers the same. A wrapper of the
-// embedder (metrics, tracing) goes in Embedder before Paced, so it sits inside the pace and sees every
-// call. A nil Embedder stays nil, so Run still starts nothing for it.
+// which every Embed call the queue makes goes through (embedDocuments). The bound runs on d's
+// clock (Deps.Clock) as Paced finds it, so a test sets Clock before it calls Paced. Embedder stays
+// as given: the queue reads only its Identity and Limits, which the pace answers the same. A
+// wrapper of the embedder (metrics, tracing) goes in Embedder before Paced, so it sits inside the
+// pace and sees every call. A nil Embedder stays nil, so Run still starts nothing for it.
 func (d Deps) Paced() Deps {
 	if d.Embedder != nil {
-		d.pace = embed.NewRateLimitedEmbedder(embed.Bounded(d.Embedder, callBound))
+		d.pace = embed.NewRateLimitedEmbedder(embed.Bounded(d.Embedder, callBound, d.clock()))
 	}
 	return d
 }
@@ -154,19 +182,20 @@ func (p *proof) answered() <-chan struct{} {
 // pace holds. Right before the call goes out - before the pace when it has no wait, and at the
 // end of the wait when it has one - the claim is renewed if it is due, or if the call, run to
 // callBound, could otherwise end with it too old (renew, needing callBound plus callSlack). A nil
-// renewal (a call that holds no claim) waits without renewing.
+// renewal (a call that holds no claim) waits without renewing. The pace's wait and the call's
+// bound run on the queue's clock (Deps.Clock).
 func (d Deps) embedDocuments(ctx context.Context, texts []string, renewal *claimRenewal) ([][]float32, error) {
 	var vectors [][]float32
 	var err error
 	renewal.renew(ctx, callBound+callSlack)
 	if d.pace != nil {
 		vectors, err = d.pace.EmbedAfter(ctx, texts, embed.InputDocument, func(ctx context.Context, wait time.Duration) bool {
-			waitOutDebt(ctx, wait, renewal)
+			waitOutDebt(ctx, d.clock(), wait, renewal)
 			renewal.renew(ctx, callBound+callSlack)
 			return ctx.Err() == nil
 		})
 	} else {
-		vectors, err = embed.Bounded(d.Embedder, callBound).Embed(ctx, texts, embed.InputDocument)
+		vectors, err = embed.Bounded(d.Embedder, callBound, d.clock()).Embed(ctx, texts, embed.InputDocument)
 	}
 	if err == nil {
 		d.proven.record()
@@ -213,7 +242,8 @@ func (d Deps) signalEnqueued() {
 // left behind.
 //
 // The scan loop takes no lease: scanPending's claim (for update skip locked, then next_attempt_at
-// pushed out by claimWindow) already keeps two processes' scans off each other's rows.
+// pushed out by claimWindow) already keeps two processes' scans off each other's rows. Its one
+// timer and its gaps run on the queue's clock (Deps.Clock).
 func Run(ctx context.Context, deps Deps) {
 	if deps.Embedder == nil {
 		return
@@ -244,10 +274,12 @@ func Run(ctx context.Context, deps Deps) {
 		wg.Go(func() { relayWakes(ctx, deps) })
 	}
 	duty.RunWoken(scanCtx, duty.WokenLoop{
-		Wake:   wake,
-		MinGap: retryInterval,
-		Pass:   func(ctx context.Context) time.Time { return scanPass(ctx, deps) },
-		Idle:   deps.idle,
+		Wake:    wake,
+		MinGap:  retryInterval,
+		Clock:   deps.clock(),
+		Waiting: deps.scanWaiting,
+		Pass:    func(ctx context.Context) time.Time { return scanPass(ctx, deps) },
+		Idle:    deps.idle,
 	})
 }
 
@@ -274,13 +306,14 @@ const nextPendingDue = `
 
 // scanPass is the scan loop's pass: it drains what is eligible now (scan), then returns when the
 // earliest row still pending falls due, and the zero time when none is, so an idle queue holds no
-// timer. The due time is never sooner than retryInterval from now: a row that stays eligible
-// (a blocked batch's, or one another process's scan held under skip locked) would otherwise be
-// scanned again at once, and a retry due sooner than that waited for the old ticker's next tick
-// too. A failed read retries after retryInterval, as the ticker would have.
+// timer. The due time is never sooner than retryInterval from now on the queue's clock
+// (Deps.Clock): a row that stays eligible (a blocked batch's, or one another process's scan held
+// under skip locked) would otherwise be scanned again at once, and a retry due sooner than that
+// waited for the old ticker's next tick too. A failed read retries after retryInterval, as the
+// ticker would have.
 func scanPass(ctx context.Context, deps Deps) time.Time {
 	scan(ctx, deps)
-	floor := time.Now().Add(retryInterval)
+	floor := deps.clock().Now().Add(retryInterval)
 	var due *time.Time
 	if err := deps.Store.Pool.QueryRow(ctx, nextPendingDue).Scan(&due); err != nil {
 		if ctx.Err() == nil {
@@ -302,7 +335,7 @@ func scanPass(ctx context.Context, deps Deps) time.Time {
 // batch per scan. While the model service is throttling it backs off the whole batch cadence (not
 // just the rows it just saw) by retryInterval plus batchBackoff before each next batch, inside the
 // scan, so wakes arriving meanwhile cannot hurry the next call to a provider that has already
-// said to slow down.
+// said to slow down. Each pause runs on the queue's clock (Deps.Clock, pauseFor).
 func scan(ctx context.Context, deps Deps) {
 	consecutiveThrottles := 0
 	for {
@@ -313,7 +346,7 @@ func scan(ctx context.Context, deps Deps) {
 		}
 		if throttled {
 			consecutiveThrottles++
-			if !pauseFor(ctx, retryInterval+batchBackoff(consecutiveThrottles)) {
+			if !pauseFor(ctx, deps.clock(), retryInterval+batchBackoff(consecutiveThrottles)) {
 				return
 			}
 			continue
@@ -322,7 +355,7 @@ func scan(ctx context.Context, deps Deps) {
 		if succeeded+failed < deps.Embedder.Limits().MaxBatchTexts || blocked {
 			return
 		}
-		if !pauseFor(ctx, batchPause) {
+		if !pauseFor(ctx, deps.clock(), batchPause) {
 			return
 		}
 	}
@@ -336,15 +369,15 @@ func batchBackoff(consecutiveThrottles int) time.Duration {
 	return base + time.Duration(rand.Int64N(int64(base)/2+1))
 }
 
-// pauseFor waits d, or returns false without waiting out the rest of it if ctx ends first - a
-// cancelled Run should stop promptly, not finish out its pacing delay.
-func pauseFor(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
+// pauseFor waits d on c, or returns false without waiting out the rest of it if ctx ends first -
+// a cancelled Run should stop promptly, not finish out its pacing delay.
+func pauseFor(ctx context.Context, c clock.Clock, d time.Duration) bool {
+	timer := c.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
-	case <-timer.C:
+	case <-timer.C():
 		return true
 	}
 }
@@ -401,7 +434,9 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
 		return 0, 0, false, false, err
 	}
-	claimed := time.Now() // before the scan's statement claims the rows (newClaimRenewal)
+	// claimed is read on the queue's clock (Deps.Clock), on which the renewal reads the claim's
+	// age, before the scan's statement claims the rows (newClaimRenewal).
+	claimed := deps.clock().Now()
 	rows, settled, err := scanPending(ctx, deps)
 	if err != nil {
 		return 0, 0, false, false, err
@@ -814,9 +849,11 @@ func commitEmbeddings(ctx context.Context, deps Deps, rows []pendingRow, vectors
 // A dead row is still visible (`select * from embeddings where dead`) and still recoverable: a
 // future write to the same content (embeddings_enqueue clears both counters, dead and dead_model
 // the moment content_hash changes) or a manual `update embeddings set dead = false,
-// confirmed_failures = 0` re-admits it to the next scan. It reports whether the batch is blocked,
-// as the outbox's scanBatch reports its own.
+// confirmed_failures = 0` re-admits it to the next scan. Each row's retry falls due its delay
+// (nextAttempt) after the moment the queue's clock (Deps.Clock) reads as the row is stamped. It
+// reports whether the batch is blocked, as the outbox's scanBatch reports its own.
 func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool) bool {
+	c := deps.clock()
 	kinds := make([]string, len(rows))
 	ids := make([]string, len(rows))
 	hashes := make([]string, len(rows))
@@ -837,7 +874,7 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 		kinds[i], ids[i], hashes[i] = row.kind, row.id, row.contentHash
 		attempts[i] = int32(n)
 		confirmedFailures[i] = int32(confirmed)
-		nextAttempts[i] = time.Now().Add(delay)
+		nextAttempts[i] = c.Now().Add(delay)
 		deads[i] = dead
 	}
 	_, err := deps.Store.Pool.Exec(ctx, `

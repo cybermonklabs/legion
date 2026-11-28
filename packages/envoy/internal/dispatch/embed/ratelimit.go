@@ -197,23 +197,31 @@ func (r *RateLimitedEmbedder) setInterval(d time.Duration) {
 	r.limiter.SetLimit(rate.Every(d))
 }
 
+// Clock is the clock Bounded ends a call's context on: a narrowing of clock.Clock
+// (internal/clock), so clock.Real() and a test's clocktest.Fake each fit it.
+type Clock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+}
+
 // Bounded returns inner with each of its calls ended at bound through the call's context, whatever
 // the place: embedqueue bounds every call it makes so, at its callBound, inside its
-// RateLimitedEmbedder. A call the bound ended while its caller's context was live ran out of time,
-// which is an outage (IsOutage), as a call that ran out of time inside a client is: it does not
-// speed RateLimitedEmbedder up as an answered call does, and embedqueue's canary that meets it backs
-// the pace off. Identity and Limits are inner's.
-func Bounded(inner Embedder, bound time.Duration) Embedder {
-	return bounded{Embedder: inner, bound: bound}
+// RateLimitedEmbedder. The bound runs on c (its WithTimeout), which is clock.Real() in a
+// deployment, so the call's context ends once bound has passed on c. A call the bound ended while
+// its caller's context was live ran out of time, which is an outage (IsOutage), as a call that ran
+// out of time inside a client is: it does not speed RateLimitedEmbedder up as an answered call
+// does, and embedqueue's canary that meets it backs the pace off. Identity and Limits are inner's.
+func Bounded(inner Embedder, bound time.Duration, c Clock) Embedder {
+	return bounded{Embedder: inner, bound: bound, clock: c}
 }
 
 type bounded struct {
 	Embedder
 	bound time.Duration
+	clock Clock
 }
 
 func (b bounded) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
-	call, cancel := context.WithTimeout(ctx, b.bound)
+	call, cancel := b.clock.WithTimeout(ctx, b.bound)
 	defer cancel()
 	vectors, err := b.Embedder.Embed(call, texts, inputType)
 	if err != nil && ctx.Err() == nil && call.Err() != nil && !IsOutage(err) && !IsThrottled(err) {
