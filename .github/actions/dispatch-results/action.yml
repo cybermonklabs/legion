@@ -17,6 +17,11 @@ description: >-
   dispatch command under Bun. The calling step sets DISPATCH_URL, AGENT_SECRETS_URL and
   AGENT_SECRETS_MACHINE_AUDIENCE, and the job has `id-token: write`, for agent-secrets' exchange.
 
+  The calling step runs after the job's go test step with `if: ${{ !cancelled() }}`: under a
+  step's default `if: success()`, a go test step whose test failed skips this one, and none of
+  the job's results is written, its passes among them. A failed test is a result to write, so it
+  fails no call: the step fails only when a call fails, or when it cannot read its inputs.
+
 inputs:
   report:
     description: >-

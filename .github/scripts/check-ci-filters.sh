@@ -400,17 +400,24 @@
 #      writes one result for each check whose test ran, and that holds a `go test` command
 #      passing a -v of go test or a -test.v of its test binary (before -args, -v and -test.v;
 #      after -args or --args, -test.v alone; one dash or two, bare or with any value but
-#      test2json, false too), naming the file, the job, the step and the line; or that holds no
-#      `go test` command in a run: script of its own, since the flags of a report made elsewhere,
-#      in a script or in another job, are flags this rule cannot read. go test -json runs the test
-#      binary with -test.v=test2json, and any other value replaces it, so a frame line carries no
-#      mark, a test can print a line that reads as its own pass, and the report cannot be told
-#      from one of `go test -json` by its content: the reader cannot refuse it, so the command
-#      that makes it must not pass such a flag. A -v after -args is a flag of the test's own, such
-#      as the log level of glog and klog, and passes. A -v in GOFLAGS (the variable, or go's own
-#      env file) reaches no test binary: under -json, go drops v and test.v from the flags it
-#      forwards from GOFLAGS (cmd/go/internal/test/testflag.go, go1.27.3), so the rule reads the
-#      command line alone.
+#      test2json, false too), naming the file, the job, the step and the line; or a `go test`
+#      command whose flags it cannot read to the command's end - a line it cannot split into
+#      words, a word that bash or GitHub expands ($, a backtick, a ${{ }} expression), a subshell
+#      or a substitution, any of which can carry such a flag - naming what it stopped at; or that
+#      holds no `go test -json` command in a run: script of its own, since the flags of a report
+#      made elsewhere, in a script or in another job, are flags this rule cannot read. It reads a
+#      command to its end, a pipe, a list operator or the ) that closes it, since go test reads
+#      its flags after the package list too, and passes over each redirection and its target. It
+#      does not tie a command to the report path the action is given: a job whose report a script
+#      makes, beside a go test -json of its own that makes none, passes. go test -json runs the
+#      test binary with -test.v=test2json, and any other value replaces it, so a frame line
+#      carries no mark, a test can print a line that reads as its own pass, and the report cannot
+#      be told from one of `go test -json` by its content: the reader cannot refuse it, so the
+#      command that makes it must not pass such a flag. A -v after -args is a flag of the test's
+#      own, such as the log level of glog and klog, and passes. A -v in GOFLAGS (the variable, or
+#      go's own env file) reaches no test binary: under -json, go drops v and test.v from the
+#      flags it forwards from GOFLAGS (cmd/go/internal/test/testflag.go, go1.27.3), so the rule
+#      reads the command line alone.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

@@ -5566,6 +5566,35 @@ for after in "-test.v" "--test.v" "-v=true" "-args -test.v" "-args --test.v" "-a
   check "fails with $after after the packages" "$(contains "$out" "which passes \`$flag\`")"
   replace "$root/.github/workflows/results.yaml" "./mod/... $after |" "./mod/... |"
 done
+# go test reads its flags to the end of the command, so the rule reads past a redirection and its
+# target, which are no arguments of the command, with the descriptor before it or none.
+for redirect in '> "$RUNNER_TEMP/go-test.json"' '>> go-test.json' '2> go-test.err' '&> go-test.json' '2>&1'; do
+  replace "$root/.github/workflows/results.yaml" "./mod/... |" "./mod/... $redirect -v |"
+  run_check "$root"
+  check "fails with -v after the redirection $redirect" "$(contains "$out" "which passes \`-v\`")"
+  replace "$root/.github/workflows/results.yaml" "./mod/... $redirect -v |" "./mod/... |"
+done
+# A word that bash or GitHub expands, a subshell and a substitution can each carry a -v that the
+# rule cannot see, so a go test command that holds one is refused, naming the word or the operator
+# it stopped at: a command substitution in either spelling, a variable bare or quoted, a GitHub
+# expression and a process substitution. Each row's -v after it shows what the rule could not see.
+tick='`'
+for row in '$(go list ./mod/...)|$(' "${tick}go list ./mod/...${tick}|${tick}go" '$GO_TEST_FLAGS|$GO_TEST_FLAGS' \
+  '"$GO_TEST_FLAGS"|$GO_TEST_FLAGS' '${{ inputs.go-test-flags }}|${{' '<(echo ./mod/...)|<('; do
+  word=${row%|*} named=${row##*|}
+  replace "$root/.github/workflows/results.yaml" "./mod/... |" "$word -v |"
+  run_check "$root"
+  check "fails with go test -json $word -v, naming $named" \
+    "$(contains "$out" "::error file=.github/workflows/results.yaml::.*, whose go test holds \"$named\", which this check cannot read past")"
+  replace "$root/.github/workflows/results.yaml" "$word -v |" "./mod/... |"
+done
+# A quote that does not close leaves a line no reader can split into words: the rule cannot read
+# its flags, so it refuses the line.
+replace "$root/.github/workflows/results.yaml" "-run '^(TestA|TestB)\$' ./mod/..." "-run '^(TestA|TestB)\$ ./mod/..."
+run_check "$root"
+check "fails with a go test whose quote does not close, which it cannot split into words" \
+  "$(contains "$out" "::error file=.github/workflows/results.yaml::.*, which this check cannot split into words, so it cannot read whether its go test passes -v")"
+replace "$root/.github/workflows/results.yaml" "-run '^(TestA|TestB)\$ ./mod/..." "-run '^(TestA|TestB)\$' ./mod/..."
 # A job that asks for no verbose output passes: go's own -test.v=test2json, which -json passes
 # itself, before -args and after it; flags of the test's own after -args, a -v among them, as the
 # log level of glog and klog; grep's -v after a pipe; and the -v of another go command.
@@ -5578,6 +5607,10 @@ for honest in "-v=test2json $report_command |" "-test.v=test2json $report_comman
   check "passes with go test -json $honest" "$(is "$status" 0)"
   replace "$root/.github/workflows/results.yaml" "$honest" "$report_command |"
 done
+replace "$root/.github/workflows/results.yaml" './mod/... | tee "$RUNNER_TEMP/go-test.json"' './mod/... > "$RUNNER_TEMP/go-test.json" 2> go-test.err'
+run_check "$root"
+check "passes with go test -json's report and its errors redirected, and no -v" "$(is "$status" 0)"
+replace "$root/.github/workflows/results.yaml" './mod/... > "$RUNNER_TEMP/go-test.json" 2> go-test.err' './mod/... | tee "$RUNNER_TEMP/go-test.json"'
 replace "$root/.github/workflows/results.yaml" "          set -o pipefail" $'          set -o pipefail\n          go build -v ./mod/... && go vet -v ./mod/...'
 run_check "$root"
 check "passes with the -v of go build and go vet on a line of the step" "$(is "$status" 0)"
@@ -5591,7 +5624,15 @@ replace "$root/.github/workflows/results.yaml" $'go -C mod test -json -count=1 \
   "go run ./tools/make-report"
 run_check "$root"
 check "fails when no step of the job runs go test" \
-  "$(contains "$out" "::error file=.github/workflows/results.yaml::.github/workflows/results.yaml job go-checks runs ./.github/actions/dispatch-results, and no run: step of it runs \`go test\` where this check reads it")"
+  "$(contains "$out" "::error file=.github/workflows/results.yaml::.github/workflows/results.yaml job go-checks runs ./.github/actions/dispatch-results, and no run: step of it runs \`go test -json\` where this check reads it")"
+# The rule cannot tie a go test command to the report the action is given, so it holds the job to
+# one go test -json of its own: a go test with no -json, such as a build of the test binary beside
+# a report a script makes, is none.
+replace "$root/.github/workflows/results.yaml" "go run ./tools/make-report" $'go run ./tools/make-report\n          go test -c -o probe.test ./mod/...'
+run_check "$root"
+check "fails when the job's one go test makes no -json report" \
+  "$(contains "$out" "and no run: step of it runs \`go test -json\` where this check reads it")"
+replace "$root/.github/workflows/results.yaml" $'go run ./tools/make-report\n          go test -c -o probe.test ./mod/...' "go run ./tools/make-report"
 replace "$root/.github/workflows/results.yaml" "go run ./tools/make-report" "go test -json -v ./mod/..."
 replace "$root/.github/workflows/results.yaml" "      - uses: ./.github/actions/dispatch-results" "      - uses: ./.github/actions/other"
 run_check "$root"

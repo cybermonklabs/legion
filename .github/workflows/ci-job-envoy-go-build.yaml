@@ -148,7 +148,7 @@ jobs:
       # run: envoy-go's unit legs leave them out, .github/go-legs.yaml naming them under
       # `elsewhere`, which ci_job_reads.py holds to this step's package list, built from
       # NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py. cmd/ci-report's tests also run
-      # the steps of .github/actions/dispatch-results, with fakes of go and bun.
+      # the steps of .github/actions/dispatch-results, with fakes of go, bun and agent-secrets.
       - name: Test the architecture-note and spec-file rules and their commands
         run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/ ./cmd/ci-report/
         working-directory: packages/envoy
