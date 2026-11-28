@@ -16,18 +16,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
-// The walks of the list of terms of a root (R50) do work in proportion to what they read, as the
-// form's own table measures each rule (specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText)
-// and with its measure: the CPU time of the thread that walks (cputest.OnThread), of n units and of
-// 4n, the two sizes in turn, the least of the samples of each. The work of the larger grows less
-// than levelTwoWorkGrowth times. A walk that reads the record in memory works on maps, whose cost
-// for each entry grows once they no longer fit the cache of a core, so the sizes of such a row keep
-// both maps within it, and a window runs the walk as many times as it takes to last.
+// The walks of the list of terms of a root (R50) do work in proportion to what they read, measured
+// as the CPU time of the thread that walks (cputest.OnThread), of n units and of 4n, the two sizes
+// in turn, the least of the samples of each; the form's own table
+// (specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText) counts the statements of each rule's
+// judgment instead. The work of the larger grows less than levelTwoWorkGrowth times. A walk that
+// reads the record in memory works on maps, whose cost for each entry grows once they no longer
+// fit the cache of a core, so the sizes of such a row keep both maps within it, and a window runs
+// the walk as many times as it takes to last.
 
 // walkSamples is how many times each size is timed. A walk of the record in memory takes less than
 // a millisecond, and the other thread of its core, busy on a loaded machine, can double the CPU
-// time of one window, so the least of seven samples is its work, where a judgment of a text, which
-// takes longer, needs three (specform's workSamples).
+// time of one window, so the least of seven samples is its work.
 const walkSamples = 7
 
 // leastWork is the CPU time of one call of each of calls, each window timed on its thread
