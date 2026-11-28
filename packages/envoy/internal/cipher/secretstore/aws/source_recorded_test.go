@@ -1,34 +1,36 @@
-package secrets_test
+package aws_test
 
-// This file holds the source of each secret each store lists, and the source the policy serves it
-// by, to what main answered before the store packages moved. Postgres holds a grant's source
-// (request_secrets.source), so a source whose format changes ends every live grant of an AWS or
-// GCP deployment that upgrades. testdata/source-recorded-on-main-<store>.json was written by this
-// file and export_test.go at main f57cfa7e2ffe, in a worktree of that commit, from the root of the
+// This file holds the source of each secret the AWS store lists, and the source the policy serves
+// it by, to what main answered before the store packages moved. Postgres holds a grant's source
+// (request_secrets.source), so a source whose format changes ends every live grant of an AWS
+// deployment that upgrades. testdata/source-recorded-on-main-aws.json was written at main
+// f57cfa7e2ffe by internal/cipher/secrets/source_recorded_test.go and export_test.go as they were
+// at 414d2709f4b4, the package the store was in, in a worktree of that commit, from the root of the
 // checkout that holds this file:
 //
 //	git worktree add --detach <tmp>/main f57cfa7e2ffe
-//	cp packages/envoy/internal/cipher/secrets/source_recorded_test.go packages/envoy/internal/cipher/secrets/export_test.go <tmp>/main/packages/envoy/internal/cipher/secrets/
+//	git show 414d2709f4b4:packages/envoy/internal/cipher/secrets/source_recorded_test.go > <tmp>/main/packages/envoy/internal/cipher/secrets/source_recorded_test.go
+//	git show 414d2709f4b4:packages/envoy/internal/cipher/secrets/export_test.go > <tmp>/main/packages/envoy/internal/cipher/secrets/export_test.go
 //	go test -C <tmp>/main/packages/envoy ./internal/cipher/secrets/ -run TestSourceFormatRecordedOnMain -args -record
-//	cp <tmp>/main/packages/envoy/internal/cipher/secrets/testdata/source-recorded-on-main-*.json packages/envoy/internal/cipher/secrets/testdata/
+//	cp <tmp>/main/packages/envoy/internal/cipher/secrets/testdata/source-recorded-on-main-aws.json packages/envoy/internal/cipher/secretstore/aws/testdata/
 //	git worktree remove --force <tmp>/main
 //
-// Never write the records again from the code they check: a record written by the code it checks
-// compares that code with itself and proves nothing. A change to main that adds, drops or changes a
-// source of either store fails this test in its own pull request: that change edits the record
-// there, in the form -record writes, which the test holds the file to, and names itself here with
-// the lines of the records that moved. A moved source ends the live grants that hold it, so that
-// pull request's review decides whether it may move. The AWS sources carry the region "local" and
-// the account 000000000000 because the AWS fake (secrets.Local) answers its ARNs so; a real store
-// answers its own region and account, and each secret's own name suffix, which realARNs gives the
-// fake, in a form of its own (awsNameSuffix).
+// This file writes no record: a record written by the code it checks compares that code with
+// itself and proves nothing. A change to main
+// that adds, drops or changes a source fails this test in its own pull request: that change edits
+// the record there, in the form -record wrote it (json.MarshalIndent with two-space indents and a
+// closing newline), which the test holds the file to, and names itself here with the lines of the
+// record that moved. A moved source ends the live grants that hold it, so that pull request's
+// review decides whether it may move. The sources carry the region "local" and the account
+// 000000000000 because the AWS fake (awstest.Local) answers its ARNs so; a real store answers its
+// own region and account, and each secret's own name suffix, which realARNs gives the fake, in a
+// form of its own (awsNameSuffix).
 
 import (
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"maps"
 	"os"
@@ -39,13 +41,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
+	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
-)
 
-var recordSources = flag.Bool("record", false, "write testdata/source-recorded-on-main-*.json instead of comparing; run only on main, as source_recorded_test.go's head comment says")
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+)
 
 // recordedSource is one secret's sources as a record holds them: the source its store's listing
 // answered, and the one the policy serves it by, which a grant stores.
@@ -54,7 +57,7 @@ type recordedSource struct {
 	Source string `json:"source"`
 }
 
-// recordedSecrets are the two secrets each store holds under its prefix, on the agent-secrets key:
+// recordedSecrets are the two secrets the store holds under its prefix, on the agent-secrets key:
 // a stored secret, and one whose type tag makes the policy serve it by a type source. The policy
 // loads a google-login secret with no profile, so it is the typed one.
 var recordedSecrets = []struct {
@@ -67,37 +70,27 @@ var recordedSecrets = []struct {
 		`{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`},
 }
 
-// TestSourceFormatRecordedOnMain: each store lists each secret with the source main listed it
+// TestSourceFormatRecordedOnMain: the AWS store lists each secret with the source main listed it
 // with, and the policy serves it by the source main served it by, both on a load (List, Load) and
 // on a reread of the one secret (Describe, LoadOne), which is how the broker serves a secret after
-// a reread and so the source a grant made then stores. With -record it writes the records instead,
-// which the head comment allows at a commit of main alone.
+// a reread and so the source a grant made then stores.
 func TestSourceFormatRecordedOnMain(t *testing.T) {
 	for _, row := range []struct {
 		store  string
 		prefix string
-		open   func(t *testing.T, prefix string) secrets.Store
+		open   func(t *testing.T, prefix string) secretstore.Store
 		// form is what every source the record holds for this store must match, so a record
 		// taken against a fake that answers a shape no real store answers is refused here
 		// rather than freezing that shape for the moves to be held to.
 		form *regexp.Regexp
 	}{
-		{"aws", "example/agent-secrets/", func(t *testing.T, prefix string) secrets.Store {
-			const key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-			local := secrets.NewLocal()
+		{"aws", "example/agent-secrets/", func(t *testing.T, prefix string) secretstore.Store {
+			local := awstest.NewLocal()
 			for _, s := range recordedSecrets {
-				local.Put(secrets.LocalSecret{Name: prefix + s.slug, KmsKeyID: key, Tags: s.tags, Value: s.value})
+				local.Put(awstest.LocalSecret{Name: prefix + s.slug, KmsKeyID: awstest.KeyARN, Tags: s.tags, Value: s.value})
 			}
-			return secrets.AWS{Client: realARNs{local}, KMS: local, KeyARN: key}
+			return aws.Store{Client: realARNs{local}, KMS: local, KeyARN: awstest.KeyARN}
 		}, regexp.MustCompile(`-[a-z0-9]{6}$`)},
-		{"gcp", "projects/000000000000/secrets/agent-secrets-", func(t *testing.T, prefix string) secrets.Store {
-			const key = "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
-			held := map[string]secrets.FakeGCPSecretForTest{}
-			for _, s := range recordedSecrets {
-				held[prefix+s.slug] = secrets.FakeGCPSecretForTest{Tags: s.tags, Value: s.value}
-			}
-			return secrets.NewGCP(secrets.StartFakeGCPForTest(t, key, held), key)
-		}, regexp.MustCompile(`^(mint:[a-z-]+:)?projects/[0-9]+/secrets/[A-Za-z0-9_-]+$`)},
 	} {
 		t.Run(row.store, func(t *testing.T) {
 			record := filepath.Join("testdata", "source-recorded-on-main-"+row.store+".json")
@@ -140,27 +133,6 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			if len(got) != len(recordedSecrets) {
 				t.Fatalf("List answered %d secrets, want the %d this test holds: %+v", len(got), len(recordedSecrets), listings)
 			}
-			if *recordSources {
-				// A record holds one listed and one served source for each secret, so a reread
-				// that answers other sources than the load cannot be recorded.
-				for name, g := range got {
-					if r := reread[name]; r != g {
-						t.Fatalf("%s: the reread lists %q and serves %q, the load lists %q and serves %q; a record holds one of each", name, r.Listed, r.Source, g.Listed, g.Source)
-					}
-				}
-				raw, err := json.MarshalIndent(got, "", "  ")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.MkdirAll(filepath.Dir(record), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(record, append(raw, '\n'), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				t.Logf("wrote %d secrets' sources to %s", len(got), record)
-				return
-			}
 			raw, err := os.ReadFile(record)
 			if err != nil {
 				t.Fatalf("read %s: %v", record, err)
@@ -173,7 +145,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 				t.Fatalf("UNKNOWN: %s records no secret, so the check compares nothing", record)
 			}
 			if again, err := json.MarshalIndent(want, "", "  "); err != nil || !bytes.Equal(append(again, '\n'), raw) {
-				t.Fatalf("%s holds an entry or a form -record does not write (%s), which the comparison would not read; write it as -record does", record, recordForm(raw, "secret"))
+				t.Fatalf("%s holds an entry or a form -record did not write (%s), which the comparison would not read; write it as -record did", record, recordForm(raw, "secret"))
 			}
 			for _, name := range slices.Sorted(maps.Keys(want)) {
 				for _, held := range []struct{ what, source string }{
@@ -227,8 +199,8 @@ func sourceText(source string, present bool) string {
 	return strconv.Quote(source)
 }
 
-// recordForm names what makes a record other than what -record writes: each top-level key it
-// holds more than once, of which decoding keeps the last, or else a form written by hand.
+// recordForm names what makes a record other than what -record wrote: each top-level key it holds
+// more than once, of which decoding keeps the last, or else a form written by hand.
 func recordForm(raw []byte, entry string) string {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if _, err := dec.Token(); err != nil {
@@ -271,17 +243,17 @@ func awsNameSuffix(name string) string {
 	return "-" + string(suffix)
 }
 
-// realARNs is the AWS fake answering the ARNs a real Secrets Manager answers: secrets.LocalARN
-// ends an ARN at the secret's name, where Secrets Manager ends it with that name's own suffix
+// realARNs is the AWS fake answering the ARNs a real Secrets Manager answers: awstest.ARN ends an
+// ARN at the secret's name, where Secrets Manager ends it with that name's own suffix
 // (awsNameSuffix), so a record taken from the bare fake would hold a source no deployment has, and
 // a move that rebuilt an ARN from the name, or trimmed its suffix, would pass against it. Every
 // ARN it answers carries the suffix, and every call it takes one from reads it back.
-type realARNs struct{ secrets.SecretsManagerAPI }
+type realARNs struct{ aws.SecretsManagerAPI }
 
 // suffixed is an ARN of the fake's form with its secret's suffix on the end; anything else, a
 // secret's bare name among them, is left as it is.
 func suffixed(id, name string) string {
-	if !strings.HasPrefix(id, secrets.LocalARN("")) {
+	if !strings.HasPrefix(id, awstest.ARN("")) {
 		return id
 	}
 	return id + awsNameSuffix(name)
@@ -291,7 +263,7 @@ func suffixed(id, name string) string {
 // no ARN of this form, or whose last seven bytes are not the suffix of the name before them, is
 // left as it is, so the fake answers it as it answers any other id.
 func unsuffixed(id string) string {
-	prefix := secrets.LocalARN("")
+	prefix := awstest.ARN("")
 	if !strings.HasPrefix(id, prefix) {
 		return id
 	}
@@ -308,29 +280,29 @@ func (r realARNs) ListSecrets(ctx context.Context, in *secretsmanager.ListSecret
 		return out, err
 	}
 	for i, entry := range out.SecretList {
-		out.SecretList[i].ARN = aws.String(suffixed(aws.ToString(entry.ARN), aws.ToString(entry.Name)))
+		out.SecretList[i].ARN = sdkaws.String(suffixed(sdkaws.ToString(entry.ARN), sdkaws.ToString(entry.Name)))
 	}
 	return out, nil
 }
 
 func (r realARNs) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
 	asked := *in
-	asked.SecretId = aws.String(unsuffixed(aws.ToString(in.SecretId)))
+	asked.SecretId = sdkaws.String(unsuffixed(sdkaws.ToString(in.SecretId)))
 	out, err := r.SecretsManagerAPI.DescribeSecret(ctx, &asked, opts...)
 	if err != nil {
 		return out, err
 	}
-	out.ARN = aws.String(suffixed(aws.ToString(out.ARN), aws.ToString(out.Name)))
+	out.ARN = sdkaws.String(suffixed(sdkaws.ToString(out.ARN), sdkaws.ToString(out.Name)))
 	return out, nil
 }
 
 func (r realARNs) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
 	asked := *in
-	asked.SecretId = aws.String(unsuffixed(aws.ToString(in.SecretId)))
+	asked.SecretId = sdkaws.String(unsuffixed(sdkaws.ToString(in.SecretId)))
 	out, err := r.SecretsManagerAPI.GetSecretValue(ctx, &asked, opts...)
 	if err != nil {
 		return out, err
 	}
-	out.ARN = aws.String(suffixed(aws.ToString(out.ARN), aws.ToString(out.Name)))
+	out.ARN = sdkaws.String(suffixed(sdkaws.ToString(out.ARN), sdkaws.ToString(out.Name)))
 	return out, nil
 }

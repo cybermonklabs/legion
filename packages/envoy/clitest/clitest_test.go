@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/internal/fixtureenv"
@@ -421,7 +422,7 @@ func TestConformanceFailsOnACompletionAShellRefuses(t *testing.T) {
 	refusing := t.TempDir()
 	for _, shell := range []string{"zsh", "fish"} {
 		script := "#!/bin/sh\necho \"$0: refused $*\" >&2\nexit 1\n"
-		if err := os.WriteFile(filepath.Join(refusing, shell), []byte(script), 0o700); err != nil {
+		if err := testexec.WriteFile(filepath.Join(refusing, shell), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}

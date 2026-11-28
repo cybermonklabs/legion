@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -110,7 +111,7 @@ func candidateConfig(t *testing.T, dsn, dispatchURL string) string {
 	release := filepath.Join(dir, "release")
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' '{\"installations\":{\"acme\":{\"installation_id\":7,\"token\":\"ghs_census\",\"expires_at\":\"%s\"}}}'\n",
 		time.Now().Add(2*time.Hour).UTC().Format(time.RFC3339))
-	if err := os.WriteFile(release, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(release, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "legion.yaml")
