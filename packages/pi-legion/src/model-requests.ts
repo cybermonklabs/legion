@@ -54,9 +54,10 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * their answers arrive in either order: each answer puts back only its own report's requests, and
  * the daemon takes a request again by its id and keeps the later end, so a crossing changes
  * nothing it decides. A request the daemon's answer does not name as held goes again under the
- * same id. A call that fails — the daemon unreachable or failing, or no answer within the 10 s —
- * holds every send until a bound after it ends, and a call's end only arms the timer, so a failing
- * daemon is never called in a loop. A request older than an hour is dropped with a warning.
+ * same id. A call that fails — the daemon unreachable or failing, no answer within the 10 s, or a
+ * report the client refuses before it leaves — holds every send until a bound after it ends, and a
+ * call's end only arms the timer, so a failing daemon is never called in a loop. A request older
+ * than an hour is dropped with a warning.
  * A report the daemon refuses (a 4xx) is dropped with a warning, as a turn outcome's is.
  * Nothing of the session waits on any of it: the hooks return at once.
  *
@@ -198,7 +199,9 @@ export function createModelRequestsReporter(
 
   /** Sends every pending request now, as "When it is sent" (above) says, the earliest deadline's
    * report first, each in a call of its own (`report`), unless a failed call holds sends
-   * (`retryAt`): then it arms the timer for when that hold ends. */
+   * (`retryAt`): then it arms the timer for when that hold ends. It takes every batch out of
+   * `pending` before it reports any: a call that fails before it leaves puts its batch back at
+   * once, and this send must not take that batch again. */
   const send = (): void => {
     const now = deps.now();
     if (now < retryAt) {
@@ -216,6 +219,7 @@ export function createModelRequestsReporter(
       });
       return false;
     });
+    const batches: { readonly owner: ModelRequestCredential; readonly batch: Pending[] }[] = [];
     for (let first = earliestPending(); first !== undefined; first = earliestPending()) {
       const batch: Pending[] = [first];
       const rest: Pending[] = [];
@@ -228,8 +232,9 @@ export function createModelRequestsReporter(
         }
       }
       pending = rest;
-      report(first.owner, batch);
+      batches.push({ owner: first.owner, batch });
     }
+    for (const { owner, batch } of batches) report(owner, batch);
   };
 
   /** Puts `batch`, which no other report carries, on its way in a call of its own. The call's end
