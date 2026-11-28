@@ -277,6 +277,12 @@ func (c *Client) MarkUnconfirmed() (written func()) {
 // still to be taken, or one taken behind the PING, is not confirmed. It reads the connection without
 // the client's lock (severable).
 func (c *Client) ConfirmMarked(timeout time.Duration) bool {
+	return c.confirmMarkedBy(func(conn *nats.Conn) error { return conn.FlushTimeout(timeout) })
+}
+
+// confirmMarkedBy is ConfirmMarked with the flush of the connection passed in, which ConfirmMarked
+// makes nats.go's FlushTimeout under its timeout.
+func (c *Client) confirmMarkedBy(flush func(*nats.Conn) error) bool {
 	current := c.severable.Load()
 	if current == nil {
 		return true
@@ -288,7 +294,7 @@ func (c *Client) ConfirmMarked(timeout time.Duration) bool {
 	if current.conn.IsClosed() {
 		return true
 	}
-	if current.conn.FlushTimeout(timeout) != nil {
+	if flush(current.conn) != nil {
 		return false
 	}
 	return current.dialer == nil || current.dialer.confirmMarks(before)

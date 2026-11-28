@@ -569,7 +569,7 @@ func (s *runSegments) segmentDepth(reading segmentReading, first, last, segment 
 func crossingEscapes(nodes []*Node) delimiterEscapes {
 	stars, underscores, tildes := 0, 0, 0
 	for _, node := range nodes {
-		if node.Type != "text" || nodeHasMark(node, "inlineCode") {
+		if node.Type != "text" || HasMark(node, "inlineCode") {
 			continue
 		}
 		stars += freeDelimiterRuns(node.Text, '*')
