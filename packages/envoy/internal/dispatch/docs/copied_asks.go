@@ -411,7 +411,9 @@ func owedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) ([]
 // within one session), and returns, sorted and once each, every other document of each document's
 // owner whose latest version holds the block of one of that document's asks with no ask of its own
 // under that block's id (copiesOf). A document's latest version is read for the block's opener
-// (`:::ask{<id> …}`, the id as pmdoc.TypedBlockIDAttribute writes it), so one that quotes the
+// from the last colon of its fence on (`:ask{<id> …}`, the id as pmdoc.TypedBlockIDAttribute
+// writes it): every opener the parser opens holds it (pmdoc.ParseTypedDirectiveOpen), and the
+// opener of a plan task under the same id, `:::plan_task{<id> …}`, does not. One that quotes the
 // opener elsewhere, in code, is settled for nothing.
 // The caller has taken no pending row and appended no event. A copy's settlement waits on the row
 // this marks holding its own owner lock and room lock, which the caller never takes, and deletes
@@ -473,7 +475,7 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 		if ask.BlockID == nil {
 			continue
 		}
-		opener := `%ask{` + likeLiteral(pmdoc.TypedBlockIDAttribute(*ask.BlockID))
+		opener := `%:ask{` + likeLiteral(pmdoc.TypedBlockIDAttribute(*ask.BlockID))
 		blockIDs = append(blockIDs, *ask.BlockID, *ask.BlockID)
 		patterns = append(patterns, opener+` %`, opener+`}%`)
 	}

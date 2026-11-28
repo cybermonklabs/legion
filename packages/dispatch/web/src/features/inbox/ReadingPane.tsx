@@ -224,14 +224,16 @@ function ApprovalBody({
   // answered block's state, and who answered it and when, but not the words or the options
   // chosen: the server holds those on the ask alone, so the block's card reads them from here.
   // Both reads wait for the version and start only where it holds an ask block, by the test the
-  // server makes of a text before it reads its asks (docs.TextWithAsks): `VersionView` reads the
-  // server's read only for an ask block of that version.
+  // server makes of a text before it reads its asks (docs.holdsAskOpener): whether it holds
+  // `:ask{`, which every ask block's opener holds from its fence's last colon on and the opener
+  // of a plan task, `:::plan_task{`, does not. `VersionView` reads the server's read only for an
+  // ask block of that version.
   const issueKey = artifact?.issue_key ?? null;
   const readsAsks =
     settled &&
     artifact !== undefined &&
     isText(versionQuery.data) &&
-    versionQuery.data.markdown.includes("ask{");
+    versionQuery.data.markdown.includes(":ask{");
   const asksQuery = useQuery({
     ...ownerAsksQueryOptions(artifactId, issueKey),
     enabled: readsAsks,

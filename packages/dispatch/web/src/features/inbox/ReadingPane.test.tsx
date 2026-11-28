@@ -1108,6 +1108,39 @@ test("an approval draws the ask card of a version answered with no reading", asy
   }
 });
 
+// The pane reads the server's read of a version's asks, the owner's asks and the live text, only
+// for a version that holds an ask block, by the server's test of a text (docs.holdsAskOpener): it
+// holds `:ask{`. A plan document's version holds `:::plan_task{`, whose `ask{` opens no ask
+// block, so an approval of one starts neither read.
+test("an approval of a plan document's version starts neither the owner's asks read nor the live text read", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\n:::plan_task{#t1}\nRead the version.\n:::\n";
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const { view } = renderPane({
+    ask: approvalAsk(),
+    seed: (client) => {
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      );
+      // Neither read is answered from the cache, so one that starts reaches the network, where
+      // the spies see it.
+      client.removeQueries({ exact: true, queryKey: ["asks", "CORE-1"] });
+      client.removeQueries({ exact: true, queryKey: ["artifact", "artifact-1", "text"] });
+    },
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    expect(listIssueAsks).not.toHaveBeenCalled();
+    expect(getArtifactText).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listIssueAsks.mockRestore();
+  }
+});
+
 test("an anchored question is today's card", async () => {
   const { opened, view } = renderPane({
     ask: issueAsk({
