@@ -20,51 +20,48 @@ import (
 // registerBlockTree takes on its own: the content typedBlocksIn hands over for the block, the one
 // GET /api/v1/reference-targets cuts from the block's stored text (blockTextContent), a
 // decision's section of decisions.md, or a text of a document's block the reference graph's read
-// draws. labels is the footnotes that markdown calls that its document defines outside it: the
-// ones the block's node calls (pmdoc.CalledFootnoteLabels), or, for a text no node of the
-// document's parse holds, the ones it writes as a call (footnotesCalledIn); block is where the
-// block stands, the document that holds it and the id it holds it under, which registerBlockTree
-// logs a tree it cannot set with. Every source with labels names it. cut is set, where the source
-// is made (drawnText), for a markdown that is a cut of the block's text, an edge's excerpt, which
-// can stop inside a block whose end the cut leaves out (a fenced code block): the stand-ins read
-// after it then stand inside that block, so a tree that does not end in them is no fault of the
-// read, and registerBlockTree sets it nowhere and logs nothing, for the caller to read the cut
-// alone.
+// draws, an edge's excerpt among them. labels is the footnotes that markdown calls that its
+// document defines outside it: the ones the block's node calls (pmdoc.CalledFootnoteLabels), or,
+// for a text no node of the document's parse holds, the ones it writes as a call
+// (footnotesCalledIn).
 type blockTreeSource struct {
-	block  refs.DocumentBlock
 	labels []string
-	cut    bool
 }
 
 // registerBlockTree registers with trees, as field, the display tree of markdown, the content of
-// the block source names: the one its block's document holds under that block's id. Every read
-// that answers a block's tree registers it here: the coverage read's requirements, the results
-// read's checks, the batched reference read's blocks, the decisions read's decisions and the
-// reference graph read's texts of documents' blocks, so one block answers one tree in each read
-// that draws it whole, and each of them reads a call as the document does. The markdown is cut
-// out of the document, so it holds no definition the document writes outside the block, and read
-// alone it reads a call of such a label as text, where the document reads, and the browser editor
-// holds, a reference. So the markdown of a block with labels is registered with a stand-in
-// definition of each label after it (pmdoc.WithStandInDefinitions), and the stand-ins, those the
-// markdown refers to and those it does not, are taken out of the tree before it is set
-// (withoutStandInDefinitions); a block with none registers its markdown as it stands. A tree that
-// does not end in the stand-ins is set nowhere, since no other field of the read depends on it,
-// and is logged unless source is a cut, which can end that way (blockTreeSource).
+// a document's block, read with source beside it. Every read that answers a block's tree
+// registers it here: the coverage read's requirements, the results read's checks, the batched
+// reference read's blocks, the decisions read's decisions and the reference graph read's texts
+// of documents' blocks, so one block answers one tree in each read that draws it whole, and each
+// of them reads a call as the document does. The markdown is cut out of the document, so it
+// holds no definition the document writes outside the block, and read alone it reads a call of
+// such a label as text, where the document reads, and the browser editor holds, a reference. So
+// the markdown of a block with labels is registered with a stand-in definition of each label
+// after it (pmdoc.WithStandInDefinitions), and the stand-ins, those the markdown refers to and
+// those it does not, are taken out of the tree before it is set (withoutStandInDefinitions); a
+// block with none registers its markdown as it stands.
+//
+// A markdown can leave open a block that its document closes: a fenced code block in a list item,
+// whose stored text carries the item's indentation on each line but its first, so that, read
+// alone, its closing fence closes nothing, or an edge's excerpt cut before the end of such a
+// block. The stand-ins read after it then stand inside that block, so its tree does not end in
+// them and they cannot be taken out. Such a block keeps the tree of its markdown alone, whatever
+// its source, as a block with no labels does and as a block whose document cannot be read does:
+// the reading of that markdown in trees' mode, taken from the process's display cache or built
+// where the cache holds none (builtDisplayTree), once resolve has the tree with the stand-ins and
+// so knows the block needs it. The shape is the block's own and no fault of the read, so nothing
+// is logged for it.
 func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, markdown string, source blockTreeSource) {
 	if len(source.labels) == 0 || markdown == "" {
 		trees.text(field, markdown)
 		return
 	}
 	trees.textInto(func(tree json.RawMessage) {
-		shown, ok := withoutStandInDefinitions(tree, len(source.labels))
-		if !ok {
-			if !source.cut {
-				slog.Warn("dispatch: take the stand-in footnote definitions out of a block's tree",
-					"artifact", source.block.ArtifactID, "block", source.block.BlockID, "labels", source.labels)
-			}
+		if shown, ok := withoutStandInDefinitions(tree, len(source.labels)); ok {
+			*field = model.DisplayTree(shown)
 			return
 		}
-		*field = model.DisplayTree(shown)
+		*field = model.DisplayTree(builtDisplayTree(pmdoc.TextSum(markdown), markdown, trees.mode))
 	}, pmdoc.WithStandInDefinitions(markdown, source.labels))
 }
 
@@ -157,13 +154,13 @@ func (d *footnoteDocuments) warnUnread(route string) {
 }
 
 // calledFootnotes is, by key, the source of the tree of each document block's text of texts
-// (blockTreeSource): its document's id, its own block id, the footnotes it calls that its
-// document defines outside it and whether it is a cut, for the texts that hold a call at all
-// (`[^`). Such a text is a slice of its document, so it holds no definition the document writes
-// outside the block, and read alone it reads a call of such a label as text. A key names a text,
-// not a block: the batched reference read keys each block's stored text by its target
-// (blockTrees), and the reference graph's read draws one block from its whole text and from an
-// edge's excerpt of it (readGraphFootnotes), which can call different labels.
+// (blockTreeSource), the footnotes it calls that its document defines outside it, for the texts
+// that hold a call at all (`[^`). Such a text is a slice of its document, so it holds no
+// definition the document writes outside the block, and read alone it reads a call of such a
+// label as text. A key names a text, not a block: the batched reference read keys each block's
+// stored text by its target (blockTrees), and the reference graph's read draws one block from its
+// whole text and from an edge's excerpt of it (readGraphFootnotes), which can call different
+// labels.
 //
 // keys is the keys of texts in the order in which the request first names each text, and the
 // documents are taken in the order in which keys first names a text of each that holds a call; a
@@ -253,14 +250,12 @@ func (s *server) documentMarkdownAt(ctx context.Context, artifactID string, vers
 
 // drawnText is the text of a document's block that a read draws a tree of, as calledFootnotes and
 // footnotesCalledIn read the footnotes it calls: block, where the block stands, the id of its
-// document and its own block id; text, the text itself, a block's stored text, a decision's
-// section of decisions.md, or a text of a document's block the reference graph's read draws; and
-// cut, whether text is a cut of the block's text, an edge's excerpt, which the text's source then
-// carries (blockTreeSource).
+// document and its own block id; and text, the text itself, a block's stored text, a decision's
+// section of decisions.md, or a text of a document's block the reference graph's read draws, an
+// edge's excerpt among them.
 type drawnText struct {
 	block refs.DocumentBlock
 	text  string
-	cut   bool
 }
 
 // footnotesCalledIn is, by key, the source of the tree of each text of texts (blockTreeSource),
@@ -277,9 +272,9 @@ type drawnText struct {
 // (pmdoc.KeyFootnoteLabels), so no text's labels depend on the order texts is walked in. Such a
 // text can write a call that reads as text, escaped or in code, or one of a label it defines
 // itself, which resolves to its own definition first; the stand-in of that label is then one
-// nothing refers to, which is taken out of the tree with the rest (registerBlockTree). Each source
-// is a cut where its text is. It answers the map it makes: a text that calls no such label has no
-// entry in it, and a markdown the parser refuses answers none.
+// nothing refers to, which is taken out of the tree with the rest (registerBlockTree). It answers
+// the map it makes: a text that calls no such label has no entry in it, and a markdown the parser
+// refuses answers none.
 func footnotesCalledIn[K comparable](markdown, artifactID string, texts map[K]drawnText) map[K]blockTreeSource {
 	parse := footnoteParseOf(markdown, artifactID)
 	if !parse.Read {
@@ -299,7 +294,7 @@ func footnotesCalledIn[K comparable](markdown, artifactID string, texts map[K]dr
 			labels = defined.Written(text.text)
 		}
 		if len(labels) > 0 {
-			called[key] = blockTreeSource{block: text.block, labels: labels, cut: text.cut}
+			called[key] = blockTreeSource{labels: labels}
 		}
 	}
 	return called

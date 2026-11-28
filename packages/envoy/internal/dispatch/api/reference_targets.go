@@ -229,8 +229,8 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // index, and a block of a message has its text split again from its message's body, since no
 // table records it. A document's block is registered with the footnotes it calls that its
 // document defines outside it (registerBlockTree), as the coverage and the results reads register
-// a typed block's, and only one whose text holds a call has its document read for them
-// (calledFootnotes); every other block registers its text as it stands.
+// a typed block's, and only one whose text holds a call (`[^`) is handed to calledFootnotes, which
+// reads its document for them; every other block registers its text as it stands.
 //
 // The request reads the definitions of at most footnoteDocumentsMax documents: its one call of
 // calledFootnotes takes the blocks in the order in which the request's `ref` parameters first
@@ -273,9 +273,14 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	for target, whole := range texts {
 		contents[target] = blockTextContent(whole, target.Kind == "block")
 	}
-	drawn := make(map[refs.Target]drawnText, len(documents))
+	var drawn map[refs.Target]drawnText
 	for target, block := range documents {
-		drawn[target] = drawnText{block: block, text: texts[target]}
+		if text := texts[target]; strings.Contains(text, "[^") {
+			if drawn == nil {
+				drawn = map[refs.Target]drawnText{}
+			}
+			drawn[target] = drawnText{block: block, text: text}
+		}
 	}
 	var budget footnoteDocuments
 	called := calledFootnotes(ctx, s, blocks, drawn, 0, &budget)

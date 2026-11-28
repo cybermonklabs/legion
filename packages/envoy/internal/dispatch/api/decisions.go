@@ -363,19 +363,18 @@ func (s *server) readDecisions(
 }
 
 // decisionFootnotes is, by each decision's index in decisions, the source of the tree of its text
-// (blockTreeSource): the document artifactID, the decision's heading block and
-// the footnotes its text calls that the document defines outside the decision. A decision's text
-// is its section of markdown, the document's markdown the view cut it from, so it holds no
-// definition the document writes outside the section, and read alone it reads a call of such a
-// label as text, where the document reads, and the browser editor holds, a reference. The labels
-// are read from the parse of markdown as the batched reference read reads a block's
-// (footnotesCalledIn): a decision's heading is no typed block, so the rendering writes no id for it
-// and no node of the parse holds it, and its labels are each label the document defines that its
-// text writes as a call, up to case. markdown's parse is read only where some decision's text
-// holds a call at all (`[^`), since a decision that calls no footnote has no labels to read, and
-// what the labels are read from is kept, so a markdown an earlier read parsed is parsed again by
-// none (footnoteParses). A markdown the parser refuses leaves every decision the tree of its text
-// alone; the failure is logged.
+// (blockTreeSource), the footnotes its text calls that the document artifactID defines outside
+// the decision. A decision's text is its section of markdown, the document's markdown the view
+// cut it from, so it holds no definition the document writes outside the section, and read alone
+// it reads a call of such a label as text, where the document reads, and the browser editor
+// holds, a reference. The labels are read from the parse of markdown as the batched reference
+// read reads a block's (footnotesCalledIn): a decision's heading is no typed block, so the
+// rendering writes no id for it and no node of the parse holds it, and its labels are each label
+// the document defines that its text writes as a call, up to case. markdown's parse is read only
+// where some decision's text holds a call at all (`[^`), since a decision that calls no footnote
+// has no labels to read, and what the labels are read from is kept, so a markdown an earlier read
+// parsed is parsed again by none (footnoteParses). A markdown the parser refuses leaves every
+// decision the tree of its text alone; the failure is logged.
 func decisionFootnotes(artifactID, markdown string, decisions []model.Decision) map[int]blockTreeSource {
 	var texts map[int]drawnText
 	for index := range decisions {

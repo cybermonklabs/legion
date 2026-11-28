@@ -192,13 +192,13 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 const graphNodeText = -1
 
 // graphFootnotes is, for a read of the reference graph, the source of the tree of each text of a
-// document's block the read draws (blockTreeSource): the document's id, the block's id and the
-// footnotes the text calls that the document defines outside the block. node is the queried
-// node's own text and excerpts each edge's excerpt, by the edge's index, each source of which is
-// a cut, both read with the definitions of the document as it stands; pin is the text the node's
-// pin recorded, read with the definitions of the version it pins. A text with no source, and
-// every text of a node that is no document's block, is drawn from its text alone
-// (registerBlockTree).
+// document's block the read draws (blockTreeSource), the footnotes the text calls that its
+// document defines outside the block. node is the queried node's own text and excerpts each
+// edge's excerpt, by the edge's index, both read with the definitions of the document as it
+// stands; pin is the text the node's pin recorded, read with the definitions of the version it
+// pins. A text with no source, and every text of a node that is no document's block, is drawn
+// from its text alone, and so is a text whose tree with the stand-ins cannot have them taken out,
+// an excerpt cut inside a fenced code block among them (registerBlockTree).
 type graphFootnotes struct {
 	node, pin blockTreeSource
 	excerpts  map[int]blockTreeSource
@@ -253,7 +253,7 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 			continue
 		}
 		if cutFrom, ok := graphDocumentBlock(edge.Node, edge.Excerpt.BlockID); ok {
-			hold(index, drawnText{block: cutFrom, text: edge.Excerpt.Text, cut: true})
+			hold(index, drawnText{block: cutFrom, text: edge.Excerpt.Text})
 		}
 	}
 	var budget footnoteDocuments

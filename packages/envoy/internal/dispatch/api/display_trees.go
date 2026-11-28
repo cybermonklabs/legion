@@ -560,9 +560,8 @@ type graphEdgeRead struct {
 // that its document defines outside the block, its source in excerpts under the edge's index
 // (graphFootnotes, registerBlockTree). Being a cut, such an excerpt can stop inside a block whose
 // end the cut leaves out, a fenced code block among them, which then holds the stand-in
-// definitions read after it, so its tree does not end in them and is set nowhere, with no
-// warning, since its source is a cut (blockTreeSource): that excerpt is read again from its text
-// alone, since every excerpt with a text carries a tree (graphExcerptRead).
+// definitions read after it: that excerpt keeps the tree of its text alone (registerBlockTree),
+// so every excerpt with a text carries a tree (graphExcerptRead).
 func graphEdgeReads(edges []model.GraphEdge, trees bool, excerpts map[int]blockTreeSource) []graphEdgeRead {
 	if edges == nil {
 		return nil
@@ -578,19 +577,6 @@ func graphEdgeReads(edges []model.GraphEdge, trees bool, excerpts map[int]blockT
 			if edge.Excerpt != nil {
 				read.Excerpt = &graphExcerptRead{GraphExcerpt: *edge.Excerpt}
 				registerBlockTree(reader, &read.Excerpt.TextTree, edge.Excerpt.Text, excerpts[index])
-			}
-		}
-	})
-	if len(excerpts) == 0 {
-		return reads
-	}
-	shapeBuilt(trees, func(reader *displayTreeReader) {
-		for index := range reads {
-			if _, withSource := excerpts[index]; !withSource {
-				continue
-			}
-			if excerpt := reads[index].Excerpt; excerpt != nil && excerpt.TextTree == nil {
-				reader.text(&excerpt.TextTree, excerpt.Text)
 			}
 		}
 	})
