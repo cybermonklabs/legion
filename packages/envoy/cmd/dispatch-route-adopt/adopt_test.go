@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // The old layout as main held it the moment routes moved into files of their own (843a9f45),
@@ -1354,7 +1356,7 @@ if [ "$1" = merge ]; then
 fi
 exit $status
 `
-	if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
