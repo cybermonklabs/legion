@@ -610,11 +610,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		publishClaimStates(st, workflow, runID)
 		log.Info("legion daemon state events on", "project", cfg.Project, "run", runID, "schemaVersion", schemaVersion)
 		// From here on, a claim write that changes a role holder queues its issue's publication in
-		// its own transaction, and the store tells the issue once that commits, so its lane is woken
-		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
-		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
-		// on before supervision restores a claim, so no claim write of this boot is left out.
+		// its own transaction, and one that moves a claim off a session it recorded queues the
+		// release of the Dispatch claim that session may still hold, since no claims row names it
+		// after the write; the store tells the issue once that commits, so its lane is woken at once
+		// rather than at its next sweep. Only a daemon with a workflow runs an outbox to send the
+		// rows, so only this one turns them on (store.PublishRoleHolders,
+		// store.ReleaseLeftSessionClaims). They are turned on before supervision restores a claim,
+		// so no claim write of this boot is left out.
 		st.PublishRoleHolders(workflow.wakeRoleHolders)
+		st.ReleaseLeftSessionClaims(workflow.wakeClaimRelease)
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its

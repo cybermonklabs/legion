@@ -283,6 +283,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if change := issue.RepoChange; change != nil {
 			view.RepoChangePending, view.RepoChangeReason = change.Pending, change.Reason
 		}
+		// Why the newest claim release that judged the issue's Dispatch holder left that claim,
+		// absent where the record holds none (api.Issue.ClaimLeft).
+		view.ClaimLeft = api.ClaimLeftViewOf(issue.ClaimLeft)
 		// The phase, the tree, the slot, the claims, and what the root waits on from a person,
 		// which is present only while it is in awaiting_person.
 		entry.putListed(&view, claimViews)
