@@ -38,7 +38,8 @@ const Project = "projects/000000000000"
 type FakeSecret struct {
 	Annotations map[string]string
 	// Labels are the secret's labels, which `agent-secrets secret create` sets one of
-	// (agent-secrets-create) and the broker reads none of.
+	// (agent-secrets-create): the GCP store reads that one alone (secretstore.CreateLabel), to mark
+	// a secret the create left with no version as unfilled (Listing.Unfilled).
 	Labels map[string]string
 	// ReplicationKey is the key the secret's replication policy names; "" is Google's default.
 	ReplicationKey string
