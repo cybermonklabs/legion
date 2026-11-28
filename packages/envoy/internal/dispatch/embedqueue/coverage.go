@@ -29,8 +29,9 @@ const coverageStatementRows = 500
 // after a failed run before it tries that run again. While a rolling deploy that changes the
 // identity still has an old-configuration process embedding, that process commits vectors the
 // new identity must drop; ten minutes was the whole pass's period before, and nothing faster is
-// owed to a vector search already filters out by identity. A test of the recheck shortens it for
-// its own Run alone (Deps.identityRecheck).
+// owed to a vector search already filters out by identity. The wait runs on the queue's clock
+// (Deps.Clock), so a test that wants the recheck moves that clock there: this is the one interval
+// the coverage loop runs under.
 const identityRecheckInterval = 10 * time.Minute
 
 // issueKind is the one kind of row meaning search ranks that no indexer owns, and so the one
@@ -669,14 +670,14 @@ func runCoverage(ctx context.Context, deps Deps) {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", deps.identityRecheck)
+			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", identityRecheckInterval)
 		default:
 			pass = recheckCoverage
 			if steps.skipped && steps.mine {
 				answered = deps.proven.answered()
 			}
 		}
-		timer := c.NewTimer(duty.Jittered(deps.identityRecheck))
+		timer := c.NewTimer(duty.Jittered(identityRecheckInterval))
 		deps.reportParked(err, answered)
 		select {
 		case <-ctx.Done():

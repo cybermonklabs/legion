@@ -114,10 +114,6 @@ type Deps struct {
 	// of this package reads through it where the scan loop's timer stands. Nil in production and
 	// for a caller that builds Deps itself.
 	scanWaiting func(at time.Time, ok bool)
-	// identityRecheck is the coverage loop's interval between runs. Run sets it to
-	// identityRecheckInterval unless a test of the recheck has set a shorter one, to run its own
-	// Run's in seconds beside tests whose Run keeps ten minutes.
-	identityRecheck time.Duration
 	// pace is the pace every Embed call this queue makes waits on (embedDocuments), which Paced
 	// sets and cmd/dispatch asks for: the wait renews the claim on the rows the call carries, and a
 	// canary that meets an outage backs the pace off (confirmSoloFailure). It is a field of its own
@@ -253,9 +249,6 @@ func Run(ctx context.Context, deps Deps) {
 	if wake == nil {
 		wake = make(chan struct{}, 1)
 		deps.enqueued = wake
-	}
-	if deps.identityRecheck <= 0 {
-		deps.identityRecheck = identityRecheckInterval
 	}
 	coverageCtx, err := store.ForConcurrentRead(ctx)
 	if err != nil {
