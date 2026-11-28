@@ -2141,6 +2141,62 @@ test("a plan whose every task is in a cycle draws the line, and its tasks as ste
   }
 });
 
+// What a task waits on and the cycle it stands in are the read's alone: the Plan view's read
+// answers them (`TreeNode.needs` and `TreeNode.cycle`, the read's `plan.needs` and `plan.cycle`),
+// and the tree drew no `needs` chip for them, so no chip names the task a step waits on and no
+// chips form the cycle. The cycle is still one line, just before the step that waits on it, and
+// that step's bar starts after the line, which starts after the step the cycle needs.
+test("a need and a cycle the read answers with no chip that names them place the steps and draw the cycle's line", () => {
+  setViewport(1440);
+  /** A task as the tree draws it with no `needs` chip on its row. */
+  const unchipped = (one: TreeNode): TreeNode => ({ ...one, chips: [] });
+  const view = renderBody(
+    issue(
+      [
+        task("t4", { needs: ["t2"], position: 1 }),
+        task("t2", { cycle: "c", needs: ["t3", "t1"] }),
+        task("t3", { cycle: "c", needs: ["t2"] }),
+        task("t1", { position: 0 }),
+      ].map(unchipped)
+    )
+  );
+  try {
+    // The chart: the step the cycle needs, the cycle's line, and two units in the step that
+    // waits on it.
+    const drawn = [
+      ...view.container.querySelectorAll(
+        "[data-plan-chart] :is([data-plan-bar-row], [data-plan-cycle])"
+      ),
+    ].map((row) => row.getAttribute("data-node-id") ?? "cycle");
+    expect(drawn, "the chart's order").toEqual([D("t1"), "cycle", D("t4")]);
+    expect(
+      rowOf(view, "t4").getAttribute("data-plan-start"),
+      "where the step that waits on the cycle starts"
+    ).toBe("2");
+    // One line, which lists the cycle's two tasks and no other, and one row for it.
+    const lines = [...view.container.querySelectorAll("[data-plan-cycle]")];
+    expect(lines, "the cycle's lines").toHaveLength(1);
+    expect(
+      [...(lines[0]?.querySelectorAll("a") ?? [])].map((link) => [
+        link.textContent,
+        link.getAttribute("href"),
+      ]),
+      "the tasks the cycle's line lists"
+    ).toEqual([
+      ["Task t2", `/issues/${KEY}/artifacts/${PLAN}#b-t2`],
+      ["Task t3", `/issues/${KEY}/artifacts/${PLAN}#b-t3`],
+    ]);
+    expect(
+      [...view.container.querySelectorAll("[data-plan-cycle-row]")].map((row) =>
+        row.getAttribute("data-plan-cycle-row")
+      ),
+      "the cycle's rows"
+    ).toEqual([`${D("t2")} ${D("t3")}`]);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a plan with no tasks says so in the one line the page has for it, and draws no control", () => {
   setViewport(1440);
   const view = renderBody(issue([]));
