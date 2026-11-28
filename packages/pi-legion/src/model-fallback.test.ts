@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { FallbackCooldownState } from "@legion/pi-shared/fallback-cooldown";
+import {
+  type FallbackCooldownState,
+  LEGION_FALLBACK_ENTRY,
+  recordedFallbackCooldown,
+} from "@legion/pi-shared/fallback-cooldown";
 import type { HostModel } from "@legion/pi-shared/pi-types";
 import { createModelFallback, type ModelFallbackContext } from "./model-fallback";
 
@@ -40,6 +44,7 @@ const BUN_LONGEST_TIMER_MS = 2_147_483_647;
 function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const branch: unknown[] = [];
   const setModelCalls: string[] = [];
+  const setThinkingLevelCalls: string[] = [];
   const saved: FallbackCooldownState[] = [];
   const warnings: string[] = [];
   /** The model below each selector in this deployment's chain. */
@@ -53,6 +58,9 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const chainList = new Map<string, string[]>();
   /** The family the host's catalog gives each selector; a selector absent here names none. */
   const families = new Map<string, string>();
+  /** The default thinking level a selector's model names (`thinking.defaultLevel`); a selector
+   * absent here names none. */
+  const defaultLevels = new Map<string, string>();
   const hostModel = (selector: string): HostModel => {
     const family = families.get(selector);
     return family === undefined
@@ -62,6 +70,8 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const live = {
     now: 1_000_000_000,
     current: startOn,
+    /** The session's thinking level, as the newest `thinking_level_change` names it. */
+    thinkingLevel: undefined as string | undefined,
     setModelAnswers: true,
     /** Whether the pane is on this session when a timer fires. */
     onPane: true,
@@ -102,6 +112,21 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     return id;
   };
 
+  /** One `thinking_level_change` as the host appends it (`setThinkingLevel`,
+   * `session/model-controls.ts:576-626` at the pinned tag): the level a turn runs at, and the one
+   * the session chose, which is `auto` while the host picks the level each turn. */
+  const appendLevel = (level: string, configured = level): void => {
+    entries += 1;
+    branch.push({
+      type: "thinking_level_change",
+      id: `entry-${entries}`,
+      timestamp: new Date(live.now).toISOString(),
+      thinkingLevel: level,
+      configured,
+    });
+    live.thinkingLevel = configured;
+  };
+
   const ctx: ModelFallbackContext = {
     sessionManager: { getBranch: () => branch, getSessionId: () => live.sessionId },
     isIdle: () => live.idle,
@@ -129,9 +154,29 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
       // `pi.setModel` clears the active retry fallback and appends an ordinary `model_change`
       // (`session/model-controls.ts:327-331` at the pinned tag), never a fallback claim.
       append(`${next.provider}/${next.id}`, "default", false);
+      // It sets the level the model names as its default, and otherwise keeps the level the
+      // session runs at; it writes a `thinking_level_change` only for a level that changes
+      // (`session/model-controls.ts:347-349`).
+      const defaultLevel = defaultLevels.get(`${next.provider}/${next.id}`);
+      if (defaultLevel !== undefined && defaultLevel !== live.thinkingLevel)
+        appendLevel(defaultLevel);
       return true;
     },
-    saveState: (state) => void saved.push(state),
+    setThinkingLevel: (level) => {
+      setThinkingLevelCalls.push(level);
+      // The host writes an entry only for a level that changes (`model-controls.ts:613-620`).
+      if (level !== live.thinkingLevel) appendLevel(level);
+    },
+    // `pi.appendEntry` writes the record as a custom entry on the branch (`extensions/legion.ts`).
+    saveState: (state) => {
+      saved.push(state);
+      branch.push({
+        type: "custom",
+        id: `record-${saved.length}`,
+        customType: LEGION_FALLBACK_ENTRY,
+        data: recordedFallbackCooldown(state),
+      });
+    },
     now: () => live.now,
     limits,
     nextModel: async (_chain, current) => {
@@ -163,11 +208,13 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   return {
     branch,
     setModelCalls,
+    setThinkingLevelCalls,
     saved,
     warnings,
     chain,
     chainList,
     families,
+    defaultLevels,
     suppressed,
     unresolvable,
     live,
@@ -177,6 +224,9 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     hostFallback: (to: string) => append(to, "fallback", true),
     /** Any other model change: the operator's `/model`, the host's own restore. */
     modelChange: (to: string) => append(to, "default", false),
+    /** A change of the session's thinking level: the host's walk to a model whose selector names
+     * one, or the operator's `/thinking`. */
+    thinkingLevel: appendLevel,
     /** The state the last save recorded. */
     last: () => saved[saved.length - 1],
     timers,
@@ -872,6 +922,254 @@ describe("the return to the session's own model", () => {
     await pane.runner.turnSettled(REFUSED, pane.ctx);
     expect(pane.last()?.arming?.dueAt).toBe(pane.live.now + 4 * HOUR);
     expect(pane.last()?.levels).toEqual({ [OPUS]: 4 });
+  });
+});
+
+// `pi.setModel` keeps the level the session runs at for a model that names no default level of
+// its own, so a return that sets the model alone leaves the session at the fallback model's level.
+// LINUX-1916's implementer ran on GPT-6.2 Sol at `xhigh`, fell back to Kimi K3.1 Pro at `max`, and
+// ran 244 Sol turns at `max` after the return (dispatch://LINUX-12, comment f016da39).
+describe("the thinking level the return sets", () => {
+  const SOL = "openai/gpt-6.2-sol";
+  const KIMI = "model-gateway/kimi-k3.1-pro";
+  /** What the host names for Sol's 400 after a compaction (dispatch://INFRA-5778): no content
+   * filter, so the host suppresses Sol and the return waits for that to end. */
+  const SOL_400 = "Request failed: 400 Unknown parameter: 'input[12].created_by'";
+
+  test("is the level the session ran at before the host's walk, not the fallback model's", async () => {
+    const pane = fixture(SOL);
+    pane.modelChange(SOL);
+    pane.thinkingLevel("xhigh");
+    // The host's walk writes the fallback's `model_change`, then the level its selector names
+    // (`session/turn-recovery.ts:3153-3155` at the pinned tag).
+    pane.hostFallback(KIMI);
+    pane.thinkingLevel("max");
+    pane.suppressed.add(SOL);
+    pane.runner.armFromEvent(applied(SOL, KIMI, "default", SOL_400), pane.ctx);
+
+    pane.suppressed.delete(SOL);
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SOL]);
+    expect(pane.live.thinkingLevel).toBe("xhigh");
+    expect(pane.setThinkingLevelCalls).toEqual(["xhigh"]);
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+
+  test("is the level before the plugin's own walk, not the fallback model's default", async () => {
+    const pane = fixture(OPUS);
+    pane.thinkingLevel("high");
+    pane.chain.set(OPUS, SONNET);
+    // The fallback model names a default level, which `pi.setModel` sets with it.
+    pane.defaultLevels.set(SONNET, "low");
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    expect(pane.live.thinkingLevel).toBe("low");
+    expect(pane.last()?.arming?.thinkingLevel).toBe("high");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+    expect(pane.live.thinkingLevel).toBe("high");
+  });
+
+  // The return undoes the fallback's own move and nothing after it: a level changed since the
+  // fallback's switch is not that move, as a model changed since is not.
+  test("leaves a level a person set during the fallback", async () => {
+    const pane = fixture(SOL);
+    pane.modelChange(SOL);
+    pane.thinkingLevel("xhigh");
+    pane.hostFallback(KIMI);
+    pane.thinkingLevel("max");
+    pane.runner.armFromEvent(applied(SOL, KIMI, "default", REFUSAL_REASON), pane.ctx);
+    // A person's `/thinking` on the fallback model.
+    pane.thinkingLevel("high");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SOL]);
+    expect(pane.setThinkingLevelCalls).toEqual([]);
+    expect(pane.live.thinkingLevel).toBe("high");
+    expect(pane.last()?.arming).toBeUndefined();
+  });
+
+  // An entry between a switch's `model_change` and the level it sets changes nothing: the return
+  // compares levels, not entries.
+  test("is set when an entry no turn wrote stands between the fallback's switch and its level", async () => {
+    const pane = fixture(SOL);
+    pane.modelChange(SOL);
+    pane.thinkingLevel("xhigh");
+    pane.hostFallback(KIMI);
+    pane.branch.push({ type: "custom", id: "record-1", customType: "legion-model-fallback" });
+    pane.thinkingLevel("max");
+    pane.runner.armFromEvent(applied(SOL, KIMI, "default", REFUSAL_REASON), pane.ctx);
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SOL]);
+    expect(pane.live.thinkingLevel).toBe("xhigh");
+  });
+
+  test("leaves a level set after a turn on a fallback whose switch set none", async () => {
+    const pane = fixture(SOL);
+    pane.modelChange(SOL);
+    pane.thinkingLevel("xhigh");
+    // The fallback's selector names no level, so the switch keeps `xhigh` and writes no entry.
+    pane.hostFallback(KIMI);
+    pane.runner.armFromEvent(applied(SOL, KIMI, "default", REFUSAL_REASON), pane.ctx);
+    pane.branch.push({ type: "message", id: "turn-1", message: { role: "assistant" } });
+    // A person's `/thinking` after that turn: the first level entry after the switch, and no
+    // entry of the switch's own.
+    pane.thinkingLevel("high");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SOL]);
+    expect(pane.setThinkingLevelCalls).toEqual([]);
+    expect(pane.live.thinkingLevel).toBe("high");
+  });
+
+  test("is kept when the turn's end makes a fallback with no reason a refusal's", async () => {
+    const pane = fixture();
+    pane.modelChange(OPUS);
+    pane.thinkingLevel("high");
+    pane.hostFallback(SONNET);
+    pane.thinkingLevel("max");
+    pane.chain.set(SONNET, GPT);
+    pane.runner.armFromEvent(applied(OPUS, SONNET), pane.ctx);
+    // The settled filter re-arms the same fallback as a refusal's (`settled`), level and all.
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    expect(pane.last()?.arming?.cause).toBe("refusal");
+    expect(pane.last()?.arming?.thinkingLevel).toBe("high");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([OPUS]);
+    expect(pane.live.thinkingLevel).toBe("high");
+  });
+
+  test("leaves a level a person set before any turn after the plugin's walk to a model with no default", async () => {
+    const pane = fixture(OPUS);
+    pane.thinkingLevel("high");
+    pane.chain.set(OPUS, SONNET);
+    // The switch keeps `high` and writes no level entry.
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    // A person's `/thinking` in the idle pane, before any turn on the fallback model.
+    pane.thinkingLevel("low");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+    expect(pane.setThinkingLevelCalls).toEqual([]);
+    expect(pane.live.thinkingLevel).toBe("low");
+  });
+
+  test("stays the first arming's level when the plugin walks a second step itself", async () => {
+    const pane = fixture(OPUS);
+    pane.thinkingLevel("high");
+    pane.chain.set(OPUS, SONNET);
+    pane.chain.set(SONNET, GPT);
+    // The first step's model names a default level, so the branch before the second step names
+    // that level and not the one the walk started at.
+    pane.defaultLevels.set(SONNET, "low");
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    expect(pane.setModelCalls).toEqual([SONNET, GPT]);
+    expect(pane.last()?.arming?.thinkingLevel).toBe("high");
+
+    pane.live.now += 2 * HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.live.thinkingLevel).toBe("high");
+  });
+
+  test("stays the level before the first step when a second step continues the walk", async () => {
+    const pane = fixture();
+    pane.modelChange(OPUS);
+    pane.thinkingLevel("high");
+    pane.chain.set(SONNET, GPT);
+    pane.hostFallback(SONNET);
+    pane.thinkingLevel("max");
+    pane.runner.armFromEvent(applied(OPUS, SONNET, "default", REFUSAL_REASON), pane.ctx);
+    // The fallback model refuses too, and the plugin walks one step further from it.
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    expect(pane.setModelCalls).toEqual([GPT]);
+    expect(pane.last()?.arming?.thinkingLevel).toBe("high");
+
+    pane.live.now += 2 * HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([GPT, OPUS]);
+    expect(pane.live.thinkingLevel).toBe("high");
+  });
+
+  test("is read from the branch of a relaunched worker, and keeps `auto`", async () => {
+    const pane = fixture();
+    pane.modelChange(OPUS);
+    // A session on `auto`: each entry names the level one turn ran at and the `auto` it chose.
+    pane.thinkingLevel("medium", "auto");
+    pane.hostFallback(SONNET);
+    pane.thinkingLevel("max");
+
+    pane.runner.restore(undefined, pane.ctx);
+    expect(pane.last()?.arming?.thinkingLevel).toBe("auto");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([OPUS]);
+    expect(pane.setThinkingLevelCalls).toEqual(["auto"]);
+  });
+
+  test("comes back from the transcript's record, and a record with none sets the model alone", async () => {
+    /** A relaunched worker on the fallback model at its level, with the arming its record holds,
+     * due now. */
+    const relaunched = (thinkingLevel?: string) => {
+      const pane = fixture(SONNET);
+      const entryId = pane.hostFallback(SONNET);
+      pane.thinkingLevel("max");
+      const due = { restoreTo: OPUS, entryId, dueAt: pane.live.now, cause: "refusal" as const };
+      pane.runner.restore(
+        {
+          arming:
+            thinkingLevel === undefined ? due : { ...due, thinkingLevel, fallbackLevel: "max" },
+          levels: {},
+        },
+        pane.ctx
+      );
+      return pane;
+    };
+
+    const recorded = relaunched("xhigh");
+    await recorded.runner.maybeRestore(recorded.ctx);
+    expect(recorded.setModelCalls).toEqual([OPUS]);
+    expect(recorded.live.thinkingLevel).toBe("xhigh");
+
+    // A record an older build wrote names no level.
+    const older = relaunched();
+    await older.runner.maybeRestore(older.ctx);
+    expect(older.setModelCalls).toEqual([OPUS]);
+    expect(older.setThinkingLevelCalls).toEqual([]);
+  });
+
+  test("is not set when the model could not be set again", async () => {
+    const pane = fixture(OPUS);
+    pane.thinkingLevel("high");
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    pane.live.setModelAnswers = false;
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+    expect(pane.setThinkingLevelCalls).toEqual([]);
+    expect(pane.last()?.arming?.thinkingLevel).toBe("high");
   });
 });
 

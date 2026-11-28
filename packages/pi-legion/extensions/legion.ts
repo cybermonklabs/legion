@@ -315,6 +315,7 @@ export default function legionExtension(pi: PiApi): void {
   // still on the session whose state it holds when the timer fires.
   const modelFallback = createModelFallback({
     setModel: async (model) => (await pi.setModel?.(model)) === true,
+    setThinkingLevel: (level) => pi.setThinkingLevel?.(level),
     saveState: (state) => pi.appendEntry(LEGION_FALLBACK_ENTRY, recordedFallbackCooldown(state)),
     now: () => Date.now(),
     limits: fallbackCooldownLimits(process.env, logger),
