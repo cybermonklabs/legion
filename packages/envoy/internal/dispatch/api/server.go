@@ -229,6 +229,11 @@ type Deps struct {
 	// changes the listener's sessions sees the change at its next read. A deployment leaves it
 	// false.
 	ListenerRosterUncached bool
+	// HideStateFile is for end-to-end test processes only: while the file it names exists, the
+	// results read leaves out the state the server computes from the results (stateHidden,
+	// results_state_hidden.go), so a run of the skill-scenario rig can show an agent the results
+	// alone. A deployment leaves it "".
+	HideStateFile string
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
 	// earlier event of its comment's owner still owes a send its session may take
@@ -381,6 +386,8 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
+	// HideStateFile is for end-to-end test processes only; see Deps.HideStateFile.
+	HideStateFile string
 	// OutboxPublishes is that an outbox publishes this deployment's events; see
 	// Deps.OutboxPublishes.
 	OutboxPublishes bool
@@ -498,6 +505,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
+		HideStateFile:          input.HideStateFile,
 		OutboxPublishes:        input.OutboxPublishes,
 		Metrics:                input.Metrics,
 		AnswersLatency:         input.AnswersLatency,
@@ -1084,9 +1092,9 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	handler = s.asOfGate(route.Method+" "+route.Pattern, route.Read, handler)
 	// Outside the scope gate and every layer inside it, so a read-only token on a row outside
 	// the read class, or one that carries a cut on a read that answers no cut, a results token on
-	// a row the results list does not name, or an approve-only token on a row the approve list
-	// does not name, is refused before anything the row does: before the row's own scopes, which
-	// would name a scope to ask for where no scope makes the row its to call, or which an
+	// a row that does not state ResultsScope, or an approve-only token on a row that does not
+	// state ApproveOnly, is refused before anything the row does: before the row's own scopes,
+	// which would name a scope to ask for where no scope makes the row its to call, or which an
 	// approve-only token would pass with its person's scopes person and approve; before the
 	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
 	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of which
@@ -1303,10 +1311,8 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
-	// DELETE_CONTENDED, linkedReadRefusal's 502 for a linked repository's read GitHub
-	// rate-limited with a wait, and the keyed layer's 409 KEY_IN_FLIGHT (writeKeyInFlight,
-	// writeKeyFreed). writeHandlerError writes the header.
+	// brokerTokenActor's 429, both deletes' 409 DELETE_CONTENDED, and the keyed layer's 409
+	// KEY_IN_FLIGHT (writeKeyInFlight, writeKeyFreed). writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header

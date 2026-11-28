@@ -4512,6 +4512,7 @@ LEGION_TEST_PG_DSN=… DISPATCH_CLI="$base/packages/envoy-client/bin/dispatch.ts
 ```sh
 DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [DISPATCH_BIN=<envoy-dispatch>] [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+  [VERIFICATION_RESULTS_E2E_CASES=<case>,<case>] \
   bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
@@ -4544,6 +4545,14 @@ Each item below names an input and its default, then what it means.
   The script reads it before it drops the inherited variables, and refuses a value that is not a readable file.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
+
+- `VERIFICATION_RESULTS_E2E_CASES` — unset
+
+  the cases to run, commas between them; unset or empty, every case runs.
+  The first case, `the-results-route-is-served`, always runs, since it is the run's first result write.
+  Before anything is built or started, the script asks the driver (`verification-results.ts --check-cases`) whether the list is one it can run: a name no case has exits 2 and names it, and so does a list that names no case but the first.
+  A run whose list ran no case after the first exits 2 as well, so a list that runs nothing it asked for never prints a pass.
+  `VERIFICATION_RESULTS_E2E_CASES=several-open-pull-requests,several-open-pull-requests-lines` prints `== ` lines for the first case and those two alone
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
 
@@ -4676,6 +4685,17 @@ Each item below names a case and how it is driven, then what must hold for it to
   Each stored `run`, `observed` and `negative_control` equals byte for byte what its step gave, and the stdin text of step 1 keeps both its line feeds.
   A field that a step did not send reads as the empty string
 
+- `several-open-pull-requests` — one issue with one `before_merge` check, `each`, and three pull requests the intake learns from their envelopes: #81 merged and #82 open, each on a branch whose name holds the issue's key, and #83 open on a branch, with a title and a body, that name no issue.
+  The case first links the issue to #83's URL with `dispatch issue-update --external-link`, and only then publishes #83's `opened` envelope, since the intake reads the issue's links when it writes the row and no write of a link marks a stored row again.
+  It waits until each of the three stored rows names the issue
+
+  before any result, `each`'s heads (`pass_stands.subjects`) are the heads of #82 and #83 and no other.
+  `dispatch results` prints `- each (before_merge). Compared with the heads of 2 open pull requests. A pass stands: no, as 0 of 2 heads read yes.`, one line `  - #<n> at <head>: no, as it holds no result.` for each of #82 and #83, and `  The 1 merged pull request decides nothing while one is open.`
+
+- `several-open-pull-requests-lines` — the same issue (seeded here when the case runs alone); the implementer records a pass at #82's head and the tester a fail at #83's head
+
+  `dispatch results` prints, under `each`, the line `  - #82 at <head>: yes, from implementer. Pass <id> decides it.` and the line `  - #83 at <head>: no, as fail <id> counts there.`, each with its result's id, and no other line of a head
+
 Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
@@ -4724,6 +4744,20 @@ DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
 #   line for --negative-control
 #   exit 1
 git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
+```
+
+The two cases of several open pull requests take their negative controls from a planted fault and from `VERIFICATION_RESULTS_E2E_DISPATCH_CLI`:
+
+```sh
+# In a worktree of this change's head, delivery.Attributor.HeadsAttributedTo keeps only its first head:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_CASES=several-open-pull-requests bash scripts/e2e/verification-results.sh
+# → FAIL several-open-pull-requests: the check's heads are [<one head>], want [#82 at …, #83 at …]
+# The command of a worktree of a commit before the lines of each head:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_CASES=several-open-pull-requests-lines \
+  VERIFICATION_RESULTS_E2E_DISPATCH_CLI="$TMPDIR/<base tree>/packages/envoy-client/bin/dispatch.ts" \
+  bash scripts/e2e/verification-results.sh
+# → FAIL several-open-pull-requests-lines: the command's head lines are [], want one line for #82
+#   and one for #83
 ```
 
 ## child-adoption.sh
@@ -7726,6 +7760,8 @@ A port the kernel gives the other address can already be listening on `127.0.0.1
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
+The same walks run from an `EXIT` trap, as a run's exit handler runs them, read their reader's own status: after `exit 1` `run_processes` names the run's process and `listening_holders` the socket's holder, and after a clean end a `find` or a `grep` a signal ended still makes both exit 2.
+Each walk hands its reader's status out of its process substitution with `exit "$?"`: from a trap, bash's bare `exit` there exits with the status the trap was entered with, so every walk after a failed run read as `xargs` exiting 1 and named nothing, and one after a clean end read as 0 whatever its reader did.
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
@@ -7746,7 +7782,7 @@ A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: 
 `untilRunning(pid, program, end)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails at `end`, the end of the row's waits ([`lib/row-waits.ts`](#librow-waitsts)), naming both and what the pid ran instead: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
 `untilExecDone(pid, program, end)` resolves once `pid` has finished its exec of `program` as far as a walk of the processes' environments reads it: its exe link names `program` and its `/proc/<pid>/environ` reads non-empty.
 Linux names the program in the exe link before it lays out the environment, so a walk made after `untilRunning` alone can read an empty environment, name nothing, and leave the process running.
-Each row of `lib/run-processes.test.ts` whose walk must name a marked process it started, and both `run_env_pids` rows of the skill-scenario rig, wait on it before the walk, and it fails at `end` as `untilRunning` does, naming the pid, what its exe link read and how many bytes its environment held.
+Each row of `lib/run-processes.test.ts` whose walk must name a marked process it started, and each `run_env_pids` row of the skill-scenario rig, wait on it before the walk, and it fails at `end` as `untilRunning` does, naming the pid, what its exe link read and how many bytes its environment held.
 `lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, that `untilRunning` fails at the end it is given and not before, naming the pid, the program and what the pid runs, and that it looks once at an end that has passed.
 It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
 It holds that `untilExecDone` resolves for a process whose environment reads, and that for a process whose environment reads empty, as one inside its exec does, it fails at the end it is given, naming what the exe link and the environment read.
@@ -8071,7 +8107,7 @@ A driver counts as alive only while its pid is a live, non-zombie process that s
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
-A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
+A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2, from a driver's exit trap too; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 
 ## lib/operator-dispatch.sh

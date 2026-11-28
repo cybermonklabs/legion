@@ -7,7 +7,7 @@ Add a new item next to the item it belongs with, never at the end of a list unle
 
 `DispatchClient` (`dispatch-http.ts`) reads each answer of Dispatch as one of the outcomes below, and the `dispatch` command prints each outcome as the last section says.
 The package's [README](../README.md) ("Dispatch") says how a write carries its `Idempotency-Key` and when the client asks again under it.
-[`ci-results.md`](ci-results.md) says what `dispatch result --project`, a CI job's write, prints for each outcome.
+[`ci-results.md`](ci-results.md) says what a CI job's write, `dispatch result --project` or `dispatch result --issue` under `agent-secrets result-grant`, prints for each outcome.
 
 ## A refusal
 
@@ -17,15 +17,18 @@ The error's message is that text, under its `code`, or under `HTTP_<status>` whe
 
 Any other body did not come from Dispatch: a gateway's HTML page, an empty body, or JSON of another shape.
 It is a `DispatchGatewayError`, whose `fromDispatch` is false.
-Its message names the method and the URL with its query, and leaves out a user and a password that the URL may carry.
+Its message names the method and the request's URL as built, its query included, where the configured URL is a plain http(s) URL, and that URL's fixed phrase otherwise (`requestForText`, `@legion/contracts/log-text`).
 The bearer is a header, so no message names it.
 The message then names the status and the reason phrase, a one-line plain-text excerpt of the body, and what asking again can do.
 The excerpt drops scripts, styles and tags, and it reads at most the first 64 KiB of the body, in linear time.
-In the excerpt and in the reason phrase, the client redacts the value after `Authorization:` or `Bearer`.
-It also redacts each run of 8 or more characters of its own bearer, and a shorter bearer only whole.
-So a copy of the bearer that is cut short, split by markup or overlapped by another copy leaves no piece behind.
+In the excerpt and in the reason phrase, the client redacts the value after `Authorization:`, `Bearer` or `DPoP`, and every value shaped as a JWS (`eyJ…`, a proof or a JWT) wherever it stands.
+It also redacts each run of 8 or more characters of each token it presented lately (its credential's now, and those it sent before a renewal: `SentTokens` in `excerpt.ts`), and a shorter token only whole.
+So a copy of a token that is cut short, split by markup or overlapped by another copy leaves no such run behind.
 The message names a body with no text in the part that the excerpt reads by its size in bytes.
 Only a body with nothing in it is "an empty body".
+
+A 2xx of a read, a `PUT` or a `DELETE` is no answer of Dispatch's either where its body is empty, not typed JSON or not JSON, but for a bodiless 204 or 205.
+Every route the client reads as JSON answers JSON, so such an answer is a `DispatchGatewayError` too, and a retry may succeed: a proxy or a captive portal in the way can be got past.
 
 What asking again can do depends on the status (`gatewayAdvice`).
 A status that cannot clear gets the same answer until someone fixes the Dispatch URL, or whatever answers in its place.

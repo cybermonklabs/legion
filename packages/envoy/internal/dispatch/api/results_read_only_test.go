@@ -101,7 +101,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 			}
 		}
 		standsAt(t, read.writer, "k1", pair.writer.ids[0], "the writer's result at the commit the push left behind", model.CommitOtherCommit, false)
-		standsAtBasis(t, read.writer, "k3", pair.writer.ids[1], atPull61)
+		standsAtParityBasis(t, read.writer, "k3", pair.writer.ids[1], atPull61)
 	}
 
 	t.Run("2 a result at a commit no stored pull request heads, beside the issue's head no stored row holds", func(t *testing.T) {
@@ -446,7 +446,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		pair, issue, atHead := ciCheckAtLearnedHead(t, appKey, "ROL")
 
 		first := pair.read(t, issue, "the first read")
-		standsAtBasis(t, first.writer, "k1", pair.writer.ids[0], atHead)
+		standsAtParityBasis(t, first.writer, "k1", pair.writer.ids[0], atHead)
 		derived := checkOf(t, first.writer, "c1")
 		assertCI(t, derived, ciCheckRun, model.CIStatePass, ciConclusionSuccess,
 			ciVerdictLineOf("c1", ciCheckRun, model.CIStatePass, headCommit))
@@ -531,7 +531,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 				t.Errorf("the writer's %s compared with %v, want %s alone", check, bases, atHead)
 			}
 		}
-		standsAtBasis(t, read.writer, "k1", pair.writer.ids[0], atHead)
+		standsAtParityBasis(t, read.writer, "k1", pair.writer.ids[0], atHead)
 		standsAt(t, read.writer, "k3", pair.writer.ids[1], "the writer's result at the older head", model.CommitOtherCommit, false)
 		read.calls(t, parityPulls, 2)
 	})
@@ -657,7 +657,7 @@ func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 		// stored with the result, and never parityRepo. It stores #7, attributed to no issue, and
 		// the link makes it a head k1 compares with, first since it was learned last, and the
 		// head the result stands at.
-		standsAtBasis(t, first.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 7 at %.7s of %s", toolsHead, parityLinkedRepo))
+		standsAtParityBasis(t, first.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 7 at %.7s of %s", toolsHead, parityLinkedRepo))
 		wantBases := []string{
 			fmt.Sprintf("pull request 7 at %.7s of %s", toolsHead, parityLinkedRepo),
 			fmt.Sprintf("pull request 5 at %.7s", headCommit),
@@ -672,7 +672,7 @@ func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 		// moment, on the same rows, asks acme/tools again and answers as the first read did.
 		pair.clock.advance(time.Minute)
 		second := pair.read(t, issue, "the second read")
-		standsAtBasis(t, second.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 7 at %.7s of %s", toolsHead, parityLinkedRepo))
+		standsAtParityBasis(t, second.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 7 at %.7s of %s", toolsHead, parityLinkedRepo))
 		if bases := parityBases(checkOf(t, second.writer, "k1")); !slices.Equal(bases, wantBases) {
 			t.Errorf("the writer's k1 compared with %v at the second read, want %v", bases, wantBases)
 		}
@@ -717,7 +717,7 @@ func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 		// reads them, and their results are walked in acme/tools: k4's is the merge commit
 		// integration/x carries by the stored yes, with no read, and the merge never reached
 		// acme/tools' main, so k5's is asked about no branch there.
-		standsAtBasis(t, read.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 10 at %.7s of %s", toolsHead, parityLinkedRepo))
+		standsAtParityBasis(t, read.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 10 at %.7s of %s", toolsHead, parityLinkedRepo))
 		for check, want := range map[string][]string{
 			"k4": {"branch main", "branch integration/x of " + parityLinkedRepo},
 			"k5": {"branch main", "branch main of " + parityLinkedRepo},
@@ -726,7 +726,7 @@ func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 				t.Errorf("the writer's %s compared with %v, want %v", check, bases, want)
 			}
 		}
-		standsAtBasis(t, read.writer, "k4", pair.writer.ids[1], "branch integration/x of "+parityLinkedRepo)
+		standsAtParityBasis(t, read.writer, "k4", pair.writer.ids[1], "branch integration/x of "+parityLinkedRepo)
 		offTrunk := standsAt(t, read.writer, "k5", pair.writer.ids[2], "the writer's result of k5", model.CommitOtherCommit, false)
 		if offTrunk.Repo != parityLinkedRepo {
 			t.Errorf("the writer's result of k5 is at another commit of %q, want of %s", offTrunk.Repo, parityLinkedRepo)
@@ -1573,8 +1573,10 @@ func parityStored(t *testing.T, database *store.Store) string {
 
 // normalized is a results answer of this stack as JSON, with every member that names this
 // stack's own rows rather than the answer replaced: each result's id by its place in the order
-// the test recorded it, and the artifact ids, the record times and the event sequence numbers
-// cleared. Every other member, the moment each head was learned at among them, is as answered.
+// the test recorded it, wherever the answer names it (a result's own id, and the lists of results a
+// pass stands on, pass_stands.results and each subject's results), and the artifact ids, the
+// record times and the event sequence numbers cleared. Every other member, the moment each head
+// was learned at among them, is as answered.
 func (s *parityStack) normalized(t *testing.T, body string) string {
 	t.Helper()
 	var answer any
@@ -1604,8 +1606,8 @@ func (s *parityStack) normalized(t *testing.T, body string) string {
 				if id, isString := inner.(string); isString {
 					if index := slices.Index(s.ids, id); index >= 0 {
 						value[place] = fmt.Sprintf("result %d", index)
-						continue
 					}
+					continue
 				}
 				walk(inner)
 			}
@@ -1687,8 +1689,9 @@ func parityBasisName(basis *model.CheckBasis) string {
 	return name
 }
 
-// standsAtBasis asserts that the writer's result stands at the basis parityBasisName names want.
-func standsAtBasis(t *testing.T, read issueResults, check, resultID, want string) {
+// standsAtParityBasis asserts that the writer's result stands at the basis parityBasisName names
+// want.
+func standsAtParityBasis(t *testing.T, read issueResults, check, resultID, want string) {
 	t.Helper()
 	stands := standsAt(t, read, check, resultID, "the writer's result of "+check, model.CommitAtBasis, false)
 	if stands.Basis == nil || parityBasisName(stands.Basis) != want {

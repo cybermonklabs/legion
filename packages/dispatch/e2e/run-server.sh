@@ -19,7 +19,10 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # so silently selecting a shared default would make the destructive write
 # target ambiguous. FAKE_ENVOY_PORT and FAKE_GITHUB_PORT (and FAKE_BROKER_PORT
 # for the default broker switch below) name the fakes the caller started, whose
-# ports e2e/harness-start.ts reads from their reports.
+# ports e2e/harness-start.ts reads from their reports. DISPATCH_E2E_NATS_URLS,
+# optional, names a NATS server the caller started: set, the server publishes
+# through it and its delivery intake reads it (NATS_URLS); unset or empty, the
+# server runs with NATS off (DISPATCH_NATS_DISABLED=1), as it always did.
 #
 # One server (DISPATCH_E2E_PROCESSES unset or 1): DISPATCH_E2E_PORT unset (or
 # empty), the server serves on a port the kernel chooses, held from that moment
@@ -310,6 +313,15 @@ if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
   delivery_reconcile_env=(DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL")
 fi
 
+# The hide-state file, read before the sweep below and passed under the same DISPATCH_TEST_HOOKS=1.
+# While the file it names exists, the results read leaves out the state the server computes from
+# the results: each check's pass_stands and ci, and each result's currency. The skill-scenario rig
+# sets it for a run whose agent judges the results alone. Unset, nothing changes.
+hide_state_env=()
+if [ -n "${DISPATCH_TEST_HIDE_STATE_FILE:-}" ]; then
+  hide_state_env=(DISPATCH_TEST_HIDE_STATE_FILE="$DISPATCH_TEST_HIDE_STATE_FILE")
+fi
+
 # Whether the server keeps a parent's status in line with its children's
 # (DISPATCH_PARENT_STATUS_RULE), read before the sweep below. Unset is the server's own off, which
 # every e2e run keeps, since none sets it. A caller that sets it
@@ -395,7 +407,9 @@ fi
 # developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
 # publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
 # variable a shell exported is still swept below, and a caller that names none gets exactly the
-# server every spec has always run against.
+# server every spec has always run against. The skill-scenario rig names one for each run of its
+# heads scenarios, so the server's delivery intake reads the `pull_request` envelopes the rig
+# publishes there.
 nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
 if [ -n "$nats_urls" ]; then
   nats_env=(NATS_URLS="$nats_urls")
@@ -465,6 +479,7 @@ exec "${listen[@]}" env \
   "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
+  "${hide_state_env[@]}" \
   "${parent_status_rule_env[@]}" \
   "${served_origins_env[@]}" \
   DISPATCH_SPEC_ROOTS="$spec_roots" \

@@ -363,6 +363,11 @@ agent-secrets result-grant -- dispatch result --project ACME --check BUNDLE-c1 \
   --verdict pass --commit "$GITHUB_SHA" --observed 'the command the job ran'
 ```
 
+A job records its result of a check of an issue's Verification document whose `ci_check` names
+the job the same way, with `dispatch result --issue KEY --check c1 --verdict pass --commit
+"$GITHUB_SHA"`; the rule entry `DISPATCH_RESULTS_TOKEN` then allows `POST` under
+`/api/v1/issues/` beside `/api/v1/projects/`.
+
 `result-grant` trades the job's GitHub identity at the broker's token endpoint for the proxy
 placeholder of a result grant (`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`),
 proving the trade with a key it makes in memory and never writes. It needs

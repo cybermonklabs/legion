@@ -44,7 +44,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                                      "it from @legion/envoy-client/test/fake-dispatch"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
-    (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
+    (TEST_FIXTURES_SRC, "packages/pi-legion's extensions, src and scripts/skill-scenarios tests import @legion/test-fixtures; `packages/pi-legion/scripts/skill-scenarios/test-limit.ts#fileLimit` imports its row-clock, and the temporary-directories fixture runs its remove-trees.ts as a process of its own"),
     (f"{FIX}/daemon-api/**", "`packages/pi-legion/extensions/legion.test.ts#/legion-claim-controller in a phase worker's pane calls no daemon route and does not exit` and `packages/pi-legion/extensions/legion.test.ts#launchedController`, `packages/pi-legion/extensions/legion-role-claim.test.ts#registered`; "
                              "`packages/pi-legion/src/daemon-api-version.test.ts#package.json names no daemon API contract, and the plugin speaks this tree's` reads released-contracts.json and lists contracts/*.json; "
                              "and `packages/contracts/src/daemon-contract.ts#lastReleased` and `packages/contracts/src/daemon-contract.ts#entryFixtures` read and list the same two for "

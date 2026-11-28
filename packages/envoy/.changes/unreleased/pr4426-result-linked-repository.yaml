@@ -7,25 +7,19 @@ body: |-
   head of the pull request it links in the second repository. Dispatch reads the links only when
   GitHub does not say that the issue's own repository holds the commit: when it says that it does
   not, and when its read fails. A pull request that closed without a merge does not count, and
-  neither does one GitHub answers 404 or 410 for, such as a mistyped link, nor one in a
-  repository the GitHub App is not installed on or cannot read (GitHub's 403 that is no rate
-  limit). One record reads at most 10 linked pull requests, and a refusal says how many it left
-  unread past that bound. `400 RESULT_COMMIT_UNKNOWN` names the commit, each repository that
-  Dispatch asked, each linked pull request that Dispatch could not read, at most 10 and a count
-  of the rest, and every linked pull request in whose repository it could not read the commit,
-  since each of those spent one of the record's 10 reads, each as
-  `owner/repo#n (repository_unreadable)`, saying to grant the App that repository or link a
-  readable pull request. A link names a pull request only where its owner is a login GitHub
-  serves and its name holds only letters, digits, `.`, `-` and `_` and is not `.` or `..`; any
-  other link spends no read, and no refusal names it. A linked pull request whose repository's
-  name GitHub's naming rule then refuses, such as one of `acme/.git`, which is empty once `.git`
-  is trimmed, counts for nothing and spends one of the 10 reads, and
-  `400 RESULT_COMMIT_UNKNOWN` names that repository as one whose links Dispatch set aside, which
-  no grant of the App mends. A read of a linked pull request or of a linked repository that does
-  not answer (a rate limit, a 5xx, a timeout), where no repository is shown to hold the commit,
-  refuses the record with `502 GITHUB_UNREADABLE` and stores nothing: the refusal tells the
-  caller to record the result again, and a rate limit names GitHub's wait, in the sentence and
-  in `Retry-After`.
+  neither does one GitHub answers 404 or 410 for, such as a mistyped link. One record reads at
+  most 10 linked pull requests, and a refusal says how many it left unread past that bound.
+  `400 RESULT_COMMIT_UNKNOWN` names the commit and each repository that Dispatch asked. A link
+  names a pull request only where its owner is a login GitHub serves and its name holds only
+  letters, digits, `.`, `-` and `_` and is not `.` or `..`; any other link spends no read, and no
+  refusal names it. A linked pull request whose repository's name GitHub's naming rule then
+  refuses, such as one of `acme/.git`, which is empty once `.git` is trimmed, counts for nothing
+  and spends one of the 10 reads, and `400 RESULT_COMMIT_UNKNOWN` names that repository as one
+  whose links Dispatch set aside, which no grant of the App mends. A linked repository the GitHub
+  App is not installed on or cannot read (GitHub's 403 that is no rate limit), and a read of a
+  linked pull request or of a linked repository that does not answer (a rate limit, a 5xx, a
+  timeout), where no repository is shown to hold the commit, store the result as before, as a
+  repository Dispatch cannot read does.
   Where Dispatch cannot read its own list of the issue's links, the record is refused with
   `500 INTERNAL` and nothing is stored; before this change such a result was stored, or refused
   with `400 RESULT_COMMIT_UNKNOWN`.
@@ -35,10 +29,10 @@ body: |-
   repository the commit is taken to be of.
 
   `GET /api/v1/issues/{key}/results` compares a `before_merge` check with the heads of those
-  linked pull requests too, open or merged, as it does with the pull requests attributed to the
-  check's issue. A result at such a head stands `at_basis`, and a push that moves the head leaves
-  it at `other_commit`. A link to a pull request of the issue's own repository adds nothing: the
-  attribution alone decides which pull requests of that repository are the issue's. A result
+  linked pull requests too, open or merged, as the attribution gives each to the check's issue: a
+  pull request whose head is in a fork is no head, linked or not, and a merged one an older
+  attribution rule judged is a head once the reconcile judges it again. A result at such a head
+  stands `at_basis`, and a push that moves the head leaves it at `other_commit`. A result
   whose commit is taken to be of a linked repository is decided by that repository: a
   `before_merge` one stands `unknown` where Dispatch cannot read it and `other_commit` where no
   compared head is its commit, and an `after_merge` or `default_branch` one is compared with that

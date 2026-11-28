@@ -98,7 +98,8 @@ var corpusRefusals = []corpusRefusal{
 // token was refused: <the policy's error>." Each is the format the policy writes it with, filled
 // with values of the shape cipher-client's slots take; the format must stand in the policy's
 // source. The refusal that quotes an error text of its own (`not a person's Google identity token
-// (%v)`) is not among them: cipher-client withholds it.
+// (%v)`) is not among them: cipher-client withholds it. Every other refusal the policy writes as
+// `fmt.Errorf("%w: …")` is (TestEveryPolicyRefusalIsInTheCorpus).
 type policyRefusal struct {
 	format string
 	args   []any
@@ -124,8 +125,16 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
 	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
 	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},
-	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
+	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, "example-org/other/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
 	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
+	{"%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", []any{exchange.ErrTwoEntries, corpusWorkflow, corpusRepository, "refs/heads/*, refs/heads/main", corpusRef}, policySource},
+	// A job written in a result entry's workflow at a ref other than the one the entry takes it
+	// at, here the copy on the run's own branch, and a run of another repository whose job is a
+	// result entry's workflow (exchange.Set.resultRun).
+	{"%w: a run of %s on %s ran a job written in %s, and the result entry of that workflow takes it at %s: a copy at any other ref, the branch's own among them, is not the entry's workflow, since a push to that ref can change it", []any{exchange.ErrNoEntry, corpusRepository, "refs/heads/legion/INFRA-1", corpusRepository + "/" + corpusWorkflow + "@refs/heads/legion/INFRA-1", corpusRef}, policySource},
+	{"%w: a run of %s on %s ran a job written in %s, the workflow of a result entry of %s, and a result entry takes the runs of its own repository alone", []any{exchange.ErrNoEntry, "example-org/other", "refs/heads/topic", corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, corpusRepository}, policySource},
+	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("sha")}, policySource},
+	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("run_id")}, policySource},
 	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
 	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
@@ -153,6 +162,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusAccount, "public,DSP,OPS", "PUB"}, policySource},
 	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
 	{"%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on", []any{exchange.ErrRestrictedOneProject, corpusPerson, 2}, policySource},
+	{"%w: %s's machine login was decided with member kind %d", []any{exchange.ErrApproverKindUnknown, corpusPerson, int(exchange.ApproverUnknown)}, policySource},
 	// A Dispatch sign-in's trade whose person is a restricted member (exchange.Set.Machine).
 	{"%w: %s is a restricted member, whose machine's token is held to one project, and a Dispatch sign-in acts in every project its person may reach; sign in to Dispatch in a browser instead", []any{exchange.ErrRestrictedSignIn, corpusPerson}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
@@ -375,4 +385,106 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 			t.Errorf("%s holds no refusal code %q", refusal.source, refusal.code)
 		}
 	}
+}
+
+// The policy's refusals the corpus must hold: every format the policy writes a refusal with as
+// fmt.Errorf("%w: …"), so a refusal the broker sends and the corpus leaves out fails here, rather
+// than reaching cipher-client with no row that shows its pattern takes the broker's text. The one
+// refusal cipher-client withholds is the exception, and it must still stand in the source. One
+// format, the refusal of a run's claim of the wrong form (readCIRun), wraps what
+// oauthwire.ParseCIRun answers, "<claim> claim is not <form>": each form ParseCIRun holds a claim
+// readCIRun reads from the token to must fill a row too, and the forms are read off ParseCIRun
+// itself, one claim of a run broken at a time (runClaimRefusal).
+func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
+	withheld := map[string]bool{"%w: the subject token is not a person's Google identity token (%v)": true}
+	listed := map[string]bool{}
+	for _, refusal := range policyRefusals {
+		listed[refusal.format] = true
+	}
+	raw, err := os.ReadFile(policySource)
+	if err != nil {
+		t.Fatalf("read %s: %v", policySource, err)
+	}
+	written := regexp.MustCompile(`fmt\.Errorf\(("%w: (?:[^"\\]|\\.)*")`)
+	matches := written.FindAllStringSubmatch(string(raw), -1)
+	if len(matches) == 0 {
+		t.Fatalf("%s holds no fmt.Errorf(\"%%w: …\"): the scan reads nothing", policySource)
+	}
+	seen := map[string]bool{}
+	for _, match := range matches {
+		format, err := strconv.Unquote(match[1])
+		if err != nil {
+			t.Fatalf("%s: %s does not unquote: %v", policySource, match[1], err)
+		}
+		seen[format] = true
+		if !listed[format] && !withheld[format] {
+			t.Errorf("%s writes the refusal %q, which policyRefusals does not hold: add it, filled as cipher-client's slots take it, and run UPDATE_REFUSAL_CORPUS=1 go test -run TestTheRefusalCorpusIsWhatTheBrokerWrites ./internal/cipher/oauth", policySource, format)
+		}
+	}
+	for format := range withheld {
+		if !seen[format] {
+			t.Errorf("%s no longer writes the withheld refusal %q: take it out of this test's list", policySource, format)
+		}
+	}
+	forms := map[string]string{}
+	for _, claim := range readCIRunClaims {
+		text := runClaimRefusal(claim).Error()
+		_, form, ok := strings.Cut(text, " claim is not ")
+		if !ok {
+			t.Fatalf("oauthwire.ParseCIRun refused a run whose %s claim is broken with %q, which is no \"<claim> claim is not <form>\"", claim, text)
+		}
+		forms[form] = claim
+	}
+	filled := map[string]bool{}
+	for _, refusal := range policyRefusals {
+		if refusal.format != "%w: the subject token's %w" {
+			continue
+		}
+		for _, arg := range refusal.args {
+			if wrapped, ok := arg.(error); ok && wrapped != exchange.ErrClaimMissing {
+				if _, form, ok := strings.Cut(wrapped.Error(), " claim is not "); ok {
+					filled[form] = true
+				}
+			}
+		}
+	}
+	for form, claim := range forms {
+		if !filled[form] {
+			t.Errorf("oauthwire.ParseCIRun holds the %s claim to the form %q, which no row of policyRefusals fills: add a row of the claim refusal with it", claim, form)
+		}
+	}
+}
+
+// readCIRunClaims are the claims of a run that exchange's readCIRun reads from the subject token
+// and oauthwire.ParseCIRun then holds to a form; readCIRun refuses an absent or empty one first
+// (claimString), so ParseCIRun's own refusal of those is a form they always meet.
+var readCIRunClaims = []string{"sha", "job_workflow_sha", "run_id", "run_attempt", "check_run_id"}
+
+// runClaimRefusal is oauthwire.ParseCIRun's refusal of a run that is whole but for claim, which
+// holds a value of no form ParseCIRun takes. A claim it does not break, or a run it takes, is an
+// error that names it, which no row of the corpus matches.
+func runClaimRefusal(claim string) error {
+	run := oauthwire.CIRun{
+		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, JobWorkflowSHA: strings.Repeat("b", 40),
+		Ref: corpusRef, SHA: strings.Repeat("a", 40), EventName: "push", RunnerEnvironment: "github-hosted",
+		RunID: "1", RunAttempt: "1", CheckRunID: "1",
+	}
+	switch claim {
+	case "sha":
+		run.SHA = "not-a-commit"
+	case "job_workflow_sha":
+		run.JobWorkflowSHA = "not-a-commit"
+	case "run_id":
+		run.RunID = "0"
+	case "run_attempt":
+		run.RunAttempt = "0"
+	case "check_run_id":
+		run.CheckRunID = "0"
+	default:
+		return fmt.Errorf("runClaimRefusal breaks no claim %q", claim)
+	}
+	if _, err := oauthwire.ParseCIRun(run); err != nil {
+		return err
+	}
+	return fmt.Errorf("oauthwire.ParseCIRun took a run whose %s claim is %q", claim, "broken")
 }

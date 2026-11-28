@@ -292,10 +292,12 @@ export async function dispatchUrl(
 }
 
 /**
- * Dispatch for a CI job that records its result of a check of the spec files (`dispatch result
- * --project`), which has no session and no envoy.json. Its server is `DISPATCH_URL`, and its
- * credential is the secrets broker's proxy placeholder of the run's result grant, which
- * `agent-secrets result-grant -- <command>` gives the command in `DISPATCH_RESULTS_TOKEN`
+ * Dispatch for a CI job that records its result, of a check of the spec files (`dispatch result
+ * --project`) or of the check of an issue's Verification document its ci_check gives to the job
+ * (`dispatch result --issue`), which has no session and no envoy.json. Its server is
+ * `DISPATCH_URL`, and its credential is the secrets broker's proxy placeholder of the run's
+ * result grant, which `agent-secrets result-grant -- <command>` gives the command in
+ * `DISPATCH_RESULTS_TOKEN`
  * (`AIRLOCK_RESULTS_VAR`), presented as its one `Authorization` header and nothing else
  * (`airlockCredential`): the airlock proxy, whose settings the same command gives, puts the run's
  * results token and a proof of its own key in its place. No bearer and no broker variable is read,

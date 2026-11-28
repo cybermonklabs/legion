@@ -16,6 +16,7 @@ import type { LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { RIG_WORLD } from "./rig-world";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -50,9 +51,16 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
 /** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
  * `prompt`): the role's parts, a blank line, then its addressing, and for the architect of a tree's
  * root (`root`) the design gate steps after that, byte for byte as the daemon writes the prompt
- * file. The claim is the rig's: its issue is the root of its tree, or a child under that root. */
+ * file. The claim is the rig's: its issue is the root of its tree, or a child under that root, in
+ * the world's repository (`RIG_WORLD`). */
 export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
-  return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
+  return runDaemonPane(module, [
+    "prompt",
+    role,
+    root ? "root" : "child",
+    RIG_WORLD.repository,
+    RIG_WORLD.defaultBranch,
+  ]);
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot
@@ -76,6 +84,9 @@ interface PaneRequest {
   readonly path: string;
   readonly ghPath?: string;
   readonly systemPrompt?: boolean;
+  /** The issue's repository and its default branch: rig-world.json's (`RIG_WORLD`). */
+  readonly repository: string;
+  readonly defaultBranch: string;
 }
 
 /** What the daemon tells the pane: every variable, PATH included, and, for a request that asks for
@@ -177,6 +188,8 @@ export async function workerPane(
     path: env.PATH ?? "",
     systemPrompt: source.systemPrompt,
     ghPath: source.ghPath,
+    repository: RIG_WORLD.repository,
+    defaultBranch: RIG_WORLD.defaultBranch,
   };
   const pane = JSON.parse(
     runDaemonPane(source.daemonModule, ["pane"], JSON.stringify(request))

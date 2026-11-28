@@ -5,7 +5,9 @@ import { NODE_STATE_WORDS, VERIFICATION_WORDS } from "./page-words";
 import {
   type CheckStateReads,
   checkStanding,
+  countsForSomething,
   namedCommit,
+  standsAsEvidence,
   stateAtCommit,
   statementState,
 } from "./statement-rules";
@@ -179,4 +181,97 @@ test("with no named commit each check reads as it stands on its own", () => {
   expect(statementState(atNamedCommit([noCommit, unrun]))).toBe("unknown");
   // A statement with no check is Unknown, whatever commit is named.
   expect(statementState([])).toBe("unknown");
+});
+
+/** Why a role's result of a check CI proves counts for nothing, as the server says it. */
+const ROLE_ON_CI_CHECK =
+  "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+
+// A result that counts for nothing is no evidence, as the server's pass_stands reads it
+// (results_pass_stands.go skips it as it skips a withdrawn one): a role's result of a check CI
+// proves, or a reading recorded before the current deploy of the program its check reads.
+// Catches: a role's newer pass at the basis turning a check whose CI job's fail stands there into
+// Passed; a check whose only result counts for nothing reading Passed, or Retracted where nobody
+// withdrew anything; and such a result naming the page's commit.
+test("a result that counts for nothing decides no state of its check and names no commit", () => {
+  const rolePass = result({
+    check_block_id: "c-ci",
+    commit_sha: OTHER_COMMIT,
+    created_at: "2026-11-15T09:00:00Z",
+    id: "role-pass",
+    not_counted: ROLE_ON_CI_CHECK,
+  });
+  const jobFail = result({
+    branch: "legion/CORE-1",
+    check_block_id: "c-ci",
+    created_at: "2026-11-14T09:00:00Z",
+    id: "job-fail",
+    role: "ci",
+    verdict: "fail",
+  });
+  const failed = twoHeads({
+    block_id: "c-ci",
+    pass_stands: { answer: "no", reason: "fail" },
+    results: [rolePass, jobFail],
+  });
+  const roleOnly = twoHeads({
+    block_id: "c-ci",
+    pass_stands: { answer: "no", reason: "no_result" },
+    results: [rolePass],
+  });
+
+  expect(checkStanding(failed)).toEqual({ stands: jobFail, state: "failed" });
+  expect(checkStanding(roleOnly)).toEqual({ state: "no-result" });
+  expect(namedCommit([failed])).toBe(COMMIT);
+  expect(namedCommit([roleOnly])).toBeUndefined();
+});
+
+// The page's one reading of "this result counts" and of "this result stands as evidence", which
+// a check's No result, its standing results and the latest result the Verification filter's body
+// draws all read. Catches: a result with no `not_counted` at all, as the server sends a result
+// that counts, read as counting for nothing; a reason the server gives read as counting; and a
+// withdrawn result, or one that counts for nothing, standing as evidence.
+test("a result counts unless the server says why it does not, and stands only where it counts and nobody withdrew it", () => {
+  const absent = result({ id: "absent" });
+  const empty = result({ id: "empty", not_counted: "" });
+  const reasoned = result({ id: "reasoned", not_counted: ROLE_ON_CI_CHECK });
+  const withdrawn = result({
+    id: "withdrawn",
+    retracted: {
+      actor: { id: "tester", kind: "session" },
+      created_at: "2026-11-15T10:00:00Z",
+      reason: "Run was wrong.",
+    },
+  });
+  const results = [absent, empty, reasoned, withdrawn];
+
+  expect(results.map(countsForSomething)).toEqual([true, true, false, true]);
+  expect(results.map(standsAsEvidence)).toEqual([true, true, false, false]);
+});
+
+// Where nothing stands at a check's basis, its state is read from its newest result that stands
+// (`checkState`), by the time each was recorded and never in the order the read sent them in, so
+// the state and the result it stands on (`stands`) are one result. Catches: the state read from
+// the first result the read sent, here an older fail at a commit Dispatch could not place, which
+// read Failed under a newer pass at another commit when the read sent them oldest first.
+test("with nothing at its basis a check reads its newest standing result, whatever order they arrive in", () => {
+  const olderFail = result({
+    commit_stands: { answer: "unknown" },
+    created_at: "2026-11-13T09:00:00Z",
+    id: "older-fail",
+    verdict: "fail",
+  });
+  const newerPass = result({
+    commit_sha: OTHER_COMMIT,
+    commit_stands: { answer: "other_commit" },
+    created_at: "2026-11-14T09:00:00Z",
+    id: "newer-pass",
+  });
+  for (const [order, results] of [
+    ["newest first", [newerPass, olderFail]],
+    ["oldest first", [olderFail, newerPass]],
+  ] as const) {
+    const read = check({ block_id: "c-one", pass_stands: { answer: "no" }, results: [...results] });
+    expect(checkStanding(read), order).toEqual({ stands: newerPass, state: "older" });
+  }
 });

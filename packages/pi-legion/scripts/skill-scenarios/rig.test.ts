@@ -5,9 +5,11 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -19,20 +21,42 @@ import path from "node:path";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { fileLimit, spawnWithin, type Wait } from "@legion/test-fixtures/row-clock";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilExecDone } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptAssignments, scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { DAEMON_MODULE, workerPane } from "./daemon-pane";
 import { OWNER_WALK_STAGES } from "./owner-walk";
+import { RIG_WORLD } from "./rig-world";
 import { modelProblem, transcriptModels } from "./scored-runs";
 import { RunRow } from "./scored-runs-contracts";
+import {
+  JUDGE_IMAGE,
+  JUDGE_IMAGE_ENVIRONMENT,
+  JUDGE_OMP,
+  JUDGE_OMP_ENVIRONMENT,
+  RIG_STEP,
+  rowLimit,
+  SCRIPT_RUN,
+  VCS_COMMAND,
+} from "./test-limit";
 
-// Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
-// takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute, and a wait of a row on its processes (untilExecDone) ends 20 s before that.
-const waits = rowWaits(60_000);
+/** rig.sh's world variables as its header sets them from rig-world.json, for a row that runs one
+ * of its functions alone, and `here`, the directory whose rig-world.json they come from. */
+const WORLD_VARS = `here=${import.meta.dir} worker_repo=${RIG_WORLD.repository} worker_base=${RIG_WORLD.defaultBranch}`;
+
+// Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
+// stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
+// what they wait for: the most of a row of judge-omp's describe (JUDGE_OMP: the row's measured
+// normal work and one Docker call's bound, since a stalled call ends the row at once) and four
+// rig.sh steps, the limit of every other row. A wait of a row on its processes (untilExecDone)
+// ends rowWaitMarginMs before that limit (rowWaits).
+const waits = rowWaits(
+  fileLimit(Math.max(rowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP), rowLimit(JUDGE_OMP)))
+);
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
@@ -109,37 +133,36 @@ const miseData =
   (process.env.XDG_DATA_HOME === undefined
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
-/** Runs ARGV, in childCwd, with the test's child environment and ENV over it: the caller's PATH,
- * a HOME of the test's own, and the caller's mise data and config directories when the caller
- * names them. A tool on PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME
- * such a shim finds neither its installs nor its global config, so it fails. make_omp_home keeps
- * the operator's two directories for the processes it starts for the same reason, and base_env
- * passes MISE_DATA_DIR to every agent. A caller that names neither variable gets neither: the
- * developer's own home decides nothing here. A Bun process it starts under that HOME keeps no
- * transpiler cache there (`bunCacheOff`). It is the one place this file builds that
- * environment, and its `cwd` is the only one in the file but the omp turn's and the kept-notice
- * row's below, so a child that gets the test's HOME gets childCwd with it. Every child of this
- * file starts through it but six, and none of those gets the test's HOME: the key command, the
- * libpq probe and the model stand-in pass no environment, so they run under the caller's own HOME,
- * where mise reads the caller's config as its global config. runProcess's child gets PATH and
- * SKILL_SCENARIO_RUN alone, and runs sleep, not a mise shim. The model stand-in row's omp turn gets
- * its profile's HOME and the system's PATH alone, in a workspace under this file's work directory.
- * The kept-notice row's rig.sh runs take the caller's whole environment, in this checkout's root,
- * since the label's build needs the caller's Go and Bun caches. */
-function childSpawn(argv: string[], env: Record<string, string> = {}) {
-  return Bun.spawnSync(argv, {
-    env: {
-      ...bunCacheOff,
-      PATH: callerPath,
-      HOME: operatorHome,
-      ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-      ...(process.env.XDG_CONFIG_HOME === undefined
-        ? {}
-        : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
-      ...env,
-    },
-    cwd: childCwd,
-  });
+/** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
+ * own, and the caller's mise data and config directories when the caller names them. A tool on
+ * PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME such a shim finds
+ * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
+ * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
+ * to every agent. A caller that names neither variable gets neither: the developer's own home
+ * decides nothing here. A Bun process started under that HOME keeps no transpiler cache there
+ * (`bunCacheOff`). */
+const childEnv = {
+  ...bunCacheOff,
+  PATH: callerPath,
+  HOME: operatorHome,
+  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
+  ...(process.env.XDG_CONFIG_HOME === undefined
+    ? {}
+    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+};
+/** Runs ARGV within WAIT's bound (spawnWithin), in childCwd, with childEnv and ENV over it. It is
+ * the one place this file gives a child childEnv with childCwd, so a child that gets the test's
+ * HOME gets childCwd with it: every such child starts through it, but jj in a fixture's workspace,
+ * which runs in that workspace (workspaceParent), and the pane workerPane builds, whose processes
+ * this file does not start. The other children of this file do not get the test's HOME: the key
+ * command, the libpq probe and the model stand-in pass no environment, so they run under the
+ * caller's own HOME, where mise reads the caller's config as its global config. runProcess's child
+ * gets PATH and SKILL_SCENARIO_RUN alone, and runs sleep, not a mise shim. The model stand-in row's
+ * omp turn gets its profile's HOME and the system's PATH alone, in a workspace under this file's
+ * work directory. The kept-notice row's rig.sh runs take the caller's whole environment, in this
+ * checkout's root, since the label's build needs the caller's Go and Bun caches. */
+function childSpawn(wait: Wait, argv: string[], env: Record<string, string> = {}) {
+  return spawnWithin(wait, argv, { env: { ...childEnv, ...env }, cwd: childCwd });
 }
 
 let profiles = 0;
@@ -156,6 +179,7 @@ function keyFile(mode: number): string {
 }
 function route(dir: string, env: Record<string, string>, model = "") {
   const result = childSpawn(
+    { ...RIG_STEP, part: "rig.sh install_model_route" },
     [
       "bash",
       "-c",
@@ -184,7 +208,9 @@ describe("install_model_route", () => {
     );
     expect(models).toContain(`!exec ${path.join(dir, "model-key", "anthropic-key")}`);
     expect(models).toContain("https://api.anthropic.com");
-    const served = Bun.spawnSync([path.join(dir, "model-key", "anthropic-key")]);
+    const served = spawnWithin({ ...RIG_STEP, part: "the profile's model-key command" }, [
+      path.join(dir, "model-key", "anthropic-key"),
+    ]);
     expect(served.stdout.toString().trim()).toBe("sk-ant-rig-test-0000000000000000");
     expect(existsSync(path.join(dir, "key", "anthropic-key.log"))).toBe(true);
   });
@@ -403,7 +429,7 @@ describe("a setup that fails after install_model_route", () => {
       ].map(fn),
       "checkout_commit() { printf 'fixture parents=base\\n'; }",
       "install_superpowers() { fail 'the superpowers probe failed'; }",
-      'work=$1; cmd_profile probe "$2"',
+      'work=$1 maps=$1/maps; cmd_profile probe "$2"',
     ].join("\n");
     const failed = bash(script, [work, checkout()], {
       ...routeEnv(),
@@ -411,8 +437,10 @@ describe("a setup that fails after install_model_route", () => {
     });
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain("the superpowers probe failed");
-    const P = path.join(work, "profiles/probe");
-    expect(existsSync(path.join(P, "home/.omp/profiles/skills-probe/agent/models.yml"))).toBe(true);
+    // The profile's directory has a random name, and the map's link names the label.
+    const P = realpathSync(path.join(work, "maps/profiles/probe"));
+    expect(path.relative(realpathSync(work), P)).toMatch(/^profiles\/[0-9a-f]{16}$/);
+    expect(existsSync(path.join(P, "home/.omp/profiles/skills/agent/models.yml"))).toBe(true);
     expect(existsSync(path.join(P, "model-key"))).toBe(false);
     expect(existsSync(path.join(P, "ready"))).toBe(false);
 
@@ -427,8 +455,9 @@ describe("a setup that fails after install_model_route", () => {
       }
     );
     expect({ code: ok.code, stderr: ok.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(existsSync(path.join(kept, "profiles/probe/model-key/anthropic-key"))).toBe(true);
-    expect(existsSync(path.join(kept, "profiles/probe/ready"))).toBe(true);
+    const keptProfile = realpathSync(path.join(kept, "maps/profiles/probe"));
+    expect(existsSync(path.join(keptProfile, "model-key/anthropic-key"))).toBe(true);
+    expect(existsSync(path.join(keptProfile, "ready"))).toBe(true);
   });
 
   /** judge_profiles and its helpers, called on the checkout $1 and the work directory $2. A row
@@ -505,7 +534,11 @@ describe("a setup that fails after install_model_route", () => {
 /** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., through
  * childSpawn. */
 function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
-  const result = childSpawn(["bash", "-c", script, "-", ...args], env);
+  const result = childSpawn(
+    { ...RIG_STEP, part: `rig.sh ${script.split("\n").at(-1)}` },
+    ["bash", "-c", script, "-", ...args],
+    env
+  );
   return {
     code: result.exitCode,
     stdout: result.stdout.toString(),
@@ -536,7 +569,7 @@ test("a child of this file starts in childCwd, outside the developer's home", ()
 // no .jj, and jj alone printed an empty commit line for it.
 describe("checkout_commit", () => {
   const git = (dir: string, ...args: string[]) => {
-    const result = childSpawn([
+    const result = childSpawn({ ...VCS_COMMAND, part: `git ${args.join(" ")}` }, [
       "git",
       "-C",
       dir,
@@ -665,9 +698,11 @@ describe("omp_ancestor", () => {
     const top = freshDir("omp-rig");
     mkdirSync(path.join(top, ".omp"));
     const work = path.join(top, "work");
-    const result = childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "score"], {
-      SKILL_SCENARIOS_WORK: work,
-    });
+    const result = childSpawn(
+      { ...RIG_STEP, part: "rig.sh score" },
+      ["bash", path.join(import.meta.dir, "rig.sh"), "score"],
+      { SKILL_SCENARIOS_WORK: work }
+    );
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain(`${top}/.omp`);
     expect(existsSync(work)).toBe(false);
@@ -675,10 +710,11 @@ describe("omp_ancestor", () => {
 });
 
 // A spec-writing or spec-rewrite batch takes one run, numbered one above the highest run of its
-// scenario and label, so a later batch never removes an earlier run (cmd_run starts from rm -rf).
+// scenario and label in the map, so a later batch never replaces an earlier run (cmd_run replaces a
+// run of its name).
 describe("next_run", () => {
   const next = (work: string, scenario: string, label: string) =>
-    bash(`${fn("next_run")}\nwork=$1\nnext_run "$2" "$3"`, [work, scenario, label]);
+    bash(`${fn("next_run")}\nwork=$1 maps=$1/maps\nnext_run "$2" "$3"`, [work, scenario, label]);
 
   // Catches: numbering that starts over at 1 and so overwrites run 1, or that counts directories
   // instead of reading their numbers.
@@ -692,12 +728,12 @@ describe("next_run", () => {
       "spec-rewrite-s1-30",
       "spec-writing-main-40",
     ])
-      mkdirSync(path.join(work, "runs", run), { recursive: true });
-    writeFileSync(path.join(work, "runs", "spec-writing-s1-99"), "");
+      mkdirSync(path.join(work, "maps", "runs", run), { recursive: true });
+    writeFileSync(path.join(work, "maps", "runs", "spec-writing-s1-99"), "");
     expect(next(work, "spec-writing", "s1")).toEqual({ code: 0, stdout: "11\n", stderr: "" });
   });
 
-  // Catches: a first batch that fails because $work/runs does not exist yet.
+  // Catches: a first batch that fails because $work/maps/runs does not exist yet.
   test("1 when the label has no run of the scenario", () => {
     expect(next(freshDir("numbering-empty"), "spec-rewrite", "s1").stdout).toBe("1\n");
   });
@@ -874,9 +910,13 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       stderr: "ignore",
     });
   const groupBash = (script: string, args: string[], procRoot: string) => {
-    const result = childSpawn(ownGroup(["bash", "-c", script, "-", ...args]), {
-      proc_root: procRoot,
-    });
+    const result = childSpawn(
+      { ...RIG_STEP, part: "rig.sh stop_env_processes" },
+      ownGroup(["bash", "-c", script, "-", ...args]),
+      {
+        proc_root: procRoot,
+      }
+    );
     return {
       code: result.exitCode,
       stdout: result.stdout.toString(),
@@ -908,6 +948,10 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     }
   );
 
+  // stopScript is a shell that sources the rig's process walks and runs BODY, for DIR in $1.
+  const stopScript = (body: string) =>
+    `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(path.join(root, "scripts/e2e/lib/rig.sh"))}\n${fn("stop_env_processes")}\n${fn("run_env_pids")}\n${body}`;
+
   // Catches: a stop_env_processes that does not end what its walk names. The loop that ends each
   // process, held to its start and its mark, is kill_held (scripts/e2e/lib/process-tree.sh), the
   // run's sweep's own; its rows, a pid that passed to another process and a parent that exits after
@@ -917,14 +961,44 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     const run = runProcess(dir);
     await untilExecDone(run.pid, "sleep", waits.end());
     try {
-      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
-      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
       const own = groupBash(
-        `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+        stopScript(`stop_env_processes "$1"; echo "status $?"`),
         [dir],
         procRootOf(dir, [run.pid])
       );
       expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      expect(await run.exited).not.toBe(0);
+      expect(run.signalCode).toBe("SIGKILL");
+    } finally {
+      run.kill("SIGKILL");
+    }
+  });
+
+  // Catches: a stop_env_processes that stops nothing when the exit trap of a run that failed runs
+  // it. There bash's bare `exit` in a process substitution exits with the status the trap was
+  // entered with, so the walk read xargs as exiting 1 after every failed run and named no process
+  // (procs_naming, scripts/e2e/lib/process-tree.sh). A walk of a busy machine always meets a batch
+  // of entries with no match (xargs 123), and only then hands a status out through that `exit`;
+  // this row's proc root fits one batch that matches, so a grep that prints what the real one
+  // prints and then answers as such a batch does stands in for the rest of the machine. The trap
+  // runs inside `fail`, whose arguments are not the script's, so it names the run by $work.
+  test("stops each process of the run from the exit trap of a run that failed", async () => {
+    const dir = freshDir("env-stop-failed");
+    const busy = freshDir("env-stop-busy");
+    writeFileSync(path.join(busy, "grep"), `#!/bin/sh\n/usr/bin/grep "$@"\nexit 1\n`, {
+      mode: 0o755,
+    });
+    const run = runProcess(dir);
+    await untilExecDone(run.pid, "sleep", waits.end());
+    try {
+      const failed = groupBash(
+        stopScript(
+          `export PATH=${JSON.stringify(busy)}:$PATH\ntrap 'stop_env_processes "$work"; echo "status $?"' EXIT\nfail`
+        ),
+        [dir],
+        procRootOf(dir, [run.pid])
+      );
+      expect(failed).toEqual({ code: 1, stdout: "status 0\n", stderr: "" });
       expect(await run.exited).not.toBe(0);
       expect(run.signalCode).toBe("SIGKILL");
     } finally {
@@ -1014,12 +1088,12 @@ describe("spec_turns", () => {
     });
     const standIns = `
 launch() {
-  printf 'launch %s | %s\\n' "$*" "$(<"$R/prompt.txt")" >>"$R/calls"
-  [ -n "\${SECOND:-}" ] && [ $# -gt 1 ] && : >"$R/sessions/fresh.jsonl"
+  printf 'launch%s | %s\\n' "\${*:+ $*}" "$(<"$R/prompt.txt")" >>"$R/calls"
+  [ -n "\${SECOND:-}" ] && [ $# -gt 0 ] && : >"$R/sessions/fresh.jsonl"
   printf x >>"$R/launches"
   status=0
   [ "$(wc -c <"$R/launches")" != "\${FAIL_AT:-0}" ] || status=1
-  printf 'output of %s\\nexit=%s\\n' "$*" "$status" >"$R/out.txt"
+  printf 'output of turn %s%s\\nexit=%s\\n' "$(wc -c <"$R/launches")" "\${*:+ $*}" "$status" >"$R/out.txt"
   printf '{}\\n' >>"$R/sessions/run.jsonl"
 }
 seed_ts() {
@@ -1056,19 +1130,19 @@ judge_ts() {
     const { code, calls, read } = conversation([{ asks: 2 }, { approval: true }, {}]);
     expect(code).toBe(0);
     expect(calls).toEqual([
-      "launch spec-writing-s1-1 | Design it.",
+      "launch | Design it.",
       "seed state <R>/fixture.json 1 <R>",
       "judge answer <R> 1",
       "seed answer <R>/fixture.json <R>/answers-1.jsonl",
-      `launch spec-writing-s1-1 --continue | ${answered}`,
+      `launch --continue | ${answered}`,
       "seed state <R>/fixture.json 2 <R>",
       "seed approve <R>/fixture.json",
-      `launch spec-writing-s1-1 --continue | ${approved}`,
+      `launch --continue | ${approved}`,
       "seed state <R>/fixture.json 3 <R>",
     ]);
     expect(read("turns.txt")).toBe("1 first exit=0\n2 answered exit=0\n3 approved exit=0\n");
     expect(read("answers.jsonl")).toBe(read("answers-1.jsonl"));
-    expect(read("out-2.txt")).toBe("output of spec-writing-s1-1 --continue\nexit=0\n");
+    expect(read("out-2.txt")).toBe("output of turn 2 --continue\nexit=0\n");
   });
 
   // Catches: a loop that answers the open asks when an approval request is open too (the rig.sh
@@ -1086,10 +1160,7 @@ judge_ts() {
   test("no open ask and no approval request ends the run after its turn", () => {
     const { code, calls, read } = conversation([{}]);
     expect(code).toBe(0);
-    expect(calls).toEqual([
-      "launch spec-writing-s1-1 | Design it.",
-      "seed state <R>/fixture.json 1 <R>",
-    ]);
+    expect(calls).toEqual(["launch | Design it.", "seed state <R>/fixture.json 1 <R>"]);
     expect(read("turns.txt")).toBe("1 first exit=0\n");
   });
 
@@ -1220,14 +1291,18 @@ echo done
   });
 });
 
+/**
+ * The pulls of the judge's image rig.sh judge-omp asks for at most, a pause of 2 s between two
+ * (rig.sh's `for attempt in 1 2 3`): a pull that fails within its bound is asked again, and a pull
+ * its bound ends is not.
+ */
+const JUDGE_PULLS = 3;
+
 // rig.sh judge-omp, the whole script, in its Docker container (Docker is on the devbox and on CI's
 // ubuntu-24.04 runners), with the real key-file route and a stand-in omp that records its argv and
 // environment. SKILL_SCENARIOS_JUDGE_OMP puts the stand-in where the pinned omp's binary is
 // mounted, so no test needs a model. The checkout's own skills/asd-ste100 is the ste skill.
 describe("judge-omp", () => {
-  // Each row starts one or two judge containers, and a container's start on a loaded host has
-  // taken longer than the file's 60 s bound, so these rows get a bound of their own.
-  const judgeBound = 180_000;
   // Every row that reaches the container needs Docker, so a machine without it (a Legion
   // worker's pod) skips those rows and the rest of the file still runs. GitHub Actions is the
   // exception, as in extensions/controller-start-omp.test.ts: its ubuntu-24.04 runners have
@@ -1287,21 +1362,63 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
       { mode: 0o755 }
     );
   });
+  // A Docker daemon that stalls is the machine's, not one row's. Once rig.sh refuses a judge run at
+  // the rows' own Docker bound (JUDGE_OMP_ENVIRONMENT) for a call that bound ended, every later row
+  // that needs Docker would wait on the same stalled daemon, call after call, and a daemon that
+  // stalls every call would add those bounds up past the CI job's timeout. So that judge's row
+  // fails at once with the rig's refusal and starts no judge after it, and each later row that
+  // needs Docker (dockerTest) fails at once with the same refusal, starting none. The rows that
+  // plant a `docker` of their own with bounds of seconds (stalledDocker, SHORT) wait on no daemon
+  // of the machine, so they neither set this nor stop for it.
+  let daemonStall: string | undefined;
+  /** rig.sh's refusal of a judge for a Docker call its bound ended (judge_docker's docker_late). */
+  const LATE_CALL = /^skill-scenarios: judge-omp: docker .+ did not end within its bound of \d+ s/;
+  /** A row that reaches the container: skipped without Docker, and failed at once after a stall. */
+  const dockerTest = (name: string, row: () => void) =>
+    test.skipIf(skip)(name, () => {
+      if (daemonStall !== undefined) {
+        throw new Error(
+          `${daemonStall}: the judge of an earlier row met that stall, and this row starts no judge on the stalled daemon`
+        );
+      }
+      row();
+    });
+  // Each judge waits for the bounds rig.sh judge-omp runs under (JUDGE_OMP), which the row hands it
+  // (JUDGE_OMP_ENVIRONMENT): a Docker daemon that stalls less than a call's bound costs the row
+  // time, and one that stalls longer ends the judge with the rig's refusal naming the call, and,
+  // at the rows' own Docker bound, the row with it.
   const judge = (
     kind: string,
     dir: string,
     output = "answer.json",
     env: Record<string, string> = {}
-  ) =>
-    childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output], {
-      USER: "rig",
-      SKILL_SCENARIOS_WORK: work,
-      SKILL_SCENARIOS_JUDGE_OMP: omp,
-      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
-      LEGION_E2E_MODEL_ROUTE: "key-file",
-      LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-      ...env,
-    });
+  ) => {
+    const result = childSpawn(
+      { ...JUDGE_OMP, part: `rig.sh judge-omp ${kind}` },
+      ["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output],
+      {
+        ...JUDGE_OMP_ENVIRONMENT,
+        USER: "rig",
+        SKILL_SCENARIOS_WORK: work,
+        SKILL_SCENARIOS_JUDGE_OMP: omp,
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
+        LEGION_E2E_MODEL_ROUTE: "key-file",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+        ...env,
+      }
+    );
+    if (env.SKILL_SCENARIOS_DOCKER_TIMEOUT === undefined) {
+      const late = result.stderr
+        .toString()
+        .split("\n")
+        .find((line) => LATE_CALL.test(line));
+      if (late !== undefined) {
+        daemonStall = late;
+        throw new Error(late);
+      }
+    }
+    return result;
+  };
   let jobs = 0;
   function judgeDir(): string {
     const dir = path.join(work, "judging", `job-${++jobs}`);
@@ -1338,22 +1455,26 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   // 44097039395 (2026-11-17T15:00:12Z), the slowest; over the 1,341 green pi-legion jobs of main's
   // merge-group and push runs, 2026-10-29T12:58Z to 2026-11-17T16:22Z, it took at most 15,772.79
   // ms (job 126587011431, push run 41833651040), and no other judge-omp row took more than
-  // 3,342.44 ms (job 126217454413, push run 41722033995). So this hook has a guard of its own, at
-  // least twice the slowest pull CI read. Its one line of output is the pull's time, so each CI log
+  // 3,342.44 ms (job 126217454413, push run 41722033995). So this hook has a guard of its own: each
+  // Docker call of the pull has JUDGE_IMAGE_CALL's bound, at least twice the slowest pull CI read,
+  // which a row's own Docker bound (JUDGE_DOCKER_CALL) would refuse, and the hook waits for the
+  // pull's whole bound (JUDGE_IMAGE). Its one line of output is the pull's time, so each CI log
   // records one more reading. A host that skips the rows skips the pull.
   beforeAll(() => {
     if (skip) return;
     const start = performance.now();
-    const result = childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "judge-image"], {
-      SKILL_SCENARIOS_WORK: work,
-    });
+    const result = childSpawn(
+      JUDGE_IMAGE,
+      ["bash", path.join(import.meta.dir, "rig.sh"), "judge-image"],
+      { ...JUDGE_IMAGE_ENVIRONMENT, SKILL_SCENARIOS_WORK: work }
+    );
     console.log(`judge-omp: rig.sh judge-image took ${(performance.now() - start).toFixed(2)} ms`);
     expect(judged(result)).toEqual(judgedCleanly);
-  }, 240_000);
+  }, rowLimit(JUDGE_IMAGE));
 
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
-  test.skipIf(skip)(
+  dockerTest(
     "ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model",
     () => {
       const dir = judgeDir();
@@ -1392,14 +1513,13 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
           "utf8"
         )
       ).toContain("https://api.anthropic.com");
-    },
-    judgeBound
+    }
   );
 
   // Catches: a judge that reads the run's transcript, other runs or the operator's files beside its
   // own directory (as a findings judge did, given no check), or that writes anything but its one
   // answer file and its sessions.
-  test.skipIf(skip)(
+  dockerTest(
     "a judge sees only its own directory, read-only, with its answer file and sessions writable",
     () => {
       const dir = judgeDir();
@@ -1419,68 +1539,177 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         "dbus-set": "denied",
       });
       expect(existsSync(path.join(dir, "new.txt"))).toBe(false);
-    },
-    judgeBound
+    }
   );
 
   // Catches: a bare judge that still loads skills, or a judge-omp that hides omp's failure.
-  test.skipIf(skip)(
-    "bare loads no skill, and judge-omp exits with omp's status",
-    () => {
-      const dir = judgeDir();
-      writeFileSync(path.join(dir, "exit-status"), "3\n");
-      const result = judge("bare", dir);
-      expect(result.exitCode).toBe(3);
-      expect(recorded(dir, "argv")).toContain("--no-skills");
-      expect(recorded(dir, "argv")).not.toContain("--skills");
-      expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
-      expect(recorded(dir, "probe")).toContain("read-skill denied");
-      expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
-      expect(
-        existsSync(
-          path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills")
-        )
-      ).toBe(false);
-    },
-    judgeBound
-  );
+  dockerTest("bare loads no skill, and judge-omp exits with omp's status", () => {
+    const dir = judgeDir();
+    writeFileSync(path.join(dir, "exit-status"), "3\n");
+    const result = judge("bare", dir);
+    expect(result.exitCode).toBe(3);
+    expect(recorded(dir, "argv")).toContain("--no-skills");
+    expect(recorded(dir, "argv")).not.toContain("--skills");
+    expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
+    expect(recorded(dir, "probe")).toContain("read-skill denied");
+    expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
+    expect(
+      existsSync(path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills"))
+    ).toBe(false);
+  });
 
   // Catches: a mount two judges share that one can write and the next can read, such as the key
   // command's call record, a path one judge could leave its private input in for another to read.
   // The first judge writes a marker into every directory it can write outside its own directory;
   // the second, of the same kind, looks for one anywhere it can read.
-  test.skipIf(skip)(
-    "one judge cannot leave a file that a second judge can read",
-    () => {
-      const first = judgeDir();
-      const env = (word: string) => ({
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
-      });
-      expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
-      const second = judgeDir();
-      expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
-      expect(recorded(second, "seek")).toEqual([""]);
-    },
-    judgeBound
-  );
+  dockerTest("one judge cannot leave a file that a second judge can read", () => {
+    const first = judgeDir();
+    const env = (word: string) => ({
+      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
+    });
+    expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
+    const second = judgeDir();
+    expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
+    expect(recorded(second, "seek")).toEqual([""]);
+  });
 
   // Catches: a judge kind the rig has no profile for, a directory with no prompt, and an answer
   // file name that escapes the judge's directory or names another of its files.
-  test(
-    "refuses another kind, a directory with no prompt.txt and a bad answer name",
-    () => {
-      expect(judge("plugins", judgeDir()).stderr.toString()).toContain("is ste or bare");
-      expect(judge("ste", freshDir("judging-empty")).stderr.toString()).toContain(
-        "has no prompt.txt"
-      );
-      for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
-        const result = judge("ste", judgeDir(), output);
-        expect(result.exitCode).not.toBe(0);
-        expect(result.stderr.toString()).toContain("is not the name of an answer file");
-      }
-    },
-    judgeBound
-  );
+  test("refuses another kind, a directory with no prompt.txt and a bad answer name", () => {
+    expect(judge("plugins", judgeDir()).stderr.toString()).toContain("is ste or bare");
+    expect(judge("ste", freshDir("judging-empty")).stderr.toString()).toContain(
+      "has no prompt.txt"
+    );
+    for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
+      const result = judge("ste", judgeDir(), output);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr.toString()).toContain("is not the name of an answer file");
+    }
+  });
+
+  /**
+   * A `docker` first on PATH for a daemon that never answers one kind of call, `hang` (it sleeps
+   * far past any bound, as a stalled daemon's client waits on; `none` stalls no call), answers an
+   * image's inspect with `inspect` (1: the daemon lacks the image), fails each pull at once with a
+   * line of its own on stderr, and answers a run at once. It writes each call's first two words to
+   * calls.txt beside it. No row of it needs Docker itself.
+   */
+  function stalledDocker(hang: "image" | "pull" | "run" | "none", inspect = 0) {
+    const bin = freshDir("judge-stalled-docker");
+    const calls = path.join(bin, "calls.txt");
+    writeFileSync(
+      path.join(bin, "docker"),
+      `#!/bin/bash\nprintf '%s %s\\n' "$1" "$2" >>${JSON.stringify(calls)}\n[ "$1" != ${hang} ] || exec sleep 600\ncase $1 in image) exit ${inspect} ;; pull) echo 'the registry refused the pull' >&2; exit 1 ;; esac\n`,
+      { mode: 0o755 }
+    );
+    return {
+      PATH: `${bin}:${childEnv.PATH}`,
+      calls: () => readFileSync(calls, "utf8").split("\n").filter(Boolean),
+    };
+  }
+  /** Bounds that end a stalled call in seconds: the daemon's 2 s, and omp's own 1 s. */
+  const SHORT = { SKILL_SCENARIOS_DOCKER_TIMEOUT: "2", SKILL_SCENARIOS_TIMEOUT: "1" };
+  /** The rig's refusal lines in a judge's stderr. */
+  const refusals = (result: { stderr: Buffer }) =>
+    result.stderr
+      .toString()
+      .split("\n")
+      .filter((line) => line.startsWith("skill-scenarios: "));
+
+  // Catches: a Docker call that waits on a stalled daemon with no bound of its own, so only the
+  // row's clock ends it and nothing names the call (on 20 November the seven judge rows failed so,
+  // at a bound measured on another step), and an inspect the daemon never answered taken for a missing
+  // image, which then pulls.
+  test("an inspect the daemon does not answer within its bound ends the judge, naming the call", () => {
+    const docker = stalledDocker("image");
+    const dir = judgeDir();
+    const result = judge("bare", dir, "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        expect.stringMatching(
+          /^skill-scenarios: judge-omp: docker image inspect \S+ did not end within its bound of 2 s \(SKILL_SCENARIOS_DOCKER_TIMEOUT\)$/
+        ),
+      ],
+    });
+    expect(docker.calls()).toEqual(["image inspect"]);
+    expect(existsSync(`${dir}.key`)).toBe(false);
+  });
+
+  // Catches: a pull that waits on a stalled daemon with no bound, a refusal that names no call, and
+  // a pull its bound ended asked again, each attempt another bound on a daemon that stalled.
+  test("a pull the daemon does not answer within its bound ends the judge at once, naming the call", () => {
+    const docker = stalledDocker("pull", 1);
+    const result = judge("bare", judgeDir(), "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        expect.stringMatching(
+          /^skill-scenarios: judge-omp: docker pull \S+ did not end within its bound of 2 s \(SKILL_SCENARIOS_DOCKER_TIMEOUT\)$/
+        ),
+      ],
+    });
+    expect(docker.calls()).toEqual(["image inspect", "pull --quiet"]);
+  });
+
+  // Catches: a registry's one bad answer, which the next pull makes good, refusing the judge, and a
+  // refusal after the last attempt that drops that attempt's own words.
+  test("a pull that fails within its bound is asked again, and the judge is refused after the last", () => {
+    const docker = stalledDocker("none", 1);
+    const result = judge("bare", judgeDir(), "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        expect.stringMatching(
+          new RegExp(
+            `^skill-scenarios: judge-omp: docker could not pull \\S+ in ${JUDGE_PULLS} attempts: the registry refused the pull$`
+          )
+        ),
+      ],
+    });
+    expect(docker.calls()).toEqual([
+      "image inspect",
+      ...Array.from({ length: JUDGE_PULLS }, () => "pull --quiet"),
+    ]);
+  });
+
+  // Catches: a judge's run that waits on a stalled daemon past omp's own bound, and one whose
+  // refusal leaves its key directory behind or no exit line in out.txt.
+  test("a run that does not end within the daemon's bound and omp's own ends the judge, naming both", () => {
+    const docker = stalledDocker("run");
+    const dir = judgeDir();
+    const result = judge("bare", dir, "answer.json", { ...SHORT, PATH: docker.PATH });
+    expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
+      code: 1,
+      refusals: [
+        expect.stringMatching(
+          /^skill-scenarios: judge-omp: docker run \S+ did not end within its bound of 3 s: the daemon's 2 s \(SKILL_SCENARIOS_DOCKER_TIMEOUT\) and omp's own 1 s \(SKILL_SCENARIOS_TIMEOUT\)$/
+        ),
+      ],
+    });
+    expect(docker.calls()).toEqual(["image inspect", "run --rm"]);
+    expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("exit=137\n");
+    expect(existsSync(`${dir}.key`)).toBe(false);
+  });
+
+  // Catches: a bound that is no whole number of seconds handed to `timeout` as it stands.
+  test("refuses a Docker bound or an omp bound that is no whole number of seconds", () => {
+    for (const [name, value] of [
+      ["SKILL_SCENARIOS_DOCKER_TIMEOUT", "5s"],
+      ["SKILL_SCENARIOS_DOCKER_TIMEOUT", "0"],
+      ["SKILL_SCENARIOS_TIMEOUT", "1e3"],
+    ] as const) {
+      const result = judge("bare", judgeDir(), "answer.json", { [name]: value });
+      expect({ name, value, code: result.exitCode, refusals: refusals(result) }).toEqual({
+        name,
+        value,
+        code: 1,
+        refusals: [
+          `skill-scenarios: judge-omp: ${name} is '${value}', not a whole number of seconds`,
+        ],
+      });
+    }
+  });
 
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
@@ -1529,7 +1758,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // home or session bus, one whose models.yml still names the host key command (which the
     // container cannot run), one that mints more than once per judge run, a token the judge can
     // read only by a path outside its mounts, and a token left on disk once the judge ends.
-    test.skipIf(skip)(
+    dockerTest(
       "a gateway judge starts in the container on a token the host minted once, and the token file is gone after",
       () => {
         // The first judge-omp call builds both profiles, and each install's preflight mints once.
@@ -1561,8 +1790,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         });
         expect(existsSync(`${dir}.key`)).toBe(false);
         expect(readFileSync(path.join(dir, "answer.json"), "utf8")).not.toMatch(/eyJ[\w-]*\./);
-      },
-      judgeBound
+      }
     );
 
     // Catches: a token directory or file that others can read while the judge runs. The modes
@@ -1570,21 +1798,17 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
     // for nothing now, so there is no window for a watcher to look through, and a row that
     // waited for one would be waiting on a sleep.
-    test.skipIf(skip)(
-      "the token file is the owner's alone while the judge runs",
-      () => {
-        const dir = gatewayDir();
-        const result = gatewayJudge("bare", dir);
-        expect(judged(result)).toEqual(judgedCleanly);
-        expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
-        expect(existsSync(`${dir}.key`)).toBe(false);
-      },
-      judgeBound
-    );
+    dockerTest("the token file is the owner's alone while the judge runs", () => {
+      const dir = gatewayDir();
+      const result = gatewayJudge("bare", dir);
+      expect(judged(result)).toEqual(judgedCleanly);
+      expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
+      expect(existsSync(`${dir}.key`)).toBe(false);
+    });
 
     // Catches: a token file left behind when the judge fails, and a failed mint that starts the
     // judge anyway.
-    test.skipIf(skip)(
+    dockerTest(
       "removes the token file when the judge fails, and starts no judge when the key command fails",
       () => {
         const dir = gatewayDir();
@@ -1608,52 +1832,49 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
           "judge-omp: the gateway's key command gave no key"
         );
         expect(existsSync(path.join(refused, "answer.json"))).toBe(false);
-      },
-      judgeBound
+      }
     );
   });
 
   // Catches: a judge profile whose built-from records an empty commit line when the rig's root is
   // no checkout, so a judge's model run cannot be traced to the code that built it.
-  test.skipIf(skip)(
-    "fails, naming the rig's root, when the root is no checkout",
-    () => {
-      const top = freshDir("judge-root");
-      const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
-      mkdirSync(scripts, { recursive: true });
-      // rig.sh sources rpc.sh beside it.
-      for (const file of ["rig.sh", "rpc.sh"])
-        writeFileSync(path.join(scripts, file), readFileSync(path.join(import.meta.dir, file)));
-      for (const file of [
-        ".omp-pin",
-        "skills/asd-ste100/SKILL.md",
-        "packages/envoy/scripts/lib/pg-url.sh",
-      ]) {
-        mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
-        writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
+  dockerTest("fails, naming the rig's root, when the root is no checkout", () => {
+    const top = freshDir("judge-root");
+    const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
+    mkdirSync(scripts, { recursive: true });
+    // rig.sh reads rig-world.json and sources rpc.sh beside it.
+    for (const file of ["rig.sh", "rig-world.json", "rpc.sh"])
+      writeFileSync(path.join(scripts, file), readFileSync(path.join(import.meta.dir, file)));
+    for (const file of [
+      ".omp-pin",
+      "skills/asd-ste100/SKILL.md",
+      "packages/envoy/scripts/lib/pg-url.sh",
+    ]) {
+      mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
+      writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
+    }
+    mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
+    cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
+      recursive: true,
+    });
+    const rootWork = freshDir("judge-root-work");
+    const result = childSpawn(
+      { ...JUDGE_OMP, part: "rig.sh judge-omp ste" },
+      ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
+      {
+        ...JUDGE_OMP_ENVIRONMENT,
+        USER: "rig",
+        SKILL_SCENARIOS_WORK: rootWork,
+        SKILL_SCENARIOS_JUDGE_OMP: omp,
+        LEGION_E2E_MODEL_ROUTE: "key-file",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+        GIT_CEILING_DIRECTORIES: path.dirname(top),
       }
-      mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
-      cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
-        recursive: true,
-      });
-      const rootWork = freshDir("judge-root-work");
-      const result = childSpawn(
-        ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
-        {
-          USER: "rig",
-          SKILL_SCENARIOS_WORK: rootWork,
-          SKILL_SCENARIOS_JUDGE_OMP: omp,
-          LEGION_E2E_MODEL_ROUTE: "key-file",
-          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-          GIT_CEILING_DIRECTORIES: path.dirname(top),
-        }
-      );
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
-      expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
-    },
-    judgeBound
-  );
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
+    expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
+  });
 });
 
 // A spec run's plan row reads skill://writing-plans, which only a label built with
@@ -1676,20 +1897,83 @@ describe("require_superpowers", () => {
   });
 });
 
-// launch with a stand-in tmux that starts the pane's command only once launch has looked at the
-// pane's output for the first time, as a real tmux server starts it after `new-session` has
-// returned, and a stand-in mise that prints the omp command line it was given. The gate is a
-// FIFO: the pane's command waits to read it, and the stand-in `sleep`, launch's pause after each
-// look, opens it at its first call; the script opens it at the end where launch never paused.
+// launch with a stand-in tmux that records its session's name and starts the pane's command only
+// once launch has looked at the pane's output for the first time, as a real tmux server starts it
+// after `new-session` has returned, a stand-in systemd-run that records the scope it was
+// asked for and runs the command after `--`, a stand-in bwrap that records its arguments and runs
+// the command after `--`, a stand-in mise that prints the omp command line it was given, and a
+// stand-in bun that names its binary. The run's directory and the label's profile sit in a work
+// directory, as rig.sh lays them out. The pane's PATH holds what an operator's does: a wrapper of
+// git and jj in the operator's home first, then mise's shims (jq's is a link to mise, as mise
+// makes them), then two mise installs, jq's and jj's, under the pane's MISE_DATA_DIR, then the
+// system. The run's HOME links to a native module cache, and its models.yml reads its key with
+// `!cat`, as the provider route writes it; the label's key-file command names a key file. The
+// tmux gate is a FIFO: the pane's command waits to read it, and the stand-in `sleep`, launch's
+// pause after each look, opens it at its first call; the script opens it at the end where launch
+// never paused. A launch that refuses does so before `new-session`, so no pane waits on the gate.
 describe("launch", () => {
-  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
-  // once, and extra omp arguments placed anywhere but after the prompt.
-  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
-    const run = freshDir("launch-run");
+  type Dirs = { run: string; profile: string; bin: string; tools: string };
+  function launchRun(
+    args: string,
+    env: Record<string, string> = {},
+    before?: (dirs: Dirs) => void
+  ) {
+    const work = freshDir("launch-work");
+    const run = path.join(work, "runs", "0123456789abcdef");
+    const profile = path.join(work, "profiles", "fedcba9876543210");
     const bin = freshDir("launch-bin");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+    const tools = freshDir("launch-tools");
+    for (const dir of ["cwd", "sessions", "tmp", "home/.omp/profiles/skills/agent"])
+      mkdirSync(path.join(run, dir), { recursive: true });
+    for (const dir of ["pi-envoy", "pi-legion", "model-key"])
+      mkdirSync(path.join(profile, dir), { recursive: true });
+    // The label's checkout, which no agent's view holds, and the map's link to its profile.
+    const checkout = freshDir("launch-checkout");
+    writeFileSync(path.join(profile, "checkout"), `${checkout}\n`);
+    mkdirSync(path.join(work, "services"));
+    mkdirSync(path.join(work, "maps", "profiles"), { recursive: true });
+    symlinkSync(
+      "../../profiles/fedcba9876543210",
+      path.join(work, "maps", "profiles", "ablate-head")
+    );
+    const data = path.join(tools, "mise");
+    const wrappers = path.join(tools, "home", ".dotfiles", "shims");
+    for (const dir of [wrappers, path.join(data, "shims"), path.join(data, "installs/jq/1.0")])
+      mkdirSync(dir, { recursive: true });
+    mkdirSync(path.join(data, "installs/jj/0.1/bin"), { recursive: true });
+    for (const file of [
+      path.join(wrappers, "git"),
+      path.join(wrappers, "jj"),
+      path.join(data, "installs/jq/1.0/jq"),
+      path.join(data, "installs/jj/0.1/bin/jj"),
+    ])
+      writeFileSync(file, "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync(path.join(bin, "mise"), path.join(data, "shims", "jq"));
+    const panePath = [
+      bin,
+      wrappers,
+      path.join(data, "shims"),
+      path.join(data, "installs/jq/1.0"),
+      path.join(data, "installs/jj/0.1/bin"),
+      "/usr/bin",
+      "/bin",
+    ].join(":");
+    mkdirSync(path.join(tools, "natives"));
+    symlinkSync(path.join(tools, "natives"), path.join(run, "home/.omp/natives"));
+    mkdirSync(path.join(tools, "keys"));
+    writeFileSync(path.join(tools, "keys", "token"), "a key\n");
+    writeFileSync(
+      path.join(run, "home/.omp/profiles/skills/agent/models.yml"),
+      `${JSON.stringify({ providers: { rig: { apiKey: `!cat ${tools}/keys/token` } } })}\n`
+    );
+    writeFileSync(path.join(tools, "anthropic-key"), "a key\n");
+    writeFileSync(
+      path.join(profile, "model-key", "anthropic-key"),
+      `#!/bin/sh\nkey_file=${tools}/anthropic-key\n`,
+      { mode: 0o755 }
+    );
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
-    writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
+    writeFileSync(path.join(run, "pane.env"), `PATH=${panePath}\nMISE_DATA_DIR=${data}\n`);
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
     writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
@@ -1698,88 +1982,1585 @@ describe("launch", () => {
       `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\necho "$@"\n`,
       { mode: 0o755 }
     );
+    writeFileSync(path.join(bin, "bun-real"), "", { mode: 0o755 });
+    writeFileSync(path.join(bin, "bun"), `#!/bin/sh\necho "${bin}/bun-real"\n`, { mode: 0o755 });
+    writeFileSync(
+      path.join(bin, "systemd-run"),
+      `#!/bin/bash\nscope=()\nwhile [ "$1" != -- ]; do scope+=("$1"); shift; done\nshift\necho "\${scope[*]}" >"${run}/scope"\nexec "$@"\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      path.join(bin, "bwrap"),
+      `#!/bin/bash\n: >"${run}/view"\nif [ "$1" = --args ]; then tr '\\0' '\\n' <&"$2" >>"${run}/view"; shift 2; fi\nwhile [ "$1" != -- ]; do printf '%s\\n' "$1" >>"${run}/view"; shift; done\nshift\nexec "$@"\n`,
+      { mode: 0o755 }
+    );
+    before?.({ run, profile, bin, tools });
     const standIns = `
-tmux() { case $1 in new-session) (read -r _ <"$R/pane-gate" && bash -c "\${@: -1}") & ;; esac; }
+tmux() { case $1 in new-session) printf '%s\\n' "$4" >"$R/session"; (read -r _ <"$R/pane-gate" && bash -c "\${@: -1}") & ;; esac; }
 open_gate() { if [ -p "$R/pane-gate" ]; then echo looked >"$R/pane-gate"; rm -f "$R/pane-gate"; fi; }
 sleep() { open_gate; command sleep 0.05; }`;
+    const functions = [
+      "fail",
+      "pinned_omp",
+      "rig_omp",
+      "view_bind",
+      "view_tool",
+      "provider_key_file",
+      "key_command_file",
+      "fresh_gateway_key",
+      "agent_view",
+      "launch",
+    ];
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nmkfifo "$R/pane-gate"\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"\nopen_gate`,
-      [run],
-      { PATH: `${bin}:${callerPath}` }
+      `${functions.map(fn).join("\n")}\n${standIns}\nR=$1 P=$2 work=$3 maps=$3/maps tag=t pin=omp@pin profile=skills\nmkfifo "$R/pane-gate"\nlaunch${args}\ncp "$R/out.txt" "$R/seen"\nopen_gate`,
+      [run, profile, work],
+      { PATH: `${bin}:${callerPath}`, ...env }
     );
-    expect(result.code).toBe(0);
-    expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
+    const read = (name: string) => readFileSync(path.join(run, name), "utf8");
+    return { ...result, run, bin, read, work, profile, checkout, tools, data };
+  }
+
+  /** The view's bubblewrap arguments, read back: each bind (`--bind` or `--ro-bind`, a source
+   *  and a destination) and, apart, every other argument with its operands. */
+  function viewOf(lines: string[]) {
+    const binds: { mode: string; source: string; dest: string }[] = [];
+    const others: string[] = [];
+    const operands: Record<string, number> = {
+      "--symlink": 2,
+      "--dev": 1,
+      "--proc": 1,
+      "--tmpfs": 1,
+      "--chdir": 1,
+    };
+    for (let at = 0; at < lines.length; ) {
+      const option = lines[at] ?? "";
+      if (option === "--bind" || option === "--ro-bind" || option === "--dev-bind") {
+        binds.push({ mode: option, source: lines[at + 1] ?? "", dest: lines[at + 2] ?? "" });
+        at += 3;
+      } else {
+        const n = operands[option] ?? 0;
+        others.push(lines.slice(at, at + n + 1).join(" "));
+        at += n + 1;
+      }
+    }
+    return { binds, others };
+  }
+
+  /** What launch binds of the system: /usr, /etc, each directory at / that is no link, and the
+   *  directory of each file outside /etc and /usr that a link of /etc names. */
+  const systemSources = new Set(["/usr", "/etc"]);
+  for (const dir of ["/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"])
+    if (existsSync(dir) && !lstatSync(dir).isSymbolicLink()) systemSources.add(dir);
+  for (const name of readdirSync("/etc")) {
+    const link = path.join("/etc", name);
+    if (!lstatSync(link).isSymbolicLink()) continue;
+    let target: string;
+    try {
+      target = realpathSync(link);
+    } catch {
+      continue;
+    }
+    if (!/^\/(etc|usr|proc|dev)\//.test(target)) systemSources.add(path.dirname(target));
+  }
+
+  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
+  // once, and extra omp arguments placed anywhere but after the prompt.
+  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
+    const { code, read, bin, run } = launchRun(" --continue");
+    expect(code).toBe(0);
+    expect(read("seen")).toBe(
       `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
     );
   });
-});
 
-describe("launch environment", () => {
+  // Catches: an agent that runs in the caller's own scope with no memory cap. On 2026-11-18 one
+  // reviewer's shell held an endless command substitution (an unquoted here-document whose
+  // backticks ran `yes`) and its omp reached 79 GiB in the session's scope before the kernel
+  // killed it. In a scope of its own, capped with no swap, such an agent is killed alone.
+  test("the agent runs in a user scope of its own, capped at 8G with no swap, or at SKILL_SCENARIOS_MEMORY_MAX", () => {
+    const capped = launchRun("");
+    expect(capped.code).toBe(0);
+    expect(capped.read("scope")).toBe(
+      "--user --scope --quiet -p MemoryMax=8G -p MemorySwapMax=0\n"
+    );
+    const named = launchRun("", { SKILL_SCENARIOS_MEMORY_MAX: "2G" });
+    expect(named.read("scope")).toBe("--user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0\n");
+  });
+
+  // Catches: an agent whose view is the whole machine with holes in it (`--dev-bind / /`), where a
+  // search from / reads another label's skills in an older work directory's profile or in the
+  // operator's installed plugins; a view that binds a label's checkout, the map, another run or
+  // label, the profile's own records, or a tool's wrapper in the operator's home or mise's shims in
+  // place of the tool's install; another run's scratch files in the machine's /tmp; and a tmux
+  // session named after the run.
+  test("the agent's view is an allowlist: the system, its run with its own /tmp, its label's plugins and keys, the services, and its tools' installs, in a PID namespace of its own", () => {
+    const { code, read, run, work, profile, checkout, bin, tools, data } = launchRun("");
+    expect(code).toBe(0);
+    const { binds, others } = viewOf(read("view").split("\n").filter(Boolean));
+    expect(binds.filter((bind) => bind.mode === "--dev-bind" || bind.source === "/")).toEqual([]);
+    const ro = (source: string, dest = source) => ({ mode: "--ro-bind", source, dest });
+    const real = (file: string) => realpathSync(file);
+    expect(binds.filter((bind) => !systemSources.has(bind.source))).toEqual([
+      { mode: "--bind", source: run, dest: run },
+      { mode: "--bind", source: `${run}/tmp`, dest: "/tmp" },
+      ro(`${profile}/pi-envoy`),
+      ro(`${profile}/pi-legion`),
+      ro(`${profile}/model-key`),
+      ro(`${work}/services`),
+      ro(`${tools}/keys`),
+      ro(`${tools}/anthropic-key`),
+      ro(real(`${bin}/pin`), `${bin}/pin`),
+      ro(real(`${bin}/mise`)),
+      ro(real(`${bin}/bun-real`)),
+      { mode: "--bind", source: real(`${tools}/natives`), dest: `${tools}/natives` },
+      ro(real(`${data}/installs/jj/0.1`), `${data}/installs/jj/0.1`),
+      ro(real(`${data}/installs/jq/1.0`), `${data}/installs/jq/1.0`),
+    ]);
+    for (const bind of binds) expect(bind.source.startsWith(checkout)).toBe(false);
+    // `mise x` takes every mise install but the pin's off the agent's PATH, so the run's bin,
+    // first on it, links each tool a mise install holds; git is the system's.
+    expect(readlinkSync(path.join(run, "bin", "jj"))).toBe(`${data}/installs/jj/0.1/bin/jj`);
+    expect(readlinkSync(path.join(run, "bin", "jq"))).toBe(`${data}/installs/jq/1.0/jq`);
+    expect(existsSync(path.join(run, "bin", "git"))).toBe(false);
+    expect(others.filter((other) => !other.startsWith("--symlink "))).toEqual([
+      "--dev /dev",
+      "--tmpfs /dev/shm",
+      "--proc /proc",
+      "--tmpfs /var/tmp",
+      "--unshare-pid",
+      "--die-with-parent",
+      `--chdir ${run}/cwd`,
+    ]);
+    for (const other of others.filter((one) => one.startsWith("--symlink ")))
+      expect(other).toMatch(/^--symlink usr\/\S+ \/\S+$/);
+    expect(read("session")).toBe("t-0123456789abcdef\n");
+    // bwrap reads the view from a file under <work>, which the view does not hold, around the
+    // launch file started again with an empty environment, and the agent runs mise by the path the
+    // view binds.
+    expect(read("launch.sh")).not.toContain(checkout);
+    expect(read("launch.sh")).toContain(
+      ` --args 3 -- env -i "$BASH" "$0" clean 3<${work}/views/0123456789abcdef >`
+    );
+    expect(read("launch.sh")).toContain(`exec env -u SHLVL ${real(`${bin}/mise`)} x omp@pin -- `);
+  });
+
+  // Catches: a gateway route whose key command must mint inside the agent's view, which holds
+  // neither hawk-token nor the operator's HOME and session bus; and a kept key that expires
+  // before the run's deadline. The stand-in key command serves the kept key while it is good, as
+  // install-model-gateway.sh's does, and mints one good for 60 s first and for a day after.
+  test("on the gateway route the host mints a key good past the run's deadline, and the view holds the kept key read-only", () => {
+    const keyCommand = (dirs: Dirs, lives: string) => {
+      mkdirSync(path.join(dirs.profile, "key"));
+      mkdirSync(path.join(dirs.profile, "cache"));
+      writeFileSync(
+        path.join(dirs.profile, "key", "hawk-token"),
+        [
+          "#!/bin/bash",
+          `cache=${dirs.profile}/cache/hawk-token.key calls=${dirs.profile}/key/calls`,
+          'echo call >>"$calls"',
+          'if [ -s "$cache" ]; then read -r until key <"$cache"; [ "$EPOCHSECONDS" -ge "$until" ] || { echo "$key"; exit 0; }; fi',
+          `lives=(${lives})`,
+          'n=$(wc -l <"$calls")',
+          'printf "%s key%s\\n" $((EPOCHSECONDS + lives[n - 1])) "$n" >"$cache"',
+          'echo "key$n"',
+          "",
+        ].join("\n"),
+        { mode: 0o755 }
+      );
+    };
+    const fresh = launchRun("", {}, (dirs) => keyCommand(dirs, "60 86400"));
+    expect(fresh.code).toBe(0);
+    expect(readFileSync(path.join(fresh.profile, "key", "calls"), "utf8")).toBe("call\ncall\n");
+    const [until] = readFileSync(path.join(fresh.profile, "cache", "hawk-token.key"), "utf8").split(
+      " "
+    );
+    expect(Number(until)).toBeGreaterThan(Date.now() / 1000 + 1500);
+    const { binds } = viewOf(fresh.read("view").split("\n").filter(Boolean));
+    expect(binds).toContainEqual({
+      mode: "--ro-bind",
+      source: `${fresh.profile}/key`,
+      dest: `${fresh.profile}/key`,
+    });
+    expect(binds).toContainEqual({
+      mode: "--ro-bind",
+      source: `${fresh.profile}/cache`,
+      dest: `${fresh.profile}/cache`,
+    });
+    const short = launchRun("", {}, (dirs) => keyCommand(dirs, "60 60"));
+    expect(short.code).not.toBe(0);
+    expect(short.stderr).toContain("before the run's deadline");
+  });
+
   // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
   // a tester's pane carries the batch's NATS URL, credential included, and launch once handed the
-  // pane to `env -i` as arguments. Every `env` launch runs after the pane's PATH is set records
-  // its arguments here. The clean re-exec starts with no PATH, so it calls the system `env`, and a
-  // command named by its absolute path is no stand-in's either: so launch.sh itself must give the
-  // pane's lines (`vars`) to nothing but `export`, the mapfile that reads them and the loop alone.
+  // pane to `env -i` as arguments. Every `env` the launch runs from PATH records its arguments
+  // here: the one bwrap starts the launch file again with, and the one that starts the launcher
+  // under the pane's PATH. A command named by its absolute path is no stand-in's, so launch.sh
+  // itself must give the pane's lines (`vars`) to nothing but `export`, the mapfile that reads them
+  // and the loop alone. The launcher, mise, gets the pane's lines as its whole environment.
   test("the pane's variables reach the launcher, mise, in its environment alone, never in an argument", () => {
-    const run = freshDir("launch-env-run");
-    const bin = freshDir("launch-env-bin");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
     const realEnv = Bun.which("env", { PATH: callerPath });
     const token = fixtureSecret("tok");
     const url = new URL("nats://127.0.0.1:4222");
     url.username = token;
-    const pane = [`PATH=${bin}:${callerPath}`, `ENVOY_NATS_URL=${url.href}`, "NOTE=two words"];
-    writeFileSync(path.join(run, "prompt.txt"), "Test it.\n");
-    writeFileSync(path.join(run, "pane.env"), `${pane.join("\n")}\n`);
-    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
-    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
-    writeFileSync(
-      path.join(bin, "env"),
-      `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(path.join(run, "argv.log"))}\nexec ${JSON.stringify(realEnv)} "$@"\n`,
-      { mode: 0o755 }
-    );
-    writeFileSync(
-      path.join(bin, "mise"),
-      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n${JSON.stringify(realEnv)} >${JSON.stringify(path.join(run, "launcher-env"))}\n`,
-      { mode: 0o755 }
-    );
-    const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
-    const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch tester-proof-s1-1`,
-      [run],
-      { PATH: `${bin}:${callerPath}` }
-    );
-    const argv = existsSync(path.join(run, "argv.log"))
-      ? readFileSync(path.join(run, "argv.log"), "utf8")
-      : "";
+    const { code, read, run } = launchRun("", {}, ({ run, bin }) => {
+      appendFileSync(path.join(run, "pane.env"), `ENVOY_NATS_URL=${url.href}\nNOTE=two words\n`);
+      writeFileSync(
+        path.join(bin, "env"),
+        `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(path.join(run, "argv.log"))}\nexec ${JSON.stringify(realEnv)} "$@"\n`,
+        { mode: 0o755 }
+      );
+      writeFileSync(
+        path.join(bin, "mise"),
+        `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n${JSON.stringify(realEnv)} >${JSON.stringify(path.join(run, "launcher-env"))}\n`,
+        { mode: 0o755 }
+      );
+    });
+    const argv = existsSync(path.join(run, "argv.log")) ? read("argv.log") : "";
     const launcherEnv = existsSync(path.join(run, "launcher-env"))
-      ? readFileSync(path.join(run, "launcher-env"), "utf8")
+      ? read("launcher-env")
           .trim()
           .split("\n")
           .filter((line) => !line.startsWith("PWD="))
           .sort()
       : [];
-    const launcher = readFileSync(path.join(run, "launch.sh"), "utf8");
     expect({
-      code: result.code,
+      code,
       envRan: argv.length > 0,
       leaked: argv
         .split("\n")
         .filter((line) => line.includes(token))
         .map((line) => line.replaceAll(token, "<token>")),
-      paneUses: paneUses(launcher),
+      paneUses: paneUses(read("launch.sh")),
       launcherEnv,
     }).toEqual({
       code: 0,
       envRan: true,
       leaked: [],
       paneUses: PANE_USES,
-      launcherEnv: [...pane].sort(),
+      launcherEnv: read("pane.env").trim().split("\n").sort(),
     });
   });
+
+  // Catches: a launch that asks mise for the pin's Oh My Pi where SKILL_SCENARIOS_OMP names the one
+  // to run, as a build pod with no mise does, or a view that holds no install of that binary.
+  test("with SKILL_SCENARIOS_OMP the agent runs that Oh My Pi alone, with its install in the view, and calls no mise", () => {
+    const install = freshDir("launch-omp");
+    mkdirSync(path.join(install, "bin"));
+    const omp = path.join(install, "bin", "omp");
+    // launchRun's pin is omp@pin, whose release the binary's --version must print.
+    writeFileSync(
+      omp,
+      `#!/usr/bin/env bash\nif [ "\${1:-}" = --version ]; then echo omp/pin; exit 0; fi\necho "the pod's omp ran: $*"\n`,
+      { mode: 0o755 }
+    );
+    const miseCalls = path.join(install, "mise-calls.txt");
+    const { code, read, run, bin } = launchRun("", { SKILL_SCENARIOS_OMP: omp }, ({ bin }) =>
+      writeFileSync(
+        path.join(bin, "mise"),
+        `#!/bin/sh\necho "mise $*" >>${JSON.stringify(miseCalls)}\nexit 1\n`,
+        { mode: 0o755 }
+      )
+    );
+    expect(code).toBe(0);
+    expect(read("seen")).toBe(
+      `the pod's omp ran: -p The person answered your asks on LWEVAL-2. --session-dir ${run}/sessions\nexit=0\n`
+    );
+    expect(existsSync(miseCalls)).toBe(false);
+    const { binds } = viewOf(read("view").split("\n").filter(Boolean));
+    expect(binds).toContainEqual({
+      mode: "--ro-bind",
+      source: realpathSync(install),
+      dest: install,
+    });
+    expect(binds.map((bind) => bind.source)).not.toContain(realpathSync(path.join(bin, "mise")));
+    expect(read("launch.sh")).toContain(`exec env -u SHLVL ${omp} -p `);
+  });
+
+  // Catches: a provider block whose key command, `!<absolute executable>`, the agent's view does
+  // not hold, so every turn of the agent fails on its key while the run is scored as a model error.
+  test("a models.yml that reads its key with a command of its own is refused, naming the form", () => {
+    const keyCommand = "!/usr/bin/true";
+    const { code, stderr } = launchRun("", {}, ({ run }) =>
+      writeFileSync(
+        path.join(run, "home/.omp/profiles/skills/agent/models.yml"),
+        `${JSON.stringify({ providers: { rig: { apiKey: keyCommand } } })}\n`
+      )
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain("which the agent's view cannot run");
+  });
+});
+
+// The heads scenarios wait for the run's Dispatch to know #702's head before any agent starts:
+// fixture_heads with a stand-in for the label checkout's `dispatch` command (its
+// packages/envoy-client/bin/dispatch.ts), which records each call and prints the line of #702 from
+// the call HEADS_LINE_AT on, beside a line of #703 on every call, and a stand-in sleep that records
+// each wait. Like the real command, the stand-in refuses a call that names no host or no session
+// (`DISPATCH_HOST is not set`), and prints no line of a head then.
+describe("fixture_heads", () => {
+  function waitFor(lineAt: number) {
+    const run = freshDir("heads-run");
+    const co = freshDir("heads-checkout");
+    const rigWork = freshDir("heads-work");
+    const bin = path.join(co, "packages", "envoy-client", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      path.join(bin, "dispatch.ts"),
+      `import { appendFileSync, existsSync, readFileSync } from "node:fs";
+const calls = process.env.HEADS_CALLS ?? "";
+const n = (existsSync(calls) ? readFileSync(calls, "utf8").split("\\n").filter(Boolean).length : 0) + 1;
+appendFileSync(calls, \`\${JSON.stringify({ argv: process.argv.slice(2), url: process.env.DISPATCH_URL, token: process.env.DISPATCH_TOKEN_FILE, host: process.env.DISPATCH_HOST, session: process.env.DISPATCH_SESSION_ID })}\\n\`);
+if (!process.env.DISPATCH_HOST || !process.env.DISPATCH_SESSION_ID) {
+  console.log("dispatch: DISPATCH_HOST is not set.");
+  process.exit(1);
+}
+console.log(\`- k1 (before_merge). Compared with the heads of 2 open pull requests. Read \${n}.\`);
+console.log("  A pass stands: no, as 0 of 2 heads read yes");
+console.log("  - #703 at ${"3".repeat(40)}: no, as fail f1 counts there.");
+if (n >= Number(process.env.HEADS_LINE_AT)) console.log("  - #702 at ${"2".repeat(40)}: yes, from implementer, tester. Passes p1, p2 decide it.");
+`
+    );
+    const calls = path.join(run, "calls.jsonl");
+    const result = bash(
+      [
+        fn("fail"),
+        fn("fixture_heads"),
+        `sleep() { printf '%s\\n' "$1" >>"$R/sleeps"; }`,
+        "R=$1 co=$2 work=$3 dispatch_port=4567 worker_key=LWEVAL-9",
+        "fixture_heads 702",
+      ].join("\n"),
+      [run, co, rigWork],
+      { HEADS_CALLS: calls, HEADS_LINE_AT: String(lineAt) }
+    );
+    const read = (name: string) =>
+      existsSync(path.join(run, name)) ? readFileSync(path.join(run, name), "utf8") : "";
+    const made = read("calls.jsonl").split("\n").filter(Boolean);
+    return { ...result, run, rigWork, read, made: made.map((line) => JSON.parse(line)) };
+  }
+
+  // Catches: a wait that starts the agent before Dispatch learned #702's head, one that takes the
+  // line of #703 for it, one that reads another Dispatch than the run's own, one that names no host
+  // or session (the real command refuses it and prints no line of a head), and one that keeps no
+  // record of what it read.
+  test("a line of #702 on the third read passes, and that read's output is results-before.txt", () => {
+    const { code, stderr, read, made, rigWork } = waitFor(3);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(made).toHaveLength(3);
+    expect(made[0]).toEqual({
+      argv: ["results", "--issue", "LWEVAL-9"],
+      url: "http://127.0.0.1:4567",
+      token: path.join(rigWork, "services", "dispatch-token"),
+      host: "omp",
+      session: "rig-fixture-heads",
+    });
+    expect(read("sleeps")).toBe("2\n2\n");
+    expect(read("results-before.txt")).toContain("Read 3.");
+    expect(read("results-before.txt")).toContain(`  - #702 at ${"2".repeat(40)}: yes`);
+  });
+
+  // Catches: a wait with no deadline, one shorter than 60 s, a failure that does not name the head
+  // or the file, and one that leaves no record of the last read.
+  test("no line of #702 in 60 s fails, naming #702 and the last read's file", () => {
+    const { code, stderr, read, made, run } = waitFor(1000);
+    expect(code).toBe(1);
+    expect(stderr).toContain("#702");
+    expect(stderr).toContain(path.join(run, "results-before.txt"));
+    expect(made).toHaveLength(31);
+    const waited = read("sleeps")
+      .split("\n")
+      .filter(Boolean)
+      .reduce((sum, seconds) => sum + Number(seconds), 0);
+    expect(waited).toBe(60);
+    expect(read("results-before.txt")).toContain("Read 31.");
+    expect(read("results-before.txt")).not.toContain("#702");
+  });
+});
+
+// A run of a -hidden label turns its Dispatch's switch on after the rig's own reads and off once
+// its agent has ended (hide_state_on, hide_state_off). Stand-ins for the label checkout's
+// `dispatch` (its packages/envoy-client/bin/dispatch.ts) and for curl print whether the switch's
+// file existed when each ran, and a stand-in agent records whether it saw the switch on and
+// results-before.txt in its run's directory.
+describe("hide_state_on and hide_state_off", () => {
+  function hiddenRun(hidden: boolean, ending: "ends" | "fails") {
+    const run = freshDir("hide-run");
+    const co = freshDir("hide-checkout");
+    const rigWork = freshDir("hide-work");
+    const quiet = path.join(rigWork, "maps", "quiet");
+    mkdirSync(quiet, { recursive: true });
+    mkdirSync(path.join(rigWork, "services"));
+    writeFileSync(path.join(rigWork, "services", "dispatch-token"), "e2e-token\n");
+    const bin = path.join(co, "packages", "envoy-client", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      path.join(bin, "dispatch.ts"),
+      `import { existsSync } from "node:fs";
+const on = (process.env.SWITCH ?? "") !== "" && existsSync(process.env.SWITCH ?? "");
+console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DISPATCH_URL} as \${process.env.DISPATCH_HOST}: switch \${on ? "on" : "off"}\`);
+`
+    );
+    writeFileSync(path.join(run, "results-before.txt"), `  - #702 at ${"2".repeat(40)}: yes\n`);
+    const sw = hidden ? path.join(quiet, path.basename(run)) : "";
+    const result = bash(
+      [
+        fn("quiet_reads"),
+        fn("hide_state_on"),
+        fn("hide_state_off"),
+        fn("stop_run"),
+        "stop_tree() { :; }",
+        "stop_panes() { :; }",
+        "stop_env_processes() { :; }",
+        `curl() { printf 'curl %s [stdin %s]: switch %s\\n' "$*" "$(cat)" "$([ -e "$SWITCH" ] && echo on || echo off)"; }`,
+        `agent() { { [ -e "$SWITCH" ] && echo switch=on || echo switch=off; [ -e "$R/results-before.txt" ] && echo before=seen || echo before=unseen; } >"$R/agent-saw"; }`,
+        "R=$1 co=$2 work=$3 maps=$3/maps dispatch_port=4567 worker_key=ACME-1 hide_state_file=$SWITCH",
+        "session='' daemon_pid='' dispatch_pid='' natsd_pid='' fake_github_pid=''",
+        "trap stop_run EXIT",
+        "hide_state_on",
+        "agent",
+        ending === "ends" ? "hide_state_off" : "exit 1",
+      ].join("\n"),
+      [run, co, rigWork],
+      { SWITCH: sw }
+    );
+    const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
+    return { ...result, run, sw, quiet, read };
+  }
+
+  // Catches: a switch turned on before the rig's own reads, or after the agent starts; one left on
+  // after the agent; a results-before.txt the agent's view still holds, or one not put back for
+  // score.ts; and reads of the results the rig does not keep.
+  test("a hidden run's agent sees the switch on and no results-before.txt, between the rig's reads before and after", () => {
+    const { code, stderr, run, sw, read } = hiddenRun(true, "ends");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(read(path.join(run, "agent-saw"))).toBe("switch=on\nbefore=unseen\n");
+    expect(read(`${sw}.before-text`)).toBe(
+      "dispatch results --issue ACME-1 at http://127.0.0.1:4567 as omp: switch off\n"
+    );
+    expect(read(`${sw}.after-text`)).toBe(
+      "dispatch results --issue ACME-1 at http://127.0.0.1:4567 as omp: switch on\n"
+    );
+    expect(read(`${sw}.before-json`)).toBe(
+      "dispatch results --issue ACME-1 --json at http://127.0.0.1:4567 as omp: switch off\n"
+    );
+    expect(read(`${sw}.after-json`)).toContain("--json at http://127.0.0.1:4567 as omp: switch on");
+    // The token reaches curl on its standard input, never in its arguments, which another process
+    // can read (packages/daemon/internal/textcheck).
+    expect(read(`${sw}.before-curl`)).toBe(
+      "curl -sS -H @- http://127.0.0.1:4567/api/v1/issues/ACME-1/results [stdin Authorization: Bearer e2e-token]: switch off\n"
+    );
+    expect(read(`${sw}.after-curl`)).toContain(
+      "/results [stdin Authorization: Bearer e2e-token]: switch on"
+    );
+    expect(existsSync(sw)).toBe(false);
+    expect(existsSync(`${sw}.results-before.txt`)).toBe(false);
+    expect(read(path.join(run, "results-before.txt"))).toContain("#702");
+  });
+
+  // Catches: a run that fails with the switch on and leaves it on, or keeps results-before.txt in
+  // the map, where score.ts does not read it.
+  test("a hidden run whose agent fails ends with the switch off and results-before.txt back", () => {
+    const { code, run, sw, read } = hiddenRun(true, "fails");
+    expect(code).toBe(1);
+    expect(read(path.join(run, "agent-saw"))).toBe("switch=on\nbefore=unseen\n");
+    expect(existsSync(sw)).toBe(false);
+    expect(read(path.join(run, "results-before.txt"))).toContain("#702");
+  });
+
+  // Catches: a switch that a run of any other label turns on.
+  test("a run of another label reads nothing more, and its agent sees what it saw before", () => {
+    const { code, stderr, run, quiet } = hiddenRun(false, "ends");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(run, "agent-saw"), "utf8")).toBe("switch=off\nbefore=seen\n");
+    expect(readdirSync(quiet)).toEqual([]);
+  });
+
+  // Catches: a switch the run's Dispatch never learns of.
+  test("start_dispatch names the run's switch to run-server.sh, and an empty one for any other run", () => {
+    const started = (sw: string) => {
+      const run = freshDir("hide-dispatch");
+      mkdirSync(path.join(run, "logs"));
+      const result = bash(
+        [
+          fn("start_dispatch"),
+          `start_process() { printf '%s|%s\\n' "\${DISPATCH_TEST_HIDE_STATE_FILE-unset}" "$*" >"$evidence/started"; }`,
+          "await_start() { :; }",
+          "report_port() { echo 4567; }",
+          "evidence=$1 root=/checkout hide_state_file=$2",
+          "start_dispatch postgres://db",
+        ].join("\n"),
+        [run, sw]
+      );
+      return { code: result.code, started: readFileSync(path.join(run, "started"), "utf8") };
+    };
+    expect(started("/w/maps/quiet/0123456789abcdef")).toEqual({
+      code: 0,
+      started:
+        "/w/maps/quiet/0123456789abcdef|dispatch bash /checkout/packages/dispatch/e2e/run-server.sh\n",
+    });
+    expect(started("").started).toBe(
+      "|dispatch bash /checkout/packages/dispatch/e2e/run-server.sh\n"
+    );
+  });
+});
+
+// services_up, then services_down, given no servers, with a stand-in docker, which records each
+// call, answers each `run` with an id and `logs` with the lines NATS logs on a port it chose, and
+// refuses a `run` that publishes a host port, as Docker does when another process holds the port it
+// chose; and a stand-in go, whose `store/cmd/connections -process` counts 30 connections a run.
+describe("services_up", () => {
+  const TAKEN =
+    "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint t-nats (bb7e): failed to bind host port 127.0.0.1:41026/tcp: address already in use";
+  function up(owner: string | undefined) {
+    const dir = freshDir("services-up");
+    mkdirSync(path.join(dir, "services"));
+    mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
+    mkdirSync(path.join(dir, "root", "scripts", "e2e", "lib"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "root", "scripts", "e2e", "lib", "nats-image.sh"),
+      "nats_image=nats:rig\n"
+    );
+    const result = bash(
+      [
+        "set -euo pipefail",
+        fn("fail"),
+        fn("given_services"),
+        fn("safe_url"),
+        fn("connections_needed"),
+        fn("owner_only"),
+        fn("services_up"),
+        fn("services_down"),
+        `docker() {
+  printf '%s\\n' "$*" >>"$S/calls"
+  case $1 in
+  run)
+    case " $* " in *" -p 127.0.0.1:"* | *" --publish "*) echo "${TAKEN}" >&2 && return 125 ;; esac
+    n=$((n + 1)) && echo "id-$n"
+    ;;
+  logs)
+    echo "[1] 2026/11/21 01:56:40.269703 [INF] Listening for client connections on 127.0.0.1:4567"
+    echo "[1] 2026/11/21 01:56:40.269710 [INF] Server is ready"
+    ;;
+  esac
+}`,
+        "until_true() { :; }",
+        "go() { echo 30; }",
+        "listener_up() { envoy_port=1; }",
+        "stop_tree() { :; }",
+        "note() { :; }",
+        "n=0 S=$1/services root=$1/root tag=t services_env=$1/services/env services_postgres=$1/services/postgres-url pg_socket=''",
+        "services_up",
+        `cp "$services_env" "$S/env-seen" && printf '%s' "$pg_socket" >"$S/socket-seen"`,
+        `[ -d "$pg_socket" ] && echo made >"$S/socket-made"`,
+        "services_down",
+      ].join("\n"),
+      [dir],
+      owner === undefined ? {} : { SKILL_SCENARIOS_OWNER: owner }
+    );
+    const read = (name: string) =>
+      existsSync(path.join(dir, "services", name))
+        ? readFileSync(path.join(dir, "services", name), "utf8")
+        : "";
+    const socket = read("socket-seen");
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      containers: read("containers"),
+      runs: read("calls")
+        .split("\n")
+        .filter((line) => line.startsWith("run ")),
+      env: read("env-seen"),
+      socket,
+      socketMade: read("socket-made"),
+      socketLeft: socket !== "" && existsSync(socket),
+    };
+  }
+
+  // Catches: a container no record names, so nothing can remove it by its id; and an owner label
+  // missing from one of the two.
+  test("each container's id is recorded, and SKILL_SCENARIOS_OWNER labels each one", () => {
+    const labelled = up("rig-agent");
+    expect({ code: labelled.code, stderr: labelled.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(labelled.containers).toBe("id-1\nid-2\n");
+    expect(labelled.runs.map((line) => line.split(" ").slice(0, 6).join(" "))).toEqual([
+      "run -d --name t-pg --label owner=rig-agent",
+      "run -d --name t-nats --label owner=rig-agent",
+    ]);
+    const plain = up(undefined);
+    expect(plain.containers).toBe("id-1\nid-2\n");
+    expect(plain.runs.every((line) => !line.includes("--label"))).toBe(true);
+  });
+
+  // Catches: a container that publishes a host port, which Docker chooses among the ports it has
+  // not handed out itself and another process of a shared host can hold; a batch of
+  // reviewer-pass-and-fail ended at that refusal, before any run. And a NATS the listener would
+  // refuse as another machine's, or a service the runs' Dispatch servers would look for on a host
+  // port.
+  test("no container publishes a host port: NATS binds its own loopback port, Postgres is reached through its socket", () => {
+    const { code, stderr, runs, env, socket, socketMade, socketLeft } = up(undefined);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(runs.filter((line) => / (-p 127\.0\.0\.1:|--publish )/.test(line))).toEqual([]);
+    const nats = runs.find((line) => line.startsWith("run -d --name t-nats ")) ?? "";
+    expect(nats).toEndWith(
+      " --network host --cpus 1 --memory 512m nats:rig -js -a 127.0.0.1 -p -1"
+    );
+    expect(env).toContain("ENVOY_NATS_URL=nats://127.0.0.1:4567\n");
+    const postgres = runs.find((line) => line.startsWith("run -d --name t-pg ")) ?? "";
+    // 30 connections for each of the 5 concurrent runs, and 20 for the batch's own queries.
+    expect(postgres).toEndWith(" -c max_connections=170");
+    expect(postgres).toContain(
+      `--mount type=bind,source=${socket},destination=/var/run/postgresql`
+    );
+    expect(postgres).toMatch(/ --user \d+:\d+ /);
+    // The socket's directory is a new one of /tmp's, short enough for a socket's path, and
+    // services_down removes it.
+    expect({
+      name: socket.replace(/\.[A-Za-z0-9]{6}$/, ".XXXXXX"),
+      socketMade,
+      socketLeft,
+    }).toEqual({
+      name: "/tmp/rig-pg.XXXXXX",
+      socketMade: "made\n",
+      socketLeft: false,
+    });
+  });
+});
+
+// cmd_batch of reviewer-own-head runs each of its four cases <runs> times for each label, each
+// as a run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
+// `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd.
+describe("cmd_batch", () => {
+  // Catches: a batch that runs one case alone, gives two runs one index (and so one PR number and
+  // one commit time), drops the case from a run's arguments, or builds no natsd for the runs.
+  test("reviewer-own-head runs each case for each label and run number, each with its own index", () => {
+    const here = freshDir("batch-here");
+    const rigWork = freshDir("batch-work");
+    writeFileSync(path.join(here, "rig.sh"), `printf '%s\\n' "$*" >>"${here}/runs"\n`);
+    const result = bash(
+      [
+        fn("fail"),
+        fn("hidden_needs_heads"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        'lock_services() { S=$work/services; mkdir -p "$S"; }',
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        "date() { echo 1700000000; }",
+        `go() { printf 'go %s\\n' "$*" >>"$here/builds"; }`,
+        "here=$1 work=$2 root=/checkout",
+        "cmd_batch reviewer-own-head 2 head ablate-head",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+    const cases = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
+    let index = 0;
+    const want = ["head", "ablate-head"].flatMap((label) =>
+      cases.flatMap((which) =>
+        [1, 2].map((n) => `run reviewer-own-head ${label} ${n} ${++index} 1700000000 ${which}`)
+      )
+    );
+    const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
+    expect(runs.toSorted()).toEqual(want.toSorted());
+    expect(readFileSync(path.join(here, "builds"), "utf8")).toBe(
+      `go -C /checkout/packages/envoy build -o ${rigWork}/services/bin/natsd ./internal/testnats/cmd/natsd\n`
+    );
+  });
+
+  // Catches: a run whose name leaves out its case, so the cases' batches of one label, each
+  // numbered from 1, replace each other's runs; a case outside the four; and a run directory whose
+  // own name tells its agent the scenario, the case or the label (each is in the map alone).
+  test("cmd_run names a reviewer-own-head run by its case in the map, in a directory of a random name, and refuses another case", () => {
+    // rig.sh resolves its work directory's path once (realpath), as this does.
+    const rigWork = realpathSync(freshDir("run-work"));
+    mkdirSync(path.join(rigWork, "services"), { recursive: true });
+    writeFileSync(path.join(rigWork, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("hidden_needs_heads"),
+      fn("map_run"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_reviewer_own_head() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
+      "work=$1 maps=$1/maps services_env=$1/services/env",
+      'cmd_run reviewer-own-head head 1 3 1700000000 "$2"',
+    ].join("\n");
+    const link = path.join(rigWork, "maps", "runs", "reviewer-own-head-ci-only-head-1");
+    const ran = bash(script, [rigWork, "ci-only"]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const first = realpathSync(link);
+    expect(path.relative(rigWork, first)).toMatch(/^runs\/[0-9a-f]{16}$/);
+    expect(readFileSync(path.join(first, "ran"), "utf8")).toBe("3 1700000000 ci-only\n");
+    expect(existsSync(path.join(first, "case.txt"))).toBe(false);
+    expect(existsSync(path.join(first, "built-from"))).toBe(false);
+    expect(
+      readFileSync(
+        path.join(rigWork, "maps", "built-from", "reviewer-own-head-ci-only-head-1"),
+        "utf8"
+      )
+    ).toBe("checkout /c/head\n");
+    // A second run of the name replaces the first: its directory and its link.
+    expect(bash(script, [rigWork, "ci-only"]).code).toBe(0);
+    expect(realpathSync(link)).not.toBe(first);
+    expect(existsSync(first)).toBe(false);
+    const refused = bash(script, [rigWork, "frobnicate"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      "'frobnicate' is not sibling-fails, ci-only, no-implementer or no-tester"
+    );
+  });
+
+  // Catches: a -hidden label whose run has no switch (its agent then sees all Dispatch computes,
+  // under the hidden label's name), a switch inside the run's directory, which the agent's view
+  // holds, and a switch for a run of another label.
+  test("cmd_run gives a run of a -hidden label a switch in the map named after its directory, and no other run one", () => {
+    const rigWork = realpathSync(freshDir("hidden-run-work"));
+    mkdirSync(path.join(rigWork, "services"), { recursive: true });
+    writeFileSync(path.join(rigWork, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("heads_scenario"),
+      fn("hidden_needs_heads"),
+      fn("map_run"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_architect_pass_and_fail() { printf '%s\\n' "$hide_state_file" >"$R/switch"; echo exit=0 >"$R/out.txt"; }`,
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root} hide_state_file=''`,
+      'cmd_run architect-pass-and-fail "$2" 1 1 1700000000',
+    ].join("\n");
+    expect(bash(script, [rigWork, "head-hidden"])).toMatchObject({ code: 0, stderr: "" });
+    const hiddenRun = realpathSync(
+      path.join(rigWork, "maps", "runs", "architect-pass-and-fail-head-hidden-1")
+    );
+    expect(readFileSync(path.join(hiddenRun, "switch"), "utf8")).toBe(
+      `${path.join(rigWork, "maps", "quiet", path.basename(hiddenRun))}\n`
+    );
+    expect(bash(script, [rigWork, "head"])).toMatchObject({ code: 0, stderr: "" });
+    const run = realpathSync(path.join(rigWork, "maps", "runs", "architect-pass-and-fail-head-1"));
+    expect(readFileSync(path.join(run, "switch"), "utf8")).toBe("\n");
+  });
+
+  // Catches: a -hidden label run in a scenario that never turns the switch on, so its agent sees
+  // all that Dispatch computes; and a refusal that comes only after the batch started its services.
+  test("a -hidden label is refused by any scenario but the heads scenarios, before a batch starts anything", () => {
+    const here = freshDir("hidden-batch-here");
+    const rigWork = freshDir("hidden-batch-work");
+    const result = bash(
+      [
+        fn("fail"),
+        fn("heads_scenario"),
+        fn("hidden_needs_heads"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        `lock_services() { echo started >>"$here/started"; }`,
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        `here=$1 work=$2 root=${root}`,
+        "cmd_batch measure-before-ask 1 head ablate-x-hidden",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      "the label ablate-x-hidden hides Dispatch's computed state, but the heads-scenario catalog does not list measure-before-ask"
+    );
+    expect(existsSync(path.join(here, "started"))).toBe(false);
+  });
+
+  // Catches: a ci-pass-and-fail batch that drives one role alone, or a run whose name leaves out its
+  // role, so the roles' runs of one label replace each other.
+  test("ci-pass-and-fail runs each role for each label, and cmd_run names the run by its role", () => {
+    const here = freshDir("ci-batch-here");
+    const rigWork = freshDir("ci-batch-work");
+    writeFileSync(path.join(here, "rig.sh"), `printf '%s\\n' "$*" >>"${here}/runs"\n`);
+    const batch = bash(
+      [
+        fn("fail"),
+        fn("heads_scenario"),
+        fn("hidden_needs_heads"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        'lock_services() { S=$work/services; mkdir -p "$S"; }',
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        "date() { echo 1700000000; }",
+        "go() { :; }",
+        `here=$1 work=$2 root=${root}`,
+        "cmd_batch ci-pass-and-fail 1 head head-hidden",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect({ code: batch.code, stderr: batch.stderr }).toEqual({ code: 0, stderr: "" });
+    let index = 0;
+    const want = ["head", "head-hidden"].flatMap((label) =>
+      ["reviewer", "tester", "architect"].map(
+        (role) => `run ci-pass-and-fail ${label} 1 ${++index} 1700000000 ${role}`
+      )
+    );
+    const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
+    expect(runs.toSorted()).toEqual(want.toSorted());
+
+    const work = realpathSync(freshDir("ci-run-work"));
+    mkdirSync(path.join(work, "services"), { recursive: true });
+    writeFileSync(path.join(work, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("heads_scenario"),
+      fn("hidden_needs_heads"),
+      fn("map_run"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_ci_pass_and_fail() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root} hide_state_file=''`,
+      'cmd_run ci-pass-and-fail head 1 2 1700000000 "$2"',
+    ].join("\n");
+    expect(bash(script, [work, "tester"])).toMatchObject({ code: 0, stderr: "" });
+    const run = realpathSync(path.join(work, "maps", "runs", "ci-pass-and-fail-tester-head-1"));
+    expect(readFileSync(path.join(run, "ran"), "utf8")).toBe("2 1700000000 tester\n");
+    const refused = bash(script, [work, "merger"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      "the ci-pass-and-fail case 'merger' is not reviewer, tester or architect"
+    );
+  });
+});
+
+// ci_job_results with a stand-in docker, which records the psql call and its SQL and answers the
+// count of the rows written: 0 while the run's Dispatch has not indexed the block k1 yet, then 2.
+describe("ci_job_results", () => {
+  function written(answers: string[]) {
+    const run = freshDir("ci-job-run");
+    writeFileSync(
+      path.join(run, "dispatch.json"),
+      JSON.stringify({ database: "run_0123456789abcdef" })
+    );
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ verification: "11111111-2222-3333-4444-555555555555" })
+    );
+    writeFileSync(path.join(run, "heads.json"), JSON.stringify({ "702": "7".repeat(40) }));
+    writeFileSync(path.join(run, "answers"), `${answers.join("\n")}\n`);
+    const result = bash(
+      [
+        fn("fail"),
+        fn("ci_job_results"),
+        `docker() { printf '%s\\n' "$*" >>"$R/calls"; cat >"$R/sql"; head -n 1 "$R/answers"; sed -i 1d "$R/answers"; }`,
+        `sleep() { printf '%s\\n' "$1" >>"$R/sleeps"; }`,
+        `R=$1 tag=t worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        "ci_job_results",
+      ].join("\n"),
+      [run]
+    );
+    const read = (name: string) =>
+      existsSync(path.join(run, name)) ? readFileSync(path.join(run, name), "utf8") : "";
+    return { ...result, read };
+  }
+
+  // Catches: rows written before the block exists (none, and no retry), a call that names another
+  // database, head, branch, block or job than the run's (the job is rig-world.json's, which
+  // Dispatch's GitHub stand-in serves too), and a statement that writes one verdict.
+  test("writes the job's pass and fail of k1 at #702's head once the block is indexed", () => {
+    const { code, stderr, read } = written(["0", "2"]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(read("sleeps")).toBe("2\n");
+    const job = RIG_WORLD.ciJobs["ci-pass-and-fail"].name;
+    const call = `exec -i t-pg psql -U postgres -d run_0123456789abcdef -v ON_ERROR_STOP=1 -qAt -v issue=LWEVAL-9 -v artifact=11111111-2222-3333-4444-555555555555 -v head=${"7".repeat(40)} -v branch=legion/LWEVAL-9-702 -v job=${job} -v session=ci-results:example/widgets/.github/workflows/ci-results.yaml`;
+    expect(read("calls").split("\n").filter(Boolean)).toEqual([call, call]);
+    const sql = read("sql");
+    expect(sql).toContain("insert into ci_check_results");
+    expect(sql).toContain("where b.artifact_id = :'artifact'::uuid and b.block_id = 'k1'");
+    expect(sql).toMatch(
+      /\('pass', 'Attempt 1 of ' \|\| :'job' \|\| ' passed[^']*', interval '2 minutes'\)/
+    );
+    expect(sql).toMatch(
+      /\('fail', 'Attempt 2 of ' \|\| :'job' \|\| ' failed[^']*', interval '0 seconds'\)/
+    );
+  });
+
+  // Catches: a world built with no CI result, which would read as the not_completed case alone.
+  test("a block that is never indexed fails the run after 60 s, naming the issue", () => {
+    const { code, stderr, read } = written(Array.from({ length: 31 }, () => "0"));
+    expect(code).toBe(1);
+    expect(stderr).toContain("held no block k1 within 60 s");
+    expect(read("sleeps").split("\n").filter(Boolean)).toHaveLength(30);
+  });
+});
+
+// The world of the heads scenarios: fixture_repo's bare remote, source repository and workspace,
+// and heads_fixture's two pull request branches of one issue on it. worker_fixture, the
+// tester-proof world, builds on the same fixture_repo, and keeps its world as it was.
+describe("heads_fixture", () => {
+  function build(fixture: "heads_fixture" | "worker_fixture") {
+    const run = freshDir(`${fixture}-run`);
+    const result = bash(
+      [
+        "set -euo pipefail",
+        ...["fail", "g", "fixture_repo", "workspace_on", "worker_routes", fixture].map(fn),
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        `${fixture} 3 1700000000`,
+      ].join("\n"),
+      [run]
+    );
+    return { ...result, run };
+  }
+  const git = (dir: string, ...args: string[]) => {
+    const result = childSpawn({ ...VCS_COMMAND, part: `git ${args.join(" ")}` }, [
+      "git",
+      "-C",
+      dir,
+      ...args,
+    ]);
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+    return result.stdout.toString().trim();
+  };
+  /** The commit the workspace's working copy stands on, as jj reads it with the fixture's own
+   * configuration. */
+  const workspaceParent = (run: string) =>
+    spawnWithin(
+      { ...VCS_COMMAND, part: "jj log" },
+      ["jj", "log", "--no-graph", "-r", "@-", "-T", "commit_id"],
+      {
+        cwd: path.join(run, "ws"),
+        env: { ...childEnv, JJ_CONFIG: path.join(run, "jj-setup.toml") },
+      }
+    )
+      .stdout.toString()
+      .trim();
+
+  // Catches: one branch where the case needs two heads, a head that is no commit of the remote, a
+  // commit that is not one above main or that changes code (the reviewer then runs its
+  // thermonuclear pair), a fixture that ignores the run's index and start, a workspace left on
+  // main, and a world that names another pull request than #702.
+  test("two branches of the issue, each one docs-only commit above main, and the world of #702", () => {
+    const { code, stderr, run } = build("heads_fixture");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const remote = path.join(run, "remote.git");
+    const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8")) as Record<
+      string,
+      string
+    >;
+    expect(Object.keys(heads).toSorted()).toEqual(["702", "703"]);
+    expect(heads["702"]).not.toBe(heads["703"]);
+    const main = git(remote, "rev-parse", "main");
+    for (const [pr, head] of Object.entries(heads)) {
+      expect(head).toMatch(/^[0-9a-f]{40}$/);
+      expect(git(remote, "rev-parse", `legion/LWEVAL-9-${pr}`)).toBe(head);
+      expect(git(remote, "rev-parse", `${head}^`)).toBe(main);
+      expect(git(remote, "rev-list", "--count", `main..${head}`)).toBe("1");
+      const changed = git(remote, "diff", "--name-only", main, head).split("\n");
+      expect(changed.length).toBeGreaterThan(0);
+      expect(changed.filter((file) => !file.endsWith(".md"))).toEqual([]);
+      expect(git(remote, "log", "-1", "--format=%at %ct", head)).toBe("1700000003 1700000003");
+    }
+    expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
+      key: "LWEVAL-9",
+      repo: "example/widgets",
+      pr: 702,
+      branch: "legion/LWEVAL-9-702",
+      head: heads["702"],
+    });
+    expect(workspaceParent(run)).toBe(heads["702"]);
+    expect(readFileSync(path.join(run, "pushes.log"), "utf8")).toBe("");
+  });
+
+  // Catches: a move of the shared part into fixture_repo that changes the tester's world: its
+  // branch, its code commit, its PR number or its workspace.
+  test("worker_fixture with the same inputs keeps legion/LWEVAL-9 one commit above main with greet.ts, and pr 1003", () => {
+    const { code, stderr, run } = build("worker_fixture");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const remote = path.join(run, "remote.git");
+    const head = git(remote, "rev-parse", "legion/LWEVAL-9");
+    expect(git(remote, "rev-parse", `${head}^`)).toBe(git(remote, "rev-parse", "main"));
+    expect(git(remote, "rev-list", "--count", `main..${head}`)).toBe("1");
+    expect(git(remote, "diff", "--name-only", "main", head).split("\n")).toEqual([
+      "greet.test.ts",
+      "greet.ts",
+    ]);
+    expect(git(remote, "show", `${head}:greet.ts`)).toContain(
+      "export function greet(name: string): string {"
+    );
+    expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
+      key: "LWEVAL-9",
+      repo: "example/widgets",
+      pr: 1003,
+      branch: "legion/LWEVAL-9",
+      head,
+    });
+    expect(workspaceParent(run)).toBe(head);
+    expect(readFileSync(path.join(run, "pushes.log"), "utf8")).toBe("");
+  });
+
+  // Catches: a ci-pass-and-fail world whose GitHub shows k1's job as passed (the agent would then
+  // see CI green beside Dispatch's not_completed), a body line that is not the one Dispatch printed,
+  // a second pull request, and an approval on #702 for any role but the architect.
+  test("heads_routes of ci-pass-and-fail serve #702 alone, its go-checks run in progress, and the architect's approval", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ issue: "LWEVAL-9", title: "A usage page" })
+    );
+    const prLine = "- Check k1 (before_merge): CI run go-checks has no result (not_completed)";
+    writeFileSync(
+      path.join(run, "results-before.txt"),
+      `Checks of LWEVAL-9:\n\n- k1 (before_merge): its CI job's results below.\n  A pass stands: not known, as 0 of 1 heads read yes.\n  - #702 at ${head}: not known, as pass p1 and fail f1 count at this commit.\n    Pull request line: ${prLine}\n`
+    );
+    const routes = (role: string) => {
+      const result = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          'heads_routes ci-pass-and-fail "$2"',
+        ].join("\n"),
+        [run, role]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const all: { match: string; stdout?: unknown }[] = JSON.parse(
+        readFileSync(path.join(run, "fixtures.json"), "utf8")
+      ).routes;
+      const answer = (match: string) => all.find((route) => route.match === match)?.stdout;
+      return { all, answer };
+    };
+    const reviewer = routes("reviewer");
+    // gh prints a check run's own link, the job's page in its workflow run (rig-world.json's run 41
+    // and check run 9101 for go-checks, as Dispatch's stand-in serves them).
+    expect(reviewer.answer("^gh pr checks")).toBe(
+      "lint\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ntest\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ngo-checks\tpending\t0\thttps://github.com/example/widgets/actions/runs/41/job/9101"
+    );
+    expect(reviewer.answer(`^gh api .*commits/${head}/check-runs`)).toMatchObject({
+      total_count: 3,
+      check_runs: [
+        { name: "lint" },
+        { name: "test" },
+        { name: "go-checks", status: "in_progress", conclusion: null },
+      ],
+    });
+    const pr = reviewer.answer("^gh pr view") as { body: string; statusCheckRollup: unknown[] };
+    expect(pr.body).toContain(`**Checks:**\n${prLine}\n`);
+    expect(pr.statusCheckRollup).toContainEqual({
+      name: "go-checks",
+      status: "IN_PROGRESS",
+      conclusion: "",
+    });
+    expect((reviewer.answer("^gh pr list") as unknown[]).length).toBe(1);
+    expect(reviewer.answer("^gh api .*pulls/702/reviews")).toEqual([]);
+    expect(routes("tester").answer("^gh api .*pulls/702/reviews")).toEqual([]);
+    expect(routes("architect").answer("^gh api .*pulls/702/reviews")).toMatchObject([
+      { state: "APPROVED", commit_id: head },
+    ]);
+  });
+
+  // Each GitHub read the heads scenarios' agents made in the fifth round of runs and since, one
+  // call of each endpoint in the form an agent wrote it, and the reads the role prompts and skills
+  // name. The round's agents named two repositories, since the pane's addressing named another than
+  // the world's; the addressing now reads rig-world.json, so each call names the world's.
+  const ROUND_CALLS = [
+    "gh --version",
+    "gh auth status",
+    "gh repo view example/widgets --json defaultBranchRef --jq .defaultBranchRef.name",
+    "gh api repos/example/widgets --jq {full_name,default_branch}",
+    "gh api repos/example/widgets/branches --jq .[].name",
+    "gh api -i repos/example/widgets/branches/main",
+    "gh api repos/example/widgets/branches/main/protection/required_status_checks",
+    "gh api repos/example/widgets/rulesets",
+    'gh api --paginate repos/example/widgets/rules/branches/main --jq .[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
+    "gh api --paginate repos/example/widgets/issues/702/comments --jq .[] | [.user.login,.body] | @tsv",
+    "gh api repos/example/widgets/pulls/702/comments",
+    "gh api --paginate repos/example/widgets/pulls/703/reviews --jq .[] | [.id,.state,.user.login] | @tsv",
+    "gh api repos/example/widgets/pulls/702 --jq {head:.head.sha,base:.base.ref,mergeable_state}",
+    "gh api repos/example/widgets/pulls/702/commits --jq .[] | [.sha, .commit.message] | @tsv",
+    "gh api repos/example/widgets/actions/runs?head_sha={702}&per_page=100 --jq .workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv",
+    "gh api repos/example/widgets/actions/runs/1/jobs --jq .jobs[] | [.id, .name, .status, .conclusion] | @tsv",
+    "gh api repos/example/widgets/commits/{703}/check-runs --paginate --jq .check_runs[] | [.name, .status, .conclusion, .started_at] | @tsv",
+    "gh api --paginate repos/example/widgets/commits/{702}/status?per_page=100 --jq .statuses[] | [.context, .state] | @tsv",
+    "gh api repos/example/widgets/git/ref/heads/legion/LWEVAL-9-702 --jq .object.sha",
+    "gh api repos/example/widgets/compare/main...legion/LWEVAL-9-703 --jq .ahead_by",
+    'gh api graphql -f query=query{repository(owner:"example",name:"widgets"){pullRequest(number:703){mergeStateStatus mergeable baseRef{branchProtectionRule{requiredStatusCheckContexts}}}}}',
+    "gh api graphql --paginate -f query=query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}} -F o=example -F r=widgets -F n=702",
+    "gh pr view 703 --repo example/widgets --json number,headRefOid,mergeStateStatus,statusCheckRollup,isCrossRepository",
+    "gh pr diff 702 --repo example/widgets",
+    "gh pr checks 702 -R example/widgets --required",
+    "gh pr list --repo example/widgets --state open --json number,headRefName,headRefOid",
+  ];
+  // Catches: a world with no route for a GitHub read an agent makes, which the stand-in used to
+  // answer `gh: Not Found (HTTP 404)`, as if GitHub held no such thing: the fifth round's reviewers
+  // read the base's branch so, took it for a refusal and waited, and that measured the rig. And a
+  // stand-in that answers a read no route names in any way an agent can take for GitHub's.
+  test("heads_routes answer each GitHub read of the round as GitHub does, and a read they lack fails the run loudly", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+      })
+    );
+    const made = bash(
+      [
+        "set -euo pipefail",
+        fn("fail"),
+        fn("heads_routes"),
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        "heads_routes reviewer-own-head sibling-fails",
+      ].join("\n"),
+      [run]
+    );
+    expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+    const gh = (line: string) => {
+      const argv =
+        line
+          .replace(/\{(70[23])\}/g, (_, pr: string) => heads[pr])
+          .match(/'[^']*'|\S+/g)
+          ?.slice(1)
+          .map((arg) => arg.replace(/^'|'$/g, "")) ?? [];
+      // A jq program of several words is one argument, as the agent's shell quoted it.
+      const jq = argv.findIndex((arg) => arg === "--jq" || arg === "-q");
+      const args = jq < 0 ? argv : [...argv.slice(0, jq + 1), argv.slice(jq + 1).join(" ")];
+      const result = childSpawn(
+        { ...SCRIPT_RUN, part: "gh-standin.ts" },
+        ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+        { SKILL_SCENARIO_RUN: run }
+      );
+      return {
+        code: result.exitCode,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+      };
+    };
+    for (const call of ROUND_CALLS) {
+      const { code, stderr } = gh(call);
+      expect({ call, noRoute: code === 97 || stderr.includes("STAND-IN HAS NO ROUTE") }).toEqual({
+        call,
+        noRoute: false,
+      });
+    }
+    expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+    // A pull request's commits, as GitHub lists them: its one commit, the head on the base. A
+    // reviewer of reviewer-own-head read #702's so, where the stand-in had no route for it.
+    expect(
+      gh("gh api repos/example/widgets/pulls/702/commits --jq .[] | [.sha, .parents[0].sha] | @tsv")
+    ).toEqual({
+      code: 0,
+      stdout: `${heads["702"]}\t${git(path.join(run, "remote.git"), "rev-parse", "main")}\n`,
+      stderr: "",
+    });
+    // A pull request's files, as GitHub lists them: each path, its status and its patch, the hunks
+    // of that path from the first @@ line. A reviewer of reviewer-own-head read #703's so, where the
+    // stand-in had no route for it.
+    const remote = path.join(run, "remote.git");
+    const changed = git(remote, "diff", "--name-status", "main", heads["703"])
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => line.split("\t"));
+    expect(changed.length).toBeGreaterThan(0);
+    const statuses: Record<string, string> = { A: "added", M: "modified", D: "removed" };
+    expect(
+      gh("gh api repos/example/widgets/pulls/703/files --jq .[] | [.filename, .status] | @tsv")
+    ).toEqual({
+      code: 0,
+      stdout: changed.map(([status, file]) => `${file}\t${statuses[status ?? ""]}\n`).join(""),
+      stderr: "",
+    });
+    for (const [, file] of changed) {
+      const diff = git(remote, "diff", "main", heads["703"], "--", file ?? "");
+      const patch = diff.slice(diff.indexOf("\n@@") + 1).replace(/\n$/, "");
+      expect(
+        gh(
+          `gh api repos/example/widgets/pulls/703/files --jq .[] | select(.filename == "${file}") | .patch`
+        )
+      ).toEqual({ code: 0, stdout: `${patch}\n`, stderr: "" });
+    }
+    expect(
+      gh("gh api repos/example/widgets/pulls/703/files --jq .[] | .filename, .patch").code
+    ).toBe(0);
+    // A check run by its id, as GitHub answers it, and GitHub's 404 for an id no head has a run of.
+    // A reviewer of the case ci-only read its named run so, where the stand-in had no route for it.
+    const runID = gh(
+      "gh api repos/example/widgets/commits/{702}/check-runs --jq .check_runs[0].id"
+    ).stdout.trim();
+    expect(
+      gh(
+        `gh api repos/example/widgets/check-runs/${runID} --jq [.id, .name, .head_sha, .conclusion] | @tsv`
+      )
+    ).toEqual({ code: 0, stdout: `${runID}\tlint\t${heads["702"]}\tsuccess\n`, stderr: "" });
+    expect(gh("gh api repos/example/widgets/check-runs/1 --jq .name")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
+    // A compare with a commit the repository does not hold: GitHub's 404. An architect of
+    // architect-pass-and-fail compared the base with such a commit, where the stand-in had no route
+    // for it. The control: the compare of the base with a head still answers.
+    expect(
+      gh(
+        "gh api repos/example/widgets/compare/main...cc14cd790a47ea73926f227bad9e00374e3424d1 --jq {status,ahead_by}"
+      )
+    ).toMatchObject({ code: 1, stderr: "gh: Not Found (HTTP 404)\n" });
+    expect(gh("gh api repos/example/widgets/compare/main...{702} --jq .status")).toEqual({
+      code: 0,
+      stdout: "ahead\n",
+      stderr: "",
+    });
+    // Each body holds every line of the template's brief that the implementer writes, and the
+    // Thermo line's row for each half, as skills/legion-worker/references/pr-body.md has them. A
+    // reviewer of reviewer-own-head requested changes on a body that lacked the brief and had one
+    // Thermo row, instead of judging the gate.
+    const template = readFileSync(
+      path.join(root, "skills/legion-worker/references/pr-body.md"),
+      "utf8"
+    );
+    const brief = template.slice(
+      template.indexOf("## For the reviewer"),
+      template.indexOf("## Verification")
+    );
+    const briefLines = brief.split("\n");
+    // A line the reviewer writes says so, on it or on its continuation (a next line that starts no
+    // label of its own): "the reviewer writes this line" or "The reviewer writes it".
+    const implementerLabels = briefLines.flatMap((line, index) => {
+      const label = /^\*\*([^*]+):\*\*/.exec(line)?.[1];
+      const next = briefLines[index + 1] ?? "";
+      const reviewers = /the reviewer writes (this line|it)\b/i.test(
+        /^\*\*[^*]+:\*\*/.test(next) ? line : `${line}\n${next}`
+      );
+      return label === undefined || reviewers ? [] : [label];
+    });
+    expect(implementerLabels).toEqual(["Outcome", "Why", "Change", "Proven by", "Size"]);
+    const halves = [...template.matchAll(/^- (`thermonuclear-[a-z-]+`):/gm)].map((m) => m[1]);
+    expect(halves.length).toBe(2);
+    for (const pr of ["702", "703"]) {
+      const body = gh(`gh pr view ${pr} --repo example/widgets --json body --jq .body`).stdout;
+      expect({
+        pr,
+        brief: body.includes("\n## For the reviewer\n"),
+        missing: implementerLabels.filter(
+          (label) => !body.includes(`\n**${label}:** `) && !body.includes(`\n**${label}:**\n`)
+        ),
+        rows: halves.map((half) =>
+          body.includes(`\n- ${half}: not run (the whole change touches no runtime code)\n`)
+        ),
+      }).toEqual({ pr, brief: true, missing: [], rows: [true, true] });
+    }
+    expect(gh("gh pr view 702 --repo example/widgets --json body --jq .body").stdout).toContain(
+      "\n**Size:** 1 file changed, +3/−0\n"
+    );
+    // The reads a reviewer makes of the base, as GitHub answers them for a base with no protection.
+    expect(gh("gh api repos/example/widgets/branches/main --jq .protected")).toEqual({
+      code: 0,
+      stdout: "false\n",
+      stderr: "",
+    });
+    expect(
+      gh(
+        "gh api repos/example/widgets/branches/main --jq .protection.required_status_checks.checks[].context"
+      )
+    ).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(gh("gh api repos/example/widgets/branches/main/protection")).toEqual({
+      code: 1,
+      stdout:
+        '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"403"}',
+      stderr: "gh: Resource not accessible by integration (HTTP 403)\n",
+    });
+    expect(gh("gh api repos/example/widgets/branches/no-such-branch --jq .name")).toMatchObject({
+      code: 1,
+      stderr: "gh: Branch not found (HTTP 404)\n",
+    });
+    expect(gh("gh api -i repos/example/widgets/branches/main").stdout).toStartWith(
+      "HTTP/2.0 200 OK\r\n"
+    );
+    expect(gh("gh pr checks 702 -R example/widgets --required")).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: "no required checks reported on the 'legion/LWEVAL-9-702' branch\n",
+    });
+    // A review the run posts is GitHub's answer, then in the list and readable by its id.
+    writeFileSync(
+      path.join(run, "review.json"),
+      JSON.stringify({ event: "APPROVE", body: "ok", commit_id: heads["702"] })
+    );
+    const posted = gh(
+      `gh api --method POST repos/example/widgets/pulls/702/reviews --input ${path.join(run, "review.json")} --jq .id`
+    );
+    expect(posted).toEqual({ code: 0, stdout: "7002\n", stderr: "" });
+    expect(
+      gh("gh api repos/example/widgets/pulls/702/reviews --jq .[] | [.id,.state,.commit_id] | @tsv")
+        .stdout
+    ).toBe(`7002\tAPPROVED\t${heads["702"]}\n`);
+    expect(gh("gh api repos/example/widgets/pulls/702/reviews/7002 --jq .state").stdout).toBe(
+      "APPROVED\n"
+    );
+    expect(gh("gh api repos/example/widgets/pulls/702/reviews/99 --jq .state")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
+    expect(gh("gh pr view 702 --json reviews --jq .reviews[].state").stdout).toBe("APPROVED\n");
+    // A repository other than the world's, which the App's token cannot read: GitHub's 404.
+    expect(gh("gh api repos/skills-rig/project/branches/main --jq .protected")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
+    // A read no route names: the stand-in's own failure, named in the run's log, never an answer.
+    expect(gh("gh api repos/example/widgets/planted-unknown-endpoint --jq .")).toEqual({
+      code: 97,
+      stdout: "",
+      stderr:
+        "STAND-IN HAS NO ROUTE: gh api repos/example/widgets/planted-unknown-endpoint --jq .\n",
+    });
+    expect(readFileSync(path.join(run, "no-route.log"), "utf8")).toBe(
+      "STAND-IN HAS NO ROUTE: gh api repos/example/widgets/planted-unknown-endpoint --jq .\n"
+    );
+    const calls = readFileSync(path.join(run, "calls.jsonl"), "utf8").trim().split("\n");
+    expect(JSON.parse(calls.at(-1) ?? "{}")).toMatchObject({
+      route: null,
+      no_route: true,
+      exit: 97,
+    });
+  });
+
+  // Catches: a pane whose addressing names another repository or default branch than the world
+  // the stand-ins serve, as the fifth round's did (`skills-rig/project`, `trunk`, where GitHub's
+  // stand-in held `example/widgets` on `main`): an agent that reads the repository it was told
+  // then reads a world that does not exist. The addressing comes from daemon-pane.go, the world
+  // from rig.sh, and both read rig-world.json, so each side is read here and they must agree.
+  test("the pane's addressing names the repository and default branch the stand-in's world serves", async () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+      })
+    );
+    const made = bash(
+      [
+        "set -euo pipefail",
+        fn("fail"),
+        fn("heads_routes"),
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        "heads_routes reviewer-own-head sibling-fails",
+      ].join("\n"),
+      [run]
+    );
+    expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+    const pane = await workerPane(
+      { rig: run, port: 13399, profile: "rig-profile" },
+      { ...childEnv, HOME: path.join(run, "pane-home") },
+      { project: "skillsrig", issue: "LWEVAL-9", role: "reviewer" },
+      { daemonModule: DAEMON_MODULE, systemPrompt: true, ghPath: process.execPath }
+    );
+    const promptFile = (pane.systemPromptArgument ?? "")
+      .replace(/^--append-system-prompt /, "")
+      .replace(/^'(.*)'$/, "$1");
+    const told = /Your issue's repository is (\S+) \(default branch ([^)]+)\)/.exec(
+      readFileSync(promptFile, "utf8")
+    );
+    const routes: { match: string; stdout?: unknown }[] = JSON.parse(
+      readFileSync(path.join(run, "fixtures.json"), "utf8")
+    ).routes;
+    const repoRead = routes.find((route) => route.match.includes("/?repos/[^/ ]+/[^/ ?]+([ ?]|$)"))
+      ?.stdout as { full_name?: string; default_branch?: string } | undefined;
+    const remoteHead = childSpawn({ ...VCS_COMMAND, part: "git symbolic-ref" }, [
+      "git",
+      "-C",
+      path.join(run, "remote.git"),
+      "symbolic-ref",
+      "--short",
+      "HEAD",
+    ])
+      .stdout.toString()
+      .trim();
+    const world = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
+    const named = { repository: RIG_WORLD.repository, defaultBranch: RIG_WORLD.defaultBranch };
+    expect({
+      addressing: { repository: told?.[1], defaultBranch: told?.[2] },
+      githubStandIn: { repository: repoRead?.full_name, defaultBranch: repoRead?.default_branch },
+      remote: { repository: world.repo, defaultBranch: remoteHead },
+    }).toEqual({ addressing: named, githubStandIn: named, remote: named });
+  }, 600_000);
+
+  // Catches: a named CI job that the two GitHub worlds of one run number apart. Dispatch's stand-in
+  // (heads-world.ts) served docs as check run 9001 of run 40, the agent's gh stand-in served it as
+  // 8002 of run 1, and no route answered a read of job 9001: a ci-only reviewer read the id that
+  // `dispatch results` printed, and the run was a rig error.
+  for (const [scenario, scenarioCase, world] of [
+    ["reviewer-own-head", "ci-only", "ci-only"],
+    ["ci-pass-and-fail", "reviewer", "ci-pass-and-fail"],
+  ] as const) {
+    test(`${scenario} ${scenarioCase}: the named CI job is the check run, workflow run and suite rig-world.json names, and a read of it by its id answers`, () => {
+      const { code, run } = build("heads_fixture");
+      expect(code).toBe(0);
+      writeFileSync(
+        path.join(run, "fixture.json"),
+        JSON.stringify({
+          issue: "LWEVAL-9",
+          title: "A usage page",
+          lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+        })
+      );
+      // The rig's read of the results before the agent starts: a named job's Pull request line.
+      const head702 = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+      writeFileSync(
+        path.join(run, "results-before.txt"),
+        `Checks of LWEVAL-9:\n\n- k1 (before_merge): its CI job's results below.\n  - #702 at ${head702}: yes\n    Pull request line: - Check k1 (before_merge): pass at ${head702} by ci\n`
+      );
+      const made = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          `heads_routes ${scenario} ${scenarioCase}`,
+        ].join("\n"),
+        [run]
+      );
+      expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+      const job = RIG_WORLD.ciJobs[world];
+      const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
+      const gh = (...args: string[]) => {
+        const result = childSpawn(
+          { ...SCRIPT_RUN, part: "gh-standin.ts" },
+          ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+          { SKILL_SCENARIO_RUN: run }
+        );
+        return {
+          code: result.exitCode,
+          stdout: result.stdout.toString(),
+          stderr: result.stderr.toString(),
+        };
+      };
+      const done = job.status === "completed";
+      expect(
+        gh(
+          "api",
+          `repos/example/widgets/actions/jobs/${job.checkRun}`,
+          "--jq",
+          "[.id,.run_id,.name,.status]|@tsv"
+        )
+      ).toEqual({
+        code: 0,
+        stdout: `${job.checkRun}\t${job.run}\t${job.name}\t${job.status}\n`,
+        stderr: "",
+      });
+      expect(
+        gh(
+          "api",
+          `repos/example/widgets/commits/${heads["702"]}/check-runs`,
+          "--jq",
+          `.check_runs[] | select(.name == "${job.name}") | [.id,.run_id,.check_suite.id,.html_url]|@tsv`
+        ).stdout
+      ).toBe(
+        `${job.checkRun}\t${job.run}\t${job.suite}\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}\n`
+      );
+      expect(
+        gh("api", `repos/example/widgets/actions/runs/${job.run}`, "--jq", "[.name,.status]|@tsv")
+          .stdout
+      ).toBe(`${job.name}\t${job.status}\n`);
+      expect(gh("pr", "checks", "702").code).toBe(done ? 0 : 8);
+      expect(gh("api", "repos/example/widgets/actions/jobs/1234567", "--jq", ".id")).toMatchObject({
+        code: 1,
+        stderr: "gh: Not Found (HTTP 404)\n",
+      });
+      expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+    }, 600_000);
+  }
+
+  // Catches: a world with no route for a read of a file at a head, which this round's architects
+  // made with Dispatch's state hidden (`contents/docs/usage.md?ref=<head>`, `git/trees/<head>`),
+  // and which the stand-in failed loudly as a rig error: each read answers as GitHub answers it, a
+  // path no commit holds is GitHub's 404, and each file's bytes are the commit's own.
+  test("heads_routes answer the reads of a head's files as GitHub does", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+      })
+    );
+    const made = bash(
+      [
+        "set -euo pipefail",
+        fn("fail"),
+        fn("heads_routes"),
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        "heads_routes architect-pass-and-fail",
+      ].join("\n"),
+      [run]
+    );
+    expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const gitShow = (spec: string) =>
+      childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+        "git",
+        "-C",
+        path.join(run, "remote.git"),
+        "show",
+        spec,
+      ]).stdout.toString();
+    const usage = gitShow(`${head}:docs/usage.md`);
+    expect(usage.length).toBeGreaterThan(0);
+    const gh = (...args: string[]) => {
+      const result = childSpawn(
+        { ...SCRIPT_RUN, part: "gh-standin.ts" },
+        ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+        { SKILL_SCENARIO_RUN: run }
+      );
+      return {
+        code: result.exitCode,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+      };
+    };
+    const content = gh(
+      "api",
+      `repos/example/widgets/contents/docs/usage.md?ref=${head}`,
+      "--jq",
+      ".content"
+    );
+    expect(content.code).toBe(0);
+    expect(Buffer.from(content.stdout.replace(/\n/g, ""), "base64").toString()).toBe(usage);
+    expect(
+      gh(
+        "api",
+        "-H",
+        "Accept: application/vnd.github.raw",
+        `repos/example/widgets/contents/docs/usage.md?ref=${head}`
+      ).stdout
+    ).toBe(usage);
+    expect(
+      gh("api", "repos/example/widgets/contents/docs?ref=legion/LWEVAL-9-702", "--jq", ".[].name")
+        .stdout
+    ).toBe("usage.md\n");
+    expect(
+      gh(
+        "api",
+        `repos/example/widgets/git/trees/${head}?recursive=1`,
+        "--jq",
+        ".tree[].path"
+      ).stdout.split("\n")
+    ).toContain("docs/usage.md");
+    expect(gh("api", `repos/example/widgets/commits/${head}`, "--jq", ".sha").stdout).toBe(
+      `${head}\n`
+    );
+    expect(
+      gh("api", `repos/example/widgets/contents/no/such/file.md?ref=${head}`, "--jq", ".content")
+    ).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
+    expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+  }, 600_000);
 });
 
 /** What a launch file may do with the pane's lines, `vars`: read them, and export each one. */
@@ -1818,6 +3599,7 @@ describe("worker_routes", () => {
       expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
     }
     const result = childSpawn(
+      { ...SCRIPT_RUN, part: "gh-standin.ts" },
       [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
       { SKILL_SCENARIO_RUN: run }
     );
@@ -1898,14 +3680,18 @@ const sha256 = (file: string) => createHash("sha256").update(readFileSync(file))
 /** git in DIR, with no user or system configuration and no signing; its stdout, as it printed it.
  * A failure throws with git's stderr. */
 function git(dir: string, ...args: string[]): string {
-  const result = childSpawn(["git", "-C", dir, "-c", "commit.gpgsign=false", ...args], {
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_AUTHOR_NAME: "rig",
-    GIT_AUTHOR_EMAIL: "rig@example.invalid",
-    GIT_COMMITTER_NAME: "rig",
-    GIT_COMMITTER_EMAIL: "rig@example.invalid",
-  });
+  const result = childSpawn(
+    { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
+    ["git", "-C", dir, "-c", "commit.gpgsign=false", ...args],
+    {
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "rig",
+      GIT_AUTHOR_EMAIL: "rig@example.invalid",
+      GIT_COMMITTER_NAME: "rig",
+      GIT_COMMITTER_EMAIL: "rig@example.invalid",
+    }
+  );
   if (result.exitCode !== 0)
     throw new Error(`git ${args.join(" ")} in ${dir}: ${result.stderr.toString()}`);
   return result.stdout.toString();
@@ -2048,7 +3834,7 @@ describe("label_tree", () => {
     );
     // The tree's profile copies the record's manifest lines into built-from.
     const profile = bash(
-      `${defs("fail", "label_dir", "on_exit", "drop_unready_keys", "checkout_commit", "install_model_route", "install_standin_route", "route_config", "route_model_line", "cmd_profile")}\n${assignment("model_standin")}\n${assignment("model_standin_unrouted")}\nwork=$1\ncmd_profile every-verb "$2" >/dev/null`,
+      `${defs("fail", "label_dir", "on_exit", "drop_unready_keys", "checkout_commit", "install_model_route", "install_standin_route", "route_config", "route_model_line", "cmd_profile")}\n${assignment("model_standin")}\n${assignment("model_standin_unrouted")}\nwork=$1 maps=$1/maps\ncmd_profile every-verb "$2" >/dev/null`,
       [work, tree],
       { SKILL_SCENARIOS_MODEL: "standin" }
     );
@@ -2061,7 +3847,7 @@ describe("label_tree", () => {
       .filter((line) => line.startsWith("manifest"))
       .map((line) => `${line}\n`)
       .join("");
-    expect(readFileSync(path.join(work, "profiles/every-verb/built-from"), "utf8")).toContain(
+    expect(readFileSync(path.join(work, "maps/profiles/every-verb/built-from"), "utf8")).toContain(
       manifestLines
     );
   });
@@ -2244,10 +4030,13 @@ describe("a label older than its entry", () => {
     expect(check.stderr).toContain(
       `label old: its checkout ${co} has no packages/pi-legion/scripts/skill-scenarios/label-texts.sh`
     );
-    // rig.sh batch-scored refuses it before any service starts.
+    // rig.sh batch-scored refuses it before any service starts. The label's profile is a
+    // directory of a random name, which the map's link names (rig.sh's header, "the map").
     const work = freshDir("old-label-work");
-    const P = path.join(work, "profiles/old");
-    const agent = path.join(P, "home/.omp/profiles/skills-old/agent");
+    const P = path.join(work, "profiles/0123456789abcdef");
+    mkdirSync(path.join(work, "maps/profiles"), { recursive: true });
+    symlinkSync("../../profiles/0123456789abcdef", path.join(work, "maps/profiles/old"));
+    const agent = path.join(P, "home/.omp/profiles/skills/agent");
     mkdirSync(agent, { recursive: true });
     writeFileSync(
       path.join(agent, "config.yml"),
@@ -2257,10 +4046,11 @@ describe("a label older than its entry", () => {
       ["ready", ""],
       ["checkout", `${co}\n`],
       ["pin", "github:example/oh-my-pi@1.2.3-4\n"],
-      ["profile", "skills-old\n"],
+      ["profile", "skills\n"],
     ] as const)
       writeFileSync(path.join(P, file), text);
     const batch = childSpawn(
+      { ...RIG_STEP, part: "rig.sh batch-scored" },
       ["bash", path.join(scenarios, "rig.sh"), "batch-scored", "owner-walk", "1", "old"],
       { SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude" }
     );
@@ -2317,8 +4107,15 @@ describe("a label older than its entry", () => {
     writeFileSync(path.join(R, "world-answer.json"), JSON.stringify({ starts: [], notices: [] }));
     const result = bash(
       [
-        defs("fail", "service_value", "launch_request", "label_texts", "scored_rig_error"),
-        "R=$1 co=$2 work=$3 P=$3/profiles/head services_env=$4 pg_url=postgres://127.0.0.1:1/postgres",
+        defs(
+          "fail",
+          "service_value",
+          "launch_request",
+          "label_texts",
+          "map_run",
+          "scored_rig_error"
+        ),
+        "R=$1 co=$2 work=$3 maps=$3/maps P=$3/profiles/0123456789abcdef services_env=$4 pg_url=postgres://127.0.0.1:1/postgres",
         'launch_request "$R/world-request.json" "$R/world-answer.json" http://127.0.0.1:1 "$R/guidance.md" >"$R/launch-request.json"',
         'if (label_texts launch "$R/launch-request.json" "$R/launch-answer.json") 2>"$R/err"; then exit 9; fi',
         'scored_rig_error owner-walk-root-A-claude-head-1 head root-A-claude "$(grep "^skill-scenarios: " "$R/err" | tail -n 1)"',
@@ -2331,7 +4128,7 @@ describe("a label older than its entry", () => {
     ).toBe(path.join(R, "guidance.md"));
     const row = RunRow.parse(
       JSON.parse(
-        readFileSync(path.join(work, "runs/owner-walk-root-A-claude-head-1/row.json"), "utf8")
+        readFileSync(path.join(work, "maps/runs/owner-walk-root-A-claude-head-1/row.json"), "utf8")
       )
     );
     expect(row.outcome).toBe("rig-error");
@@ -2587,10 +4384,10 @@ describe("owner_launch", () => {
   });
 });
 
-describe("tester_pane", () => {
-  // Catches: a tester's pane readable by other users while it names the batch's NATS URL, which
+describe("role_pane", () => {
+  // Catches: a worker's pane readable by other users while it names the batch's NATS URL, which
   // the services file gives it. The pane starts as an earlier run's file at 0644, under umask 022.
-  test("the tester's pane is its owner's alone, and carries the services' NATS URL", () => {
+  test("the worker's pane is its owner's alone, and carries the services' NATS URL", () => {
     const R = freshDir("tester-pane");
     const { token, url } = natsWithToken();
     const services = path.join(R, "services-env");
@@ -2601,9 +4398,9 @@ describe("tester_pane", () => {
     const result = bash(
       [
         "umask 022",
-        defs("owner_only", "tester_pane"),
+        defs("owner_only", "role_pane"),
         "R=$1 services_env=$2 dispatch_port=1 work=/rig/work worker_repo=example/widgets",
-        "tester_pane",
+        "role_pane",
       ].join("\n"),
       [R, services]
     );
@@ -2674,7 +4471,8 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       'umask 022 && echo "an earlier batch\'s" >"$services_env" && chmod 0644 "$services_env"',
       'if [ $# -ge 5 ]; then services_up "$5"; else services_up; fi',
       'echo "services mode $(stat -c %a "$services_env")" >>"$calls"',
-      'for R in "$4/runs/owner-walk-root-B-claude-head-1" "$4/runs/owner-walk-root-B-claude-head-2"; do',
+      // Each run's own directory, whose random name its database carries (own_dispatch).
+      'for R in "$4/runs/0123456789abcdef" "$4/runs/fedcba9876543210"; do',
       '  mkdir -p "$R"',
       "  pg_url=''",
       "  own_dispatch project /label/checkout",
@@ -2701,7 +4499,7 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
     expect(seen.filter((line) => line.startsWith("docker "))).toEqual([]);
     expect(seen).toContain("nats_ready nats://127.0.0.1:4999");
     expect(seen).toContain("services mode 600");
-    const runs = ["run_owner_walk_root_b_claude_head_1", "run_owner_walk_root_b_claude_head_2"];
+    const runs = ["run_0123456789abcdef", "run_fedcba9876543210"];
     for (const run of runs) {
       expect(seen.filter((line) => line.endsWith(` -c CREATE DATABASE ${run}`))).toEqual([
         `psql ${login} -X -q -w -v ON_ERROR_STOP=1 -A -t -F \t -c CREATE DATABASE ${run}`,
@@ -2835,9 +4633,10 @@ describe("rig_omp", () => {
     expect(elsewhere.stderr).toContain("is not <dir>/bin/omp");
   });
 
-  // Catches: a launch or a superpowers probe that asks mise for the pin's Oh My Pi where
-  // SKILL_SCENARIOS_OMP names the one to run, as a build pod with no mise does.
-  test("launch and install_superpowers run the Oh My Pi SKILL_SCENARIOS_OMP names, and call no mise", () => {
+  // Catches: a superpowers probe that asks mise for the pin's Oh My Pi where SKILL_SCENARIOS_OMP
+  // names the one to run, as a build pod with no mise does. launch's own row of this is in
+  // describe("launch"), whose stand-ins its scope and view need.
+  test("install_superpowers runs the Oh My Pi SKILL_SCENARIOS_OMP names, and calls no mise", () => {
     const install = freshDir("omp-direct");
     mkdirSync(path.join(install, "bin"));
     const omp = path.join(install, "bin/omp");
@@ -2871,22 +4670,6 @@ echo "the pod's omp ran"
       SKILL_SCENARIOS_OMP: omp,
     };
     const pin = "github:example/oh-my-pi@1.2.3-4";
-
-    const run = freshDir("omp-direct-run");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
-    writeFileSync(path.join(run, "prompt.txt"), "Plan the issue.\n");
-    writeFileSync(path.join(run, "pane.env"), `PATH=${tools}:${callerPath}\n`);
-    const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
-    const launched = bash(
-      `${defs("fail", "pinned_omp", "rig_omp", "launch")}\n${standIns}\nR=$1 tag=t pin=$2\nlaunch owner-walk-s1-1`,
-      [run, pin],
-      env
-    );
-    expect({ code: launched.code, stderr: launched.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(readFileSync(path.join(run, "out.txt"), "utf8")).toBe("the pod's omp ran\nexit=0\n");
-
     const label = freshDir("omp-direct-label");
     const src = freshDir("omp-direct-superpowers");
     for (const skill of ["writing-plans", "brainstorming"]) {
@@ -2906,9 +4689,8 @@ sleep() { command sleep 0.05; }`;
     expect(existsSync(path.join(label, "superpowers"))).toBe(true);
 
     const calls = readFileSync(path.join(install, "calls.txt"), "utf8").trimEnd().split("\n");
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toStartWith("-p Plan the issue.");
-    expect(calls[1]).toStartWith("-p Call the read tool once on the path skill://writing-plans");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toStartWith("-p Call the read tool once on the path skill://writing-plans");
     expect(existsSync(miseCalls)).toBe(false);
   });
 });
@@ -2917,7 +4699,11 @@ describe("owner_walk_case", () => {
   // Catches: an owner-walk run with no case, or one owner-walk.ts does not know, which would run
   // a world no cell counts.
   test("SKILL_SCENARIOS_OWNER_WALK_CASE is refused when unset or unknown, naming its values", () => {
-    const listed = childSpawn([process.execPath, path.join(scenarios, "owner-walk.ts"), "cases"]);
+    const listed = childSpawn({ ...SCRIPT_RUN, part: "owner-walk.ts cases" }, [
+      process.execPath,
+      path.join(scenarios, "owner-walk.ts"),
+      "cases",
+    ]);
     const cases = listed.stdout
       .toString()
       .trim()
@@ -2951,17 +4737,18 @@ describe("batch_scored", () => {
   // run of digits fails every comparison bash makes with it, so 9223372036854775808 as a cap
   // launched without end.
   test("batch_scored stops a cell at three times its count of launches, and prints UNKNOWN for it", () => {
-    // A launch that writes its run's row: a rig error, or scored from the launch SCORED_FROM on.
+    // A launch that writes its run's row: a rig error, or scored from the launch SCORED_FROM on,
+    // under the name the map gives the run (rig.sh's header, "the map").
     const attempt = [
       "scored_attempt() {",
-      "  local dir=$work/runs/$1-$3-$2-$4",
+      "  local dir=$maps/runs/$1-$3-$2-$4",
       '  mkdir -p "$dir" && printf "%s\\n" "$4" >>"$work/launches"',
       '  if [ -n "$SCORED_FROM" ] && [ "$4" -ge "$SCORED_FROM" ]; then echo \'{"outcome":"scored"}\' >"$dir/row.json"; else echo \'{"outcome":"rig-error"}\' >"$dir/row.json"; fi',
       "}",
     ].join("\n");
     const cell = (work: string, count: number, scoredFrom?: number, launches?: string) =>
       bash(
-        `${defs("fail", "next_run", "scored_count", "batch_scored_cell")}\n${attempt}\nwork=$1\nbatch_scored_cell owner-walk head root-B-claude "$2"`,
+        `${defs("fail", "next_run", "scored_count", "batch_scored_cell")}\n${attempt}\nwork=$1 maps=$1/maps\nbatch_scored_cell owner-walk head root-B-claude "$2"`,
         [work, String(count)],
         {
           ...(scoredFrom === undefined ? {} : { SCORED_FROM: String(scoredFrom) }),
@@ -2990,6 +4777,7 @@ describe("batch_scored", () => {
     const batchScored = (count: string, launches?: string) => {
       const work = freshDir("cell-capped-refused");
       const batch = childSpawn(
+        { ...RIG_STEP, part: "rig.sh batch-scored" },
         ["bash", path.join(scenarios, "rig.sh"), "batch-scored", "owner-walk", count, "head"],
         {
           SKILL_SCENARIOS_WORK: work,
@@ -3038,8 +4826,8 @@ const sentence = (id: string): string => {
   if (found === undefined) throw new Error(`the guidance stage has no clause ${id}`);
   return found.sentence;
 };
-/** One run of a case under a label, as a scored batch leaves it: its world.json, and its scored
- * row.json whose clauses pass as `passes` says. */
+/** One run of a case under a label, as a scored batch leaves it under the name the map gives it:
+ * its world.json, and its scored row.json whose clauses pass as `passes` says. */
 function plantScored(
   work: string,
   label: string,
@@ -3049,7 +4837,7 @@ function plantScored(
 ): void {
   const kase = `${owner.kind}-${owner.form}-${owner.family}`;
   const name = `owner-walk-${kase}-${label}-${n}`;
-  const dir = path.join(work, "runs", name);
+  const dir = path.join(work, "maps", "runs", name);
   mkdirSync(dir, { recursive: true });
   const world = {
     scenario: "owner-walk",
@@ -3107,6 +4895,7 @@ describe("rig.sh cell", () => {
   /** `rig.sh cell owner-walk LABEL CASE COUNT`'s one line. */
   function line(work: string, label: string, kase: string, count: number): string {
     const cell = childSpawn(
+      { ...RIG_STEP, part: "rig.sh cell" },
       ["bash", path.join(scenarios, "rig.sh"), "cell", "owner-walk", label, kase, String(count)],
       { SKILL_SCENARIOS_WORK: work }
     );
@@ -3183,7 +4972,8 @@ esac
     };
   }
   /** The stand-ins scored_attempt runs from $here: rig.sh's `run`, which makes the run's directory
-   * as a run leaves it (a world.json naming its launch; the HOME copy, the pane, the launch's
+   * as a run leaves it, under a random name in <work>/runs with the map's link to it under the
+   * run's name (map_run; a world.json naming its launch; the HOME copy, the pane, the launch's
    * request and answer and two secrets directories, each of which can hold a credential; a symlink,
    * a FIFO and two hard-linked files), records the launch, and fails when FAIL_RUN is set; and
    * score.ts's `runs --run`, which writes the run's scored row. */
@@ -3193,7 +4983,9 @@ esac
       path.join(here, "rig.sh"),
       String.raw`#!/usr/bin/env bash
 # run <scenario> <label> <n> <index> <start>
-dir=$SKILL_SCENARIOS_WORK/runs/$2-$SKILL_SCENARIOS_OWNER_WALK_CASE-$3-$4
+mkdir -p "$SKILL_SCENARIOS_WORK/runs" "$SKILL_SCENARIOS_WORK/maps/runs"
+dir=$(mktemp -d "$SKILL_SCENARIOS_WORK/runs/XXXXXXXXXXXXXXXX")
+ln -s "../../runs/$(basename "$dir")" "$SKILL_SCENARIOS_WORK/maps/runs/$2-$SKILL_SCENARIOS_OWNER_WALK_CASE-$3-$4"
 mkdir -p "$dir/home/.omp" "$dir/texts" "$dir/cwd" "$dir/secrets" "$dir/state/secrets" "$dir/state/home/.local"
 printf '%s\n' "$4" >>"$SKILL_SCENARIOS_WORK/launches"
 printf '{"launch":%s}\n' "$4" >"$dir/world.json"
@@ -3226,13 +5018,14 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
    * the stand-ins in HERE. */
   const cell = (work: string, here: string, count: number, env: Record<string, string>) =>
     bash(
-      `${defs("fail", "note", "next_run", "scored_count", "scored_rig_error", "score_scored_run", "store_scored_run", "scored_attempt", "batch_scored_cell")}\nwork=$1\nhere=$2\nstart=0\nscored_index=0\nbatch_scored_cell owner-walk head root-B-claude "$3"`,
+      `${defs("fail", "note", "next_run", "map_run", "scored_count", "scored_rig_error", "score_scored_run", "store_scored_run", "scored_attempt", "batch_scored_cell")}\nwork=$1 maps=$1/maps\nhere=$2\nstart=0\nscored_index=0\nbatch_scored_cell owner-walk head root-B-claude "$3"`,
       [work, here, String(count)],
       { SKILL_SCENARIOS_WORK: work, ...env }
     );
   /** `rig.sh restore-stored owner-walk` in WORK, against STORE. */
   const restore = (work: string, store: string) => {
     const result = childSpawn(
+      { ...RIG_STEP, part: "rig.sh restore-stored" },
       ["bash", path.join(scenarios, "rig.sh"), "restore-stored", "owner-walk"],
       { SKILL_SCENARIOS_WORK: work, RT_STORE: store }
     );
@@ -3247,11 +5040,15 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     path.join(dir, "runs", `${run(n)}.${kind}`);
   /** The member names of a pack, sorted. */
   const members = (pack: string) =>
-    childSpawn(["tar", "-tzf", pack]).stdout.toString().trim().split("\n").sort();
+    childSpawn({ ...RIG_STEP, part: "tar -tzf" }, ["tar", "-tzf", pack])
+      .stdout.toString()
+      .trim()
+      .split("\n")
+      .sort();
   /** The type letters of a pack's members, as `tar -tv` lists them, one of each. */
   const types = (pack: string) => [
     ...new Set(
-      childSpawn(["tar", "-tvzf", pack])
+      childSpawn({ ...RIG_STEP, part: "tar -tvzf" }, ["tar", "-tvzf", pack])
         .stdout.toString()
         .trim()
         .split("\n")
@@ -3346,6 +5143,38 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect(existsSync(path.join(bare, "stored"))).toBe(false);
   });
 
+  // Catches: a pack that follows a link of the run's tree. find lists the run's regular files and
+  // directories, and a process still running can swap a listed file for a link to a credential
+  // before tar packs it; a tar that follows every listed path (--dereference) then packs and
+  // uploads the credential's bytes, where tar must pack the link as a link, which restore-stored
+  // refuses.
+  test("a listed file swapped for a link before the pack is packed as that link, never as what it points at", () => {
+    const store = plantStore();
+    const pod = freshDir("store-swap");
+    plantScored(pod, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
+    const secret = path.join(freshDir("store-swap-secret"), "token");
+    const credential = fixtureSecret("cred");
+    writeFileSync(secret, `${credential}\n`);
+    const stored = bash(
+      [
+        defs("note", "fail", "store_scored_run"),
+        "work=$1 maps=$1/maps",
+        'swap=$(readlink -f -- "$maps/runs/$2")/world.json secret=$3',
+        // The swap a process still running could make between store_scored_run's find and its tar.
+        'tar() { ln -sfn -- "$secret" "$swap"; command tar "$@"; }',
+        'store_scored_run "$2"',
+      ].join("\n"),
+      [pod, run(1), secret],
+      { RT_STORE: store.bin }
+    );
+    expect({ code: stored.code, stderr: stored.stderr }).toEqual({ code: 0, stderr: "" });
+    const pack = at(store.bucket, 1, "tar.gz");
+    expect(members(pack)).toContain(`${run(1)}/world.json`);
+    expect(types(pack)).toContain("l");
+    const bytes = childSpawn({ ...RIG_STEP, part: "tar -xOzf" }, ["tar", "-xOzf", pack]);
+    expect(bytes.stdout.toString()).not.toContain(credential);
+  });
+
   // Catches: a restart that launches its cell from nothing; one that counts a run whose row was
   // never stored; numbering that starts over and so stores over a run kept before; a bound of
   // three times the count that a restart resets; and a restore that takes a pack its row does not
@@ -3357,16 +5186,30 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     // 2: its pack is stored, its row is not.
     const first = freshDir("pod-first");
     expect(cell(first, here, 1, { RT_STORE: store.bin }).code).toBe(0);
-    mkdirSync(path.join(first, "runs", run(2)));
+    mkdirSync(path.join(first, "maps", "runs", run(2)));
     writeFileSync(
-      path.join(first, "runs", run(2), "world.json"),
+      path.join(first, "maps", "runs", run(2), "world.json"),
       '{"launch":"the stopped pod\'s"}\n'
     );
     const stopped = path.join(first, `${run(2)}.tar.gz`);
     expect(
-      childSpawn(["tar", "-czf", stopped, "-C", path.join(first, "runs"), run(2)]).exitCode
+      childSpawn({ ...RIG_STEP, part: "tar -czf" }, [
+        "tar",
+        "-czf",
+        stopped,
+        "-C",
+        path.join(first, "maps", "runs"),
+        run(2),
+      ]).exitCode
     ).toBe(0);
-    expect(childSpawn([store.bin, "put", stopped, `runs/${run(2)}.tar.gz`]).exitCode).toBe(0);
+    expect(
+      childSpawn({ ...RIG_STEP, part: "rt-store put" }, [
+        store.bin,
+        "put",
+        stopped,
+        `runs/${run(2)}.tar.gz`,
+      ]).exitCode
+    ).toBe(0);
 
     const second = freshDir("pod-second");
     expect(restore(second, store.bin)).toEqual({
@@ -3379,19 +5222,22 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       ].join("\n"),
       stderr: "",
     });
-    expect(readFileSync(path.join(second, "runs", run(1), "world.json"), "utf8")).toBe(
-      '{"launch":1}\n'
-    );
-    expect(JSON.parse(readFileSync(path.join(second, "runs", run(1), "row.json"), "utf8"))).toEqual(
-      { outcome: "scored", run: run(1) }
-    );
-    expect(existsSync(path.join(second, "runs", run(2)))).toBe(false);
+    // The restored run is a run directory the map names (map_run), as a run of this pod is.
+    const restored = path.join(second, "maps", "runs", run(1));
+    expect(lstatSync(restored).isSymbolicLink()).toBe(true);
+    expect(path.dirname(realpathSync(restored))).toBe(realpathSync(path.join(second, "runs")));
+    expect(readFileSync(path.join(restored, "world.json"), "utf8")).toBe('{"launch":1}\n');
+    expect(JSON.parse(readFileSync(path.join(restored, "row.json"), "utf8"))).toEqual({
+      outcome: "scored",
+      run: run(1),
+    });
+    expect(existsSync(path.join(second, "maps", "runs", run(2)))).toBe(false);
     // Its cell of two: run 1 counts, and its one launch is run 2, whose pack is stored again over
     // the stopped pod's.
     const resumed = cell(second, here, 2, { RT_STORE: store.bin });
     expect({ code: resumed.code, stderr: resumed.stderr }).toEqual({ code: 0, stderr: "" });
     expect(readFileSync(path.join(second, "launches"), "utf8")).toBe("2\n");
-    const again = childSpawn([
+    const again = childSpawn({ ...RIG_STEP, part: "tar -xzOf" }, [
       "tar",
       "-xzOf",
       at(store.bucket, 2, "tar.gz"),
@@ -3426,7 +5272,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       code: 1,
       stderr: `skill-scenarios: runs/${run(2)}.tar.gz is not the pack its row names: the row names ${named}, the store holds ${sha256(changed)}`,
     });
-    expect(existsSync(path.join(fourth, "runs", run(2)))).toBe(false);
+    expect(existsSync(path.join(fourth, "maps", "runs", run(2)))).toBe(false);
     // Run 2's pack gone from the store: its get fails, and the restore stops on it.
     rmSync(changed);
     const fifth = freshDir("pod-fifth");
@@ -3465,8 +5311,8 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       const bucket = store.bucket;
       plantPack(bucket, 3, script);
       const work = freshDir("restore-refuses");
-      mkdirSync(path.join(work, "runs", run(1)), { recursive: true });
-      writeFileSync(path.join(work, "runs", run(1), "world.json"), "run 1's own\n");
+      mkdirSync(path.join(work, "maps", "runs", run(1)), { recursive: true });
+      writeFileSync(path.join(work, "maps", "runs", run(1), "world.json"), "run 1's own\n");
       const refused = restore(work, store.bin);
       expect({
         what,
@@ -3479,12 +5325,12 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       });
       expect({
         what,
-        world: readFileSync(path.join(work, "runs", run(1), "world.json"), "utf8"),
+        world: readFileSync(path.join(work, "maps", "runs", run(1), "world.json"), "utf8"),
       }).toEqual({
         what,
         world: "run 1's own\n",
       });
-      expect({ what, three: existsSync(path.join(work, "runs", run(3))) }).toEqual({
+      expect({ what, three: existsSync(path.join(work, "maps", "runs", run(3))) }).toEqual({
         what,
         three: false,
       });
@@ -3511,7 +5357,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       code: 1,
       stderr: `skill-scenarios: runs/${run(3)}.tar.gz's row.json is not the row stored beside it`,
     });
-    expect(existsSync(path.join(work, "runs", run(3)))).toBe(false);
+    expect(existsSync(path.join(work, "maps", "runs", run(3)))).toBe(false);
   });
 
   // Catches: a download read as the pods stored it with nothing compared, so an object changed or
@@ -3528,7 +5374,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     const log = path.join(pod, "job.log");
     for (const n of [1, 2]) {
       const stored = bash(
-        `${defs("note", "fail", "store_scored_run")}\nwork=$1\nstore_scored_run "$2"`,
+        `${defs("note", "fail", "store_scored_run")}\nwork=$1 maps=$1/maps\nstore_scored_run "$2"`,
         [pod, run(n)],
         { RT_STORE: store.bin }
       );
@@ -3545,7 +5391,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     /** `rig.sh check-stored` of DIR against LOGS (the Job's log when none is given). Each case's
      * count comes from the logs, so the Job's own cell line is part of every log planted here. */
     const check = (dir: string, ...logs: string[]) => {
-      const result = childSpawn([
+      const result = childSpawn({ ...RIG_STEP, part: "rig.sh check-stored" }, [
         "bash",
         path.join(scenarios, "rig.sh"),
         "check-stored",
@@ -3570,7 +5416,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     });
     expect(scored(kept.stdout)).toBe(2);
     expect(readFileSync(path.join(clean, "checked", run(2), "row.json"), "utf8")).toBe(
-      readFileSync(path.join(pod, "runs", run(2), "row.json"), "utf8")
+      readFileSync(path.join(pod, "maps", "runs", run(2), "row.json"), "utf8")
     );
 
     // One byte of run 2's stored row changed after the store.
@@ -3675,10 +5521,13 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       writeFileSync(path.join(made, name, "row.json"), `${JSON.stringify(row)}\n`);
       writeFileSync(
         path.join(made, name, "world.json"),
-        readFileSync(path.join(pod, "runs", run(1), "world.json"))
+        readFileSync(path.join(pod, "maps", "runs", run(1), "world.json"))
       );
       const pack = path.join(dir, "runs", `${name}.tar.gz`);
-      expect(childSpawn(["tar", "-czf", pack, "-C", made, name]).exitCode).toBe(0);
+      expect(
+        childSpawn({ ...RIG_STEP, part: "tar -czf" }, ["tar", "-czf", pack, "-C", made, name])
+          .exitCode
+      ).toBe(0);
       writeFileSync(
         path.join(dir, "runs", `${name}.row.json`),
         `${JSON.stringify({ ...row, pack: sha256(pack) })}\n`
@@ -3737,7 +5586,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         world: readFileSync(path.join(dir, "checked", run(1), "world.json"), "utf8"),
       }).toEqual({
         what,
-        world: readFileSync(path.join(pod, "runs", run(1), "world.json"), "utf8"),
+        world: readFileSync(path.join(pod, "maps", "runs", run(1), "world.json"), "utf8"),
       });
       expect({ what, outside: readFileSync(outside, "utf8") }).toEqual({
         what,
@@ -3904,7 +5753,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         `${JSON.stringify({ outcome: "rig-error", run: run(1), scenario: "owner-walk", label: "head", case: "root-B-claude", error: "the launch failed" })}\n`
       );
       const pack = at(dir, 1, "tar.gz");
-      expect(childSpawn(["tar", "-czf", pack, "-C", made, run(1)]).exitCode).toBe(0);
+      expect(
+        childSpawn({ ...RIG_STEP, part: "tar -czf" }, ["tar", "-czf", pack, "-C", made, run(1)])
+          .exitCode
+      ).toBe(0);
       writeFileSync(
         at(dir, 1, "row.json"),
         `${JSON.stringify({ outcome: "rig-error", run: run(1), scenario: "owner-walk", label: "head", case: "root-B-claude", error: "the launch failed", pack: sha256(pack) })}\n`
@@ -4002,7 +5854,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       cites: true,
     });
     const cStored = bash(
-      `${defs("note", "fail", "store_scored_run")}\nwork=$1\nstore_scored_run "$2"`,
+      `${defs("note", "fail", "store_scored_run")}\nwork=$1 maps=$1/maps\nstore_scored_run "$2"`,
       [cPod, cName],
       { RT_STORE: cStore.bin }
     );
@@ -4056,12 +5908,19 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         plantScored(made, "head", { kind, form: "B", family: "claude" }, n, { read: true });
         const pack = path.join(mixed, "runs", `${runName}.tar.gz`);
         expect(
-          childSpawn(["tar", "-czf", pack, "-C", path.join(made, "runs"), runName]).exitCode
+          childSpawn({ ...RIG_STEP, part: "tar -czf" }, [
+            "tar",
+            "-czf",
+            pack,
+            "-C",
+            path.join(made, "maps", "runs"),
+            runName,
+          ]).exitCode
         ).toBe(0);
         const stored = path.join(mixed, "runs", `${runName}.row.json`);
         writeFileSync(
           stored,
-          `${JSON.stringify({ ...JSON.parse(readFileSync(path.join(made, "runs", runName, "row.json"), "utf8")), pack: sha256(pack) })}\n`
+          `${JSON.stringify({ ...JSON.parse(readFileSync(path.join(made, "maps", "runs", runName, "row.json"), "utf8")), pack: sha256(pack) })}\n`
         );
         mixedLines += `stored runs/${runName}.tar.gz sha256 ${sha256(pack)}\nstored runs/${runName}.row.json sha256 ${sha256(stored)}\n`;
       }
@@ -4104,7 +5963,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         };
         writeFileSync(path.join(made, name, "row.json"), `${JSON.stringify(row)}\n`);
         const pack = path.join(dir, "runs", `${name}.tar.gz`);
-        expect(childSpawn(["tar", "-czf", pack, "-C", made, name]).exitCode).toBe(0);
+        expect(
+          childSpawn({ ...RIG_STEP, part: "tar -czf" }, ["tar", "-czf", pack, "-C", made, name])
+            .exitCode
+        ).toBe(0);
         const stored = path.join(dir, "runs", `${name}.row.json`);
         writeFileSync(stored, `${JSON.stringify({ ...row, pack: sha256(pack) })}\n`);
         lines += `stored runs/${name}.tar.gz sha256 ${sha256(pack)}\nstored runs/${name}.row.json sha256 ${sha256(stored)}\n`;
@@ -4134,13 +5996,20 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       const made = freshDir("control-run");
       plantScored(made, "ctl-d", { kind: "root", form: "D", family: "claude" }, 1, { read: true });
       const pack = path.join(dir, "runs", `${name}.tar.gz`);
-      expect(childSpawn(["tar", "-czf", pack, "-C", path.join(made, "runs"), name]).exitCode).toBe(
-        0
-      );
+      expect(
+        childSpawn({ ...RIG_STEP, part: "tar -czf" }, [
+          "tar",
+          "-czf",
+          pack,
+          "-C",
+          path.join(made, "maps", "runs"),
+          name,
+        ]).exitCode
+      ).toBe(0);
       const stored = path.join(dir, "runs", `${name}.row.json`);
       writeFileSync(
         stored,
-        `${JSON.stringify({ ...JSON.parse(readFileSync(path.join(made, "runs", name, "row.json"), "utf8")), pack: sha256(pack) })}\n`
+        `${JSON.stringify({ ...JSON.parse(readFileSync(path.join(made, "maps", "runs", name, "row.json"), "utf8")), pack: sha256(pack) })}\n`
       );
       controlLog = path.join(dir, "control.log");
       writeFileSync(
@@ -4221,11 +6090,11 @@ describe("score.ts cells", () => {
     const name = "owner-walk-root-B-claude-head-1";
     plantScored(runs, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
     const cells = (...args: string[]) =>
-      childSpawn([
+      childSpawn({ ...SCRIPT_RUN, part: "score.ts cells" }, [
         "bun",
         path.join(scenarios, "score.ts"),
         "cells",
-        path.join(runs, "runs"),
+        path.join(runs, "maps", "runs"),
         "owner-walk",
         ...args,
       ]);
@@ -4281,9 +6150,14 @@ describe("score.ts cells", () => {
   test("score.ts runs refuses an unknown scenario, a surplus argument and --run with no name, as its siblings refuse a bad count", () => {
     const runs = freshDir("runs-args");
     plantScored(runs, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
-    const dir = path.join(runs, "runs");
+    const dir = path.join(runs, "maps", "runs");
     const score = (...args: string[]) =>
-      childSpawn(["bun", path.join(scenarios, "score.ts"), "runs", ...args]);
+      childSpawn({ ...SCRIPT_RUN, part: "score.ts runs" }, [
+        "bun",
+        path.join(scenarios, "score.ts"),
+        "runs",
+        ...args,
+      ]);
     for (const [args, says] of [
       [[dir, "owner-walk"], "is no scenario score.ts scores"],
       [[dir, "ask-on-messages"], "is no scenario score.ts scores"],
@@ -4312,6 +6186,7 @@ describe("rig.sh batch", () => {
   test("rig.sh batch refuses owner-walk, naming batch-scored, before it starts anything", () => {
     const work = freshDir("batch-owner-walk");
     const batch = childSpawn(
+      { ...RIG_STEP, part: "rig.sh batch owner-walk" },
       ["bash", path.join(scenarios, "rig.sh"), "batch", "owner-walk", "1", "head"],
       { SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude" }
     );
@@ -4965,8 +6840,26 @@ describe("a kept notice", () => {
           .sort()
           .flatMap((file) => jsonLines(path.join(run, "sessions", file)) as Entry[])
       : [];
+  /** Why a run with no out.txt failed: its rig-error.txt, and the last ten lines of each file the
+   * reason names (`see <file>`, the run's own logs) that still exists. */
+  const beforeLaunch = (run: string) => {
+    const errorFile = path.join(run, "rig-error.txt");
+    if (!existsSync(errorFile)) return "no out.txt and no rig-error.txt";
+    const reason = readFileSync(errorFile, "utf8").trim();
+    const logs = [...reason.matchAll(/see (\/\S+)/g)]
+      .map(([, file]) => file?.replace(/[.;,]$/, "") ?? "")
+      .filter((file) => existsSync(file))
+      .map(
+        (file) =>
+          `${file}:\n${readFileSync(file, "utf8").trimEnd().split("\n").slice(-10).join("\n")}`
+      );
+    return [`no out.txt: ${reason}`, ...logs].join("\n");
+  };
   /** What a run shows of a notice MESSAGE: its out.txt's last line, the notices its launch
-   * published, the index of the first Envoy card naming MESSAGE, and of the first answer. */
+   * published, the index of the first Envoy card naming MESSAGE, and of the first answer. A run
+   * with no out.txt failed before its launch (launch_rpc makes the file), and the row deletes its
+   * work directory, so its `out` is the rig's reason (rig-error.txt) and the last lines of the log
+   * that reason names: the one record of why it failed that outlives the row. */
   const seen = (run: string, message: string) => {
     const entries = entriesOf(run);
     const card = entries.findIndex(
@@ -4980,7 +6873,7 @@ describe("a kept notice", () => {
     );
     const out = existsSync(path.join(run, "out.txt"))
       ? readFileSync(path.join(run, "out.txt"), "utf8").trimEnd().split("\n").at(-1)
-      : undefined;
+      : beforeLaunch(run);
     const answerFile = path.join(run, "texts", "launch-answer.json");
     const published: { topic: string; message: string }[] = existsSync(answerFile)
       ? JSON.parse(readFileSync(answerFile, "utf8")).published
@@ -5019,8 +6912,9 @@ describe("a kept notice", () => {
   );
 
   /** On a given Postgres each run's database stays after the batch (services_down): the row drops
-   * the ones its runs made, as own_dispatch names them. The password goes to psql in its
-   * environment, never in its arguments. */
+   * the ones its runs made, as own_dispatch names them, after the run's directory, <work>/runs/<id>
+   * (run_<id>), never after the run's name. The password goes to psql in its environment, never in
+   * its arguments. */
   function dropRunDatabases(rigWork: string) {
     const dsn = process.env.LEGION_TEST_PG_DSN;
     const runsDir = path.join(rigWork, "runs");
@@ -5113,7 +7007,13 @@ describe("a kept notice", () => {
       code: 0,
       out: "",
     });
-    const headRun = path.join(rigWork, "runs", `owner-walk-child-B-claude-${positiveLabel}-1`);
+    // The run under the name the map gives it (rig.sh's header, "the map").
+    const headRun = path.join(
+      rigWork,
+      "maps",
+      "runs",
+      `owner-walk-child-B-claude-${positiveLabel}-1`
+    );
     const notice = seen(headRun, "").published[0];
     // A batch that ends with no notice published says why in its output: a rig error's reason.
     if (notice === undefined)
@@ -5182,12 +7082,12 @@ describe("a kept notice", () => {
       .join("");
     expect({ code: ended, out: ended === 0 ? "" : controlOut }).toEqual({ code: 0, out: "" });
     expect(publish).toEqual({ status: 202, body: expect.stringContaining(other) });
-    const runs = readdirSync(path.join(rigWork, "runs"))
+    const runs = readdirSync(path.join(rigWork, "maps", "runs"))
       .filter((name) => name.startsWith(`owner-walk-child-B-claude-${controlLabel}-`))
       .sort();
     expect(runs).toEqual([`owner-walk-child-B-claude-${controlLabel}-1`]);
     for (const name of runs) {
-      const shown = seen(path.join(rigWork, "runs", name), notice.message);
+      const shown = seen(path.join(rigWork, "maps", "runs", name), notice.message);
       expect({ name, ...shown }).toEqual({
         name,
         out: "exit=bound",
@@ -5205,9 +7105,10 @@ describe("the reach lines", () => {
   // same cmd_rows.
   test("scored-job.sh and rig.sh score print a reach line for each entry of a planted run's reach, and none for a run whose reach is empty", () => {
     const work = freshDir("reach-rows");
+    // Each row under the name the map gives its run (rig.sh's header, "the map").
     const plantRow = (name: string, row: object) => {
-      mkdirSync(path.join(work, "runs", name), { recursive: true });
-      writeFileSync(path.join(work, "runs", name, "row.json"), JSON.stringify(row));
+      mkdirSync(path.join(work, "maps", "runs", name), { recursive: true });
+      writeFileSync(path.join(work, "maps", "runs", name, "row.json"), JSON.stringify(row));
     };
     const scored = (run: string, reach: object[]) => ({
       outcome: "scored",
@@ -5233,9 +7134,11 @@ describe("the reach lines", () => {
     ];
     const reachOf = (out: string) => out.split("\n").filter((line) => line.startsWith("reach "));
     // `rig.sh rows`, the command scored-job.sh runs.
-    const rows = childSpawn(["bash", path.join(scenarios, "rig.sh"), "rows", "owner-walk"], {
-      SKILL_SCENARIOS_WORK: work,
-    });
+    const rows = childSpawn(
+      { ...RIG_STEP, part: "rig.sh rows" },
+      ["bash", path.join(scenarios, "rig.sh"), "rows", "owner-walk"],
+      { SKILL_SCENARIOS_WORK: work }
+    );
     expect(rows.exitCode).toBe(0);
     expect(reachOf(rows.stdout.toString())).toEqual(want);
     expect(
@@ -5246,7 +7149,7 @@ describe("the reach lines", () => {
     ).toHaveLength(2);
     // rig.sh score's cmd_score, with the scoring and the cells, which read a whole run, stood in.
     const score = bash(
-      `${defs("note", "fail", "cmd_rows", "cmd_score")}\nscore_scored_run() { :; }\nbun() { :; }\nwork=$1 here=$2\ncmd_score owner-walk`,
+      `${defs("note", "fail", "cmd_rows", "cmd_score")}\nscore_scored_run() { :; }\nbun() { :; }\nwork=$1 maps=$1/maps here=$2\ncmd_score owner-walk`,
       [work, scenarios]
     );
     expect(score.code).toBe(0);
@@ -5257,7 +7160,8 @@ describe("the reach lines", () => {
 describe("scored-job.sh", () => {
   /** A repository holding a copy of scored-job.sh beside a planted rig.sh, and a planted bun on
    * PATH that answers `install` and `owner-walk.ts cases`. The planted rig.sh records each call and
-   * the variables it was handed, and plays one scored run and one rig error of the case. */
+   * the variables it was handed, and plays one scored run and one rig error of the case, each
+   * under the name the map gives it (rig.sh's header, "the map"). */
   function plantedJob() {
     const repo = freshDir("job-repo");
     const here = path.join(repo, "packages/pi-legion/scripts/skill-scenarios");
@@ -5272,10 +7176,11 @@ case $1 in
 batch-scored)
   printf 'case=%s model=%s route=%s provider=%s pg=%s nats=%s omp=%s plans=%s\n' "$SKILL_SCENARIOS_OWNER_WALK_CASE" "$SKILL_SCENARIOS_MODEL" \
     "$LEGION_E2E_MODEL_ROUTE" "$LEGION_E2E_MODEL_PROVIDER" "$SKILL_SCENARIOS_POSTGRES_URL" "$SKILL_SCENARIOS_NATS_URL" "$SKILL_SCENARIOS_OMP" "$SKILL_SCENARIOS_PLANS_ANSWER" >>"$work/rig-env"
-  mkdir -p "$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-1" "$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/logs"
-  echo '{"outcome":"scored"}' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-1/row.json"
-  echo '{"outcome":"rig-error"}' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/row.json"
-  echo 'the planted daemon line' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/logs/daemon.log"
+  runs=$work/maps/runs
+  mkdir -p "$runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-1" "$runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/logs"
+  echo '{"outcome":"scored"}' >"$runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-1/row.json"
+  echo '{"outcome":"rig-error"}' >"$runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/row.json"
+  echo 'the planted daemon line' >"$runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/logs/daemon.log"
   ;;
 label-tree) mkdir -p "$work/label-trees/$2/tree" ;;
 rows) echo 'row {"outcome":"scored","run":"owner-walk-root-B-claude-head-1"}' && echo 'reach owner-walk-root-B-claude-head-1: bash names storage.googleapis.com (session s, message 1)' ;;
@@ -5304,11 +7209,11 @@ esac
       env: Record<string, string>,
       args = ["owner-walk", "head", "--case", "root-B-claude", "--count", "1"]
     ) => {
-      const result = childSpawn(["bash", path.join(here, "scored-job.sh"), ...args], {
-        PATH: `${bin}:${callerPath}`,
-        SKILL_SCENARIOS_WORK: work,
-        ...env,
-      });
+      const result = childSpawn(
+        { ...RIG_STEP, part: "scored-job.sh" },
+        ["bash", path.join(here, "scored-job.sh"), ...args],
+        { PATH: `${bin}:${callerPath}`, SKILL_SCENARIOS_WORK: work, ...env }
+      );
       const read = (file: string) =>
         existsSync(path.join(work, file)) ? readFileSync(path.join(work, file), "utf8") : "";
       return {
@@ -5354,7 +7259,7 @@ esac
       "reach owner-walk-root-B-claude-head-1: bash names storage.googleapis.com (session s, message 1)"
     );
     const tail = lines.indexOf(
-      "scored-job: rig error owner-walk-root-B-claude-head-2: the last lines of runs/owner-walk-root-B-claude-head-2/logs/daemon.log"
+      "scored-job: rig error owner-walk-root-B-claude-head-2: the last lines of maps/runs/owner-walk-root-B-claude-head-2/logs/daemon.log"
     );
     expect(lines[tail + 1]).toBe("  the planted daemon line");
     expect(lines.at(-1)).toBe(

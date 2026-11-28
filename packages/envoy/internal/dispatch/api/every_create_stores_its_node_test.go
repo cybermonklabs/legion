@@ -337,6 +337,7 @@ var postCalls = map[string]postCall{
 
 	"POST /api/v1/issues/{key}/claim":                                      noObject,
 	"POST /api/v1/issues/{key}/results":                                    noObject,
+	"POST /api/v1/projects/{key}/results":                                  noObject,
 	"POST /api/v1/issues/{key}/results/dry-run":                            noObject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}":                           noObject,
 	"POST /api/v1/results/{id}/retract":                                    noObject,
@@ -344,7 +345,6 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                noObject,
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 noObject,
 	"POST /api/v1/projects/{key}/related":                                  noObject,
-	"POST /api/v1/projects/{key}/results":                                  noObject,
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":                   noObject,
 	"POST /api/v1/artifacts/{id}/reviews":                                  noObject,
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews":                noObject,

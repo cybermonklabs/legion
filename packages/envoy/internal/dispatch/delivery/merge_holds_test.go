@@ -78,7 +78,7 @@ func TestAMergedHeadRowKeepsItsMergeCommitAndItsTime(t *testing.T) {
 		State: "merged", Title: "HEAD-5 the work", EventAt: &mergedAt,
 		MergeCommitSHA: mergeOfFive, MergedAt: &mergedAt,
 	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, merged); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, merged); err != nil {
 		t.Fatalf("store the merged head: %v", err)
 	}
 	if got := readMerge(t, ctx, pool, "acme/widgets", 5); got.mergeCommitSHA != mergeOfFive || !sameTime(got.mergedAt, mergedAt) {
@@ -88,7 +88,7 @@ func TestAMergedHeadRowKeepsItsMergeCommitAndItsTime(t *testing.T) {
 	edited := mergeTestTime(t, "2026-03-02T10:00:00Z")
 	later := merged
 	later.Title, later.EventAt, later.MergeCommitSHA, later.MergedAt = "HEAD-5 the work, renamed", &edited, "", nil
-	if err := UpsertPullRequestHead(ctx, pool, nil, later); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, later); err != nil {
 		t.Fatalf("store the later write: %v", err)
 	}
 	got := readMerge(t, ctx, pool, "acme/widgets", 5)
@@ -103,7 +103,7 @@ func TestAMergedHeadRowKeepsItsMergeCommitAndItsTime(t *testing.T) {
 		Repo: "acme/widgets", Number: 6, HeadSHA: headOfSix, HeadRef: "legion/HEAD-6", BaseRef: "main",
 		State: "open", EventAt: &mergedAt, MergeCommitSHA: mergeOfSix,
 	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
 		t.Fatalf("store the open head: %v", err)
 	}
 	if got := readMerge(t, ctx, pool, "acme/widgets", 6); got.mergeCommitSHA != "" || got.mergedAt != nil {
@@ -155,7 +155,7 @@ func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 	first, second, edited := "2026-03-01T10:00:00Z", "2026-03-02T10:00:00Z", "2026-03-03T10:00:00Z"
 	check := func(t *testing.T, ctx context.Context, pool *store.Pool, issue string) {
 		t.Helper()
-		merged, err := unrenamed().MergeOfIssue(ctx, pool, issue, HeadAnswers{})
+		merged, err := unrenamed().MergeOfIssue(ctx, pool, issue, "acme/widgets", HeadAnswers{})
 		if err != nil {
 			t.Fatalf("MergeOfIssue(%s): %v", issue, err)
 		}
@@ -175,7 +175,7 @@ func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 		write := func(number int, head, base, mergeCommit, mergedAt, eventAt string) {
 			t.Helper()
 			merged, event := mergeTestTime(t, mergedAt), mergeTestTime(t, eventAt)
-			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 				Repo: "acme/widgets", Number: number, HeadSHA: head, HeadRef: "legion/" + issue, BaseRef: base,
 				State: "merged", IssueKey: &issue, AttributionSource: "branch", AttributionComplete: true,
 				EventAt: &event, MergeCommitSHA: mergeCommit, MergedAt: &merged,
@@ -222,7 +222,7 @@ func TestTheReconcileOffersEachMergedRowOnceForItsTime(t *testing.T) {
 	mergedAt := mergeTestTime(t, "2026-03-01T10:00:00Z")
 	stored := mergeTestTime(t, "2026-03-01T09:00:00Z")
 	for _, number := range []int{31, 32} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: "acme/widgets", Number: number, HeadSHA: headOfFive, HeadRef: "legion/" + issue, BaseRef: "main",
 			State: "merged", EventAt: &stored, CheckedAt: &stored,
 		}); err != nil {
@@ -398,7 +398,7 @@ func TestTheLandingOfABranchIsItsNewestMergedPullRequestWhoseFinalHeadHoldsTheMe
 			merged := mergeTestTime(t, mergedAt)
 			row.MergedAt = &merged
 		}
-		if err := UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
 			t.Fatalf("store %s#%d: %v", repo, number, err)
 		}
 	}
@@ -424,40 +424,49 @@ func TestTheLandingOfABranchIsItsNewestMergedPullRequestWhoseFinalHeadHoldsTheMe
 }
 
 // An issue's merge in a repository it links a pull request of is the newest of the merged pull
-// requests it links there: MergeIn lists them, newest merge first, with each one's base. Asked of
-// the issue's own repository, which no link of it can name, it answers nothing.
+// requests it links there that the attribution gives it: MergeIn lists them, newest merge first,
+// with each one's base. A pull request an issue links by its URL is that issue's in any repository
+// (attributionHeldFor), so each row is stored as the intake's attribution stores it, with the
+// issue and the source external_link; a linked row the attribution gives nobody (here #11, as a
+// head in a fork is given nobody) names no merge, as it names no head. Asked of the issue's own
+// repository, which no link of it can name, it answers nothing.
 func TestTheLinkedMergeIsTheNewestLinkedPullRequestsMerge(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 53)
-	for _, url := range []string{"https://github.com/acme/tools/pull/9", "https://github.com/acme/tools/pull/10"} {
+	for _, url := range []string{"https://github.com/acme/tools/pull/9", "https://github.com/acme/tools/pull/10", "https://github.com/acme/tools/pull/11"} {
 		if _, err := pool.Exec(ctx, `
 			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github')
 		`, issue, url); err != nil {
 			t.Fatalf("link %s to %s: %v", issue, url, err)
 		}
 	}
-	write := func(number int, head, base, mergeCommit, mergedAt, eventAt string) {
+	write := func(number int, head, base, mergeCommit, mergedAt, eventAt string, attributed bool) {
 		t.Helper()
 		merged, event := mergeTestTime(t, mergedAt), mergeTestTime(t, eventAt)
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		row := PullRequestHead{
 			Repo: "acme/tools", Number: number, HeadSHA: head, HeadRef: "legion/" + issue, BaseRef: base,
 			State: "merged", EventAt: &event, MergeCommitSHA: mergeCommit, MergedAt: &merged,
-		}); err != nil {
+		}
+		if attributed {
+			row.IssueKey, row.AttributionSource = &issue, string(sourceExternalLink)
+		}
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
 			t.Fatalf("store acme/tools#%d: %v", number, err)
 		}
 	}
 	// #10 merged first and was edited last, so the order by event_at and the order by number
-	// both answer #10.
-	write(10, headOfSix, "release", mergeOfSix, "2026-03-01T10:00:00Z", "2026-03-03T10:00:00Z")
-	write(9, headOfFive, "main", mergeOfFive, "2026-03-02T10:00:00Z", "2026-03-02T10:00:00Z")
+	// both answer #10. #11 merged last of all, and is the issue's by no source.
+	write(10, headOfSix, "release", mergeOfSix, "2026-03-01T10:00:00Z", "2026-03-03T10:00:00Z", true)
+	write(9, headOfFive, "main", mergeOfFive, "2026-03-02T10:00:00Z", "2026-03-02T10:00:00Z", true)
+	write(11, headOfSeven, "main", mergeOfSeven, "2026-03-04T10:00:00Z", "2026-03-04T10:00:00Z", false)
 
 	linked, err := unrenamed().MergeIn(ctx, pool, issue, "acme/tools", HeadAnswers{})
 	if err != nil {
 		t.Fatalf("MergeIn(%s, acme/tools): %v", issue, err)
 	}
 	if got := numbersOf(linked); len(got) != 2 || got[0] != 9 || got[1] != 10 {
-		t.Fatalf("MergeIn(%s, acme/tools) = %v, want #9 then #10: #9 merged last", issue, got)
+		t.Fatalf("MergeIn(%s, acme/tools) = %v, want #9 then #10: #9 merged last of the issue's, and #11 is no pull request of the issue", issue, got)
 	}
 	if linked[0].MergeCommitSHA != mergeOfFive || linked[0].BaseRef != "main" || linked[0].HeadSHA != headOfFive {
 		t.Fatalf("MergeIn(%s, acme/tools)[0] = %+v, want #9's merge commit, base and final head", issue, linked[0])
@@ -484,7 +493,7 @@ func TestAMergedPullRequestIsReadByItsRepositoryAndNumber(t *testing.T) {
 		{Repo: "acme/tools", Number: 7, HeadSHA: headOfSeven, HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged",
 			EventAt: &mergedAt, MergeCommitSHA: mergeOfSeven, MergedAt: &mergedAt},
 	} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
 			t.Fatalf("store %s#%d: %v", row.Repo, row.Number, err)
 		}
 	}

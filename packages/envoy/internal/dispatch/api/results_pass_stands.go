@@ -40,11 +40,12 @@ func standingCommit(result model.CheckResult) string {
 // without subjects, so a read at one commit (`?at=`) gives the same answer.
 //
 // A check whose repository Dispatch could not read answers unknown, since it could compare
-// nothing at all. So does a check CI proves with no subjects whose check runs GitHub could not be
-// read for, for model.PassStandsReasonReadFailed: it holds no result, and the read that would have
-// made one failed. A check CI proves with subjects asks that of each subject alone, at its own head
-// (subjectState). So does a check whose standing pass is held up only by a commit Dispatch could
-// not place. A `before_merge` check of an issue whose merged pull requests Dispatch cannot order
+// nothing at all. So does a check CI proves with no subjects whose check runs were not read where
+// they decide (unreadWithNoSubject), for model.PassStandsReasonReadFailed: it holds no result
+// there, and the read that would have made one failed. A check CI proves with subjects asks that
+// of each subject alone, at its own head (subjectState). So does a check whose standing pass is
+// held up only by a commit Dispatch could not place. A `before_merge` check of an issue whose
+// merged pull requests Dispatch cannot order
 // (comparison.unordered) answers unknown for model.PassStandsReasonReadFailed too: it names no
 // subject, since it cannot tell which merged head is the newest, and a pass at any of them is no
 // pass that stands. A check that compared with nothing because there is no pull request and no
@@ -60,7 +61,7 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	if compared.reason == model.ReasonRepositoryUnreadable {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
-	if (len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread) || compared.unordered {
+	if (len(compared.subjects) == 0 && unreadWithNoSubject(check, compared)) || compared.unordered {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: model.PassStandsReasonReadFailed}
 	}
 	conflicted := passAndFailCommits(check)
@@ -95,6 +96,30 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	return model.CheckPassStands{Answer: model.PassStandsNo}
+}
+
+// unreadWithNoSubject reports whether check, compared with no subject, is a check CI proves one of
+// whose reads that decide did not answer: its own `ci`, or any read at a commit the reader named
+// (model.CheckBasisNamed). A named commit that is the head of pull requests of two repositories is
+// read in each (ciHeadsOf), and the check's own `ci` is one of those reads, so a read of the other
+// that did not answer, GitHub's or the resolve of the issue's repository (jobAtHeadUnresolved),
+// leaves the check unknown, as it leaves that head's subject unknown on a read that names no
+// commit: a pass of one repository never hides an unread head of the other (R8).
+func unreadWithNoSubject(check model.CheckBlock, compared comparison) bool {
+	if check.CI != nil && check.CI.State == model.CIStateUnread {
+		return true
+	}
+	for _, basis := range compared.bases {
+		if basis.Kind != model.CheckBasisNamed {
+			continue
+		}
+		for key, ci := range compared.ci {
+			if key.commit == basis.Commit && ci != nil && ci.State == model.CIStateUnread {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // eachSubjectStands is passStandsOf for a `before_merge` check compared with heads: yes only

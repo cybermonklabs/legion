@@ -105,8 +105,8 @@ afterEach(async () => {
 
 /**
  * The store and the session directory of each gate a row binds (`bind`), removed after the row by
- * the maker's afterEach: kept to the file's end, a whole run's of them, over a thousand, would be
- * the work of the suite's one afterAll, which runs under Bun's 5 s hook limit.
+ * the maker's afterEach: kept to the file's end, a whole run's of them, over a thousand, would all
+ * wait for the suite's one afterAll.
  */
 const bindDirectory = temporaryDirectories("gate-bind", { root: SUITE_TMP });
 
@@ -6078,7 +6078,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     DISPATCH_URL: "http://127.0.0.1:9",
     // The gate's dry run starts the real `dispatch` as a child `bun`, which keeps its transpiler
     // cache, about 156 files, in HOME: with the cache off, the afterAll that removes this folder
-    // under Bun's 5 s hook limit removes only what the rows wrote.
+    // removes only what the rows wrote.
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
     DISPATCH_TOKEN,
   };
@@ -6172,8 +6172,9 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   // it: under bash, in the call's directory, with the environment the gate was given. The fake
   // Dispatch keeps every request it takes, the dry run's and the call's alike, each a process of
   // its own, so no `fetch` another test file installs in this process reaches them. It answers
-  // behind Dispatch's keyed layer (`keyedLayer`), which names each keyed write's key back, since the
-  // CLI reads a write's 2xx that names no key back as no answer of Dispatch's.
+  // behind Dispatch's keyed layer (`keyedLayer`), which names each keyed write's key back, as
+  // Dispatch's does, since the CLI reads a write's 2xx that names no key back as no answer of
+  // Dispatch's.
   test("the gate's read of an inline upload asks Dispatch nothing, and the call it lets run makes the round trip", async () => {
     const requests: Array<{ method: string; path: string; body?: unknown }> = [];
     const dispatch = Bun.serve({
@@ -6352,8 +6353,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   });
 
   // The gate's dry run starts the real `dispatch` as a child `bun` whose HOME is this folder,
-  // where Bun keeps its transpiler cache, and an afterAll hook removes the folder under Bun's 5 s
-  // hook limit, which no row's own limit covers: what the child leaves there is all it reads.
+  // where Bun keeps its transpiler cache, and the fixture's afterAll removes the folder: what the
+  // child leaves there is all that removal reads.
   test("the dry run's child leaves no Bun cache in the folder, which is its HOME", async () => {
     fs.writeFileSync(path.join(work, "brief.md"), BRIEF);
     const g = bind({ env: gateEnv, cwd: work });
@@ -8307,8 +8308,7 @@ test("no gated call of an earlier test made a snapshot directory", () => {
   expect(snapshotDirs()).toEqual([]);
 });
 // Runs last: each gate a row binds has a store and a session directory of the row's own, which go
-// with the row, so the suite's TMPDIR holds none of them for its afterAll hook to remove under
-// Bun's 5 s hook limit.
+// with the row, so the suite's TMPDIR holds none of them for its afterAll hook to remove.
 test("no bound gate of an earlier test left its store or session directory", () => {
   const left = fs
     .readdirSync(SUITE_TMP)

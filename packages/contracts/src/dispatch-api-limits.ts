@@ -353,26 +353,6 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
 /**
- * The code of the `403` for a request by an approve-only token - the token the secrets broker
- * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
- * `approve` alone - to a route whose declaration does not state `ApproveOnly`, and
- * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
- * recorded. No sign-in and no other scope makes the request possible for that token.
- */
-export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
-
-/**
- * The code of the `403` for a request by a read-only token that carries a cut (the broker's
- * `as_of`: the past time the token reads at) to a read that holds no past answer: `GET /ws/live`,
- * and each read route that does not answer `as_of` except `GET /api/v1/whoami`. A route that
- * answers `as_of` answers such a token as of its cut, whatever `as_of` the request sends, and
- * `GET /api/v1/whoami` names the cut. Dispatch refuses the request before the route's handler
- * runs, and names the cut, rather than answer it with the present. On a route outside the read
- * class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
- */
-export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
-
-/**
  * The most characters (Unicode code points, Go's runes) of what a CI job observed that a result
  * of a spec check keeps (`POST /api/v1/projects/{key}/results`, `observed`). A text of this many
  * characters or fewer is kept whole. A longer text is kept as its first
@@ -398,6 +378,26 @@ export const SPEC_CHECK_OBSERVED_START = 500;
  *  `contracts.SpecCheckObservedEnd`. */
 export const SPEC_CHECK_OBSERVED_END =
   SPEC_CHECK_OBSERVED_MAX - SPEC_CHECK_OBSERVED_START - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
+
+/**
+ * The code of the `403` for a request by an approve-only token - the token the secrets broker
+ * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
+ * `approve` alone - to a route whose declaration does not state `ApproveOnly`, and
+ * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
+ * recorded. No sign-in and no other scope makes the request possible for that token.
+ */
+export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
+
+/**
+ * The code of the `403` for a request by a read-only token that carries a cut (the broker's
+ * `as_of`: the past time the token reads at) to a read that holds no past answer: `GET /ws/live`,
+ * and each read route that does not answer `as_of` except `GET /api/v1/whoami`. A route that
+ * answers `as_of` answers such a token as of its cut, whatever `as_of` the request sends, and
+ * `GET /api/v1/whoami` names the cut. Dispatch refuses the request before the route's handler
+ * runs, and names the cut, rather than answer it with the present. On a route outside the read
+ * class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ */
+export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 
 /** The codes of a repeat Dispatch gives no copy of its first answer for: `409 KEY_COMMITTED`, a
  *  write that landed, or a replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats a write's as

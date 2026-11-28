@@ -70,9 +70,9 @@ var sweepBatch = 1000
 var sweepMaxBatches = 10
 
 // sweepStatements are Sweep's statements for state deleted row by row, $1 the batch. Each
-// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index, or
-// 0046's approve_grants_expires, on the predicate it sweeps by, oldest first, so a table of mostly
-// live rows is never read whole.
+// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index,
+// 0046's approve_grants_expires or 0052's result_grants_expires, on the predicate it sweeps by,
+// oldest first, so a table of mostly live rows is never read whole.
 var sweepStatements = []struct{ what, sql string }{
 	{"device codes", `delete from oauth_device_codes where signature in (select signature from oauth_device_codes
 		where expires_at < now() - interval '1 hour' order by expires_at limit $1)`},
@@ -123,14 +123,14 @@ type sweepCursor struct {
 // polling one is answered expired_token, not invalid_grant as for an unknown code), DPoP proofs
 // and nonces past theirs, access tokens past theirs, narrowed ones included, lapsed session
 // bindings, the two replay stores' remembered JWT ids past theirs, pod-session registrations past
-// theirs, CI runs' result grants past theirs, and every refresh token of a family (rows sharing
-// request_id) none of whose rows is still redeemable (active, unexpired, and in its
-// rotation's grace or never rotated). A family with a redeemable row keeps all its rows, so
-// replaying one of its rotated tokens still finds it and revokes the family. Each kind is
-// worked in batches of sweepBatch, each its own statements, until a batch comes up short or
-// sweepMaxBatches have run; what is left waits for the next Sweep. Refresh tokens are walked
-// with a cursor held on the Store: each batch examines the sweepBatch rows after the last one
-// examined, deleted or kept, and a short batch returns the cursor to the start, so a live
+// theirs, CI runs' result grants and persons' approve grants past theirs, and every refresh token
+// of a family (rows sharing request_id) none of whose rows is still redeemable (active,
+// unexpired, and in its rotation's grace or never rotated). A family with a redeemable row keeps
+// all its rows, so replaying one of its rotated tokens still finds it and revokes the family.
+// Each kind is worked in batches of sweepBatch, each its own statements, until a batch comes up
+// short or sweepMaxBatches have run; what is left waits for the next Sweep. Refresh tokens are
+// walked with a cursor held on the Store: each batch examines the sweepBatch rows after the last
+// one examined, deleted or kept, and a short batch returns the cursor to the start, so a live
 // family's rows are read once per pass over the table rather than every tick.
 func (s *Store) Sweep(ctx context.Context) error {
 	db := s.db(ctx)

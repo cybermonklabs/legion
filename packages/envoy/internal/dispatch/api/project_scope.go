@@ -289,16 +289,18 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 }
 
 // projectOfCheckResult is one hop to the project of the issue the result was recorded on,
-// since the check_results table holds no project of its own
-// (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
-// check_issue_key: a result recorded on a child against a parent's check belongs to the child.
-// The two issues can be of different projects, since an issue's parent may be of another
-// project, so a retraction asks access.CredentialCovers about a check of another project itself
-// (retractCheckResult), as the record route does (readResultRequest).
+// since neither table of results holds a project of its own
+// (store/migrations/20261102122200_check_results.up.sql, 20261116213930_ci_check_results.up.sql).
+// It reads issue_key and not check_issue_key: a result recorded on a child against a parent's
+// check belongs to the child. The two issues can be of different projects, since an issue's
+// parent may be of another project, so a retraction asks access.CredentialCovers about a check of
+// another project itself (retractCheckResult), as the record route does (readResultRequest). A CI
+// job's result resolves too, so a caller of its project reaches the retract route, which takes a
+// CI job's result as it takes a role's.
 func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, ''), coalesce(p.visibility = 'private', false)
-		from check_results c
+		from (select id, issue_key from check_results union all select id, issue_key from ci_check_results) c
 		left join issues i on i.key = c.issue_key
 		left join projects p on p.key = i.project_key
 		where c.id = $1

@@ -1306,28 +1306,45 @@ func TestCensusAdmitsTheAnswersAndBacklogIndexesOnceBtreeGinIsApplied(t *testing
 func TestCensusRefusesTheAnswersIndexBesideItsPendingExtension(t *testing.T) {
 	t.Parallel()
 	report, entries := eventsIndexCensus(t, 20261125005337, answersDestinationsIndexVersion, answersDestinationsIndexVersion)
-	extension := ""
-	for _, entry := range report.Pending {
-		if entry.Migration.Version == btreeGinVersion {
-			extension = entry.Migration.Name
+	entry := entries[answersDestinationsIndexVersion]
+	if entry.ConcurrentIndex {
+		t.Errorf("%s beside the pending btree_gin migration takes the concurrent index exemption; want none", entry.Migration.Name)
+	}
+	requireSizeRefusalBesideBtreeGin(t, report, entry, "events", "which can run code of its own on the concurrent index build")
+}
+
+// requireSizeRefusalBesideBtreeGin fails the test unless entry, the census's judgment of a
+// migration that touches table above a limit of 1 byte, refuses it on the size of table because
+// btreeGinVersion's create extension is pending before it and takes its exemption (pgmigrate's
+// takesLaterExemptions): one reason of entry.Refusals holds the three texts every such refusal
+// holds, and each of also. It fails the test at once when btree_gin's migration is not pending in
+// report. Each caller checks its own exemption beside it.
+func requireSizeRefusalBesideBtreeGin(t *testing.T, report *pgmigrate.Report, entry *pgmigrate.MigrationCensus, table string, also ...string) {
+	t.Helper()
+	var extension string
+	for _, pending := range report.Pending {
+		if pending.Migration.Version == btreeGinVersion {
+			extension = pending.Migration.Name
 		}
 	}
 	if extension == "" {
-		t.Fatalf("%d is not pending before the index; report:\n%s", btreeGinVersion, reportText(report))
+		t.Fatalf("%d is not pending; report:\n%s", btreeGinVersion, reportText(report))
 	}
-	entry := entries[answersDestinationsIndexVersion]
-	want := []string{
-		"events is ",
+	want := append([]string{
+		table + " is ",
 		"above the 1 bytes a table a migration touches may be",
 		"the earlier pending migration " + extension + " creates or alters an extension",
-		"which can run code of its own on the concurrent index build",
-	}
-	refusedOnSize := slices.ContainsFunc(entry.Refusals, func(reason string) bool {
-		return !slices.ContainsFunc(want, func(text string) bool { return !strings.Contains(reason, text) })
-	})
-	if entry.ConcurrentIndex || !refusedOnSize {
-		t.Fatalf("%s beside the pending %s: concurrent index %v, refusals %q; want no exemption and a refusal on the size of events that holds each of %q",
-			entry.Migration.Name, extension, entry.ConcurrentIndex, entry.Refusals, want)
+	}, also...)
+	if !slices.ContainsFunc(entry.Refusals, func(reason string) bool {
+		for _, text := range want {
+			if !strings.Contains(reason, text) {
+				return false
+			}
+		}
+		return true
+	}) {
+		t.Errorf("%s beside the pending %s: refusals %q; want a refusal on the size of %s that holds each of %q",
+			entry.Migration.Name, extension, entry.Refusals, table, want)
 	}
 }
 

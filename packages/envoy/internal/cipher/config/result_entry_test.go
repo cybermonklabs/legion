@@ -62,7 +62,7 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	e := withResultsAirlock(validEnv())
 	e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
 	e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
-	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = "example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com"
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = "example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/main=refs/heads/*=EXAMPLE=ada@example.com"
 	if _, err := Load(env(e)); err != nil {
 		t.Fatalf("result workflows with the airlock: %v", err)
 	}

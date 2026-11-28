@@ -43,6 +43,13 @@ const REPOSITORY = "[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}";
 const WORKFLOW_PATH = "[A-Za-z0-9_./-]{1,200}";
 const GIT_REF = "refs/[A-Za-z0-9_./-]{1,200}";
 const WORKFLOW_REF = "[A-Za-z0-9_./@-]{1,400}";
+/** A ref pattern a result entry lists its workflow under (`refs/heads/*`), and a list of them as
+ *  the policy joins them, with ", ". */
+const REF_PATTERN = "refs/[A-Za-z0-9_./*?\\[\\]-]{1,200}";
+const REF_PATTERN_LIST = `${REF_PATTERN}(?:, ${REF_PATTERN}){0,31}`;
+/** The forms a CI run's claims must have (Go's `ciRunClaims`, each claim's `form`). */
+const CLAIM_FORM =
+  "(?:40 lowercase hex digits|a positive decimal number a signed 64-bit integer holds)";
 const IDENTITY = `(?:${K8S_ACCOUNT}|${REPOSITORY}/${WORKFLOW_PATH}|${EMAIL})`;
 const FIXED_SESSION = "[A-Za-z0-9._:@/+-]{1,200}";
 const PROJECT_LIST = `${PROJECT_SLOT}(?: ${PROJECT_SLOT}){0,31}`;
@@ -93,7 +100,10 @@ const POLICY_SENTINELS = {
   sessionFixed: "exchange: the entry fixes the session name its tokens carry",
   projectsFixed: "exchange: the request names projects other than the one its entry gives",
   projectsNoPerson: "exchange: a token that names no person names no project",
+  twoEntries: "exchange: two entries list this identity",
   restrictedOneProject: "exchange: a restricted member's machine login names exactly one project",
+  approverKindUnknown:
+    "exchange: the machine login's approver is of no member kind the decision was told",
   restrictedSignIn: "exchange: a restricted member's Dispatch sign-in is given no token",
 } as const;
 
@@ -146,6 +156,33 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     "no entry lists the workflow %s of %s on %s",
     WORKFLOW_PATH,
     REPOSITORY,
+    GIT_REF
+  ),
+  // A job written in a result entry's workflow at a ref other than the one the entry takes it at,
+  // such as the copy on the run's own branch, and a run of one repository whose job is another
+  // repository's result entry's workflow (`exchange.Set.resultRun`).
+  policy(
+    "noEntry",
+    "a run of %s on %s ran a job written in %s, and the result entry of that workflow takes it at %s: a copy at any other ref, the branch's own among them, is not the entry's workflow, since a push to that ref can change it",
+    REPOSITORY,
+    GIT_REF,
+    WORKFLOW_REF,
+    GIT_REF
+  ),
+  policy(
+    "noEntry",
+    "a run of %s on %s ran a job written in %s, the workflow of a result entry of %s, and a result entry takes the runs of its own repository alone",
+    REPOSITORY,
+    GIT_REF,
+    WORKFLOW_REF,
+    REPOSITORY
+  ),
+  policy(
+    "twoEntries",
+    "the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of",
+    WORKFLOW_PATH,
+    REPOSITORY,
+    REF_PATTERN_LIST,
     GIT_REF
   ),
   policy(
@@ -232,6 +269,7 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
   policy("sessionInvalid", "%s named a session of %d bytes; %s", IDENTITY, NUMBER, SESSION_RULE),
   policy("claimMissing", "the subject token carries no %s claim", CLAIM),
   policy("claimMissing", "the subject token's %s claim is not a non-empty string", CLAIM),
+  policy("claimMissing", "the subject token's %s claim is not %s", CLAIM, CLAIM_FORM),
   policy(
     "projectsFixed",
     "%s's entry names no project, and the request named %s",
@@ -257,6 +295,15 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
   policy(
     "restrictedOneProject",
     "%s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on",
+    PERSON_SLOT,
+    NUMBER
+  ),
+  // A machine login decided with no word on what kind of member its approver is
+  // (`exchange.ApproverUnknown`), which no caller of the policy means to ask for: the broker
+  // asks Dispatch before it decides, so this says the broker asked nothing.
+  policy(
+    "approverKindUnknown",
+    "%s's machine login was decided with member kind %d",
     PERSON_SLOT,
     NUMBER
   ),

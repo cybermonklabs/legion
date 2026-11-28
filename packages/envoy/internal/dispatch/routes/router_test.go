@@ -951,6 +951,24 @@ func newTestRouterWith(t *testing.T, configure func(*AppContextOptions)) (http.H
 	return handler, ctx
 }
 
+func TestHideStateFileReachesAPI(t *testing.T) {
+	people := newMemoryPeople()
+	const hideStateFile = "/run/skill-scenarios/quiet/run-1"
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
+		SigningKey:    testSigningKey,
+		People:        people,
+		Identity:      identity.HeaderIdentity{People: people},
+		Lifetime:      t.Context(),
+		HideStateFile: hideStateFile,
+	}))
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	if ctx.apiDeps.HideStateFile != hideStateFile {
+		t.Errorf("API HideStateFile %q, want %q", ctx.apiDeps.HideStateFile, hideStateFile)
+	}
+}
+
 func TestWhoamiUsesHeaderIdentity(t *testing.T) {
 	t.Parallel()
 	handler, ctx := newTestRouter(t)

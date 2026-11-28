@@ -12,14 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-const (
-	// ciJobRepository is the repository of the rig's issue, the project's default repository.
-	ciJobRepository = "example-org/example-repo"
-	// ciJobCommit and ciJobHead are two commits of that repository, each the head of a pull
-	// request of the issue where a test writes one there.
-	ciJobCommit = "0123456789abcdef0123456789abcdef01234567"
-	ciJobHead   = "fedcba9876543210fedcba9876543210fedcba98"
-)
+// The rig's repository and the two commits of it that a test writes a pull request's head at are
+// ciJobRepository, ciJobCommit and ciJobHead, which ci_job_results_test.go declares for the CI
+// job's rig: one issue's repository and commits serve both rigs, and a test of either reads the
+// same three names.
 
 // headRuleVerification is the Verification document of the rig's issue: k1, a `before_merge`
 // check that no CI job proves.

@@ -213,7 +213,8 @@ export class ReadCut implements AsOfRead {
 
   /** `Left out at <cut>: <part>, …`: each part left out, then each absent field in words, each
    *  once, or `nothing`. A read at a cut always prints it, so its output names the cut it was
-   *  read at, a token's cut that replaced `--as-of` included. */
+   *  read at, a token's cut that replaced `--as-of` included: before its text, or on stderr
+   *  beside a JSON output (`withLeftOut`). */
   line(): string {
     const named = new Set([...this.#parts, ...[...this.#absent].map(absentFieldWords)]);
     return `Left out at ${this.asOf}: ${named.size === 0 ? "nothing" : [...named].join(", ")}`;
@@ -254,10 +255,27 @@ export async function readAtCut(
   return { identity, cut: asOf === undefined ? undefined : new ReadCut(asOf) };
 }
 
-/** `result` with the cut's `Left out at` line before its text, at a cut. */
+/** Whether the whole output of a call is one JSON object a program reads: a call with `json`,
+ *  which every command that takes it answers with that object alone. The CLI prints such an
+ *  output whole, also on a host that cuts long output, since a cut object is no JSON object, and
+ *  prints its own notes on standard error, a read's `Left out at` line at a cut among them
+ *  (`withLeftOut`). */
+export function printsJson(args: Readonly<Record<string, unknown>>): boolean {
+  return args["json"] === true;
+}
+
+/**
+ * `result` at a cut with the cut's `Left out at` line: before its text, or, where its whole text
+ * is one JSON object a program reads (`wholeJson`, `printsJson`), among its warnings, which the
+ * CLI writes to stderr, so stdout stays the JSON alone, as `dispatch api` keeps its body.
+ */
 export function withLeftOut(
   result: DispatchToolResult,
-  cut: ReadCut | undefined
+  cut: ReadCut | undefined,
+  wholeJson: boolean
 ): DispatchToolResult {
-  return cut === undefined ? result : { ...result, text: `${cut.line()}\n${result.text}` };
+  if (cut === undefined) return result;
+  return wholeJson
+    ? { ...result, warnings: [...(result.warnings ?? []), cut.line()] }
+    : { ...result, text: `${cut.line()}\n${result.text}` };
 }

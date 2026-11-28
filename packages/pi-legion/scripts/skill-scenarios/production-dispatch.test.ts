@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { bearerCredential } from "@legion/envoy-client/bearer";
@@ -15,6 +15,12 @@ import {
   parseWindow,
   resolveDispatch,
 } from "./production-dispatch";
+import { fileRowLimit } from "./test-limit";
+
+// Each row reads and writes its files in this process, against a fake Dispatch, which a loaded
+// machine stretches: each test and hook gets the limit test-limit.ts computes from the bounds of
+// what they wait for.
+setDefaultTimeout(fileRowLimit());
 
 const scratch = temporaryDirectory("production-dispatch");
 

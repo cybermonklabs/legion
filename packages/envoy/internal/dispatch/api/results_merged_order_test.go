@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -93,7 +94,7 @@ func mergedPull(issue string, number int, head, merge, mergedAt string) map[stri
 func writeMergeWithNoTime(t *testing.T, database *store.Store, number int, head, issueKey string) {
 	t.Helper()
 	attributed := issueKey
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+	if err := delivery.NewAttributor(refs.Renames{}).UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: number, HeadSHA: head, HeadRef: "legion/" + issueKey,
 		BaseRef: "main", State: "merged", IssueKey: &attributed, AttributionSource: "title",
 		AttributionComplete: true, Title: issueKey + ": a change",
@@ -339,7 +340,7 @@ func TestAFilledMergeAndAnUnfilledOneAreReadInTheOrderTheyMerged(t *testing.T) {
 		t.Fatalf("read #6's time of merge: %v", err)
 	}
 	attributed := issue
-	if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+	if err := delivery.NewAttributor(refs.Renames{}).UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: 6, HeadSHA: mergeOrderF6, HeadRef: "legion/" + issue, BaseRef: "main",
 		State: "merged", IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
 		Title: issue + ": the work", URL: "https://github.com/acme/widgets/pull/6",

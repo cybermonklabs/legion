@@ -3,9 +3,9 @@
 # (.github/ci-notes/ci.md#envoy-go-build-envoys-go-build-vet-format-generated-code-and-migration-checks
 # says what it holds), with the tests of the
 # architecture-note and spec-file rules and their commands, the note check over this
-# repository's notes through the composite action, the spec-file check over its spec
-# directory through the other one, and the guard that no CI file compares the spec files with
-# the approved spec. Its gofmt step reads the whole module, so no closure stands for it.
+# repository's notes through the composite action, and the spec-file check over its spec
+# directory through the other one. Its gofmt step reads the whole module, so no closure
+# stands for it.
 GATE = gate("envoy_go_build", "envoy-go-build", runs=[
     step_run("envoy-go-build", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
              ["./cmd/dispatch", "./cmd/listener"], mode="build"),
@@ -25,14 +25,6 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
                     (ENVOY, ["./cmd/dispatch"],
                      "go run ./cmd/dispatch openapi --check, which emits the document from the "
                      "route table and compares it with the committed one", {"mode": "build"}),
-                ]),
-    # The guard that no CI file runs the comparison of the spec files with the approved spec:
-    # `go run` again, so pinned whole, and the Run stands for the command it builds.
-    pinned_step("envoy-go-build", "Check that no CI file of this repository compares the spec files", ENVOY,
-                "go run ./cmd/spec-check guard --root ../..", [
-                    (ENVOY, ["./cmd/spec-check"],
-                     "go run ./cmd/spec-check guard, which builds the command and runs it over the "
-                     "repository root", {"mode": "build"}),
                 ]),
     pinned_step("envoy-go-build", EDITED_MIGRATIONS_STEP, ENVOY, EDITED_MIGRATIONS_SCRIPT, [
         (ENVOY, ["./internal/pgmigrate/cmd/edited-migrations"],
@@ -116,9 +108,6 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
      f"{at('envoy-go-build', './.github/actions/spec-check')} judges the action's default path "
      "(`.github/actions/spec-check/action.yml#default: .dispatch/spec`), which `.github/actions/spec-check/check.sh#run()` "
      "resolves against GITHUB_WORKSPACE and the command it runs reads"),
-    *[(glob, f"{at('envoy-go-build', 'Check that no CI file of this repository compares the spec files')}: "
-             "spec-check guard reads every file under it")
-      for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
 ) + setup_go("envoy-go-build", f"{ENVOY}/go.mod") + bun_job("envoy-go-build")
   + darwin_vet_reads("envoy-go-build", ENVOY_DARWIN_VET, ENVOY)
   + install_gotestsum("envoy-go-build") + go_test_events("envoy-go-build"))

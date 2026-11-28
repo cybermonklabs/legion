@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -786,8 +787,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 
+	// The pull requests this change of the links decides the issue of: a pull request is the
+	// issue's while the issue links it (R19 of the spec of several open pull requests), so each is
+	// judged again in this transaction from what Dispatch stored of it
+	// (delivery.Attributor.LinksChanged), with no read of GitHub: a link a person makes by hand is
+	// answered from what Dispatch holds.
+	var changedHeads []delivery.HeadOfChangedLink
 	if input.ExternalLinks != nil {
-		if _, err := tx.Exec(ctx, `delete from issue_external_links where issue_key = $1`, key); err != nil {
+		deleted, err := tx.Query(ctx, `delete from issue_external_links where issue_key = $1 returning url`, key)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		removed, err := pgx.CollectRows(deleted, pgx.RowTo[string])
+		if err != nil {
 			return issueWriteResult{}, err
 		}
 		for _, link := range *input.ExternalLinks {
@@ -816,6 +828,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 				return issueWriteResult{}, err
 			}
 		}
+		changedHeads, err = s.deps.Attributor.LinksChanged(ctx, tx, key, changedLinkURLs(removed, *input.ExternalLinks))
+		if err != nil {
+			return issueWriteResult{}, err
+		}
 		changed = true
 	}
 	if !changed {
@@ -826,10 +842,11 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		return issueWriteResult{issue: before, advice: advice, previousLastSeq: before.LastSeq}, nil
 	}
 	// Every owner this transaction appends to must be in one LockOwners call before the
-	// first append: the issue itself, the status-change parent, both ends of a reparent, and each
-	// issue under it that takes its priority from it, which the write appends to where it moves what
-	// the issue passes down. lockPatchOwners and lockPatchOwnersAndParent already hold each of those
-	// owner locks, so LockOwners returns at once.
+	// first append: the issue itself, the status-change parent, both ends of a reparent, each issue
+	// under it that takes its priority from it, which the write appends to where it moves what the
+	// issue passes down, and each issue a pull request whose links changed left or reached.
+	// lockPatchOwners and lockPatchOwnersAndParent already hold the owner locks of all but the
+	// last, so LockOwners takes only those.
 	owners := []model.Event{issueOwner(key).event("", actor, nil)}
 	ownerKeys := map[string]bool{key: true}
 	addOwner := func(parentKey *string) {
@@ -848,6 +865,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	for _, below := range inheriting {
 		addOwner(&below.Key)
+	}
+	var moves []model.Event
+	for _, head := range changedHeads {
+		for _, move := range head.AttributionEvents() {
+			addOwner(move.IssueKey)
+			moves = append(moves, move)
+		}
 	}
 	if len(owners) > 1 {
 		if err := s.deps.Events.LockOwners(ctx, tx, owners...); err != nil {
@@ -971,6 +995,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		return issueWriteResult{}, err
 	}
 	appended = append(appended, event)
+	// A pull request the change of the links moved: the move on the timeline of the issue it left
+	// and of the issue it reached, after the update that made it, as a head write appends it
+	// (delivery.AttributionEventType).
+	for _, move := range moves {
+		queued, err := s.queueEvent(ledger, move)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		appended = append(appended, queued)
+	}
 	if previousClaim != nil {
 		released, err := s.queueEvent(ledger, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {
@@ -1094,6 +1128,34 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
 		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn, moved: moved,
 	}, nil
+}
+
+// changedLinkURLs is the URL of each link the change of an issue's links added or removed: in
+// removed, the issue's links before the change, and not in links, its links after it, or the
+// other way round, compared without case, as the attribution compares a link with a pull
+// request's URL (delivery's attributionCandidates).
+func changedLinkURLs(removed []string, links []model.ExternalLink) []string {
+	before := make(map[string]bool, len(removed))
+	for _, url := range removed {
+		before[strings.ToLower(url)] = true
+	}
+	after := make(map[string]bool, len(links))
+	for _, link := range links {
+		after[strings.ToLower(link.URL)] = true
+	}
+	var changed []string
+	for url := range before {
+		if !after[url] {
+			changed = append(changed, url)
+		}
+	}
+	for url := range after {
+		if !before[url] {
+			changed = append(changed, url)
+		}
+	}
+	slices.Sort(changed)
+	return changed
 }
 
 // appendedIssueLastSeq is the issue's last_seq once the write phase has run: the sequence of the

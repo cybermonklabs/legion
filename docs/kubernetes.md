@@ -11702,7 +11702,7 @@ An issued token carries these claims and no others:
   Only a read entry's token carries `none`, and that token writes nothing.
   A token carrying a narrowed word writes nothing either.
   Only a job's token carries `public`: it reaches every public project, which no list names, and the private projects `projects` lists.
-  Only a result entry's token carries `results`, and that token writes only the results of its project's spec checks.
+  Only a result entry's token carries `results`, and that token writes only the results of its own run, of its project's spec checks and of each check CI proves whose `ci_check` names the job of that run.
   Only a token traded from a Dispatch sign-in, a device login its person approved for Dispatch with the scopes they ticked, carries `consented`: its `projects` mean what a `person` token's do, it holds the scopes its person approved and no others, and no trade narrows it to `read`.
 
 - `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` or `consented` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a job's token, its job entry's whole list, whatever its trade named: the one project of a `named` token, or the 0 to 16 private projects of a `public` one; for a `results` token, the one project key its result entry names, whose results alone it may write.
@@ -11716,7 +11716,9 @@ An issued token carries these claims and no others:
   Dispatch reads `legion-status` (`DISPATCH_LEGION_STATUS_SCOPE`).
   Every other token carries none, whatever session it carries.
 
-- `ci` — the GitHub Actions run a result entry's token was minted for: its `repository`, `workflow_ref`, `ref`, `sha`, `event_name`, `run_id`, `run_attempt`, `runner_environment` and `check_run_id`, as the run's own GitHub token names them (`CIRun`, `packages/envoy/internal/cipher/oauthwire`).
+- `ci` — the GitHub Actions run a result entry's token was minted for: its `repository`, `ref`, `sha`, `event_name`, `run_id`, `run_attempt`, `runner_environment`, `check_run_id` and `job_workflow_sha`, as the run's own GitHub token names them, and its `workflow_ref`, the token's `job_workflow_ref`: the workflow file the job is written in, the result entry's workflow at the default branch, of which `job_workflow_sha` is the commit the job ran (`CIRun`, `packages/envoy/internal/cipher/oauthwire`).
+  The `workflow_ref` is not the token's own `workflow_ref`, the workflow on the run's branch that called the entry's, and for a run of any other branch than the default the job's file at `sha` is the branch's own copy, which no job of the run ran: a reader reads the run's jobs from the file at `job_workflow_sha` (Dispatch's project results route does, `jobOfCheckRun`).
+  Every other token carries none.
 
 - `as_of` — the cut a token whose trade asked for `read` reads at, the trade's `as_of` form parameter, in UTC to the microsecond.
   Every other token, and such a token whose trade named no cut, carries none.
@@ -11754,8 +11756,13 @@ a person's read trade names the credential the sign-in already holds, so once th
 A driver that renews a copy's read token keeps the sign-in trading ordinarily as well.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 The path is the token's `workflow_ref` without its repository and without `@` and its `ref` claim (`oauthwire.WorkflowPath`), since a workflow file's name and a branch's name can each hold an `@`, and a `workflow_ref` of any other form is refused.
-A result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`, `<repository>=<workflow path>=<ref pattern>=<project>=<person>`) lists a workflow by its repository, its path and a pattern of refs in its place, such as `refs/heads/*`, where a `*` stands for one segment of the ref.
-Its run asks for `requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`, the one placeholder type of every capability the broker mints and holds, and is answered a proxy placeholder and a result grant, which the broker keeps in its database (`result_grants`) for fifteen minutes, or for `BROKER_ACCESS_TOKEN_SECONDS` when that is shorter, and never an access token:
+A result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`, `<repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person>`) lists a workflow by its repository, its path, the ref it takes the workflow file at, and a pattern of refs in place of the run's ref, such as `refs/heads/*`, where a `*` stands for one segment of the ref.
+The workflow ref is a branch's ref spelled out whole with no wildcard and no `@refs/heads/` in the branch's name, and must be the repository's default branch, such as `refs/heads/main`, whose copy of the workflow a push to another branch cannot change.
+A reader takes the workflow's path out of a run's `workflow_ref` as what lies before its last `@refs/heads/` (`oauthwire.JobWorkflowPath`), so a branch's name that held one would make the path unreadable.
+A run is the entry's only where its job is written in that copy: the token's `job_workflow_ref` is exactly `<repository>/<workflow path>@<workflow ref>`, and the pattern matches its `ref`.
+A workflow on the run's branch calls the entry's workflow as a reusable workflow (`uses: <owner>/<name>/<workflow path>@<default branch>`), so for a result entry the token's `workflow_ref`, the workflow the run entered through, need not equal `job_workflow_ref`, and a job written in the branch's own copy of the workflow, or the copy at any other ref, is refused `invalid_request`, naming the job's workflow and the ref the entry takes it at; so is a run of another repository whose job is the entry's workflow.
+An entry of the old five-field form, one whose workflow ref is not such a branch's ref, and one workflow taken at two refs refuse the broker's start.
+A result entry's run asks for `requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`, the one placeholder type of every capability the broker mints and holds, and is answered a proxy placeholder and a result grant, which the broker keeps in its database (`result_grants`) for fifteen minutes, or for `BROKER_ACCESS_TOKEN_SECONDS` when that is shorter, and never an access token:
 the same run asking for an access token is refused `invalid_request`, and no other entry is granted a result grant.
 The grant holds the scope `results` and the project scope `results`, names that person and that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as `ci`.
 Each broker pod mints its own results token for a grant when the airlock proxy first carries one of the grant's writes there (`Provider.MintGrantToken`, `packages/envoy/internal/cipher/oauth/minted.go`):
@@ -11852,7 +11859,7 @@ Dispatch refuses every write of a token that names a service and no person `403 
 It serves a read-only token, one that holds `read`, on the reads of its read class (each route's `Read`, in its file under `packages/envoy/internal/dispatch/api`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 It answers a read-only token that carries a cut as of that cut on each route that answers `as_of`, names the cut on `GET /api/v1/whoami`, and answers it `403 AS_OF_TOKEN_NOT_SERVED` on every other read and on `GET /ws/live`.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
-It serves a result entry's token on the routes whose declaration states `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `packages/envoy/internal/dispatch/api`), today `POST /api/v1/projects/{key}/results` alone, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`.
+It serves a result entry's token on the routes whose declaration states `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `packages/envoy/internal/dispatch/api`), today `POST /api/v1/projects/{key}/results` and `POST /api/v1/issues/{key}/results`, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`.
 The Envoy listener answers a result entry's token `401`, because its verifier does not ask for it (`ciphertoken.Options.ServesResults`).
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 

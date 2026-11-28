@@ -14,8 +14,14 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 //   - GET /repos/{owner}/{repo}/check-runs/{id}, the one check run Dispatch reads by its id;
 //   - GET /repos/{owner}/{repo}/git/trees/{sha}:{dir} and GET .../git/blobs/{sha}, the reads of
 //     githubapp.Client.Dir and DirFiles;
+//   - the reads of the issue's results route: GET /repos/{owner}/{repo} with `default_branch`
+//     main (Client.DefaultBranch), GET .../git/ref/heads/{branch}, a branch's head as setBranch
+//     set it (Client.Branch), GET .../commits/{sha}, which holds every commit (Client.HasCommit),
+//     GET .../commits/{sha}/check-runs, which names no run, and GET .../commits/{sha}/pulls,
+//     which names no pull request;
 //   - GET /repos/{owner}/{repo}/contents/{path}?ref={sha}, the read of githubapp.Client.File, by
-//     which Dispatch reads the run's workflow file to know which job makes the run's check run;
+//     which Dispatch reads the job's workflow file, at the commit of it the job ran, to know which
+//     job makes the run's check run;
 //   - the App installation of a repository and the installation token Dispatch mints there.
 //
 // Every route answers what this process set and nothing else, as GitHub's 404 for the rest.
@@ -34,8 +40,17 @@ const TOKEN_SECONDS = 300;
 export interface ActionsRun {
   /** `<owner>/<name>`, the repository the run belongs to. */
   readonly repository: string;
-  /** The workflow file's path in the repository, as `.github/workflows/<name>.yaml`. */
+  /** The path of the workflow file the run entered through, as `.github/workflows/<name>.yaml`:
+   *  its `workflow_ref` is this file at `ref`. */
   readonly workflow: string;
+  /** The `job_workflow_ref` of the job, `<owner>/<name>/<path>@<ref>`: the workflow file the job
+   *  is written in, at the ref the run's workflow calls it at, where the job is a reusable
+   *  workflow's. Left out, the job is written directly in `workflow`, at `ref`. */
+  readonly jobWorkflowRef?: string;
+  /** The `job_workflow_sha` of the job: the commit of its workflow file that the job ran, the head
+   *  of the ref `jobWorkflowRef` names when the run started. Left out, it is `sha`, as for a job
+   *  written directly in the workflow of the pushed commit. */
+  readonly jobWorkflowSha?: string;
   /** The ref the run was pushed to, as `refs/heads/<branch>`. */
   readonly ref: string;
   /** The commit the run tested, 40 lowercase hex characters. */
@@ -44,7 +59,9 @@ export interface ActionsRun {
   readonly runAttempt: number;
   /** The check run of the job, which GitHub names after the job. */
   readonly checkRunId: number;
-  /** The check run's name: the job's name, then its matrix values in parentheses. */
+  /** The check run's name, as GitHub names a job's: the job's name, then its matrix values in
+   *  parentheses for a leg of a matrix job, and for a job of a reusable workflow the calling
+   *  job's name and ` / ` before it, such as `ci / go-checks`. */
   readonly checkRunName: string;
   /** Whether each token of the run is signed by a key the issuer's key set does not hold. */
   readonly forged?: boolean;
@@ -71,6 +88,8 @@ export interface FakeGitHubActions {
     dir: string,
     files: Readonly<Record<string, string>>
   ): void;
+  /** The head of `branch` of `repository` is `sha` from now on, as a push moves it. */
+  setBranch(repository: string, branch: string, sha: string): void;
   /** The one file at `path` at `sha`, as the contents read answers it. */
   setFile(repository: string, sha: string, path: string, content: string): void;
   stop(): Promise<void>;
@@ -112,6 +131,8 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   // "<owner>/<name>@<sha>:<dir>" → file name → blob id, and blob id → content.
   const trees = new Map<string, Map<string, string>>();
   const blobs = new Map<string, string>();
+  // "<owner>/<name>:<branch>" → the branch's head.
+  const branches = new Map<string, string>();
   // "<owner>/<name>@<sha>:<path>" → content, for the contents read.
   const contents = new Map<string, string>();
 
@@ -166,11 +187,13 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
           repository: run.repository,
           repository_owner: owner,
           workflow_ref: workflowRef,
-          // A job written directly in its workflow, as each job here is, gets job_workflow_ref
-          // equal to workflow_ref (measured on real runs on 2026-11-16), though GitHub's OIDC
-          // reference describes the claim for a reusable workflow. The broker refuses a token
-          // without it.
-          job_workflow_ref: workflowRef,
+          // A job written directly in its workflow gets job_workflow_ref equal to workflow_ref
+          // (measured on real runs); a job of a reusable workflow gets that
+          // workflow at the ref its caller's `uses:` names, as GitHub's OIDC reference describes
+          // the claim, and job_workflow_sha the commit of that file it ran. The broker refuses a
+          // result entry's token without either.
+          job_workflow_ref: run.jobWorkflowRef ?? workflowRef,
+          job_workflow_sha: run.jobWorkflowSha ?? run.sha,
           ref: run.ref,
           ref_type: "branch",
           sha: run.sha,
@@ -208,7 +231,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
       }
 
       // Every read of a repository's contents and checks takes an installation token.
-      const repositoryRead = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/(.+)$/);
+      const repositoryRead = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(?:\/(.+))?$/);
       if (request.method === "GET" && repositoryRead !== null) {
         const repository = `${repositoryRead[1]}/${repositoryRead[2]}`;
         const rest = repositoryRead[3] ?? "";
@@ -217,7 +240,27 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         if (request.headers.get("Authorization") !== `Bearer ${installationTokens.get(id)}`) {
           return Response.json({ message: "Requires authentication" }, { status: 401 });
         }
+        if (rest === "") return Response.json({ full_name: repository, default_branch: "main" });
 
+        // The branch's name is one path segment, its "/" percent-encoded, as the Go client
+        // escapes it.
+        const ref = rest.match(/^git\/ref\/heads\/([^/]+)$/);
+        if (ref !== null) {
+          const branch = decodeURIComponent(ref[1] ?? "");
+          const head = branches.get(`${repository}:${branch}`);
+          if (head === undefined) return notFound(`branch ${branch}`);
+          return Response.json({
+            ref: `refs/heads/${branch}`,
+            object: { sha: head, type: "commit" },
+          });
+        }
+        const commit = rest.match(/^commits\/([0-9a-f]{40})(\/check-runs|\/pulls)?$/);
+        if (commit !== null) {
+          if (commit[2] === "/check-runs") return Response.json({ total_count: 0, check_runs: [] });
+          if (commit[2] === "/pulls") return Response.json([]);
+          // Client.HasCommit asks for the commit's SHA alone (application/vnd.github.sha).
+          return new Response(commit[1] ?? "", { headers: { "Content-Type": "text/plain" } });
+        }
         const checkRun = rest.match(/^check-runs\/(\d+)$/);
         if (checkRun !== null) {
           const run = checkRuns.get(`${repository}#${checkRun[1]}`);
@@ -297,6 +340,9 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         listing.set(name, id);
       }
       trees.set(`${repository}@${sha}:${dir}`, listing);
+    },
+    setBranch(repository, branch, sha): void {
+      branches.set(`${repository}:${branch}`, sha);
     },
     setFile(repository, sha, path, content): void {
       contents.set(`${repository}@${sha}:${path}`, content);

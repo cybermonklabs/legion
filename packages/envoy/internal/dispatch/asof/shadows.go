@@ -40,6 +40,11 @@ var shadows = [...]shadow{
 	{Table: "artifact_reviews", Definition: createdByTheCut("artifact_reviews")},
 	{Table: "check_results", Definition: createdByTheCut("check_results")},
 	{Table: "check_result_retractions", Definition: createdByTheCut("check_result_retractions")},
+	// A CI job's results and their retractions, which the results read loads beside check_results
+	// (api's loadCheckResults), each row as its insert left it: the record route writes every
+	// column of a job's result in its insert, and a retraction is a row of its own.
+	{Table: "ci_check_results", Definition: createdByTheCut("ci_check_results")},
+	{Table: "ci_check_result_retractions", Definition: createdByTheCut("ci_check_result_retractions")},
 }
 
 // ShadowedTables are the names of the shadowed tables, in the order Shadows writes them.

@@ -2387,10 +2387,12 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   planApprove: "plan-approve",
   reviewArtifact: "review",
   recordResult: "result",
+  // A CI job's record of its own result, which `dispatch result --issue` sends under
+  // `agent-secrets result-grant`, and a spec check's, which `dispatch result --project` sends.
+  recordCIJobResult: "result",
+  recordSpecCheckResult: "result",
   dryRunResult: "result",
   retractResult: "result",
-  // A CI job's record of its result of a check of the spec files (`dispatch result --project`).
-  recordSpecCheckResult: "result",
   recordDeploy: "deploy",
   writeHandoff: "handoff-write",
   createProject: "project",

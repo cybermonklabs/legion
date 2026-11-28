@@ -42,9 +42,8 @@ const TOKEN = fixtureSecret("dsp");
 /**
  * What each child `bun` a row starts is given beside its own environment: no transpiler cache.
  * Its HOME is the row's folder (`makeDirectory`), where Bun keeps that cache, about 155 files,
- * and the folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's own
- * limit covers. With the cache off the hook removes what the command itself wrote, where a longer
- * limit for the hook would still leave it 155 files to remove on a loaded machine.
+ * and the fixture's afterEach removes the folder. With the cache off the removal reads only what
+ * the command itself wrote, not 155 more files on a loaded machine.
  */
 const CHILD_BUN = { BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } as const;
 
@@ -3383,8 +3382,8 @@ describe("the dispatch entry as its own process", () => {
     expect(requests).toEqual([]);
   });
 
-  // The row's folder is the child's HOME, and the file's afterEach removes it under Bun's 5 s hook
-  // limit, which no row's own limit covers: what the child leaves there is all that removal reads.
+  // The row's folder is the child's HOME, and the fixture's afterEach removes it: what the child
+  // leaves there is all that removal reads.
   test("leaves no Bun cache in the row's folder, which is its HOME", async () => {
     const { code } = await spawnDispatch(["projects"]);
     expect({ code, cache: existsSync(join(stateDir, ".bun")) }).toEqual({ code: 0, cache: false });

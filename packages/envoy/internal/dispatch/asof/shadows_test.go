@@ -18,9 +18,10 @@ import (
 // shadowedTables are the tables the plan's decision 2 gives a shadow, events among them.
 var shadowedTables = []string{
 	"events", "issues", "asks", "comments", "messages", "artifacts", "artifact_versions",
-	"artifact_reviews", "check_results", "check_result_retractions", "issue_links",
-	"issue_external_links", "issue_components", "priority_tuples", "projects", "repo_projects",
-	"ask_followers", "comment_deliveries", "message_deliveries",
+	"artifact_reviews", "check_results", "check_result_retractions", "ci_check_results",
+	"ci_check_result_retractions", "issue_links", "issue_external_links", "issue_components",
+	"priority_tuples", "projects", "repo_projects", "ask_followers", "comment_deliveries",
+	"message_deliveries",
 }
 
 // column is one column by its name, its type, as pg_type names it (int4, _text, timestamptz),
@@ -255,6 +256,17 @@ func seedEveryShadowedTable(t *testing.T, w world) {
 	}
 	w.exec(`insert into check_result_retractions (result_id, reason, actor, created_at) values ($1, 'wrong commit', $2, $3)`,
 		result, w.encode(alice), made)
+	var jobResult string
+	if err := w.database.Pool.QueryRow(ctx, `
+		insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+			check_sha256, run, commit_sha, branch, verdict, attestation, session, actor, created_at)
+		values ('ASOF-1', 'ASOF-1', $1, 'b1', 1, 'sha', 'pi-legion / pi-legion', $2, 'legion/ASOF-1', 'pass', '{}', 'ci-results:o/r/ci.yaml', $3, $4)
+		returning id::text`,
+		spec, strings.Repeat("b", 40), w.encode(alice), made).Scan(&jobResult); err != nil {
+		t.Fatalf("insert a CI job's result: %v", err)
+	}
+	w.exec(`insert into ci_check_result_retractions (result_id, reason, actor, created_at) values ($1, 'wrong run', $2, $3)`,
+		jobResult, w.encode(alice), made)
 
 	// An ask a session opened, and a reply another session wrote in its thread: each follows it
 	// (asks.FollowAuthor, called by the ask's and the reply's writes).

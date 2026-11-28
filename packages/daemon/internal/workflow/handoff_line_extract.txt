@@ -3,9 +3,9 @@
 # handoff's phase word (plan, implement, test or review), {version} the version the daemon accepted
 # and {issue} the issue's key. Two scripts hand an agent the task line the daemon would have
 # written, and each reads the sentence from here rather than keeping a copy of its own:
-# packages/pi-legion/scripts/skill-scenarios/rig.sh, whose tester-proof scenario hands the tester
-# the implementer's record, and scripts/e2e/plan-pointer-drive.ts, whose task hands the
-# implementer the planner's.
+# packages/pi-legion/scripts/skill-scenarios/rig.sh, whose scenarios hand the tester the
+# implementer's record, the reviewer the tester's and the architect the reviewer's, and
+# scripts/e2e/plan-pointer-drive.ts, whose task hands the implementer the planner's.
 #
 # internal/workflow's TestTheHandoffLineExtractIsTheSentenceTheTaskWrites holds this copy, with its
 # placeholders filled, equal to what task writes. So a sentence changed in the daemon and not here

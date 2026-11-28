@@ -44,21 +44,11 @@ import (
 // `as_of` only for a cut. So a claim a new scope or a new decision adds is a claim this fails until
 // the list names it. The OAuth scope a decision grants is a claim too, though decide grants it on
 // the request rather than writing it into the extras: `scope`, which an introspection answers from
-// the granted scopes and a read entry's token, a narrowed one and a result entry's token carry
-// (writeProjectScope), joins the union when any decision granted one. The one claim no decision
-// writes, the launcher credential a machine's exchange mints (machineCredential, which runs after
-// decide because the credential does not exist until the request's key is bound), is added to that
-// union by name; what proves it is written is the live exchange in cmd/cipherd.
-// taking the union, since `machine` is written for one kind of trade and deleted for the others
-// and `as_of` is written only for a cut. So a claim a new scope or a new decision adds is a claim
-// this fails until the list names it. The OAuth scope a decision grants is a claim too, though
-// decide grants it on the request rather than writing it into the extras: `scope`, which an
-// introspection answers from the granted scopes and which a read entry's token, a narrowed one and
-// a Legion daemon's token carry (writeProjectScope), joins the union when any decision granted
-// one. The one claim no decision writes, the launcher credential a machine's exchange mints
-// (machineCredential, which runs after decide because the credential does not exist until the
-// request's key is bound), is added to that union by name; what proves it is written is the live
-// exchange in cmd/cipherd.
+// the granted scopes and a read entry's token, a narrowed one, a result entry's token and a Legion
+// daemon's token carry (writeProjectScope), joins the union when any decision granted one. The one
+// claim no decision writes, the launcher credential a machine's exchange mints (machineCredential,
+// which runs after decide because the credential does not exist until the request's key is bound),
+// is added to that union by name; what proves it is written is the live exchange in cmd/cipherd.
 //
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes
@@ -102,12 +92,15 @@ const (
 	claimsDeviceAudience = "https://broker.example/signin"
 	claimsSignInDomain   = "example.com"
 	// The result entry's half: the issuer a workflow run's token comes from, the audience it must
-	// carry, and the repository and workflow the entry lists on every branch.
-	claimsGitHubIssuer     = "https://token.actions.example"
-	claimsGitHubAudience   = "https://broker.example/ci"
-	claimsRepository       = "example-org/example-repo"
-	claimsResultsWorkflow  = ".github/workflows/ci-results.yaml"
-	claimsResultsBranchRef = "refs/heads/main"
+	// carry, the repository and workflow the entry lists on every branch, the ref it takes the
+	// workflow at, the workflow on the run's branch that calls it there, and that branch.
+	claimsGitHubIssuer       = "https://token.actions.example"
+	claimsGitHubAudience     = "https://broker.example/ci"
+	claimsRepository         = "example-org/example-repo"
+	claimsResultsWorkflow    = ".github/workflows/ci-results.yaml"
+	claimsResultsWorkflowRef = "refs/heads/main"
+	claimsResultsCaller      = ".github/workflows/ci.yaml"
+	claimsResultsBranchRef   = "refs/heads/topic"
 )
 
 // The claims claims_doc_extract.txt lists are exactly the claims an exchanged token carries. Both
@@ -162,11 +155,12 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 		Service: claimsReadService,
 		Session: claimsSessionName,
 	}}, nil, []exchange.ResultWorkflowEntry{{
-		Repository: claimsRepository,
-		Workflow:   claimsResultsWorkflow,
-		RefPattern: "refs/heads/*",
-		Project:    claimsProject,
-		Person:     claimsPerson,
+		Repository:  claimsRepository,
+		Workflow:    claimsResultsWorkflow,
+		WorkflowRef: claimsResultsWorkflowRef,
+		RefPattern:  "refs/heads/*",
+		Project:     claimsProject,
+		Person:      claimsPerson,
 	}}, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
@@ -204,8 +198,9 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 		token: map[string]any{
 			"aud":                claimsGitHubAudience,
 			"repository":         claimsRepository,
-			"workflow_ref":       claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsBranchRef,
-			"job_workflow_ref":   claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsBranchRef,
+			"workflow_ref":       claimsRepository + "/" + claimsResultsCaller + "@" + claimsResultsBranchRef,
+			"job_workflow_ref":   claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsWorkflowRef,
+			"job_workflow_sha":   "89abcdef0123456789abcdef0123456789abcdef",
 			"ref":                claimsResultsBranchRef,
 			"sha":                "0123456789abcdef0123456789abcdef01234567",
 			"event_name":         "push",

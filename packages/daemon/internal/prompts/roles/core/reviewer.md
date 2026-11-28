@@ -6,15 +6,22 @@ Verify checks and review threads as forge facts, not reports.
 Require green checks at the head you review.
 Answer every review thread under the thread rule below.
 Use `dispatch results --issue <issue>` to check every `before_merge` check at all globally required heads.
-Require passes from the implementer and from any tester who worked the change.
+Every such check must read yes on that head's line, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it.
+
+Dispatch's state reads no recorder, but your decision does.
+The `implement` handoff whose `head` names the head you review names the session that made that head (`dispatch handoff-read`).
+A pass that the session that made the head recorded at that head counts for nothing in your decision.
+For such a check, run its command yourself at that head, and record the result before you approve.
+A run you do not record with `dispatch result` is no pass of yours: the line still shows only the maker's pass, and your approval needs your own recorded pass.
+Or send the issue to testing with the `legion` tool's `request_backward_move`, `to` `testing`, and a `reason` that names the check.
 
 The command prints excluded results too.
 Passes at another commit, under older check words, or retracted passes do not count.
-A pass and a fail at one required head read not known until one is retracted.
+A pass and a fail at one required head, from any role, read not known, and a later pass there does not end it: refuse the approval at once, naming the check, and do not wait for a later result, for a CI run still going or for GitHub. A retraction of one of them ends it.
 
-A check carrying `ci_check` is CI's: `dispatch results` prints one derived CI result for it, and its `A pass stands:` line decides the check.
-That derived result stands for both roles.
-Until the named run concludes, wait for it by its name.
+A check carrying `ci_check` is CI's, and its state comes from its results from CI: the one `dispatch results` derives from its CI run, and each one its CI job recorded, which the command prints under the check.
+Its `A pass stands:` line decides the check.
+Until the named run concludes, wait for it by its name, unless that head's line reads not known because a pass and a fail count there.
 Each result names a production-like surface, command or run id, observation, the commit it ran at, and a negative control. The gate is this issue's own checks at its globally required heads.
 A result a child records against one of them proves nothing here.
 A child carrying part of this issue's requirement proves it with its own check whose `serves` names that requirement. An issue with no Verification document, or with one that holds no `before_merge` check, is a gap you name in your review, never a review that asks for changes: say which of the two it is, and tell the architect, which writes the checks, while your own findings and the checks that do exist decide the review. Run the thermonuclear pair once at the head the round reviews, over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task: the branch's whole diff on your first review of the pull request, and on a later head only what the rule for a new head below has you review. Submit one review per round carrying every inline comment.

@@ -1,14 +1,5 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import {
-  closeSync,
-  mkdirSync,
-  mkdtempSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -19,22 +10,28 @@ import {
   awaitReady,
   buildGoBinaries,
   ENVOY_MODULE,
+  linesAfter,
+  loggedLine,
   type ReadyBudget,
+  records,
+  startServer,
   stopProcess,
+  wholeLinesEnd,
 } from "./envoy-stack";
 import {
+  type ActionsRun,
   type FakeGitHubActions,
   GITHUB_ACTIONS_ISSUER,
   startFakeGitHubActions,
 } from "./fake-github-actions";
 
 // The local stack a CI job writes its result on, with every part that a production job meets
-// but GitHub itself: two real secrets brokers (./cmd/cipherd) on one database, each with one
-// result entry and the airlock's proxy, the real Dispatch server (./cmd/dispatch) reading them,
-// and a stand-in of GitHub (fake-github-actions.ts), which issues the job's OIDC token and answers
-// Dispatch's reads of the check run and of the spec files. A cluster's token issuer for
-// Dispatch's own account at the brokers is dev-oidc-issuer, as packages/envoy/scripts/dev-broker.sh
-// starts it.
+// but GitHub itself: two real secrets brokers (./cmd/cipherd) on one database, each with the
+// result entries of one workflow and the airlock's proxy, the real Dispatch server
+// (./cmd/dispatch) reading them, and a stand-in of GitHub (fake-github-actions.ts), which issues
+// the job's OIDC token and answers Dispatch's reads of the check run, of the job's workflow file
+// and of the spec files. A cluster's token issuer for Dispatch's own account at the brokers is
+// dev-oidc-issuer, as packages/envoy/scripts/dev-broker.sh starts it.
 //
 // The two brokers stand where the deployment's broker pods stand, as
 // packages/envoy/scripts/dev-airlock.sh runs two: each behind one `dev-proxy-stands front` for the
@@ -49,29 +46,51 @@ import {
 // answers the public name: a write that goes around the proxy opens no connection at all.
 //
 // Run as a script, `bun packages/envoy-client/test/ci-results-stack.ts` starts the stack, seeds
-// project ACME, whose default repository is local-org/local-repo, and one commit of that
-// repository with the probe spec, prints the variables of one job of a push run and the commands
-// of the try line, and runs until Ctrl-C. With `--forge-only` it starts the stand-in's Actions
-// token endpoint alone and prints the three variables a job reads it by: each token it mints is
-// signed by a key no real issuer holds, so a broker that verifies GitHub's tokens refuses it on
-// its signature.
+// project ACME, whose default repository is local-org/local-repo, one commit of that repository
+// with the probe spec and issue ACME-1 whose Verification document holds a check CI proves and an
+// ordinary one, prints the variables of one job of a push run of the default branch and the
+// commands of the try line, and runs until Ctrl-C. With `--forge-only` it starts the stand-in's
+// Actions token endpoint alone and prints the three variables a job reads it by: each token it
+// mints is signed by a key no real issuer holds, so a broker that verifies GitHub's tokens refuses
+// it on its signature.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
 const { PATH: SHELL_PATH = "" } = process.env;
 
-/** The project the stack's result entry writes, whose default repository is {@link REPOSITORY}. */
+/** The project the stack's result entries write, whose default repository is {@link REPOSITORY}. */
 const PROJECT = "ACME";
-/** The repository whose runs the result entry takes. */
+/** The repository whose runs the result entries take. */
 const REPOSITORY = "local-org/local-repo";
-/** The workflow the result entry lists, as ci-results.yaml is listed in production. */
+/** The workflow the result entries list, as ci-results.yaml is listed in production. */
 const WORKFLOW = ".github/workflows/ci-results.yaml";
-/** The workflow file at each commit {@link CIResultsStack.setFiles} sets: the jobs go-checks and
- *  lint, which the probe checks name, each with no matrix, so a check run named exactly the job
- *  is that job's (Dispatch reads the file to know which job makes a check run, spec_results.go
- *  `jobOfCheckRun`). */
+/** The repository's default branch, which the stand-in answers as `main`, and the ref each result
+ *  entry takes {@link WORKFLOW} at. A run's job is the entry's only where it is written in that
+ *  copy, so the copy on the run's own branch, which a push to the branch changes, is never the
+ *  entry's. A run of the default branch itself runs that copy as its own workflow. */
+export const DEFAULT_BRANCH_REF = "refs/heads/main";
+/** The workflow on a run's branch that calls {@link WORKFLOW} at {@link DEFAULT_BRANCH_REF} as a
+ *  reusable workflow: the workflow a branch's run enters through. */
+const CALLER = ".github/workflows/ci.yaml";
+/** The job of {@link CALLER} that calls {@link WORKFLOW}. GitHub names the check run of a called
+ *  job `<caller's job> / <called job>` ({@link calledCheckRun}). */
+const CALLER_JOB = "ci";
+/** The commit of {@link DEFAULT_BRANCH_REF} whose copy of {@link WORKFLOW} each called job ran, its
+ *  `job_workflow_sha`, at which the stand-in serves that file from the start. It is no commit a
+ *  run tests: a called job's run tests a commit of its branch, whose copy of the file is the
+ *  branch's own, which no job of the run ran. */
+export const WORKFLOW_COMMIT = "d0".repeat(20);
+/** The result entry's workflow file as the default branch holds it, at {@link WORKFLOW_COMMIT} and
+ *  at each commit a run of the default branch tests: the jobs go-checks and lint, which the probe
+ *  checks name, each with no matrix, so a check run named exactly the job is that job's (Dispatch
+ *  reads the job's workflow file, at the commit of it the job ran, to know which job makes a check
+ *  run, spec_results.go `jobOfCheckRun`). It runs on a push of the default branch, and where a
+ *  branch's {@link CALLER} calls it. */
 const WORKFLOW_FILE = `name: ci-results
-on: push
+on:
+  push:
+    branches: [main]
+  workflow_call:
 jobs:
   go-checks:
     runs-on: ubuntu-latest
@@ -82,8 +101,11 @@ jobs:
     steps:
       - run: go vet ./...
 `;
-/** The refs the entry takes: every branch of two segments, such as `refs/heads/topic/one`. */
-const REF_PATTERN = "refs/heads/*/*";
+/** The ref patterns of the stack's two result entries of {@link WORKFLOW}, which differ in nothing
+ *  else: the default branch itself, whose run's job is written in {@link WORKFLOW} directly, and
+ *  every branch of two segments, such as `refs/heads/topic/one`, whose run's {@link CALLER} calls
+ *  it. No ref matches both. */
+const REF_PATTERNS = [DEFAULT_BRANCH_REF, "refs/heads/*/*"];
 /** The person the entry acts for, which a result entry needs (`exchange.checkGrant`) and which no
  *  stored result, no answer of Dispatch and no output of `dispatch result --project` names. */
 const PERSON = "ada@example.com";
@@ -173,14 +195,48 @@ export function writeProbeSpec(dir: string): void {
   writeFileSync(path.join(dir, "probe.yaml"), PROBE_SPEC);
 }
 
-/** One job of a push run of the workflow, as `jobEnv` makes its variables. */
+/** The name GitHub gives the check run of `job` where {@link CALLER_JOB} calls it: the caller's
+ *  job, ` / ` and the called job, its matrix values in parentheses for a leg of a matrix job. */
+function calledCheckRun(job: string): string {
+  return `${CALLER_JOB} / ${job}`;
+}
+
+/** The check of the seeded issue's Verification document whose ci_check names the check run of the
+ *  job go-checks as a branch's run calls it, `ci / go-checks`, and the ordinary check beside it,
+ *  which no job proves. */
+export const CI_CHECK = "c1";
+export const ORDINARY_CHECK = "k1";
+
+/** The negative control both checks name: a check CI proves names one (docs.CICheckRule). */
+const NEGATIVE_CONTROL = "A build whose server does not build.";
+
+/** The seeded issue's Verification document. */
+const VERIFICATION = `:::check{#${CI_CHECK} negative_control="${NEGATIVE_CONTROL}" ci_check="${calledCheckRun("go-checks")}"}
+The server builds at the head.
+:::
+
+:::check{#${ORDINARY_CHECK} negative_control="${NEGATIVE_CONTROL}"}
+A person reads the issue page.
+:::
+`;
+
+/** One job of a push run, as `jobEnv` makes its variables. */
 export interface JobRun {
   /** The commit the run tested, 40 lowercase hex characters. */
   readonly sha: string;
-  /** The ref the run was pushed to, as `refs/heads/<branch>`. */
+  /** The ref the run was pushed to, as `refs/heads/<branch>`: {@link DEFAULT_BRANCH_REF} for a
+   *  run of the default branch. */
   readonly ref: string;
-  /** The job's name, which its check run is named after. */
+  /** The job's name in the result entry's workflow, with its matrix values in parentheses for a
+   *  leg of a matrix job. */
   readonly job: string;
+  /** Whether the job is a called one: written in the result entry's workflow at the default
+   *  branch, at {@link WORKFLOW_COMMIT}, which {@link CALLER} on `ref` calls under its job
+   *  {@link CALLER_JOB}, so GitHub names its check run `ci / <job>`. Otherwise the job is written
+   *  directly in the result entry's workflow at `ref`, the workflow the run enters through, and
+   *  its check run is named `job`: on the default branch that copy is the entry's, and on any
+   *  other branch it is the branch's own, which no entry takes. */
+  readonly called: boolean;
   readonly runAttempt: number;
   /** The job's check run, which Dispatch reads the job's name from. */
   readonly checkRunId: number;
@@ -251,6 +307,9 @@ export interface CIResultsStack {
   readonly github: FakeGitHubActions;
   readonly project: string;
   readonly repository: string;
+  /** The seeded issue of the project, ACME-1, whose Verification document holds CI_CHECK, whose
+   *  ci_check names the check run `ci / go-checks`, and ORDINARY_CHECK. */
+  readonly issue: string;
   /** The person the result entry acts for: the broker's configuration, which no result names. */
   readonly person: string;
   /** The session and the principal every results token of the entry writes under. */
@@ -258,13 +317,25 @@ export interface CIResultsStack {
   readonly resultPrincipal: string;
   /** The environment of `agent-secrets result-grant` in a job of `run`: Dispatch's public URL, the
    *  broker, and its runner's token endpoint. Its check run is added at the stand-in, so Dispatch
-   *  reads the job's name there. */
+   *  reads the job's name there, and for a job that is not called (JobRun.called), so is the copy
+   *  of the result entry's workflow file that the job ran, at the run's commit, as the default
+   *  branch holds the file. */
   jobEnv(run: JobRun): Record<string, string>;
-  /** The argv that runs `argv` under `agent-secrets result-grant`, as a job's step runs it. */
+  /** The argv that runs `argv` under `agent-secrets result-grant`, as a job's step runs it: as the
+   *  child of this stack's real `agent-secrets result-grant --` (agentSecrets). Run with
+   *  `jobEnv(run)`, the producer trades the run's token at a broker for the airlock's placeholder
+   *  of the run, and starts `argv` with that placeholder alone in DISPATCH_RESULTS_TOKEN and the
+   *  proxy front as its proxy, so the placeholder a row's command presents is one a broker minted. */
   jobCommand(argv: readonly string[]): string[];
-  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`; and the workflow
-   *  file of the result entry at `sha`, whose jobs are the probe checks' go-checks and lint. */
+  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`. */
   setFiles(sha: string, dir: string): void;
+  /** The result entry's workflow file at the commit `sha` is `content` from now on: the copy that
+   *  commit holds, a branch's own copy where `sha` is a commit of a branch, which whoever pushes
+   *  the branch may edit. A later `jobEnv` of a job that is not called at `sha` puts the entry's
+   *  own file back there. */
+  setWorkflowFile(sha: string, content: string): void;
+  /** The head of `branch` of the repository is `sha` from now on, as a push moves it. */
+  setBranch(branch: string, sha: string): void;
   /** Every result of the project at `commit`, as a person reads them, newest first. */
   results(commit: string): Promise<StoredResult[]>;
   /** Where each log ends now, for {@link linesSince}. */
@@ -310,60 +381,6 @@ const BROKER_READY: ReadyBudget = { timeoutMs: 120_000, tailLines: 20 };
 // dev-proxy-stands binds its sockets and writes its report before anything else.
 const FRONT_READY: ReadyBudget = { timeoutMs: 30_000, tailLines: 20 };
 
-/** Every JSON record of a log's text, in order; a line that is no JSON object is left out. */
-function records(text: string): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  for (const line of text.split("\n")) {
-    try {
-      const record: unknown = JSON.parse(line);
-      if (typeof record === "object" && record !== null && !Array.isArray(record)) {
-        out.push(record as Record<string, unknown>);
-      }
-    } catch {
-      // A line of the log that is no record, such as the last one while it is being written.
-    }
-  }
-  return out;
-}
-
-/** The first record of the broker's JSON log whose message is `message` and whose fields hold
- *  `fields`, or undefined while there is none. */
-function loggedLine(
-  log: string,
-  message: string,
-  fields: Readonly<Record<string, unknown>> = {}
-): Record<string, unknown> | undefined {
-  let text: string;
-  try {
-    text = readFileSync(log, "utf8");
-  } catch {
-    return undefined;
-  }
-  return records(text).find(
-    (record) =>
-      record.message === message &&
-      Object.entries(fields).every(([name, value]) => record[name] === value)
-  );
-}
-
-/** A child process writing its output to `log`, or its standard output to `out` and its errors to
- *  `log`, started with `env` and nothing else. */
-function spawnLogged(
-  command: readonly string[],
-  env: Record<string, string>,
-  log: string,
-  out: string = log
-): Subprocess {
-  const errors = openSync(log, "a");
-  const output = out === log ? errors : openSync(out, "a");
-  try {
-    return Bun.spawn([...command], { cwd: ENVOY_MODULE, env, stdout: output, stderr: errors });
-  } finally {
-    closeSync(errors);
-    if (output !== errors) closeSync(output);
-  }
-}
-
 /** Builds `./cmd/cipher` as `<bin>/agent-secrets`, the name a job's step runs it by, and answers
  *  its path. */
 async function buildAgentSecrets(bin: string): Promise<string> {
@@ -380,30 +397,6 @@ async function buildAgentSecrets(bin: string): Promise<string> {
     );
   }
   return binary;
-}
-
-/** The byte offset after the last whole line of `file`, 0 for a file not there yet. */
-function wholeLinesEnd(file: string): number {
-  let text: Buffer;
-  try {
-    text = readFileSync(file);
-  } catch {
-    return 0;
-  }
-  return text.lastIndexOf(0x0a) + 1;
-}
-
-/** The whole lines `file` gained after the byte offset `from`. */
-function linesAfter(file: string, from: number): string[] {
-  let text: Buffer;
-  try {
-    text = readFileSync(file);
-  } catch {
-    return [];
-  }
-  const end = text.lastIndexOf(0x0a) + 1;
-  if (end <= from) return [];
-  return text.subarray(from, end).toString("utf8").split("\n").slice(0, -1);
 }
 
 /** One `dev-proxy-stands front` over the addresses its backends file will name. */
@@ -428,6 +421,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
   // Read first: a run with no DSN fails before anything starts that would need a stop.
   const postgres = testDatabaseServer();
   const github = startFakeGitHubActions({ installations: { [REPOSITORY]: INSTALLATION } });
+  github.setFile(REPOSITORY, WORKFLOW_COMMIT, WORKFLOW, WORKFLOW_FILE);
   const database = `ci_results_broker_${crypto.randomUUID().replaceAll("-", "")}`;
   const admin = new SQL(postgres);
   const databaseUrl = new URL(postgres);
@@ -470,17 +464,18 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const signInSecret = path.join(work, "signin-client-secret");
     writeFileSync(signInSecret, randomBytes(32).toString("hex"), { mode: 0o600 });
     const issuerLog = path.join(work, "issuer.log");
-    issuer = spawnLogged(
-      [
+    issuer = startServer({
+      command: [
         path.join(bin, "dev-oidc-issuer"),
         "--token",
         `${CLUSTER_AUDIENCE}=${DISPATCH_ACCOUNT}=${accountToken}`,
         "--code-flow",
         `${SIGNIN_CLIENT}=${signInSecret}=http://127.0.0.1/signin/callback`,
       ],
-      { PATH: SHELL_PATH, HOME: work },
-      issuerLog
-    );
+      env: { PATH: SHELL_PATH, HOME: work },
+      log: issuerLog,
+      cwd: ENVOY_MODULE,
+    });
     let issuerUrl = "";
     await awaitReady("dev-oidc-issuer", issuer, issuerLog, BROKER_READY, async () => {
       issuerUrl = /issuer listening url=(\S+)/.exec(readFileSync(issuerLog, "utf8"))?.[1] ?? "";
@@ -493,12 +488,13 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const standsDir = path.join(work, "stands");
     const standsJson = path.join(work, "stands.json");
     const standsLog = path.join(work, "stands.log");
-    const standsChild = spawnLogged(
-      [stands, "--dir", standsDir],
-      { PATH: SHELL_PATH, HOME: work },
-      standsLog,
-      standsJson
-    );
+    const standsChild = startServer({
+      command: [stands, "--dir", standsDir],
+      env: { PATH: SHELL_PATH, HOME: work },
+      log: standsLog,
+      out: standsJson,
+      cwd: ENVOY_MODULE,
+    });
     try {
       await awaitReady("dev-proxy-stands", standsChild, standsLog, FRONT_READY, async () =>
         readFileSync(standsLog, "utf8").includes("stands listening records=")
@@ -515,12 +511,13 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       const backends = path.join(work, `${name}-backends`);
       const report = path.join(work, `${name}-front.json`);
       const log = path.join(work, `${name}-front.log`);
-      const child = spawnLogged(
-        [stands, "front", "--listen", "127.0.0.1:0", "--backends-file", backends],
-        { PATH: SHELL_PATH, HOME: work },
+      const child = startServer({
+        command: [stands, "front", "--listen", "127.0.0.1:0", "--backends-file", backends],
+        env: { PATH: SHELL_PATH, HOME: work },
         log,
-        report
-      );
+        out: report,
+        cwd: ENVOY_MODULE,
+      });
       fronts.push(child);
       await awaitReady(`the ${name} front`, child, log, FRONT_READY, async () =>
         readFileSync(log, "utf8").includes("front listening addr=")
@@ -574,6 +571,9 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
               kind: "dpop",
               hosts: [DISPATCH_HOST],
               headers: ["Authorization"],
+              // The two results routes a results token writes: a check of the spec files, and the
+              // check of an issue's Verification document whose ci_check names the job. Dispatch's
+              // own gate refuses the token on every other route under the second prefix.
               allow: [
                 { method: "POST", pathPrefix: "/api/v1/projects/" },
                 { method: "POST", pathPrefix: "/api/v1/issues/" },
@@ -613,7 +613,10 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       BROKER_SIGNIN_DOMAIN: PERSON.split("@")[1] ?? "",
       BROKER_EXCHANGE_GITHUB_ISSUER: github.url,
       BROKER_EXCHANGE_GITHUB_AUDIENCE: ACTIONS_AUDIENCE,
-      BROKER_EXCHANGE_RESULT_WORKFLOWS: `${REPOSITORY}=${WORKFLOW}=${REF_PATTERN}=${PROJECT}=${PERSON}`,
+      BROKER_EXCHANGE_RESULT_WORKFLOWS: REF_PATTERNS.map(
+        (pattern) =>
+          `${REPOSITORY}=${WORKFLOW}=${DEFAULT_BRANCH_REF}=${pattern}=${PROJECT}=${PERSON}`
+      ).join(" "),
       ...(options.grantSeconds === undefined
         ? {}
         : { BROKER_RESULT_GRANT_TEST_SECONDS: String(options.grantSeconds) }),
@@ -622,7 +625,14 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     for (let n = 1; n <= BROKER_COUNT; n++) {
       const log = path.join(work, `broker${n}.log`);
       brokerLogs.push(log);
-      brokers.push(spawnLogged([path.join(bin, "cipherd")], brokerEnv, log));
+      brokers.push(
+        startServer({
+          command: [path.join(bin, "cipherd")],
+          env: brokerEnv,
+          log,
+          cwd: ENVOY_MODULE,
+        })
+      );
     }
     const apiAddresses: string[] = [];
     const proxyAddresses: string[] = [];
@@ -673,7 +683,18 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       return JSON.parse(text);
     };
     await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
+    // The project's default repository, so its issues resolve to the repository a job's run is
+    // of: the issue's results route takes a job's result only for such an issue.
     await asPerson("PUT", `/api/v1/projects/${PROJECT}/default-repository`, { repo: REPOSITORY });
+    const filed = (await asPerson("POST", "/api/v1/issues", {
+      project: PROJECT,
+      title: "A change a CI job proves",
+      spec: "The server builds at the head of the change's branch.\n",
+    })) as { key: string };
+    await asPerson("POST", `/api/v1/issues/${filed.key}/artifacts`, {
+      name: "verification.md",
+      content: VERIFICATION,
+    });
 
     // One workflow run for each push of a ref at a commit, as GitHub numbers them: every attempt
     // of one push shares its run.
@@ -688,21 +709,43 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       project: PROJECT,
       repository: REPOSITORY,
       person: PERSON,
+      issue: filed.key,
       resultSession: RESULT_SESSION,
       resultPrincipal: RESULT_PRINCIPAL,
       jobEnv(run: JobRun): Record<string, string> {
         const push = `${run.ref}@${run.sha}`;
         const runId = runIds.get(push) ?? 1000 + runIds.size;
         runIds.set(push, runId);
+        // The workflow fields of the job's token and the name of its check run.
+        let job: Pick<
+          ActionsRun,
+          "workflow" | "jobWorkflowRef" | "jobWorkflowSha" | "checkRunName"
+        >;
+        if (run.called) {
+          // The run enters through CALLER on its branch, which calls the entry's workflow at the
+          // default branch, and the job runs that copy at WORKFLOW_COMMIT, which the stand-in
+          // served from the start. GitHub names its check run after the caller's job too.
+          job = {
+            workflow: CALLER,
+            jobWorkflowRef: `${REPOSITORY}/${WORKFLOW}@${DEFAULT_BRANCH_REF}`,
+            jobWorkflowSha: WORKFLOW_COMMIT,
+            checkRunName: calledCheckRun(run.job),
+          };
+        } else {
+          // The job runs the copy of the entry's workflow that its commit holds, the workflow its
+          // run enters through, so that copy is the entry's file from now on: it replaces a copy
+          // that setWorkflowFile set at the same commit.
+          github.setFile(REPOSITORY, run.sha, WORKFLOW, WORKFLOW_FILE);
+          job = { workflow: WORKFLOW, checkRunName: run.job };
+        }
         const request = github.addRun({
           repository: REPOSITORY,
-          workflow: WORKFLOW,
+          ...job,
           ref: run.ref,
           sha: run.sha,
           runId,
           runAttempt: run.runAttempt,
           checkRunId: run.checkRunId,
-          checkRunName: run.job,
           forged: run.forged === true,
         });
         return {
@@ -725,7 +768,12 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
           }
         }
         github.setFiles(REPOSITORY, sha, SPEC_DIR, files);
-        github.setFile(REPOSITORY, sha, WORKFLOW, WORKFLOW_FILE);
+      },
+      setWorkflowFile(sha: string, content: string): void {
+        github.setFile(REPOSITORY, sha, WORKFLOW, content);
+      },
+      setBranch(branch: string, sha: string): void {
+        github.setBranch(REPOSITORY, branch, sha);
       },
       async results(commit: string): Promise<StoredResult[]> {
         const read = (await asPerson(
@@ -794,19 +842,22 @@ function untilInterrupted(): Promise<void> {
   return promise;
 }
 
-/** `--forge-only`: the stand-in's token endpoint, minting a forged token of a push run of this
- *  repository's ci-results.yaml on refs/heads/probe/forge, until Ctrl-C. */
+/** `--forge-only`: the stand-in's token endpoint, minting a forged token of a push run on
+ *  refs/heads/probe/forge whose job is this repository's ci-results.yaml at main, called by the
+ *  branch's CALLER, until Ctrl-C. */
 async function forgeOnly(): Promise<void> {
   const github = startFakeGitHubActions({ issuer: GITHUB_ACTIONS_ISSUER });
   const request = github.addRun({
     repository: "cybermonklabs/legion",
-    workflow: WORKFLOW,
+    workflow: CALLER,
+    jobWorkflowRef: `cybermonklabs/legion/${WORKFLOW}@${DEFAULT_BRANCH_REF}`,
+    jobWorkflowSha: WORKFLOW_COMMIT,
     ref: "refs/heads/probe/forge",
     sha: "f0".repeat(20),
     runId: 1,
     runAttempt: 1,
     checkRunId: 1,
-    checkRunName: "go-checks",
+    checkRunName: calledCheckRun("go-checks"),
     forged: true,
   });
   console.log(`export ACTIONS_ID_TOKEN_REQUEST_URL='${request.requestUrl}'`);
@@ -834,17 +885,20 @@ async function wholeStack(): Promise<void> {
     const other = "89abcdef0123456789abcdef0123456789abcdef";
     stack.setFiles(tested, spec);
     stack.setFiles(other, spec);
-    const run = {
+    const run: JobRun = {
       sha: tested,
-      ref: "refs/heads/topic/try",
+      ref: DEFAULT_BRANCH_REF,
       job: "go-checks",
+      called: false,
       runAttempt: 1,
       checkRunId: 1,
     };
     const job = stack.jobEnv(run);
     const forged = stack.jobEnv({ ...run, checkRunId: 2, forged: true });
     const result = `${shellWord(stack.agentSecrets)} result-grant -- ${CLI} result --project ${stack.project} --verdict pass`;
-    console.log("# One job of a push run of local-org/local-repo at the commit below:");
+    console.log(
+      "# One job of a push run of local-org/local-repo's default branch at the commit below:"
+    );
     for (const [name, value] of Object.entries(job)) console.log(`export ${name}='${value}'`);
     console.log(
       `# Two brokers behind the API front ${stack.brokerUrl} and the proxy front ${stack.proxyAddress}; Dispatch at ${stack.dispatch.url}, reached by the job as ${DISPATCH_PUBLIC_URL} through the proxy alone.`
@@ -853,6 +907,26 @@ async function wholeStack(): Promise<void> {
     console.log(`${result} --check ${PROBE_CHECK} --commit ${tested}`);
     console.log(
       `env -u AGENT_SECRETS_URL DISPATCH_URL=${stack.dispatch.url} DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN=${shellWord(stack.dispatch.token)} ${CLI} results --project ${stack.project} --commit ${tested}`
+    );
+    // A run of the same job on a push of the issue's own branch, whose head is the tested commit:
+    // the branch's CALLER calls it, so its check run is `ci / go-checks`, which CI_CHECK's
+    // ci_check names.
+    const branch = `legion/${stack.issue}`;
+    stack.setBranch(branch, tested);
+    const onBranch = stack.jobEnv({
+      ...run,
+      ref: `refs/heads/${branch}`,
+      called: true,
+      checkRunId: 3,
+    });
+    console.log(
+      `# The issue's try line: the job's result of ${CI_CHECK}, which its ci_check names, on a push of ${branch}, then a session's read of it:`
+    );
+    console.log(
+      `ACTIONS_ID_TOKEN_REQUEST_TOKEN=${shellWord(onBranch.ACTIONS_ID_TOKEN_REQUEST_TOKEN ?? "")} ${shellWord(stack.agentSecrets)} result-grant -- ${CLI} result --issue ${stack.issue} --check ${CI_CHECK} --verdict pass --commit ${tested}`
+    );
+    console.log(
+      `env -u AGENT_SECRETS_URL DISPATCH_URL=${stack.dispatch.url} DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN=${shellWord(stack.dispatch.token)} ${CLI} results --issue ${stack.issue}`
     );
     console.log("# Each control is refused:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${other}   # another commit`);

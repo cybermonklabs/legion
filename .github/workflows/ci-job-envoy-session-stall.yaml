@@ -90,9 +90,9 @@ jobs:
         working-directory: packages/contracts
       # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
       # The Go commands of packages/envoy the suites below build that the go-envoy entry does not
-      # hold: the Dispatch server (the six Dispatch suites), the NATS auth service (the broker
+      # hold: the Dispatch server (the eight Dispatch suites), the NATS auth service (the broker
       # credential tests), and the secrets broker, the cluster token issuer, the airlock's authority
-      # and fronts and agent-secrets (the two CI-result suites). It compiles each once, before any
+      # and fronts and agent-secrets (the four CI-result suites). It compiles each once, before any
       # suite starts, so that no suite compiles one beside rows that read real clocks; each suite
       # then links what it builds from this run's build cache. A go build of more than one main
       # package links each and writes no binary.
@@ -153,6 +153,22 @@ jobs:
       - name: Stall test of pi-envoy
         run: ../../.github/scripts/harness-pool.sh start packages/pi-envoy/extensions/envoy.test.ts bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
+      # The path of "A CI job's result through the real broker and a real Dispatch" for a check of
+      # an issue's Verification document that its ci_check gives to the job: the job records the
+      # check's result on a push of the issue's branch with its own identity, and `dispatch results
+      # --issue` prints it at the head of that branch, with the in-toto statement of its run in the
+      # JSON (packages/envoy-client/test/ci-results-stack.ts). It and the next are queued here, after
+      # pi-envoy's stall and before the comment mention, by their walls (.github/ci-notes/ci.md).
+      - name: A CI job's result of a check its ci_check names, through the real broker and a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/ci-check-results.live.test.ts bun test src/__tests__/ci-check-results.live.test.ts
+        working-directory: packages/envoy-client
+      # The same path for what a CI job's `dispatch result --issue` prints when the real Dispatch
+      # refuses the result: each refusal, a check id or a check run name holding a line break and
+      # a workflow command among them, prints on one line, so no line of the job's log is a
+      # workflow command to its runner. Each row runs under the real `agent-secrets result-grant`.
+      - name: A CI job's refused result of a check its ci_check names prints no workflow command
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/ci-job-results-one-line.test.ts bun test src/__tests__/ci-job-results-one-line.test.ts
+        working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
       # to Dispatch.

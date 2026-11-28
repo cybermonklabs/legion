@@ -78,25 +78,45 @@ func readMerged(ctx context.Context, q refs.Queryer, answers HeadAnswers, what s
 	return merged, nil
 }
 
-// MergeOfIssue is every merged pull request attributed to issueKey, newest merge first
-// (newestMergeFirst): the merges of the issue's work in the repository it resolves to, each on
-// the branch it merged into. The rows are read through pull_request_heads_issue_head's leading
-// column.
-func (a *Attributor) MergeOfIssue(ctx context.Context, q refs.Queryer, issueKey string, answers HeadAnswers) ([]MergedPullRequest, error) {
-	return readMerged(ctx, q, answers, "the merged pull requests of "+issueKey, mergeOfIssueRead, issueKey)
+// MergeOfIssue is every merged pull request of repoFull, the repository issueKey resolves to,
+// that is attributed to issueKey, newest merge first (newestMergeFirst): the merges of the
+// issue's work in that repository, each on the branch it merged into. It is held to repoFull
+// because the attribution gives an issue a pull request of another repository too: one the issue
+// links by its URL is that issue's in any repository (attributionHeldFor, R19 of the spec of
+// several open pull requests), and such a pull request merged into a branch of its own
+// repository, which MergeIn answers. Both names are compared under their canonical names by the
+// Attributor's rename pairs and without case, as the attribution compares a pull request's
+// repository with the issue's (attributionHeld), so a merged row the build before this one wrote
+// under the name its repository was renamed away from is a merge of repoFull still. The rows are
+// read through pull_request_heads_issue_head's leading column, and the repository test filters
+// the handful one issue's key holds.
+func (a *Attributor) MergeOfIssue(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) ([]MergedPullRequest, error) {
+	return readMerged(ctx, q, answers, fmt.Sprintf("the merged pull requests of %s in %s", issueKey, repoFull),
+		a.mergeOfIssueRead, issueKey, repoFull)
 }
 
-var mergeOfIssueQuery = `
+// mergeOfIssueQuery is MergeOfIssue's statement after its WITH list, both repositories under
+// their canonical names by renames.
+func mergeOfIssueQuery(renames refs.Renames) string {
+	return `
 	select ` + mergedColumns + ` from pull_request_heads
 	where issue_key = $1 and state = 'merged'
+		and lower(` + refs.CanonicalRepoSQL(renames, "repo") + `) = lower(` + refs.CanonicalRepoSQL(renames, "$2::text") + `)
 	order by ` + newestMergeFirst
+}
 
-var mergeOfIssueRead = newHeadsStatement("", mergeOfIssueQuery, 1, "")
+// mergeOfIssueRead is mergeOfIssueQuery whole, for both callers. NewAttributor builds it once from
+// its rename pairs.
+func mergeOfIssueRead(renames refs.Renames) headsStatement {
+	return newHeadsStatement("", mergeOfIssueQuery(renames), 2, "")
+}
 
 // MergeIn is MergeOfIssue for repoFull, a repository issueKey does not resolve to: every merged
-// pull request the issue's external links name there (linkedPullRequestTerms), newest merge
-// first. A repository the issue resolves to answers none. A pull request two links name is listed
-// once.
+// pull request the issue's external links name there (linkedPullRequestTerms) that the
+// attribution gives the issue, newest merge first. A pull request the issue links by its URL is
+// the issue's in any repository (attributionHeldFor), unless its head is in a fork
+// (headAttribution), so a link alone names no merge. A repository the issue resolves to answers
+// none. A pull request two links name is listed once.
 func (a *Attributor) MergeIn(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) ([]MergedPullRequest, error) {
 	return readMerged(ctx, q, answers, fmt.Sprintf("the merged pull requests %s links in %s", issueKey, repoFull),
 		a.mergeInRead, issueKey, repoFull)

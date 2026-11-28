@@ -1,30 +1,41 @@
-// results_token_test.go holds Dispatch to its results list: a results token - one the secrets
-// broker minted from a result entry for one CI run, the scope results alone beside the project
-// scope results, a person, one project and the run - reaches the routes whose declarations state
-// ResultsScope and nothing else. Every other row of the table and GET /ws/live answer it 403
-// RESULTS_ONLY_TOKEN before the route's handler, before the sign-in check and before its
-// Idempotency-Key is read (refuseLimitedToken). The walks send the read-only walks' probes
-// (readOnlyWalkToken.probe) with this token and this list (limitedToken); the read-only token
-// is held to the read class instead (read_only_token_test.go).
+// results_token_test.go holds Dispatch to the routes a results token may call: a results token -
+// one the secrets broker minted from a result entry for one CI run, the scope results alone
+// beside the project scope results, a person, one project and the run - reaches the routes whose
+// declarations state ResultsScope (routeDecl.ResultsScope) and nothing else. Every other row of
+// the table and GET /ws/live answer it 403 RESULTS_ONLY_TOKEN before the route's handler, before
+// the sign-in check and before its Idempotency-Key is read (refuseLimitedToken). The walks send
+// the read-only walks' probes (readOnlyWalkToken.probe) with this token and the routes it may
+// call (limitedToken), each under a key of its row's own (limitedProbe); the read-only token is
+// held to the read class instead (read_only_token_test.go).
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // resultsTokenProject is the project the walks' results token writes the results of: the
 // project routeProbePath fills a {key} with, so the listed row's project check finds it.
 const resultsTokenProject = "TEST"
 
+// resultsWorkflowCommit is the commit of the result entry's workflow file, at the default branch,
+// whose jobs the run of resultsOnlyToken ran (the token's job_workflow_sha): another commit than
+// the one the run tested.
+const resultsWorkflowCommit = "fedcba9876543210fedcba9876543210fedcba98"
+
 // resultsOnlyToken is the broker's answer for a result entry's token
 // (BROKER_EXCHANGE_RESULT_WORKFLOWS): live, bound to jkt, the scope results alone beside the
 // project scope results, the person and the project the entry names, the session of its
-// workflow, and the run it was minted for.
+// workflow, and the run it was minted for, a run of a branch whose job is written in the entry's
+// workflow at the default branch, at resultsWorkflowCommit.
 func resultsOnlyToken(jkt, project string) ciphertoken.Introspection {
 	return ciphertoken.Introspection{
 		Active:       true,
@@ -34,8 +45,8 @@ func resultsOnlyToken(jkt, project string) ciphertoken.Introspection {
 		Projects:     []string{project},
 		Scope:        ciphertoken.ScopeResults,
 		CI: &ciphertoken.CIRun{
-			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
-			Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/main",
+			JobWorkflowSHA: resultsWorkflowCommit, Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
 			RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 		},
 		ExpiresAt:  time.Now().Add(time.Hour).Unix(),
@@ -51,37 +62,45 @@ type limitedAnswer struct {
 	code   string
 }
 
-// limitedToken is a broker token Dispatch serves on a list of its own, the routes whose
-// declarations state its mark, and answers 403 on every other row and on GET /ws/live, before the
-// row's handler: a results token (routeDecl.ResultsScope), which refuseLimitedToken holds to its
-// list. The two walks below take one.
+// limitedToken is a broker token Dispatch serves on the routes whose declarations state a mark of
+// its own and answers 403 on every other row and on GET /ws/live, before the row's handler: a
+// results token (routeDecl.ResultsScope), which refuseLimitedToken holds to those routes. The two
+// walks below take one.
 type limitedToken struct {
 	// kind names the token in a failure: "a results token".
 	kind string
 	// answer is what the broker answers for the token, bound to the caller's key.
 	answer func(jkt string) ciphertoken.Introspection
-	// listed reads the mark a route's declaration states when the token may call it.
+	// listed reads the mark a route's declaration states for the token, which routes() answers
+	// on the row.
 	listed func(apiRoute) bool
 	// refusal is the code every other row answers the token with, under 403 and no challenge.
 	refusal string
-	// listAnswers is what each listed row answers the mounted walk.
+	// listAnswers is what each listed row answers the mounted walk, by "<method> <pattern>": the
+	// walks hold the rows that carry the mark to exactly these.
 	listAnswers map[string]limitedAnswer
 	// seed prepares the rig's store, so a listed row's chain reaches its handler.
 	seed func(t *testing.T, rig *brokerTokenRig)
 }
 
-// presentingProbe is the request caller sends route when a walk below presents token: the probe
-// a read-only walk sends (readOnlyWalkToken.probe), its path, body and Idempotency-Key, under the
-// DPoP scheme with a fresh proof of caller's key.
-func (c *brokerCaller) presentingProbe(t *testing.T, route apiRoute, token string) *http.Request {
+// limitedProbe is the request the holder of a limited token sends route when it walks the table:
+// the probe a read-only token's walk sends (readOnlyWalkToken.probe), under an Idempotency-Key of
+// the row's own. A key is the caller's for every route, so the two keyed rows the results list
+// names would otherwise answer the second 422 KEY_REUSED for the first's body, and never reach its
+// handler.
+func limitedProbe(t *testing.T, caller *brokerCaller, route apiRoute, token string) *http.Request {
 	t.Helper()
-	return readOnlyWalkToken{token: token}.probe(t, c, route)
+	request := readOnlyWalkToken{token: token}.probe(t, caller, route)
+	row := sha256.Sum256([]byte(route.Method + " " + route.Pattern))
+	request.Header.Set(contracts.IdempotencyKeyHeader, readOnlyProbeKey+"-"+hex.EncodeToString(row[:8]))
+	return request
 }
 
 // resultsLimitedToken is the results token as the walks take it: one of project TEST, the
-// project a probe's {key} names, which the seed creates, so the listed row's project check
-// (withinProjectScope) finds the project the token names. Its listed row answers the mounted
-// walk's probe body, which names actor, 400 RESULT_INPUT: the handler's own answer.
+// project a probe's {key} names, which the seed creates with its issue TEST-1, the issue a
+// probe's issue {key} names, so each listed row's project check (withinProjectScope) finds the
+// project the token names. Each listed row answers the mounted walk's probe body, which names
+// actor, 400 RESULT_INPUT: the handler's own answer.
 func resultsLimitedToken() limitedToken {
 	return limitedToken{
 		kind:    "a results token",
@@ -90,11 +109,15 @@ func resultsLimitedToken() limitedToken {
 		refusal: codeResultsOnlyToken,
 		listAnswers: map[string]limitedAnswer{
 			"POST /api/v1/projects/{key}/results": {http.StatusBadRequest, "RESULT_INPUT"},
+			"POST /api/v1/issues/{key}/results":   {http.StatusBadRequest, "RESULT_INPUT"},
 		},
 		seed: func(t *testing.T, rig *brokerTokenRig) {
 			t.Helper()
 			if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": resultsTokenProject, "name": "Test"}); created.Code != http.StatusCreated {
 				t.Fatalf("create project %s: status=%d body=%s", resultsTokenProject, created.Code, created.Body.String())
+			}
+			if filed := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": resultsTokenProject, "title": "Probe", "spec": "A spec\n"}); filed.Code != http.StatusCreated {
+				t.Fatalf("create issue %s-1: status=%d body=%s", resultsTokenProject, filed.Code, filed.Body.String())
 			}
 		},
 	}
@@ -134,7 +157,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 		mux := http.NewServeMux()
 		mux.Handle(name, rig.served.routeHandler(route, replays[name]))
 		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, caller.presentingProbe(t, route, presented))
+		mux.ServeHTTP(response, limitedProbe(t, caller, route, presented))
 		if token.listed(route) {
 			listed++
 			if _, known := token.listAnswers[name]; !known {
@@ -170,7 +193,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
 	if listed != len(token.listAnswers) {
-		t.Fatalf("%d rows state the mark of %s, want the %d the walk names an answer for (%v)", listed, token.kind, len(token.listAnswers), token.listAnswers)
+		t.Fatalf("%d rows carry the mark of %s, want the %d the walk names (%v)", listed, token.kind, len(token.listAnswers), token.listAnswers)
 	}
 	t.Logf("walked %d rows of the table (test hooks in) and GET %s with %s: %d listed, %d refused, every refusal %s",
 		walked, liveSocketPattern, token.kind, listed, walked-listed+1, token.refusal)
@@ -194,7 +217,7 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 	walked := 0
 	for _, route := range readOnlyTable() {
 		name := route.Method + " " + route.Pattern
-		response := rig.serve(caller.presentingProbe(t, route, presented))
+		response := rig.serve(limitedProbe(t, caller, route, presented))
 		if !token.listed(route) {
 			if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 				t.Errorf("%s %s for %s, want 403 %s", name, why, token.kind, token.refusal)
@@ -223,13 +246,29 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 }
 
 // TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler: a results token
-// reaches the handler of the one row the results list names and of no other row, and no socket.
+// reaches the handlers of the rows the results list names and of no other row, and no socket.
 func TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	walkEveryChainWith(t, resultsLimitedToken())
 }
 
 // TestTheMountedServerServesAResultsTokenOnTheResultsListAlone: the mounted server answers a
-// results token 403 RESULTS_ONLY_TOKEN on every row but the listed one, whose handler answers it.
+// results token 403 RESULTS_ONLY_TOKEN on every row but the listed ones, whose handlers answer it.
 func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) {
+	t.Parallel()
 	walkTheMountedServerWith(t, resultsLimitedToken())
+}
+
+// TestTheResultsRefusalNamesEveryResultsRoute: the words of 403 RESULTS_ONLY_TOKEN are built from
+// the declarations at run time (resultsOnlyRefusal), so they name each route that states
+// ResultsScope, the issue's and the project's, and the day a route states it they name that one
+// too.
+func TestTheResultsRefusalNamesEveryResultsRoute(t *testing.T) {
+	t.Parallel()
+	refusal := resultsOnlyRefusal()
+	for name := range resultsLimitedToken().listAnswers {
+		if !strings.Contains(refusal, name) {
+			t.Errorf("the results token's refusal %q does not name %s, a route it may call", refusal, name)
+		}
+	}
 }

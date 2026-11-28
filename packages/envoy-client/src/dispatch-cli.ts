@@ -17,6 +17,7 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
+import { printsJson } from "./dispatch-commands/as-of";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
@@ -25,7 +26,6 @@ import {
   hostSessionDirectory,
   unhostedDispatch,
 } from "./dispatch-commands/host-session";
-import { printsJson } from "./dispatch-commands/issues";
 import { isJobResult, jobResultCommand, type ResultBound } from "./dispatch-commands/job-result";
 import { loginCommand } from "./dispatch-commands/login";
 import {
@@ -86,8 +86,9 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
-  /** The one bound of a CI job's `dispatch result --project` (`ResultBound`, its default in
-   *  dispatch-commands/job-result.ts), which a test shortens to run it on the real clock. */
+  /** The one bound of a CI job's `dispatch result`, `--project` or `--issue` (`ResultBound`, its
+   *  default in dispatch-commands/job-result.ts), which a test shortens to run it on the real
+   *  clock. */
   readonly resultBound?: ResultBound;
   /** How long a dry run waits on Dispatch for its step's answer (`DRY_RUN_DEADLINE_MS` unless
    *  set); a test sets a shorter one. */
@@ -244,8 +245,9 @@ export function fitOutput(
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
  *
- * The one call that runs as no session is a CI job's `dispatch result --project`
- * (`jobResultCommand`, dispatch-commands/job-result.ts), which reads none of the above.
+ * The one call that runs as no session is a CI job's `dispatch result`, `--project`, or any
+ * `result` call under `agent-secrets result-grant` (`jobResultCommand`,
+ * dispatch-commands/job-result.ts), which reads none of the above.
  */
 /**
  * The host this command runs under. `DISPATCH_HOST` names it, else Claude Code's
@@ -448,7 +450,7 @@ export async function runDispatchCli(
   // A CI job's call prints into its runner's log, a refusal of its argv included: a problem can
   // repeat a word of the argv, such as an unknown flag or a file it could not read, so each is
   // printed as `printable` text (`jobResultCommand`).
-  const job = isJobResult(argv);
+  const job = isJobResult(argv, env);
   let parsed: ParsedCommand;
   try {
     parsed = parseCommand(argv, io);
@@ -650,7 +652,7 @@ export async function runDispatchCli(
   // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
   // standard error, so its standard output is the object alone. `dispatch api`'s are held until
   // its answer is known (`held`).
-  const wholeJson = printsJson(parsed.tool, parsed.args);
+  const wholeJson = printsJson(parsed.args);
   const note = (line: string): void => {
     if (wholeJson) io.stderr(`${line}\n`);
     else if (parsed.tool === "dispatch_api") held.push(line);

@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { dispatchToolSchema, dispatchToolSpecs, zodSchemaApi } from "@legion/contracts";
+import { z } from "zod";
 import { ABSENT_FIELD_WORDS, absentFieldWords, LEFT_OUT } from "../dispatch-commands/as-of";
+import { type DispatchToolName, dispatchCommands } from "../dispatch-commands/table";
 import {
   ASK_OPENED,
   callsAtCutProblems,
@@ -126,6 +129,20 @@ const ISSUE_FIELDS = [
   "the component ids",
   "the unknown components",
   ...ASK_WORDING_FIELDS,
+];
+
+/** The words for the fields `dispatch results --issue` leaves out at the cut: what GitHub says
+ *  now, and the version of each check's words, which no index holds at the cut. */
+const RESULTS_FIELDS = [
+  "what each check is compared with on GitHub now",
+  "why a check is compared with nothing",
+  "whether a pass stands now",
+  "the CI result of each check",
+  "where the commit of each result stands now",
+  "the GitHub currency of each result",
+  "the document version of each check",
+  "the digest of the words of each check",
+  "whether the words of a check moved after each result",
 ];
 
 describe("each read command with and without --as-of", () => {
@@ -440,17 +457,7 @@ describe("each read command with and without --as-of", () => {
     const { present, past } = await readBothWays(READ_FORMS.results, {
       noHistory: [],
       parts: [],
-      fields: [
-        "what each check is compared with on GitHub now",
-        "why a check is compared with nothing",
-        "whether a pass stands now",
-        "the CI result of each check",
-        "where the commit of each result stands now",
-        "the GitHub currency of each result",
-        "the document version of each check",
-        "the digest of the words of each check",
-        "whether the words of a check moved after each result",
-      ],
+      fields: RESULTS_FIELDS,
     });
     const presentText = body(present.stdout).join("\n");
     expect(presentText).toContain("A pass stands: yes, from implementer.");
@@ -466,6 +473,70 @@ describe("each read command with and without --as-of", () => {
       `Whether the check's words moved is left out at ${CUT} (result version 1, check version left out at ${CUT}).`
     );
   });
+});
+
+/** The tools whose arguments the contract gives a `json` field. */
+const JSON_TOOLS = dispatchToolSpecs
+  .filter((spec) => {
+    const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as {
+      properties?: Record<string, unknown>;
+    };
+    return schema.properties?.json !== undefined;
+  })
+  .map((spec) => spec.name);
+
+/** Each read command that takes `json`, by its tool: a form the stand-in answers, with `--json`,
+ *  and the words of the fields it leaves out at the cut. */
+const JSON_READ_FORMS: Partial<
+  Record<DispatchToolName, { readonly argv: readonly string[]; readonly fields: readonly string[] }>
+> = {
+  dispatch_results: { argv: [...READ_FORMS.results, "--json"], fields: RESULTS_FIELDS },
+};
+
+/** Why `text` is no JSON document, or undefined where `JSON.parse` takes it whole. */
+function notJson(text: string): string | undefined {
+  try {
+    JSON.parse(text);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+// A program reads `--json` with `JSON.parse` or `jq`, at a cut too: a token that carries a cut
+// reads at it with no `--as-of` named. So standard output is the JSON alone, and the `Left out at`
+// line, which names the fields the answer left out, goes to standard error.
+describe("a read that prints JSON at a cut", () => {
+  // A read command given `json` through a merge fails here until a form of it runs below.
+  test("each read command that takes json has a form here", () => {
+    const reads: string[] = JSON_TOOLS.filter((tool) => dispatchCommands[tool].reads);
+    expect(reads.sort()).toEqual(Object.keys(JSON_READ_FORMS).sort());
+  });
+
+  for (const { argv, fields } of Object.values(JSON_READ_FORMS)) {
+    const cuts = [
+      ["with --as-of", () => standIn.run([...argv, "--as-of", CUT])],
+      ["under a token that carries a cut", () => standIn.run(argv, { whoamiCut: CUT })],
+    ] as const;
+    for (const [how, run] of cuts) {
+      test(`${argv.join(" ")} ${how} prints the JSON alone, and the Left out at line on stderr`, async () => {
+        const past = await run();
+        expect({
+          failed: past.code === 0 ? [] : [said(past)],
+          calls: callsAtCutProblems(past, CUT),
+          firstLine: past.stdout.split("\n")[0],
+          notJson: notJson(past.stdout),
+          leftOut: leftOutParts(past.stderr, CUT),
+        }).toEqual({
+          failed: [],
+          calls: [],
+          firstLine: "{",
+          notJson: undefined,
+          leftOut: [...fields].sort(),
+        });
+      });
+    }
+  }
 });
 
 /** The pointers of `asof.AbsentFields`, the table of every field a route can name absent, by

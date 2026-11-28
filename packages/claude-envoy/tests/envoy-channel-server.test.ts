@@ -1195,8 +1195,8 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
   expect(exitCode).toBe(0)
 })
 
-// The row's folder is the server's HOME, and the file's afterEach removes it under Bun's 5 s hook
-// limit, which no row's own limit covers: what the server leaves there is all that removal reads.
+// The row's folder is the server's HOME, and the fixture's afterEach removes it: what the server
+// leaves there is all that removal reads.
 test("the channel server leaves no Bun cache in its HOME", async () => {
   const home = temporaryHome("cache")
   const configDirectory = join(home, "claude-config")

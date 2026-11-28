@@ -159,12 +159,14 @@ func specPaddingFile(t *testing.T, n, size int) string {
 	return printed
 }
 
-// specResultsWorkflowPath is the workflow file of the default run, the path its workflow_ref names.
+// specResultsWorkflowPath is the workflow file the default run's job is written in, the path its
+// workflow_ref names.
 const specResultsWorkflowPath = ".github/workflows/ci-results.yaml"
 
-// specResultsWorkflow is the workflow file at specResultsCommit: the jobs go-checks and envoy-go
-// with no matrix, the matrix job m, the job foo named `foo (bar)` with no matrix, and the matrix
-// job build, one of whose matrix values holds parentheses of its own.
+// specResultsWorkflow is the workflow file at resultsWorkflowCommit, the commit of it the default
+// run's job ran: the jobs go-checks and envoy-go with no matrix, the matrix job m, the job foo
+// named `foo (bar)` with no matrix, and the matrix job build, one of whose matrix values holds
+// parentheses of its own.
 const specResultsWorkflow = `name: ci-results
 on: push
 jobs:
@@ -363,7 +365,7 @@ func newSpecResultsRigOn(t *testing.T, serving testServerOptions) *specResultsRi
 	github := &specGitHub{
 		checkRuns: map[int64]specCheckRunAnswer{specResultsCheckRun: {name: "go-checks", headSHA: specResultsCommit}},
 		files:     map[string]map[string]string{specResultsCommit: specResultsFiles},
-		workflows: map[string]map[string]string{specResultsCommit: {specResultsWorkflowPath: specResultsWorkflow}},
+		workflows: map[string]map[string]string{resultsWorkflowCommit: {specResultsWorkflowPath: specResultsWorkflow}},
 	}
 	_, pemText := githubapptest.Key(t)
 	serving.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}
@@ -459,6 +461,7 @@ func stored201(t *testing.T, response *httptest.ResponseRecorder) model.SpecChec
 // is the run the token proved: its session and principal, and no person. The body names none of
 // them. The read answers the same row.
 func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	result := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
 
@@ -472,15 +475,15 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 		t.Fatalf("the subject is %+v, want the repository at the token's commit", statement.Subject)
 	}
 	predicate := statement.Predicate
-	want := model.SpecCheckPredicate{
+	want := model.ResultPredicate{
 		Project: specResultsProject, Check: probeCheck, ProcedureDigest: specCheckDigest(t, probeCheck),
-		Test:    model.SpecCheckTest{Runner: "go", Selector: "example.com/m/p TestP", Job: "go-checks"},
+		Test:    model.ResultTest{Runner: "go", Selector: "example.com/m/p TestP", Job: "go-checks"},
 		Verdict: "pass", Observed: "ok  \texample.com/m/p\t0.01s", Job: "go-checks", Leg: "",
-		Run: model.SpecCheckRun{
-			Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/.github/workflows/ci-results.yaml@refs/heads/topic",
+		Run: model.ResultRun{
+			Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/.github/workflows/ci-results.yaml@refs/heads/main",
 			Ref: "refs/heads/topic", EventName: "push", RunID: "7", Attempt: 1, CheckRunID: "97", RunnerEnvironment: "github-hosted",
 		},
-		Recorder: model.SpecCheckRecorder{
+		Recorder: model.ResultRecorder{
 			Session:   "ci-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
 			Principal: "workflow-results:" + specResultsRepository + "/.github/workflows/ci-results.yaml",
 		},
@@ -505,6 +508,8 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 // CI log, the read's answer and the write's access-log line each name the run and no person,
 // and the line names the run's session as the caller.
 func TestAResultNamesItsRunAndNoPerson(t *testing.T) {
+	// Not parallel: captureLog sets the process's default logger, which every test's server writes
+	// its access log to.
 	rig := newSpecResultsRig(t)
 	person := resultsOnlyToken(rig.caller.jkt, specResultsProject).Person
 	logged := captureLog(t)
@@ -536,30 +541,34 @@ func TestAResultNamesItsRunAndNoPerson(t *testing.T) {
 
 // TestTheRecorderIsThePrincipalTheBrokerAuthenticated: the identity on a result is the one the
 // airlock authenticated (R12). The broker authenticates a result entry's run as
-// workflow-results:<repository>/<path>, the path being the run's workflow_ref without its
-// repository and without "@" and the run's own ref (oauthwire.WorkflowPath), and Dispatch stores
-// the recorder by that same rule. A workflow file's name and a branch's name can each hold an
-// "@", so a cut at the first or the last "@" stores a principal the broker did not authenticate,
-// or one that two workflows share. The plain row is the control. The stand-in GitHub serves the
-// run's workflow file at the path each row's workflow_ref names, the file in which go-checks, the
-// job of the check, is a plain job.
+// workflow-results:<repository>/<path>, the path of the workflow file its job is written in, and
+// the run carries that file as the token's job_workflow_ref, <repository>/<path>@refs/heads/<the
+// default branch>, whose path ends at its last "@refs/heads/" (oauthwire.JobWorkflowPath).
+// Dispatch stores the recorder by that same rule. A workflow file's name and a branch's name can
+// each hold an "@", and a file's name "@refs/heads/", so a cut at the first or the last "@", or
+// at the first "@refs/heads/", stores a principal the broker did not authenticate, or one that
+// two workflows share. The plain row is the control. The stand-in GitHub serves the job's
+// workflow file at the path each row's workflow_ref names, at the commit the job ran, the file in
+// which go-checks, the job of the check, is a plain job.
 func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
-	for _, row := range []struct{ name, path, ref string }{
-		{"a plain path on a plain branch", ".github/workflows/ci-results.yaml", "refs/heads/topic"},
-		{"a workflow file whose name holds an @", ".github/workflows/ci@probe.yaml", "refs/heads/topic"},
-		{"a branch whose name holds an @", ".github/workflows/ci-results.yaml", "refs/heads/legion/a@b"},
-		{"both at one time", ".github/workflows/ci@probe.yaml", "refs/heads/legion/a@b"},
+	t.Parallel()
+	for _, row := range []struct{ name, path, branch string }{
+		{"a plain path at a plain branch", ".github/workflows/ci-results.yaml", "refs/heads/main"},
+		{"a workflow file whose name holds an @", ".github/workflows/ci@probe.yaml", "refs/heads/main"},
+		{"a workflow file whose name holds @refs/heads/", ".github/workflows/ci@refs/heads/probe.yaml", "refs/heads/main"},
+		{"a default branch whose name holds an @", ".github/workflows/ci-results.yaml", "refs/heads/ma@in"},
+		{"both at one time", ".github/workflows/ci@probe.yaml", "refs/heads/ma@in"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
-			rig.github.workflows[specResultsCommit][row.path] = specResultsWorkflow
+			rig.github.workflows[resultsWorkflowCommit][row.path] = specResultsWorkflow
 			workflow := specResultsRepository + "/" + row.path
 			token := rig.token(func(answer *ciphertoken.Introspection) {
 				answer.Session = "ci-results:" + workflow
-				answer.CI.WorkflowRef, answer.CI.Ref = workflow+"@"+row.ref, row.ref
+				answer.CI.WorkflowRef = workflow + "@" + row.branch
 			})
 			result := stored201(t, rig.post(t, specResultsProject, token, passOf(probeCheck)))
-			want := model.SpecCheckRecorder{Session: "ci-results:" + workflow, Principal: "workflow-results:" + workflow}
+			want := model.ResultRecorder{Session: "ci-results:" + workflow, Principal: "workflow-results:" + workflow}
 			if got := result.Attestation.Predicate.Recorder; got != want {
 				t.Fatalf("the recorder is %+v, want %+v", got, want)
 			}
@@ -573,6 +582,7 @@ func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
 // TestAnotherCommitIsRefusedNamingBoth: a job writes a result only for the commit of its own
 // run, and the refusal names both commits.
 func TestAnotherCommitIsRefusedNamingBoth(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	body := passOf(probeCheck)
 	body["commit"] = specResultsOtherCommit
@@ -585,6 +595,7 @@ func TestAnotherCommitIsRefusedNamingBoth(t *testing.T) {
 // TestAnIdentityFieldInTheBodyIsRefused: the identity on a result is the one the token proved,
 // never a field the caller set, so a body naming any field but the four is refused by name.
 func TestAnIdentityFieldInTheBodyIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	for _, field := range []string{"actor", "job", "leg", "attempt", "role", "session", "repository", "run_id", "check_run_id", "procedure_digest", "subject"} {
 		t.Run(field, func(t *testing.T) {
@@ -600,6 +611,7 @@ func TestAnIdentityFieldInTheBodyIsRefused(t *testing.T) {
 
 // TestACheckTheFilesDoNotHoldIsRefused: a result is for a check of the files at the run's commit.
 func TestACheckTheFilesDoNotHoldIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("no-such-check")), http.StatusConflict, "CHECK_NOT_IN_FILES")
 }
@@ -611,6 +623,7 @@ func TestACheckTheFilesDoNotHoldIsRefused(t *testing.T) {
 // bound that every reader of spec files holds them to (notes.MaxFileSize) is the same refusal,
 // since GitHub serving it again changes nothing.
 func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, file, content, first string
 	}{
@@ -652,6 +665,7 @@ func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
 // first is the first file in name order. The one-file row of
 // TestSpecFilesTheGraphLogicRefusesAreRefused is the control.
 func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	files := maps.Clone(specResultsFiles)
 	files["big-b.yaml"] = strings.Repeat("\n", notes.MaxFileSize+2)
@@ -671,6 +685,7 @@ func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
 // with that one finding, and GitHub is asked for no file. The files of a commit at each bound
 // write their result.
 func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
+	t.Parallel()
 	// The probe spec and padding files up to count files in all, each a file the graph logic takes.
 	padded := func(t *testing.T, count int) map[string]string {
 		files := maps.Clone(specResultsFiles)
@@ -733,6 +748,7 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 // the same at every read of that commit, so a write again can never be judged: each is 409
 // SPEC_FILES_REFUSED saying why, and no file is read, not a 503 that asks for the write again.
 func TestASpecDirectoryGitHubCannotListWholeIsRefused(t *testing.T) {
+	t.Parallel()
 	const refusedAs = "have 1 problem, so they hold no check to write a result for. The first: set too large: "
 	for _, row := range []struct {
 		name   string
@@ -764,6 +780,7 @@ func TestASpecDirectoryGitHubCannotListWholeIsRefused(t *testing.T) {
 // keeps no entry larger than itself, so the judged files of a set within the bound are kept and
 // read once for each commit (notes.MaxSetSize's doc).
 func TestTheSetBoundFitsTheChecksCache(t *testing.T) {
+	t.Parallel()
 	if notes.MaxSetSize != specChecksCacheBytes {
 		t.Fatalf("notes.MaxSetSize is %d and the checks cache holds %d bytes: change the two together", notes.MaxSetSize, specChecksCacheBytes)
 	}
@@ -772,6 +789,7 @@ func TestTheSetBoundFitsTheChecksCache(t *testing.T) {
 // TestACheckOfAnotherJobIsRefused: the check names the job envoy-go, and the run's check run is
 // the job go-checks, which did not run that check.
 func TestACheckOfAnotherJobIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(otherJobsCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 }
@@ -781,6 +799,57 @@ func TestACheckOfAnotherJobIsRefused(t *testing.T) {
 func (r *specResultsRig) checkRunNamed(id int64, name string) string {
 	r.github.checkRuns[id] = specCheckRunAnswer{name: name, headSHA: specResultsCommit}
 	return r.token(func(answer *ciphertoken.Introspection) { answer.CI.CheckRunID = fmt.Sprint(id) })
+}
+
+// TestTheBranchsOwnCopyOfTheJobsWorkflowSaysNoJob: a run of a branch enters through a workflow of
+// that branch, which calls the result entry's workflow at the default branch, and GitHub names its
+// job's check run `<caller's job> / <called job>`, here `ci / results`. The job that ran is
+// written in the default branch's copy of the workflow file, at the commit the token's
+// job_workflow_sha names, which has no job of that name. The defect it catches: the route reading
+// the jobs from the copy of that file at the tested commit, the branch's own, which no job of the
+// run ran and whoever pushes the branch may edit: the branch adds a plain job named `ci / results`
+// to its copy and names that job in its own spec check, and its check run writes that check. So
+// the check is refused 409 CHECK_NOT_THIS_JOBS, naming the file at the commit the job ran, GitHub
+// is asked for the file at that commit alone, and nothing is stored. The control is the same
+// check run where the copy the job ran holds the plain job `ci / results`: the check is written.
+func TestTheBranchsOwnCopyOfTheJobsWorkflowSaysNoJob(t *testing.T) {
+	const (
+		check    = "caller-probe-passes"
+		checkRun = "ci / results"
+	)
+	files := maps.Clone(specResultsFiles)
+	files["probe.yaml"] += "---\ntype: check\nid: " + check + "\nserves: the-probe-holds\nsubject: code\nprocedure: program\n" +
+		"test:\n  runner: go\n  selector: example.com/m/p TestC\n  job: " + checkRun + "\n" +
+		"claim: The caller probe test passes.\nprocedure_text:\n  - The program runs the caller probe test one time.\n" +
+		"failing_example:\n  - A caller probe test that fails.\n"
+	withPlainJob := specResultsWorkflow + job("results", "    name: "+checkRun+"\n")
+	rigWith := func(t *testing.T, ran string) *specResultsRig {
+		rig := newSpecResultsRig(t)
+		rig.github.files[specResultsCommit] = files
+		rig.github.workflows[specResultsCommit] = map[string]string{specResultsWorkflowPath: withPlainJob}
+		rig.github.workflows[resultsWorkflowCommit][specResultsWorkflowPath] = ran
+		return rig
+	}
+	t.Run("the branch's copy names a plain job as the caller's check run", func(t *testing.T) {
+		rig := rigWith(t, specResultsWorkflow)
+		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(81, checkRun), passOf(check)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
+		if says := "no job with no matrix in " + specResultsWorkflowPath + " at " + resultsWorkflowCommit + ` is named "` + checkRun + `"`; !strings.Contains(refusal.Error, says) {
+			t.Fatalf("the refusal %q does not say %q", refusal.Error, says)
+		}
+		if asked, want := rig.workflowsAsked(), []string{resultsWorkflowCommit + " " + specResultsWorkflowPath}; !slices.Equal(asked, want) {
+			t.Fatalf("GitHub was asked for the workflow files %q, want %q alone: the file at the commit the job ran", asked, want)
+		}
+		if held := rig.stored(t); held != 0 {
+			t.Fatalf("spec_check_results holds %d rows, want none", held)
+		}
+	})
+	t.Run("the control: the copy the job ran names the plain job", func(t *testing.T) {
+		rig := rigWith(t, withPlainJob)
+		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(81, checkRun), passOf(check)))
+		if p := result.Attestation.Predicate; p.Job != checkRun || p.Leg != "" || p.Run.WorkflowRef != specResultsRepository+"/"+specResultsWorkflowPath+"@refs/heads/main" {
+			t.Fatalf("the result is of job %q, leg %q, workflow %q; want the job %q, no leg, and the job's workflow at refs/heads/main", p.Job, p.Leg, p.Run.WorkflowRef, checkRun)
+		}
+	})
 }
 
 // workflowsAsked is each workflow file the stand-in GitHub was asked for, as "<commit> <path>".
@@ -793,7 +862,7 @@ func (r *specResultsRig) workflowsAsked() []string {
 // TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck: GitHub names a job's check run by the job's
 // name, and a name may end in parentheses with no matrix behind them: the job foo is named
 // `foo (bar)` and has no matrix. Its check run writes the check that names the job `foo (bar)`,
-// with no leg. GitHub is asked for the run's workflow file once, which says that one job is named
+// with no leg. GitHub is asked for the job's workflow file once, which says that one job is named
 // `foo (bar)` and that no matrix job can make that name for a leg.
 func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
 	rig := newSpecResultsRig(t)
@@ -801,7 +870,7 @@ func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
 	if p := result.Attestation.Predicate; p.Job != "foo (bar)" || p.Leg != "" {
 		t.Fatalf("the result is of job %q, leg %q; want the job %q and no leg", p.Job, p.Leg, "foo (bar)")
 	}
-	if asked, want := rig.workflowsAsked(), []string{specResultsCommit + " " + specResultsWorkflowPath}; !slices.Equal(asked, want) {
+	if asked, want := rig.workflowsAsked(), []string{resultsWorkflowCommit + " " + specResultsWorkflowPath}; !slices.Equal(asked, want) {
 		t.Fatalf("GitHub was asked for the workflow files %q, want %q, once", asked, want)
 	}
 }
@@ -828,13 +897,13 @@ func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 	rigWith := func(t *testing.T, matrixJob string) *specResultsRig {
 		rig := newSpecResultsRig(t)
 		rig.github.files[specResultsCommit] = files
-		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = workflow(matrixJob)
+		rig.github.workflows[resultsWorkflowCommit][specResultsWorkflowPath] = workflow(matrixJob)
 		return rig
 	}
 	t.Run("a matrix job test beside the plain job test (unit)", func(t *testing.T) {
 		rig := rigWith(t, "test")
 		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(71, "test (unit)"), passOf(check)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
-		if says := `the matrix job "test" in ` + specResultsWorkflowPath + " at " + specResultsCommit + ` can make a check run of that name for its leg "unit"`; !strings.Contains(refusal.Error, says) {
+		if says := `the matrix job "test" in ` + specResultsWorkflowPath + " at " + resultsWorkflowCommit + ` can make a check run of that name for its leg "unit"`; !strings.Contains(refusal.Error, says) {
 			t.Fatalf("the refusal %q does not say %q", refusal.Error, says)
 		}
 	})
@@ -847,12 +916,12 @@ func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 	})
 }
 
-// TestALegOfAMatrixJobWritesItsJobsCheck: the job build has a matrix in the workflow file of the
-// run at the run's commit, so its check run `build (<values>)` is the leg <values> of build and
-// writes the check that names the job build. The leg is all that the parentheses after
+// TestALegOfAMatrixJobWritesItsJobsCheck: the job build has a matrix in the job's workflow file,
+// at the commit of it the job ran, so its check run `build (<values>)` is the leg <values> of
+// build and writes the check that names the job build. The leg is all that the parentheses after
 // `build (` hold, a matrix value that holds parentheses of its own included. GitHub is asked for
-// the workflow file once for the commit, at the path the run's workflow_ref names, and a matrix
-// written as an expression is a matrix too.
+// the workflow file once, at the commit the job ran and the path the run's workflow_ref names,
+// and a matrix written as an expression is a matrix too.
 func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 	t.Run("a matrix of values", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
@@ -862,13 +931,13 @@ func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 				t.Fatalf("the result is of job %q, leg %q; want the job build and the leg %q", p.Job, p.Leg, leg)
 			}
 		}
-		if asked, want := rig.workflowsAsked(), []string{specResultsCommit + " " + specResultsWorkflowPath}; !slices.Equal(asked, want) {
+		if asked, want := rig.workflowsAsked(), []string{resultsWorkflowCommit + " " + specResultsWorkflowPath}; !slices.Equal(asked, want) {
 			t.Fatalf("GitHub was asked for the workflow files %q, want %q, once", asked, want)
 		}
 	})
 	t.Run("a matrix written as an expression", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
-		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + job("build", "    strategy:\n      matrix: ${{ fromJSON(needs.setup.outputs.legs) }}\n")
+		rig.github.workflows[resultsWorkflowCommit][specResultsWorkflowPath] = "jobs:\n" + job("build", "    strategy:\n      matrix: ${{ fromJSON(needs.setup.outputs.legs) }}\n")
 		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(41, "build (linux)"), passOf(buildCheck)))
 		if p := result.Attestation.Predicate; p.Job != "build" || p.Leg != "linux" {
 			t.Fatalf("the result is of job %q, leg %q; want the job build and the leg linux", p.Job, p.Leg)
@@ -889,13 +958,13 @@ const linuxMatrix = "    strategy:\n      matrix:\n        os: [linux]\n"
 
 // TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt: GitHub does not keep a name that ends in
 // parentheses for the legs of a matrix. A check run named `build (linux)` is a leg of the job
-// build only where the workflow file of the run at its commit makes build a matrix job, so the
-// check of the job build is refused 409 CHECK_NOT_THIS_JOBS, saying why, where build has no
-// matrix or an empty one, where no job is named build, where the job's name is an expression,
-// where a job named `build (linux)` with no matrix makes a check run of that very name, and where
-// the file is over notes.MaxFileSize or does not read as a workflow file.
+// build only where the job's workflow file, at the commit of it the job ran, makes build a matrix
+// job, so the check of the job build is refused 409 CHECK_NOT_THIS_JOBS, saying why, where build
+// has no matrix or an empty one, where no job is named build, where the job's name is an
+// expression, where a job named `build (linux)` with no matrix makes a check run of that very
+// name, and where the file is over notes.MaxFileSize or does not read as a workflow file.
 func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
-	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit + " "
+	const at = " in " + specResultsWorkflowPath + " at " + resultsWorkflowCommit + " "
 	for _, row := range []struct {
 		name, workflow, says string
 	}{
@@ -917,7 +986,7 @@ func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
-			rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = row.workflow
+			rig.github.workflows[resultsWorkflowCommit][specResultsWorkflowPath] = row.workflow
 			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(51, "build (linux)"), passOf(buildCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 			if !strings.Contains(refusal.Error, row.says) {
 				t.Fatalf("the refusal %q does not say %q", refusal.Error, row.says)
@@ -934,7 +1003,7 @@ func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 // other matrix job can make the name. The control is the same name with build the one matrix job
 // that can make it: the leg writes build's check.
 func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
-	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit
+	const at = " in " + specResultsWorkflowPath + " at " + resultsWorkflowCommit
 	build := job("build", linuxMatrix)
 	for _, row := range []struct {
 		name, workflow, checkRun, says string
@@ -954,7 +1023,7 @@ func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
-			rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = row.workflow
+			rig.github.workflows[resultsWorkflowCommit][specResultsWorkflowPath] = row.workflow
 			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, row.checkRun), passOf(buildCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 			if !strings.Contains(refusal.Error, row.says) {
 				t.Fatalf("the refusal %q does not say %q", refusal.Error, row.says)
@@ -963,7 +1032,7 @@ func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 	}
 	t.Run("the control: build is the one matrix job that can make the name", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
-		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + build + job("other", "    name: test\n    strategy:\n      matrix:\n        arch: [x64]\n")
+		rig.github.workflows[resultsWorkflowCommit][specResultsWorkflowPath] = "jobs:\n" + build + job("other", "    name: test\n    strategy:\n      matrix:\n        arch: [x64]\n")
 		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, "build (linux) (x64)"), passOf(buildCheck)))
 		if p := result.Attestation.Predicate; p.Job != "build" || p.Leg != "linux) (x64" {
 			t.Fatalf("the result is of job %q, leg %q; want the job build and the leg %q", p.Job, p.Leg, "linux) (x64")
@@ -974,6 +1043,7 @@ func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 // TestACheckRunOfAnotherCommitIsRefused: GitHub names another commit for the token's check run,
 // so the check run is no job of this run.
 func TestACheckRunOfAnotherCommitIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.github.checkRuns[specResultsCheckRun] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsOtherCommit}
 	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "CHECK_RUN_NOT_THE_RUNS")
@@ -982,6 +1052,7 @@ func TestACheckRunOfAnotherCommitIsRefused(t *testing.T) {
 // TestAForgedAccessTokenIsRefusedAtTheRoute: a token the broker answers inactive, presented with
 // a sound DPoP proof of the caller's own key, writes nothing.
 func TestAForgedAccessTokenIsRefusedAtTheRoute(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.refusedWith(t, rig.post(t, specResultsProject, "a-token-the-broker-never-issued", passOf(probeCheck)), http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE")
 }
@@ -989,6 +1060,7 @@ func TestAForgedAccessTokenIsRefusedAtTheRoute(t *testing.T) {
 // TestOnlyAResultsTokenWritesTheRoute: a session's own broker token of the project, and a
 // person's cookie, are refused the route: only a CI job's results token writes a result there.
 func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	named := liveNamedToken(rig.caller.jkt)
 	named.Projects = []string{specResultsProject}
@@ -1004,6 +1076,7 @@ func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
 // the run's repository, where the handler would take the run as OTHER's and store its result under
 // OTHER.
 func TestAProjectNotTheTokensIsRefused(t *testing.T) {
+	t.Parallel()
 	t.Run("a public project", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
 		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
@@ -1031,11 +1104,12 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 // case, is refused (the rename row of TestARepositorySpelledWithCapitalsIsTheProjectsRepository,
 // a default stored under the old name and a run of the new, is its control).
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
+	t.Parallel()
 	t.Run("another repository", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
 		token := rig.token(func(answer *ciphertoken.Introspection) {
 			answer.CI.Repository = "example-org/another-repo"
-			answer.CI.WorkflowRef = "example-org/another-repo/.github/workflows/ci-results.yaml@refs/heads/topic"
+			answer.CI.WorkflowRef = "example-org/another-repo/.github/workflows/ci-results.yaml@refs/heads/main"
 		})
 		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
 		if want := "example-org/another-repo, the repository of this token's run, is not the default repository of project " + specResultsProject; !strings.Contains(refusal.Error, want) {
@@ -1072,7 +1146,7 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 				token := rig.token(func(answer *ciphertoken.Introspection) {
 					answer.Session = "ci-results:" + repository + "/.github/workflows/ci-results.yaml"
 					answer.CI.Repository = repository
-					answer.CI.WorkflowRef = repository + "/.github/workflows/ci-results.yaml@refs/heads/topic"
+					answer.CI.WorkflowRef = repository + "/.github/workflows/ci-results.yaml@refs/heads/main"
 				})
 				refusal := rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
 				if want := repository + ", the repository of this token's run, is not the default repository of project " + specResultsProject; !strings.Contains(refusal.Error, want) {
@@ -1096,6 +1170,7 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 // rewrites the old one (store.RewriteRenamedRepositories). The row is stored under the repository
 // as the run names it. The lowercase run of every other test is the control.
 func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, repository string
 		// storedDefault, where set, is the project's default as the row holds it, written by SQL.
@@ -1116,7 +1191,7 @@ func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
 			token := rig.token(func(answer *ciphertoken.Introspection) {
 				answer.Session = "ci-results:" + row.repository + "/.github/workflows/ci-results.yaml"
 				answer.CI.Repository = row.repository
-				answer.CI.WorkflowRef = row.repository + "/.github/workflows/ci-results.yaml@refs/heads/topic"
+				answer.CI.WorkflowRef = row.repository + "/.github/workflows/ci-results.yaml@refs/heads/main"
 			})
 			result := stored201(t, rig.post(t, specResultsProject, token, passOf(probeCheck)))
 			if got := result.Attestation.Predicate.Run.Repository; got != row.repository {
@@ -1135,6 +1210,7 @@ func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
 // run, and 409 WORKFLOW_NOT_SHOWN for the workflow file, which says which job made the check run.
 // A workflow file the stand-in does not hold is GitHub's 404 too.
 func TestGitHubUnreadableIsAServiceError(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		setUp  func(*specGitHub)
@@ -1149,7 +1225,7 @@ func TestGitHubUnreadableIsAServiceError(t *testing.T) {
 		{name: "the workflow file, GitHub answering 500", setUp: func(g *specGitHub) { g.workflowStatus = http.StatusInternalServerError }, status: http.StatusServiceUnavailable, code: "WORKFLOW_UNREADABLE"},
 		{name: "the workflow file, GitHub answering 404", setUp: func(g *specGitHub) { g.workflowStatus = http.StatusNotFound }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
 		{name: "the workflow file, GitHub answering 403", setUp: func(g *specGitHub) { g.workflowStatus = http.StatusForbidden }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
-		{name: "a workflow file the commit does not hold", setUp: func(g *specGitHub) { g.workflows = nil }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
+		{name: "a workflow file the commit the job ran does not hold", setUp: func(g *specGitHub) { g.workflows = nil }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
@@ -1174,9 +1250,10 @@ func storedRow(t *testing.T, rig *specResultsRig, id string) string {
 
 // TestAResultIsAppendedAndNeverEdited: a second result of one check at one commit is a second
 // row with a higher record number, and the first row's bytes stay as they were. GitHub is read
-// once for the check run, once for the files and once for the run's workflow file: each read is
+// once for the check run, once for the files and once for the job's workflow file: each read is
 // cached for the process.
 func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	first := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
 	before := storedRow(t, rig, first.ID)
@@ -1194,7 +1271,7 @@ func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
 	}
 	rig.github.mu.Lock()
 	defer rig.github.mu.Unlock()
-	workflow := []string{specResultsCommit + " " + specResultsWorkflowPath}
+	workflow := []string{resultsWorkflowCommit + " " + specResultsWorkflowPath}
 	if rig.github.checkRunReads != 1 || rig.github.treeReads != 1 || !slices.Equal(rig.github.workflowsAsked, workflow) {
 		t.Fatalf("GitHub was read %d times for the check run, %d for the files and for the workflow files %q, want once, once and %q once",
 			rig.github.checkRunReads, rig.github.treeReads, rig.github.workflowsAsked, workflow)
@@ -1205,6 +1282,7 @@ func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
 // record number, newest first. Two more rows are written in one transaction, so they carry one
 // recorded_at, which a read ordered by time alone would answer in either order.
 func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	var wrote []int64
 	for range 3 {
@@ -1218,14 +1296,17 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 	defer tx.Rollback(ctx)
 	workflow := ".github/workflows/ci-results.yaml"
 	run := oauthwire.Run{
-		Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/" + workflow + "@refs/heads/topic",
+		Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/" + workflow + "@refs/heads/main", JobWorkflowSHA: resultsWorkflowCommit,
 		Ref: "refs/heads/topic", SHA: specResultsCommit, EventName: "push", RunnerEnvironment: "github-hosted",
 		Workflow: workflow, ID: 7, Attempt: 1, CheckRun: specResultsCheckRun,
 	}
 	for range 2 {
 		row := specCheckRow{
-			project: specResultsProject, check: probeCheck, procedureDigest: specCheckDigest(t, probeCheck),
-			job: "go-checks", run: run, verdict: "pass", session: "ci-results:" + specResultsRepository + "/" + workflow,
+			result: attestedResult{
+				predicateType: specCheckResultPredicateType, project: specResultsProject, check: probeCheck,
+				procedureDigest: specCheckDigest(t, probeCheck), verdict: "pass", job: "go-checks",
+				run: run, session: "ci-results:" + specResultsRepository + "/" + workflow,
+			},
 		}
 		stored, err := insertSpecCheckResult(ctx, tx, row)
 		if err != nil {
@@ -1251,6 +1332,7 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 // of its own, with the job and the leg from its check run's name, and none is marked or dropped.
 // The workflow file that makes m a matrix job is read of GitHub once for the commit.
 func TestEveryAttemptAndLegIsKept(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	runs := []struct {
 		id      int64
@@ -1289,6 +1371,7 @@ func TestEveryAttemptAndLegIsKept(t *testing.T) {
 // TestTwoLegsOfOneNameInOneAttemptAreTwoRows: two check runs of one name in one attempt are two
 // legs, and each is a row.
 func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	for _, id := range []int64{11, 12} {
 		rig.github.checkRuns[id] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
@@ -1305,6 +1388,7 @@ func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
 // entry that write the same body under one key are two results, and only a repeat by the same
 // run is answered the first answer. The repeat is the control: the key layer is on.
 func TestAKeyOfOneRunNeverAnswersAnotherRun(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.github.checkRuns[11] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
 	first := rig.token(nil)
@@ -1331,6 +1415,7 @@ func TestAKeyOfOneRunNeverAnswersAnotherRun(t *testing.T) {
 
 // TestTwoRunsAtOneCommitAreTwoRows: two workflow runs of one commit each write a row.
 func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	for _, run := range []string{"1", "2"} {
 		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *ciphertoken.Introspection) { answer.CI.RunID = run }), passOf(probeCheck)))
@@ -1348,6 +1433,7 @@ func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
 // was cut; a text of exactly the bound is kept whole. A rune outside the basic plane, two UTF-16
 // units and four bytes, is one rune of the count.
 func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
+	t.Parallel()
 	const start, end, note = contracts.SpecCheckObservedStart, contracts.SpecCheckObservedEnd, contracts.SpecCheckObservedCutNote
 	for _, row := range []struct {
 		name, sent, kept string
@@ -1376,6 +1462,7 @@ func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
 // bound keeps both, with the note that says the middle was cut between them, and the stored text
 // is still contracts.SpecCheckObservedMax runes.
 func TestAFailingTestsLogKeepsItsStartAndItsEnd(t *testing.T) {
+	t.Parallel()
 	const first, last = "=== RUN   TestX\n", "--- FAIL: TestX (0.01s)\n"
 	sent := first + strings.Repeat("x\n", (10000-len(first)-len(last))/2) + last
 	if utf8.RuneCountInString(sent) != 10000 {
@@ -1397,6 +1484,7 @@ func TestAFailingTestsLogKeepsItsStartAndItsEnd(t *testing.T) {
 // TestACouldNotRunResultIsStored: a job whose test could not run writes that, and it is stored as
 // it was written.
 func TestACouldNotRunResultIsStored(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	body := passOf(probeCheck)
 	body["verdict"] = "could_not_run"
@@ -1408,6 +1496,7 @@ func TestACouldNotRunResultIsStored(t *testing.T) {
 // TestTheReadIsRefusedToAResultsToken: a results token writes results and reads nothing, the
 // results of its own project included.
 func TestTheReadIsRefusedToAResultsToken(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	response := rig.serve(rig.caller.presenting(t, http.MethodGet, "/api/v1/projects/"+specResultsProject+"/results?commit="+specResultsCommit, rig.token(nil), nil))
 	if why := notTheGatesRefusal(response, codeResultsOnlyToken, ""); why != "" {

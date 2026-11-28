@@ -5,7 +5,7 @@ import type {
   CheckResult,
   IssueCheckResults,
 } from "@legion/contracts";
-import { formatCheckResults } from "../dispatch-commands/render-results";
+import { formatCheckResults } from "../dispatch-commands/check-results";
 
 const repo = "acme/widgets";
 const merge = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -164,7 +164,7 @@ test("an excluded result says why it counts for nothing", () => {
       ],
     })
   ).toContain(
-    "It counts for nothing: it was recorded before the current deploy of the program this check reads."
+    "It counts for nothing: it was recorded before the current deploy of the program this check reads"
   );
 });
 

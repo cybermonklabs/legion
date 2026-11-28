@@ -571,8 +571,8 @@ export class DispatchNoRouteError extends DispatchServiceError {
  * Dispatch read the request) may have, since Dispatch runs a keyed write it received to its end.
  * `failure` is the failure's class alone (`errorClass`), for a text that names another path to
  * Dispatch (a write through Cipher's proxy, `#proxyUnreachable`), and `code` is that class where it
- * is a code alone, such as `ECONNRESET`, which a caller names an unknown outcome by
- * (`dispatch result --project`'s `write_outcome_unknown`), and undefined where it is not.
+ * is a code alone, such as `ECONNRESET`, which a caller names an unknown outcome by (a CI job's
+ * `dispatch result`'s `write_outcome_unknown`), and undefined where it is not.
  */
 export class DispatchUnreachableError extends Error {
   readonly code: string | undefined;
@@ -2471,6 +2471,28 @@ export class DispatchClient {
   }
 
   /**
+   * Records a CI job's result of one check of an issue's Verification document whose ci_check
+   * names the job, under the job's results token, and answers it beside the pull-request body
+   * line it implies. The body is built from the four members the route takes from a results
+   * token, so nothing else a caller's object carries reaches the wire: Dispatch takes who
+   * recorded the result, the commit's branch and the job from the credential and from GitHub.
+   * JSON leaves out an `observed` that is undefined.
+   */
+  async recordCIJobResult(
+    issue: string,
+    input: Pick<RecordCheckResultInput, "check" | "commit" | "verdict" | "observed">
+  ): Promise<CheckResultRecorded> {
+    const { check, commit, verdict, observed } = input;
+    const body = { check, commit, verdict, observed };
+    return this.#write(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      WRITE_ROWS.recordCIJobResult,
+      body
+    );
+  }
+
+  /**
    * The dry run of `recordResult`: Dispatch refuses the body as the record refuses it before it
    * writes, and answers the pull-request body line the record would answer, recording nothing.
    * An answer Dispatch kept no copy of is asked for again (`#writingNothing`).
@@ -2514,7 +2536,7 @@ export class DispatchClient {
    * result itself is neither changed nor deleted: a reader of the results sees the result and
    * its retraction together. The session that recorded the result, a session holding the
    * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
-   * person may each retract it.
+   * person may each retract it, a role's result or a CI job's alike.
    */
   async retractResult(
     resultID: string,

@@ -1,9 +1,35 @@
-// The removal of one temporary tree, for temporary-directories.ts: called there inside a hook, and
-// run as a process of its own (`bun remove-tree.ts <directory>`) for a directory reserved with
-// `removeInBackground`, whose removal no hook of the test runner may wait for.
+/**
+ * The removal of temporary-directories.ts, which its hooks run as a process of their own
+ * (`bun remove-trees.ts <directory>...`; temporary-directories.ts says why): removes every
+ * directory it is given, newest first, so one made inside another goes before the directory
+ * holding it. Every tree is attempted even when one of them refuses, since the directories are
+ * independent and one refusal must not leave the rest on disk, and the refusals are written
+ * together to stderr, with exit 1, at the end: a removal that stopped at the first failure would
+ * leave every later directory behind and name only the one it stopped on (the behaviour
+ * `packages/envoy-client/test/temp-dir.ts` had, which the fixture took over from it).
+ *
+ * It imports only `node:` modules, so it runs as a plain bun script, outside `bun test`. It
+ * removes only when bun runs it (`import.meta.main`): a module that imported it would otherwise
+ * remove each path of its own command line.
+ */
 import type { Stats } from "node:fs";
 import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+
+if (import.meta.main) {
+  const failures: string[] = [];
+  for (const directory of process.argv.slice(2).reverse()) {
+    try {
+      await removeTree(directory);
+    } catch (error) {
+      failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (failures.length > 0) {
+    process.stderr.write(`temporary directories left behind:\n  ${failures.join("\n  ")}\n`);
+    process.exit(1);
+  }
+}
 
 /**
  * Removes one tree, making every directory in it writable, searchable and readable first.
@@ -12,7 +38,7 @@ import { join } from "node:path";
  * under its temporary directory leaves a tree nothing can unlink. It removes asynchronously, so a
  * removal waiting on a loaded disk holds the hook alone, never the process's event loop.
  */
-export async function removeTree(directory: string): Promise<void> {
+async function removeTree(directory: string): Promise<void> {
   await makeWritable(directory);
   await rm(directory, { recursive: true, force: true });
 }
@@ -58,18 +84,4 @@ async function makeSelfWritable(path: string): Promise<Stats | undefined> {
     }
   }
   return entry;
-}
-
-// As a process of its own: remove the one directory it is given, and name it on stderr, exiting
-// 1, when it cannot.
-if (import.meta.main) {
-  const directory = process.argv[2] ?? "";
-  const leftBehind = (error: unknown): void => {
-    console.error(
-      `temporary directory left behind: ${directory}: ${error instanceof Error ? error.message : String(error)}`
-    );
-    process.exitCode = 1;
-  };
-  if (directory === "") leftBehind(new Error("no directory given"));
-  else removeTree(directory).catch(leftBehind);
 }

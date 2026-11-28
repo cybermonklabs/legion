@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // afterMergeChecks is k5, a check compared with the branch the work merged into, and k6, a check
@@ -153,7 +154,7 @@ func TestAnIntegrationBranchReachesTheDefaultBranchThroughItsLanding(t *testing.
 	// merge commit, which GitHub's answer gives.
 	mergedAt := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	rig.github.setPull(5, afterMergePull("ACME-0", 5, f5, integration, "main", m2, mergedAt.Format(time.RFC3339)), 0)
-	if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+	if err := delivery.NewAttributor(refs.Renames{}).UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: 5, HeadSHA: f5, HeadRef: integration, BaseRef: "main", State: "merged",
 		Title: "Land the integration branch", URL: "https://github.com/acme/widgets/pull/5", MergedAt: &mergedAt,
 	}); err != nil {
@@ -175,6 +176,14 @@ func TestAnIntegrationBranchReachesTheDefaultBranchThroughItsLanding(t *testing.
 // where it holds toolsMerge, and toolsMerge holds itself with no read. An issue with no merge
 // anywhere compares with nothing for not_merged. An issue with a merge of its own and the linked
 // one walks its own results in its own repository alone.
+//
+// A link alone names no merge, as it names no head: the merges of a linked repository are the
+// rows the attribution gives the issue (delivery.Attributor.MergeIn, R19 of the spec of several
+// open pull requests), so each row here carries the issue's key, as the intake's attribution
+// writes it. acme/tools#11 is the control: the issue links it and it merged into release after
+// #9 merged, but the attribution gives it nobody — a pull request whose head is in a fork is no
+// issue's, linked or not (headAttribution) — so it names no merge of the issue and release is
+// no basis. A read that took the links alone would compare with release and not with main.
 func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 	t.Parallel()
 	const (
@@ -186,13 +195,18 @@ func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 		widgetsMerge = "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
 		widgetsHead  = "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"
 		toolsPull    = "https://github.com/acme/tools/pull/9"
+		// toolsForkHead and toolsForkMerge are acme/tools#11's final head and merge commit: the
+		// control the attribution gives nobody.
+		toolsForkHead  = "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+		toolsForkMerge = "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5"
+		toolsForkPull  = "https://github.com/acme/tools/pull/11"
 	)
 	linked := &linkedGitHub{
 		held: map[string][]string{
 			"acme/tools":   {toolsEarly, toolsMerge, toolsLate, toolsHead},
 			"acme/widgets": {widgetsEarly, widgetsMerge, widgetsHead},
 		},
-		pulls: map[string]string{"acme/tools#9": "merged", "acme/widgets#3": "merged"},
+		pulls: map[string]string{"acme/tools#9": "merged", "acme/tools#11": "merged", "acme/widgets#3": "merged"},
 		merged: map[string]linkedMerge{
 			"acme/tools#9": {title: "The second half of the work", headRef: "work", headSHA: toolsHead, base: "main",
 				mergeCommit: toolsMerge, mergedAt: "2026-11-20T12:00:00Z"},
@@ -206,8 +220,9 @@ func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	onlyLinked := issueInRepository(t, handler, afterMergeProject, "acme/widgets", "Work merged in the second repository").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+onlyLinked, "verification.md", afterMergeAndDefaultChecks)
-	linkPullRequests(t, handler, onlyLinked, toolsPull)
-	writeHeadOnBase(t, database, "acme/tools", 9, toolsHead, "merged", "", "main")
+	linkPullRequests(t, handler, onlyLinked, toolsPull, toolsForkPull)
+	writeHeadOnBase(t, database, "acme/tools", 9, toolsHead, "merged", onlyLinked, "main")
+	writeKnownMergeOnBase(t, database, "acme/tools", 11, toolsForkHead, "", "release", toolsForkMerge)
 
 	bases := []afterMergeBasis{branchBasis("main", ""), {Kind: "branch", Repo: "acme/tools", Branch: "main", MergeCommit: toolsMerge}}
 	toolsMain := bases[1]
@@ -250,7 +265,7 @@ func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 	linked.mu.Unlock()
 	both := issueOfProject(t, handler, afterMergeProject, "Work merged in both repositories", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, both, "https://github.com/acme/tools/pull/10")
-	writeHeadOnBase(t, database, "acme/tools", 10, toolsHead, "merged", "", "main")
+	writeHeadOnBase(t, database, "acme/tools", 10, toolsHead, "merged", both, "main")
 	linked.mu.Lock()
 	linked.merged["acme/widgets#3"] = linkedMerge{title: both + ": the work", headRef: "legion/" + both, headSHA: widgetsHead,
 		base: "main", mergeCommit: widgetsMerge, mergedAt: "2026-11-21T12:00:00Z"}

@@ -3,12 +3,13 @@ package api
 // spec_results.go is the route a CI job writes the result of a check of the spec files with,
 // POST /api/v1/projects/{key}/results, and the read beside it (R12 of the spec). The job holds a
 // results token the secrets broker minted for its run (ciphertoken.Caller.ResultsOnly), and this
-// route is the one route that token reaches (routeDecl.ResultsScope). Dispatch takes who wrote the
-// result and what it is for from that token, from GitHub and from the spec files at the run's
-// commit; the body says only what the job observed. The recorder of a result is the run, and no
-// person: the broker's result entry names a person, whom nobody authenticated for this write and
-// who ran no test, so that person stays inside the server. Each result is a new row of
-// spec_check_results, which nothing updates or deletes.
+// route is one of the two routes that token reaches (routeDecl.ResultsScope), beside
+// POST /api/v1/issues/{key}/results. Dispatch takes who wrote the result and what it is for from
+// that token, from GitHub and from the spec files at the run's commit; the body says only what
+// the job observed. The recorder of a result is the run, and no person: the broker's result entry
+// names a person, whom nobody authenticated for this write and who ran no test, so that person
+// stays inside the server. Each result is a new row of spec_check_results, which nothing updates
+// or deletes.
 
 import (
 	"context"
@@ -65,21 +66,15 @@ const (
 	codeCheckNotInFiles = "CHECK_NOT_IN_FILES"
 	// codeCheckNotThisJobs refuses a check whose test part names another job than the run's.
 	codeCheckNotThisJobs = "CHECK_NOT_THIS_JOBS"
-	// codeWorkflowNotShown refuses a check run whose job only the run's workflow file says, where
-	// GitHub refuses Dispatch that file for good, with its 403 or 404: the commit does not hold the
-	// file, or the App cannot see it, and a write again is answered the same.
+	// codeWorkflowNotShown refuses a check run whose job only the job's workflow file says, where
+	// GitHub refuses Dispatch that file for good, with its 403 or 404: the commit the job ran does
+	// not hold the file, or the App cannot see it, and a write again is answered the same.
 	codeWorkflowNotShown = "WORKFLOW_NOT_SHOWN"
 	// codeCheckRunUnreadable, codeFilesUnreadable and codeWorkflowUnreadable are GitHub not
 	// answering, a 503: the result was not judged, and the job writes it again.
 	codeCheckRunUnreadable = "CHECK_RUN_UNREADABLE"
 	codeFilesUnreadable    = "FILES_UNREADABLE"
 	codeWorkflowUnreadable = "WORKFLOW_UNREADABLE"
-)
-
-// The in-toto statement a result is stored as: its own type, and the type of its predicate.
-const (
-	inTotoStatementType          = "https://in-toto.io/Statement/v1"
-	specCheckResultPredicateType = "https://github.com/cybermonklabs/legion/attestations/spec-check-result/v1"
 )
 
 // specCheckResultInput is the body POST /api/v1/projects/{key}/results takes: what the job ran
@@ -178,8 +173,9 @@ func (c *specResultReads) init() {
 // each before anything is read of GitHub that it does not need: the credential is a results
 // token; the body names the four fields alone, well formed; its commit is the run's; the run's
 // repository is the project's default repository; GitHub names the run's check run at that
-// commit; the graph logic takes the files at that commit; the files hold the check; and the run's
-// workflow file at the commit shows the check run to be a run of the check's job (jobOfCheckRun).
+// commit; the graph logic takes the files at that commit; the files hold the check; and the job's
+// workflow file, at the commit of it that the job ran, shows the check run to be a run of the
+// check's job (jobOfCheckRun).
 // GitHub's 403 or 404 for the check run or the workflow file is a final refusal (githubReadRefusal),
 // and any other failure of GitHub's, the spec files' read among them, a 503 that asks for the write
 // again (githubUnanswered). The project check of the path is withinProjectScope's, which register
@@ -207,9 +203,7 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Commit != run.SHA {
-		writeError(w, codeCommitNotTheRuns, http.StatusForbidden, fmt.Sprintf(
-			"the result is for commit %s, and this token's run tested commit %s: a job writes results only for the commit that it tested",
-			input.Commit, run.SHA))
+		s.writeHandlerError(w, commitNotTheRuns(input.Commit, run.SHA))
 		return
 	}
 	// The run was read whole once, by the verifier (ciphertoken.Caller.CI, oauthwire.ParseCIRun):
@@ -237,9 +231,7 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if checkRun.HeadSHA != run.SHA {
-		writeError(w, codeCheckRunNotTheRuns, http.StatusForbidden, fmt.Sprintf(
-			"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
-			checkRun.HeadSHA, run.CheckRun, run.SHA))
+		s.writeHandlerError(w, checkRunNotTheRuns(checkRun.HeadSHA, run.CheckRun, run.SHA))
 		return
 	}
 	files, err := s.specFilesAt(ctx, reader, run.Repository, run.SHA)
@@ -270,10 +262,13 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row := specCheckRow{
-		project: project, check: input.Check, procedureDigest: check.Digest, job: job, leg: leg,
-		run: run, verdict: input.Verdict, observed: cutObserved(input.Observed),
-		session: actor.Credential.Session,
-		test:    model.SpecCheckTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
+		result: attestedResult{
+			predicateType: specCheckResultPredicateType, project: project, check: input.Check,
+			procedureDigest: check.Digest,
+			test:            model.ResultTest{Runner: check.Runner, Selector: check.Selector, Job: check.Job},
+			verdict:         input.Verdict, observed: cutObserved(input.Observed), job: job, leg: leg,
+			run: run, session: actor.Credential.Session,
+		},
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -316,6 +311,22 @@ func validSpecCheckResultInput(input specCheckResultInput, body []byte) error {
 		return errorf(http.StatusBadRequest, codeResultInput, "verdict is pass, fail or could_not_run")
 	}
 	return nil
+}
+
+// commitNotTheRuns refuses a result for commit, another commit than tested, the commit the run of
+// the results token tested. Both results routes answer it.
+func commitNotTheRuns(commit, tested string) *apiError {
+	return errorf(http.StatusForbidden, codeCommitNotTheRuns,
+		"the result is for commit %s, and this token's run tested commit %s: a job writes results only for the commit that it tested",
+		commit, tested)
+}
+
+// checkRunNotTheRuns refuses a results token whose check run, checkRun, GitHub names at named,
+// another commit than tested, the commit its run tested. Both results routes answer it.
+func checkRunNotTheRuns(named string, checkRun int64, tested string) *apiError {
+	return errorf(http.StatusForbidden, codeCheckRunNotTheRuns,
+		"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
+		named, checkRun, tested)
 }
 
 // isProjectsDefaultRepository answers whether repository, the repository GitHub names a run by,
@@ -493,13 +504,18 @@ func githubUnanswered(what, code string, err error) *apiError {
 	return errorf(http.StatusServiceUnavailable, code, "GitHub did not answer the read of %s, so the result was not judged; write it again: %v", what, err)
 }
 
-// jobOfCheckRun is the job and the leg that checkRun, this token's check run, ran, where the run's
-// workflow file at the run's commit shows that job to be the one check names (check being the
-// facts the files give the check of that id), or the refusal: 409 CHECK_NOT_THIS_JOBS saying why,
-// or githubReadRefusal's for the file. The file is read for either shape of name. A check run is
-// the job's where its name is the job's name and workflowJobs.whyNotTheJob finds nothing against
-// that name, or where legOf reads its name as a leg of the job and workflowJobs.whyNotALeg finds
-// nothing against it. A name of neither shape is refused before the file is read.
+// jobOfCheckRun is the job and the leg that checkRun, this token's check run, ran, where the job's
+// workflow file shows that job to be the one check names (check being the facts the files give
+// the check of that id), or the refusal: 409 CHECK_NOT_THIS_JOBS saying why, or githubReadRefusal's
+// for the file. The file is the one the job is written in, read at the commit of it the job ran
+// (oauthwire.Run.Workflow at JobWorkflowSHA, the token's job_workflow_ref and job_workflow_sha), and
+// never the copy at the run's tested commit: for a run on a branch that calls the result entry's
+// workflow at the default branch, that copy is the branch's own, which no job of the run ran and
+// whoever pushes the branch may edit, adding a job named as the check run. The file is read for
+// either shape of name. A check run is the job's where its name is the job's name and
+// workflowJobs.whyNotTheJob finds nothing against that name, or where legOf reads its name as a
+// leg of the job and workflowJobs.whyNotALeg finds nothing against it. A name of neither shape is
+// refused before the file is read.
 func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, run oauthwire.Run, checkRun githubapp.CheckRun, id string, check specCheckFacts) (job, leg string, err error) {
 	isLeg := false
 	if checkRun.Name != check.Job {
@@ -513,24 +529,24 @@ func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, ru
 				id, named, checkRun.Name, run.CheckRun)
 		}
 	}
-	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.SHA, run.Workflow)
+	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.JobWorkflowSHA, run.Workflow)
 	if err != nil {
-		return "", "", githubReadRefusal(err, fmt.Sprintf("%s of %s at %s, the run's workflow file", run.Workflow, run.Repository, run.SHA),
+		return "", "", githubReadRefusal(err, fmt.Sprintf("%s of %s at %s, the job's workflow file at the commit the job ran", run.Workflow, run.Repository, run.JobWorkflowSHA),
 			fmt.Sprintf("which says which job makes the check run %d, %q", run.CheckRun, checkRun.Name),
 			codeWorkflowNotShown, http.StatusConflict, codeWorkflowUnreadable)
 	}
-	where := run.Workflow + " at " + run.SHA
+	where := run.Workflow + " at " + run.JobWorkflowSHA
 	if isLeg {
 		if why := jobs.whyNotALeg(checkRun.Name, check.Job, where); why != "" {
 			return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,
-				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the run's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
+				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the job's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
 				id, check.Job, run.CheckRun, checkRun.Name, check.Job, check.Job, why)
 		}
 		return check.Job, leg, nil
 	}
 	if why := jobs.whyNotTheJob(checkRun.Name, where); why != "" {
 		return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,
-			"check %s names the job %q, and this token's check run %d is named %q, that job's check run only where the run's workflow file says so, and %s: a job writes results only for the checks that name it",
+			"check %s names the job %q, and this token's check run %d is named %q, that job's check run only where the job's workflow file says so, and %s: a job writes results only for the checks that name it",
 			id, check.Job, run.CheckRun, checkRun.Name, why)
 	}
 	return checkRun.Name, "", nil
@@ -541,7 +557,7 @@ func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, ru
 // parentheses hold, a matrix value that holds parentheses of its own included; ok is false for any
 // other name, and for a job of no name. GitHub writes that shape for a job that is no leg too, one
 // whose own name ends in parentheses, so the shape alone makes no check run a leg: the route
-// takes the leg only where the run's workflow file says so (workflowJobs.whyNotALeg).
+// takes the leg only where the job's workflow file says so (workflowJobs.whyNotALeg).
 func legOf(name, job string) (leg string, ok bool) {
 	if job == "" {
 		return "", false
@@ -554,7 +570,7 @@ func legOf(name, job string) (leg string, ok bool) {
 	return leg, ok && leg != ""
 }
 
-// whyNotTheJob is why jobs, the jobs of the run's workflow file (where names that file at its
+// whyNotTheJob is why jobs, the jobs of the job's workflow file (where names that file at its
 // commit), do not show the check run called name to be the job of that very name, or "" where
 // they show it. The one job of the file named name must have no matrix, since every leg of a
 // matrix job carries its values in its name, so a matrix job named name makes no check run of
@@ -577,7 +593,7 @@ func (jobs workflowJobs) whyNotTheJob(name, where string) string {
 	return jobs.otherMatrixJobsLeg(name, "", where)
 }
 
-// whyNotALeg is why jobs, the jobs of the run's workflow file (where names that file at its
+// whyNotALeg is why jobs, the jobs of the job's workflow file (where names that file at its
 // commit), do not show the check run called name, which legOf reads as a leg of job, to be a leg
 // of job, or "" where they show it. They show it where some job named job has a matrix, no job
 // with no matrix is named name, no other matrix job can make the name for a leg of its own, and
@@ -707,12 +723,12 @@ func yamlValue(node *yaml.Node) *yaml.Node {
 	return node
 }
 
-// cutObserved is what a result keeps of what a job observed: the text whole when it is
-// contracts.SpecCheckObservedMax runes or fewer, else its first contracts.SpecCheckObservedStart
-// runes, contracts.SpecCheckObservedCutNote and its last contracts.SpecCheckObservedEnd runes,
-// that many runes in all, so the stored text keeps the test's name at its start and why it failed
-// at its end, and says that the middle was cut. `dispatch result --project` cuts by the same rule
-// before it sends the text.
+// cutObserved is what a result keeps of what a job observed, on both results routes: the text
+// whole when it is contracts.SpecCheckObservedMax runes or fewer, else its first
+// contracts.SpecCheckObservedStart runes, contracts.SpecCheckObservedCutNote and its last
+// contracts.SpecCheckObservedEnd runes, that many runes in all, so the stored text keeps the
+// test's name at its start and why it failed at its end, and says that the middle was cut.
+// `dispatch result --project` cuts by the same rule before it sends the text.
 func cutObserved(text string) string {
 	runes := utf8.RuneCountInString(text)
 	if runes <= contracts.SpecCheckObservedMax {
@@ -735,49 +751,25 @@ func runeOffset(text string, n int) int {
 	return len(text)
 }
 
-// specCheckRow is one row of spec_check_results before it is written: what the request and the
-// spec files gave, and its token's run read whole (oauthwire.Run), from which the row's
-// repository, commit, check run, run and attempt columns and the attestation's subject, run and
-// recorder are all derived. The attestation the row stores is built from it alone
-// (insertSpecCheckResult).
+// specCheckRow is one row of spec_check_results before it is written: the result whose statement
+// it stores (attestedResult.statement), built from what the request and the spec files gave and
+// from its token's run read whole (oauthwire.Run). Every column is read from that statement but
+// the check run and the workflow run, the run's own numbers (oauthwire.Run.CheckRun, ID), so no
+// column can say another thing than the statement.
 type specCheckRow struct {
-	project, check, procedureDigest, job, leg string
-	run                                       oauthwire.Run
-	verdict, observed, session                string
-	test                                      model.SpecCheckTest
+	result attestedResult
 }
 
-// insertSpecCheckResult is the one writer of spec_check_results: it appends row with the in-toto
-// statement of it, whose recorded_at is the row's own (the transaction's now(), written in UTC
-// with a Z so every reader decodes one instant the same way), and answers the row as the read
-// answers it. Nothing updates or deletes a row.
+// insertSpecCheckResult is the one writer of spec_check_results: it appends row with its
+// statement, whose recorded_at is the row's own (stampedAttestation), and answers the row as the
+// read answers it. Nothing updates or deletes a row.
 func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (model.SpecCheckResult, error) {
-	run := row.run
-	statement := model.SpecCheckAttestation{
-		Type: inTotoStatementType,
-		Subject: []model.AttestationSubject{{
-			Name: "git+https://github.com/" + run.Repository, Digest: map[string]string{"gitCommit": run.SHA},
-		}},
-		PredicateType: specCheckResultPredicateType,
-		Predicate: model.SpecCheckPredicate{
-			Project: row.project, Check: row.check, ProcedureDigest: row.procedureDigest, Test: row.test,
-			Verdict: row.verdict, Observed: row.observed, Job: row.job, Leg: row.leg,
-			Run: model.SpecCheckRun{
-				Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, EventName: run.EventName,
-				RunID: strconv.FormatInt(run.ID, 10), Attempt: int(run.Attempt), CheckRunID: strconv.FormatInt(run.CheckRun, 10),
-				RunnerEnvironment: run.RunnerEnvironment,
-			},
-			// The principal is the broker's own spelling of the run's workflow (oauthwire.ResultPrincipal),
-			// so the identity on a result is the one the broker authenticated.
-			Recorder: model.SpecCheckRecorder{
-				Session: row.session, Principal: oauthwire.ResultPrincipal(run.Repository, run.Workflow),
-			},
-		},
-	}
+	statement := row.result.statement()
 	encoded, err := json.Marshal(statement)
 	if err != nil {
 		return model.SpecCheckResult{}, fmt.Errorf("encode a spec check result: %w", err)
 	}
+	predicate := statement.Predicate
 	var (
 		result model.SpecCheckResult
 		stored []byte
@@ -785,12 +777,11 @@ func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (mo
 	if err := q.QueryRow(ctx, `
 		insert into spec_check_results (project_key, repository, check_id, commit_sha, procedure_digest, job, leg,
 			check_run_id, run_id, attempt, verdict, attestation, session)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			jsonb_set($12::jsonb, '{predicate,recorded_at}',
-				to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))), $13)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, `+stampedAttestation("$12")+`, $13)
 		returning id::text, seq, attestation`,
-		row.project, run.Repository, row.check, run.SHA, row.procedureDigest, row.job, row.leg,
-		run.CheckRun, run.ID, run.Attempt, row.verdict, encoded, row.session,
+		predicate.Project, predicate.Run.Repository, predicate.Check, statement.Subject[0].Digest["gitCommit"],
+		predicate.ProcedureDigest, predicate.Job, predicate.Leg, row.result.run.CheckRun, row.result.run.ID,
+		predicate.Run.Attempt, predicate.Verdict, encoded, predicate.Recorder.Session,
 	).Scan(&result.ID, &result.Seq, &stored); err != nil {
 		return model.SpecCheckResult{}, fmt.Errorf("insert a spec check result: %w", err)
 	}

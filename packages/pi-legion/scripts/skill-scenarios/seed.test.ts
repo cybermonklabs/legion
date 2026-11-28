@@ -1,4 +1,13 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -7,9 +16,17 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { settled } from "@legion/test-fixtures/wait";
 import type * as ownerWalkSeedModule from "./owner-walk-seed";
 import type * as seedModule from "./seed";
+import type * as seedDispatchModule from "./seed-dispatch";
+import { fileRowLimit } from "./test-limit";
 
-// e2e/api.ts, which seed.ts and owner-walk-seed.ts call, reads its port when it loads: set it as
-// rig.sh's seed_ts does, then load both. PLAYWRIGHT_BASE_URL would point api.ts somewhere else.
+// Each row seeds a fake Dispatch from this process and reads and writes its files, which a loaded
+// machine stretches: each test and hook gets the limit test-limit.ts computes from the bounds of
+// what they wait for, set before the hooks below.
+setDefaultTimeout(fileRowLimit());
+
+// e2e/api.ts, which seed.ts, seed-dispatch.ts and owner-walk-seed.ts call, reads its port when it
+// loads: set it as rig.sh's seed_ts does, then load them. PLAYWRIGHT_BASE_URL would point api.ts
+// somewhere else.
 // Both go back to what the caller held once this file ends: a plain `bun test` runs every file in
 // one process. The names are written, and the modules loaded, in the `beforeAll` below: a
 // `bun test -t <pattern>` that selects no row of this file runs neither that hook nor the
@@ -17,6 +34,7 @@ import type * as seedModule from "./seed";
 // for every later file.
 restoreEnvironment(["DISPATCH_E2E_PORT", "PLAYWRIGHT_BASE_URL"]);
 let seed: typeof seedModule;
+let seedDispatch: typeof seedDispatchModule;
 let ownerWalkSeed: typeof ownerWalkSeedModule;
 
 const origin = "http://127.0.0.1:18777";
@@ -25,11 +43,16 @@ const work = temporaryDirectory("skill-scenarios-seed");
 beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   delete process.env.PLAYWRIGHT_BASE_URL;
-  // The one hook of this file that does real work: it loads seed.ts, owner-walk-seed.ts and what
-  // they import (dispatch's e2e/api.ts and its harness modules, @legion/contracts, zod). Each load
-  // is waited for through the shared wait, so a load that outlasts the row's deadline fails here,
-  // naming it, rather than as Bun's unnamed "a beforeEach/afterEach hook timed out".
+  // The one hook of this file that does real work: it loads seed.ts, seed-dispatch.ts,
+  // owner-walk-seed.ts and what they import (dispatch's e2e/api.ts and its harness modules,
+  // @legion/contracts, zod). Each load is waited for through the shared wait, so a load that
+  // outlasts the row's deadline fails here, naming it, rather than as Bun's unnamed "a
+  // beforeEach/afterEach hook timed out".
   seed = await settled("seed.ts and the modules it imports to load", import("./seed"));
+  seedDispatch = await settled(
+    "seed-dispatch.ts and the modules it imports to load",
+    import("./seed-dispatch")
+  );
   ownerWalkSeed = await settled(
     "owner-walk-seed.ts and the modules it imports to load",
     import("./owner-walk-seed")
@@ -1170,7 +1193,7 @@ describe("tester-proof", () => {
         issue_key: "LWEVAL-2",
         phase: "implement",
         version: 1,
-        author: seed.IMPLEMENTER,
+        author: seedDispatch.IMPLEMENTER,
         body: JSON.stringify(body),
       }),
     ]);
@@ -1181,10 +1204,10 @@ describe("tester-proof", () => {
         role: "implementer",
         verdict: "pass",
         commit_sha: commit,
-        actor: seed.IMPLEMENTER,
+        actor: seedDispatch.IMPLEMENTER,
       }),
     ]);
-    expect(seed.IMPLEMENTER.id).not.toBe(runSession.id);
+    expect(seedDispatch.IMPLEMENTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: "LWEVAL-2",
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },

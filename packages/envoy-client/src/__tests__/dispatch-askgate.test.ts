@@ -596,6 +596,8 @@ describe("AskGate at the dispatch CLI", () => {
     expect(messagePosts()).toHaveLength(4);
   });
 
+  // Seven runs of the CLI, each its own process: the 30 s limit of this file's other rows that
+  // start several, since Bun's default 5 s is less than seven starts take on a loaded machine.
   test("help, a dry run and every ungated command need no marker under a live record", async () => {
     writeFileSync(join(stateDir, "shot.png"), "image bytes");
     writeRecord();
@@ -613,7 +615,7 @@ describe("AskGate at the dispatch CLI", () => {
       expect(stdout).not.toContain("AskGate");
       expect(posts.length).toBeGreaterThan(0);
     }
-  });
+  }, 30_000);
 
   test("an issue with a spec and a markdown upload are gated", async () => {
     writeRecord();
@@ -790,8 +792,8 @@ describe("AskGate at the dispatch entry, across processes", () => {
   /**
    * Each child's environment: the session's, `path` as its PATH, and no transpiler cache. Its HOME
    * is the row's folder (`makeDirectory`), where Bun keeps that cache, about 156 files, and the
-   * folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's own limit
-   * covers. With the cache off the hook removes what the children themselves wrote.
+   * fixture's afterEach removes the folder. With the cache off the removal reads only what the
+   * children themselves wrote.
    */
   const childEnvironment = (path = process.env.PATH ?? ""): Record<string, string> => ({
     ...(environment(omp) as Record<string, string>),
@@ -829,8 +831,8 @@ describe("AskGate at the dispatch entry, across processes", () => {
     expect(readdirSync(markers())).toEqual([]);
   });
 
-  // The row's folder is each child's HOME, and the file's afterEach removes it under Bun's 5 s hook
-  // limit, which no row's own limit covers: what the children leave there is all that removal reads.
+  // The row's folder is each child's HOME, and the fixture's afterEach removes it: what the
+  // children leave there is all that removal reads.
   test("a child leaves no Bun cache in the row's folder, which is its HOME", async () => {
     const child = Bun.spawn([process.execPath, ENTRY, ...MESSAGE], {
       env: childEnvironment(),

@@ -702,6 +702,32 @@ describe("the dispatch command surface", () => {
     });
   });
 
+  // The job's `dispatch result --issue` form takes `--commit` as the project form does: a CI job's
+  // step writes `--commit "$SHA"`, and an empty one would reach Dispatch only for its refusal,
+  // after `agent-secrets result-grant` traded the run's token. So it is refused there too, as
+  // `--commit=` is on the project form, and the same calls with a commit are calls. The rows above
+  // hold the rest.
+  test("an empty --commit of dispatch result --issue, or --commit= of --project, is refused, naming the flag", () => {
+    const commit = "a".repeat(40);
+    for (const argv of [
+      ["result", "--issue", "DSP-1", "--check", "c1", "--verdict", "pass", "--commit", ""],
+      ["result", "--project", "ACME", "--check", "p-1", "--verdict", "pass", "--commit="],
+    ]) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [
+          "--commit is empty, so the call names no commit: a variable that gives it may be empty or unset",
+        ],
+      });
+    }
+    for (const argv of [
+      ["result", "--issue", "DSP-1", "--check", "c1", "--verdict", "pass", "--commit", commit],
+      ["results", "--project", "ACME", "--commit", commit],
+    ]) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({ kind: "call" });
+    }
+  });
+
   test("a second bare issue key is refused", () => {
     expect(parseCommand(["read", "ACME-12", "ACME-13"], noFiles)).toEqual({
       kind: "refused",

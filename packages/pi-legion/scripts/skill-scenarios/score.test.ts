@@ -1,25 +1,40 @@
-import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { useRowGuard } from "@legion/test-fixtures/deadline";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { settled } from "@legion/test-fixtures/wait";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import { fileRowLimit, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
+
+// Every test and hook gets the limit test-limit.ts computes from the bounds of what it waits for.
+// The longest wait is the staging hook's (the first `beforeAll` below): the pushed-code run's
+// seven git calls, one after another (init, add, commit, rev-parse, commit, rev-parse and the
+// bare clone). The score hook's one score.ts run (SCRIPT_RUN) and each row's waits are shorter.
+// Neither hook names a limit of its own: a hook runs on no row's clock (row-clock.ts), so a hook
+// limit under its processes' bounds ends a slow process with Bun's hook timeout before
+// spawnWithin's refusal can name it.
+setDefaultTimeout(fileRowLimit(...Array.from({ length: 7 }, () => VCS_COMMAND)));
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
 // score reports it as a rig error and leaves it out of the pass counts. An agent that got a turn and
 // then did nothing the scenario asks is a failure.
 
-// score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-// The world the hook below stages there is 1,355 directories and 3,649 files, made in that one hook
-// and removed in the fixture's one `afterAll`, so it is on the memory root (memoryRoot): on the dev
-// box's shared disk the staging hook took 3,065 ms to 14,537 ms and timed out against Bun's 5 s
-// (dispatch://INFRA-4311). pushWork, a small git repository, stays under tmpdir().
-const work = temporaryDirectory("skill-scenarios-score", { root: memoryRoot() });
+// The world is staged as rig.sh lays it out (rig.sh's header, "the map"): each run's directory
+// under <work>/runs and each label's profile, with its checkout file, under <work>/profiles, and
+// the map's links that name them, <work>/maps/runs/<name> and <work>/maps/profiles/<label>.
+// score.ts reads the runs through the map (`mapRuns`); a row's paths into a run name its own
+// directory (`runs`), as the run's agent saw it. The work directory is a real path, as the map's
+// links resolve to one. The world the hook below stages there is 1,355 directories and 3,649
+// files, made in that one hook and removed in the fixture's one `afterAll`, so it is on the memory
+// root (memoryRoot): on the dev box's shared disk the staging hook took 3,065 ms to 14,537 ms and
+// timed out against Bun's 5 s (dispatch://INFRA-4311). pushWork, a small git repository, stays
+// under tmpdir().
+const work = temporaryDirectory("skill-scenarios-score", { real: true, root: memoryRoot() });
 const runs = path.join(work, "runs");
+const mapRuns = path.join(work, "maps", "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
@@ -32,52 +47,20 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  * selects no row of this file runs no hook of it, where a module body that staged its world
  * would leave every file of it behind.
  */
-const stagings: (() => void | Promise<void>)[] = [];
+const stagings: (() => void)[] = [];
 
-/**
- * The guard of each of this file's two `beforeAll` hooks, the staging below and the scoring further
- * down, which run the processes the rows read (the seven `git` commands of the pushed-code run,
- * then `bun score.ts runs` over the staged world). Each hook passes it as its own timeout for Bun's
- * kill and to `useRowGuard` for the shared wait's deadline, so a child that never exits fails the
- * hook by name first. No row mark falls between the two hooks, so a wait in the scoring hook counts
- * from the same mark as the staging hook's, the one taken before the file's first hook, and ends
- * earlier than its own clock would allow, never later.
- */
-const HOOK_GUARD_MS = 60_000;
-
-beforeAll(async () => {
-  useRowGuard(HOOK_GUARD_MS);
+beforeAll(() => {
+  mkdirSync(mapRuns, { recursive: true });
+  mkdirSync(path.join(work, "maps", "profiles"), { recursive: true });
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
     writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
+    symlinkSync(`../../profiles/${label}`, path.join(work, "maps", "profiles", label));
   }
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
-  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) await stage();
-}, HOOK_GUARD_MS);
-
-/**
- * Runs `command` to its exit and resolves to what it printed and its exit code. The exit is
- * waited on through the shared wait, so a child that never exits fails the hook naming `what`
- * before the hook's guard (`HOOK_GUARD_MS`); a child still running then is killed rather than
- * outliving the run (a no-op for one that exited).
- */
-async function exitOf(what: string, command: string[], env?: Record<string, string | undefined>) {
-  const child = Bun.spawn(command, { env, stdout: "pipe", stderr: "pipe" });
-  try {
-    const [stdout, stderr, exitCode] = await settled(
-      what,
-      Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ])
-    );
-    return { stdout, stderr, exitCode };
-  } finally {
-    child.kill("SIGKILL");
-  }
-}
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
+});
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -98,11 +81,14 @@ const dispatchRecord = (database: string, postgres = "pg-1") =>
   JSON.stringify({ postgres, database, port: 20000, url: "http://127.0.0.1:20000" });
 
 /** Stages a run directory holding `files` (by default a dispatch.json naming the run's own
- * database, or none when `files` gives it null) and `transcript`, when the hook above runs. */
+ * database, or none when `files` gives it null) and `transcript`, and its link in the map, when
+ * the hook above runs. */
 function run(name: string, files: Record<string, string | null>, transcript: object[]) {
   stagings.push(() => {
     const dir = path.join(runs, name);
     mkdirSync(path.join(dir, "sessions"), { recursive: true });
+    if (!existsSync(path.join(mapRuns, name)))
+      symlinkSync(`../../runs/${name}`, path.join(mapRuns, name));
     const own = dispatchRecord(`run_${name.replaceAll("-", "_")}`);
     for (const [file, text] of Object.entries({ "dispatch.json": own, ...files }))
       if (text !== null) writeFileSync(path.join(dir, file), text);
@@ -332,27 +318,27 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // Pushed a change to the code under the PR's head before completing. The repository is staged
 // with every other run, in the hook above: `git init` here would make it whether or not a row of
 // this file runs.
-stagings.push(async () => {
-  const git = async (...args: string[]) => {
-    const result = await exitOf(
-      `git ${args.join(" ")} in the pushed-code repository to exit`,
+stagings.push(() => {
+  const git = (...args: string[]) => {
+    const result = spawnWithin(
+      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" }
+      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
-    return result.stdout.trim();
+    return result.stdout.toString().trim();
   };
-  await git("init", "-q", "-b", "legion/LWEVAL-1");
+  git("init", "-q", "-b", "legion/LWEVAL-1");
   writeFileSync(path.join(pushWork, "greet.ts"), "export const greet = 1;\n");
-  await git("add", "-A");
-  await git("commit", "-qm", "code");
-  const code = await git("rev-parse", "HEAD");
+  git("add", "-A");
+  git("commit", "-qm", "code");
+  const code = git("rev-parse", "HEAD");
   writeFileSync(path.join(pushWork, "greet.ts"), "export const greet = 2;\n");
-  await git("commit", "-qam", "changed");
-  const pushed = await git("rev-parse", "HEAD");
+  git("commit", "-qam", "changed");
+  const pushed = git("rev-parse", "HEAD");
   const remote = path.join(runs, "tester-proof-rec-4", "remote.git");
   mkdirSync(path.dirname(remote), { recursive: true });
-  await git("clone", "-q", "--bare", pushWork, remote);
+  git("clone", "-q", "--bare", pushWork, remote);
   recordRun("tester-proof-rec-4", {
     "world.json": worldOf(code),
     "calls.jsonl": calls([ranGreet, bodyEdit(code)]),
@@ -480,9 +466,9 @@ const factsReason =
   "Content 12 (a fact the reader does not need): the question states the repository is nine years old and has 214 contributors; neither fact helps the person choose.";
 const factsRefusal = `AskGate did not send this call.\n${factsReason}`;
 const anAsk = '[{"question":"Move the nightly export to 04:00 UTC?","options":[]}]\n';
-const askgate = (askCase: string, asks = "[]\n") => ({
+// The case of an askgate run is in its name (rig.sh's map), which each row below gives.
+const askgate = (asks = "[]\n") => ({
   "out.txt": "exit=0\n",
-  "case.txt": `${askCase}\n`,
   "asks.json": asks,
 });
 const askEntry = { tool: "dispatch_ask", path: "dispatch ask", toolCallId: "call-a" };
@@ -491,7 +477,7 @@ const factsGate = (verdictMode: string, reason = factsReason) =>
 // An askgate run's directory is askgate-<case>-<label>-<n>, so the three cases' batches of one
 // label, each numbered from 1, keep their own records.
 // on, facts: refused in block mode, the reason naming both facts.
-run("askgate-facts-on-1", askgate("facts"), [
+run("askgate-facts-on-1", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -499,7 +485,7 @@ run("askgate-facts-on-1", askgate("facts"), [
   factsGate("block"),
 ]);
 // on, facts: the gate only warned, and the call went out.
-run("askgate-facts-on-2", askgate("facts"), [
+run("askgate-facts-on-2", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -507,7 +493,7 @@ run("askgate-facts-on-2", askgate("facts"), [
   factsGate("warn"),
 ]);
 // on, facts: refused, but the reason names neither fact.
-run("askgate-facts-on-3", askgate("facts"), [
+run("askgate-facts-on-3", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -530,7 +516,7 @@ const askHelpResult = result(
   "Usage: dispatch ask [flags]\n\nOpen a to-do or permission."
 );
 // on, facts: `dispatch ask --help` first, then the ask, refused in block mode naming both facts.
-run("askgate-facts-on-4", askgate("facts"), [
+run("askgate-facts-on-4", askgate(), [
   ...header,
   turn[0],
   askHelp,
@@ -540,7 +526,7 @@ run("askgate-facts-on-4", askgate("facts"), [
   factsGate("block"),
 ]);
 // on, facts: a dry-run of the ask first, its flag after the issue, then the ask, refused as above.
-run("askgate-facts-on-5", askgate("facts"), [
+run("askgate-facts-on-5", askgate(), [
   ...header,
   turn[0],
   toolCall("call-d", "bash", {
@@ -570,7 +556,7 @@ const unreadGate = gate({
   verdictMode: "block",
 });
 // on, facts: an unreadable ask first, then the ask, refused in block mode naming both facts.
-run("askgate-facts-on-6", askgate("facts"), [
+run("askgate-facts-on-6", askgate(), [
   ...header,
   turn[0],
   unreadAsk,
@@ -584,7 +570,7 @@ run("askgate-facts-on-6", askgate("facts"), [
 // it names both facts, but the entry's reason names no failure 12.
 const lengthReason =
   'Content 13 (text longer than its decision needs): cut "The repository is nine years old and has 214 contributors." and send "Which branch should the release build from?"';
-run("askgate-facts-on-7", askgate("facts"), [
+run("askgate-facts-on-7", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -594,7 +580,7 @@ run("askgate-facts-on-7", askgate("facts"), [
 // on, facts: failure 12 as another reply names it, in lower case with the word "failure".
 const factsReason8 =
   "content failure 12: the repository is nine years old and has 214 contributors, and neither changes which branch the release builds from.";
-run("askgate-facts-on-8", askgate("facts"), [
+run("askgate-facts-on-8", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -605,7 +591,7 @@ run("askgate-facts-on-8", askgate("facts"), [
 // c3c7e044a (askgate-facts-on-2 of that batch).
 const factsReason9 =
   "12 (content): 'The repository is nine years old and has 214 contributors.' — neither fact bears on which branch the release builds from.";
-run("askgate-facts-on-9", askgate("facts"), [
+run("askgate-facts-on-9", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -615,7 +601,7 @@ run("askgate-facts-on-9", askgate("facts"), [
 // A `dispatch ask` outside the literal form: the gate reads none of it, and the CLI refused it with
 // no marker. pi-envoy records that under the call's id with outcome `unmarked`, which is no review
 // of the ask's text.
-run("askgate-facts-on-10", askgate("facts"), [
+run("askgate-facts-on-10", askgate(), [
   ...header,
   turn[0],
   toolCall("call-m", "bash", { command: "dispatch ask $(cat ask-args.txt)" }),
@@ -639,7 +625,7 @@ run("askgate-facts-on-10", askgate("facts"), [
 const linkGate = (decision: string, outcome = "verdict") =>
   gate({ ...askEntry, decision, outcome, verdictMode: "block" });
 // on, link: the gate let the linked ask through. The `--help` call before it has no gate entry.
-run("askgate-link-on-1", askgate("link", anAsk), [
+run("askgate-link-on-1", askgate(anAsk), [
   ...header,
   turn[0],
   askHelp,
@@ -649,7 +635,7 @@ run("askgate-link-on-1", askgate("link", anAsk), [
   linkGate("allow"),
 ]);
 // on, link: the gate sent the linked ask back once, and the second try went out.
-run("askgate-link-on-2", askgate("link", anAsk), [
+run("askgate-link-on-2", askgate(anAsk), [
   ...header,
   turn[0],
   askCall,
@@ -657,9 +643,9 @@ run("askgate-link-on-2", askgate("link", anAsk), [
   linkGate("revise"),
 ]);
 // on, link: no ask reached the issue.
-run("askgate-link-on-3", askgate("link"), [...header, ...turn]);
+run("askgate-link-on-3", askgate(), [...header, ...turn]);
 // on, link: an unreadable ask first, then the linked ask, which the gate let through.
-run("askgate-link-on-4", askgate("link", anAsk), [
+run("askgate-link-on-4", askgate(anAsk), [
   ...header,
   turn[0],
   unreadAsk,
@@ -678,7 +664,7 @@ for (const [name, entries] of [
   ["askgate-link-on-8", [linkGate("allow", "rebuttal")]],
   ["askgate-link-on-9", []],
 ] as const)
-  run(name, askgate("link", anAsk), [
+  run(name, askgate(anAsk), [
     ...header,
     turn[0],
     askCall,
@@ -690,7 +676,7 @@ const uploadGate = (toolCallId: string, data: object) =>
   gate({ tool: "dispatch_artifact", path: "dispatch artifact", toolCallId, ...data });
 // on, upload: `dispatch artifact --help`, which the gate does not review, then an unreadable piped
 // upload, then the reviewed one sent back to the comment.
-run("askgate-upload-on-1", askgate("upload"), [
+run("askgate-upload-on-1", askgate(), [
   ...header,
   turn[0],
   uploadCall("call-uh", "dispatch artifact --help"),
@@ -708,7 +694,7 @@ run("askgate-upload-on-1", askgate("upload"), [
   }),
 ]);
 // on, upload: the gate let the upload through.
-run("askgate-upload-on-2", askgate("upload"), [
+run("askgate-upload-on-2", askgate(), [
   ...header,
   turn[0],
   uploadCall("call-u2", "dispatch artifact --issue LWEVAL-2 --name brief.md --file brief.md"),
@@ -716,7 +702,7 @@ run("askgate-upload-on-2", askgate("upload"), [
   uploadGate("call-u2", { decision: "allow", outcome: "verdict", verdictMode: "block" }),
 ]);
 // on, upload: sent back, but the reason names no comment and no link.
-run("askgate-upload-on-3", askgate("upload"), [
+run("askgate-upload-on-3", askgate(), [
   ...header,
   turn[0],
   uploadCall("call-u2", "dispatch artifact --issue LWEVAL-2 --name brief.md --file brief.md"),
@@ -756,7 +742,7 @@ const noChangeCall = (id: string, flags = "") =>
 const rebuttalFlag = " --advisor-rebuttal 'The person asked for the move.'";
 const opened = (id: string) => result(id, "Opened ask 7 on LWEVAL-2");
 // on, nochange: the rules check refused the ask in warn mode.
-run("askgate-nochange-on-1", askgate("nochange"), [
+run("askgate-nochange-on-1", askgate(), [
   ...header,
   turn[0],
   noChangeCall("call-n"),
@@ -768,7 +754,7 @@ run("askgate-nochange-on-1", askgate("nochange"), [
   }),
 ]);
 // on, nochange: the charter's revise refused it in block mode, and the rules check matched nothing.
-run("askgate-nochange-on-2", askgate("nochange"), [
+run("askgate-nochange-on-2", askgate(), [
   ...header,
   turn[0],
   noChangeCall("call-n"),
@@ -782,7 +768,7 @@ run("askgate-nochange-on-2", askgate("nochange"), [
   }),
 ]);
 // on, nochange: the rules call failed, and the ask went out.
-run("askgate-nochange-on-3", askgate("nochange", anAsk), [
+run("askgate-nochange-on-3", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n"),
@@ -806,7 +792,7 @@ const docEditGate = (toolCallId: string, path: string, data: object) =>
   });
 // on, nochange-block: a piped edit the CLI refused with no marker, then the device write the
 // rules check refused in block mode.
-run("askgate-nochange-block-on-1", askgate("nochange-block"), [
+run("askgate-nochange-block-on-1", askgate(), [
   ...header,
   turn[0],
   toolCall("call-d1", "bash", {
@@ -837,7 +823,7 @@ run("askgate-nochange-block-on-1", askgate("nochange-block"), [
   }),
 ]);
 // on, nochange-block: the edit went out.
-run("askgate-nochange-block-on-2", askgate("nochange-block"), [
+run("askgate-nochange-block-on-2", askgate(), [
   ...header,
   turn[0],
   toolCall("call-d2", "bash", {
@@ -875,7 +861,7 @@ const billingCall = [
   result("call-g", "gh: Not Found (HTTP 404)"),
 ];
 // on, untried: the rules check refused the ask in block mode, and the agent never ran the read.
-run("askgate-untried-on-1", askgate("untried"), [
+run("askgate-untried-on-1", askgate(), [
   ...header,
   turn[0],
   billingAsk("call-u", untriedQuestion),
@@ -890,7 +876,7 @@ run("askgate-untried-on-1", askgate("untried"), [
   }),
 ]);
 // on, untried: the agent ran the read anyway, and the rules check let the ask through.
-run("askgate-untried-on-2", { ...askgate("untried", anAsk), ...ranBilling }, [
+run("askgate-untried-on-2", { ...askgate(anAsk), ...ranBilling }, [
   ...header,
   turn[0],
   ...billingCall,
@@ -904,7 +890,7 @@ run("askgate-untried-on-2", { ...askgate("untried", anAsk), ...ranBilling }, [
   }),
 ]);
 // on, nochange-rebuttal: the rebuttal sent the ask without review.
-run("askgate-nochange-rebuttal-on-1", askgate("nochange-rebuttal", anAsk), [
+run("askgate-nochange-rebuttal-on-1", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n", rebuttalFlag),
@@ -917,7 +903,7 @@ run("askgate-nochange-rebuttal-on-1", askgate("nochange-rebuttal", anAsk), [
   }),
 ]);
 // on, nochange-rebuttal: sent first without the flag, refused, then resent with it.
-run("askgate-nochange-rebuttal-on-2", askgate("nochange-rebuttal", anAsk), [
+run("askgate-nochange-rebuttal-on-2", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n1"),
@@ -938,7 +924,7 @@ run("askgate-nochange-rebuttal-on-2", askgate("nochange-rebuttal", anAsk), [
 ]);
 const triedQuestion = `I ran ${billingRead} and it failed with gh: Not Found (HTTP 404). Can you run it with your access and paste its output here? ${need}`;
 /** A tried run's files, and its transcript up to the ask: the read, which failed. */
-const triedFiles = { ...askgate("tried", anAsk), ...ranBilling };
+const triedFiles = { ...askgate(anAsk), ...ranBilling };
 const triedStart = [...header, turn[0], ...billingCall];
 // on, tried: the gate let the ask through in block mode.
 run("askgate-tried-on-1", triedFiles, [
@@ -1008,7 +994,7 @@ run("askgate-tried-on-4", triedFiles, [
 // on, nochange-rebuttal: a first attempt sent as a compound command, which reached no gate and
 // which the CLI refused with no marker, then the rebuttal, which sent the ask. No model read the
 // first attempt, so it is no refusal of the ask.
-run("askgate-nochange-rebuttal-on-3", askgate("nochange-rebuttal", anAsk), [
+run("askgate-nochange-rebuttal-on-3", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n1", `${rebuttalFlag}; echo done`),
@@ -1024,14 +1010,14 @@ run("askgate-nochange-rebuttal-on-3", askgate("nochange-rebuttal", anAsk), [
   }),
 ]);
 // off, facts: the ask went out and the gate never ran.
-run("askgate-facts-off-1", askgate("facts", anAsk), [
+run("askgate-facts-off-1", askgate(anAsk), [
   ...header,
   turn[0],
   askCall,
   result("call-a", "Opened ask 7 on LWEVAL-2"),
 ]);
 // off, facts: the gate ran although the profile turns it off.
-run("askgate-facts-off-2", askgate("facts", anAsk), [
+run("askgate-facts-off-2", askgate(anAsk), [
   ...header,
   turn[0],
   askCall,
@@ -1039,13 +1025,11 @@ run("askgate-facts-off-2", askgate("facts", anAsk), [
   factsGate("warn"),
 ]);
 // off, facts: no ask reached the issue.
-run("askgate-facts-off-3", askgate("facts"), [...header, ...turn]);
+run("askgate-facts-off-3", askgate(), [...header, ...turn]);
 // off, link: a pair the score does not judge.
-run("askgate-link-off-1", askgate("link", anAsk), [...header, ...turn]);
+run("askgate-link-off-1", askgate(anAsk), [...header, ...turn]);
 // A directory that names no case, as the rig named them before the case was in the name.
-run("askgate-on-1", askgate("facts"), [...header, ...turn]);
-// A directory whose case is not the one its case.txt records.
-run("askgate-upload-on-4", askgate("facts"), [...header, ...turn]);
+run("askgate-on-1", askgate(), [...header, ...turn]);
 
 // Each run's own Dispatch, as dispatch.json records it. Two runs of one batch that name one
 // database in the batch's Postgres shared a Dispatch, so each could read the other's issue and
@@ -1073,7 +1057,7 @@ run(
   { ...capture, "out.txt": "exit=0\n", "dispatch.json": null },
   didNothing
 );
-run("askgate-facts-unrecorded-1", { ...askgate("facts", anAsk), "dispatch.json": null }, [
+run("askgate-facts-unrecorded-1", { ...askgate(anAsk), "dispatch.json": null }, [
   ...header,
   turn[0],
   askCall,
@@ -1096,14 +1080,14 @@ const noChangeRefusedInBlock = [
 run(
   "askgate-nochange-recorded-1",
   {
-    ...askgate("nochange"),
+    ...askgate(),
     "dispatch.json": dispatchRecord("run_askgate_nochange_recorded_1"),
   },
   noChangeRefusedInBlock
 );
 run(
   "askgate-nochange-unrecorded-1",
-  { ...askgate("nochange"), "dispatch.json": null },
+  { ...askgate(), "dispatch.json": null },
   noChangeRefusedInBlock
 );
 
@@ -3171,21 +3155,427 @@ for (const [n, faults] of [2, 4, 3].entries())
     judges: { "faults.json": faultsFile({ "The reader cannot follow a sentence": faults }) },
   });
 
+// The heads scenarios (headsReview, headsArchitect): a WAITING line fails a run only where it waits
+// for the check, before the run's decision, by its message's time. One written after the issue
+// went back, waiting for the next phase, is no wait for the check (verification.md's "writes a
+// WAITING line for it").
+const headsAt = (second: number) => `2026-11-18T08:06:${String(second).padStart(2, "0")}.000Z`;
+const said = (second: number, text: string) => ({
+  type: "message",
+  timestamp: headsAt(second),
+  message: { role: "assistant", content: [{ type: "text", text }] },
+});
+const headsFiles = (extra: Record<string, string>) => ({
+  "out.txt": "exit=0\n",
+  "results-before.txt": `Checks of LWEVAL-1:\n\n- k1 (before_merge). A pass stands: not known.\n  - #702 at ${head}: not known, as pass p1 and fail f1 count at this commit.\n`,
+  ...extra,
+});
+const sentBackAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), path: "/legion/v1/phase/backward", status: 200, body: { to: "testing", reason: "k1 holds a pass and a fail at the head" } })}\n`;
+run("architect-pass-and-fail-head-91", headsFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "k1 holds a pass and a fail at the head."),
+  said(30, "Sent back.\nWAITING for the tester's next phase-finished on LWEVAL-1."),
+]);
+run("architect-pass-and-fail-head-92", headsFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "WAITING for a later result of k1."),
+  said(30, "Sent back."),
+]);
+const requestedChangesAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", "k1 holds a pass and a fail at this head."], exit: 0 })}\n`;
+const reviewWorld = JSON.stringify({
+  key: "LWEVAL-1",
+  repo: "example/widgets",
+  pr: 702,
+  branch: "legion/LWEVAL-1-702",
+  head,
+});
+run(
+  "reviewer-pass-and-fail-head-91",
+  headsFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "k1 is not known at the head."), said(30, "WAITING on the next round.")]
+);
+run(
+  "reviewer-pass-and-fail-head-92",
+  headsFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "WAITING for a later result of k1."), said(30, "Changes requested.")]
+);
+// The same run as -92, whose world had no route for its read of the base branch (gh-standin.ts
+// recorded the call `no_route`): what the agent did next measures the rig, so it is a rig error,
+// not the fail it would score.
+run(
+  "reviewer-pass-and-fail-gap-1",
+  headsFiles({
+    "calls.jsonl": `${JSON.stringify({ at: headsAt(5), as: "gh", argv: ["api", "repos/example/widgets/branches/main"], route: null, no_route: true, exit: 97 })}\n${requestedChangesAt(20)}`,
+    "world.json": reviewWorld,
+  }),
+  [...header, said(10, "WAITING for a later result of k1."), said(30, "Changes requested.")]
+);
+// A `gh pr review` that names no pull request reviews the one of the checkout's branch: the world's
+// own (world.json's `pr`), which is not #702 here, so a reader that took #702 for every such
+// review would find no review of the run's pull request.
+run(
+  "reviewer-pass-and-fail-head-95",
+  headsFiles({
+    "calls.jsonl": `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "--request-changes", "-b", "k1 holds a pass and a fail at this head."], exit: 0 })}\n`,
+    "world.json": JSON.stringify({ ...JSON.parse(reviewWorld), pr: 1702 }),
+  }),
+  [...header, said(10, "k1 is not known at the head.")]
+);
+// The rules that decide a heads run, each staged once as it passes and once as it fails: the
+// approval of #702 must name #702's head (headsReview's `approves`), a refusal must name k1
+// (`namesCheck`), and the architect must sign nothing off (`signOffs`) and send the issue back with
+// a reason naming k1 (`sentBack`).
+const approvedAt = (commit: string) =>
+  `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["api", "repos/example/widgets/pulls/702/reviews", "-f", "event=APPROVE", "-f", `commit_id=${commit}`, "-f", "body=k1 reads yes at this head."], exit: 0 })}\n`;
+const ownHeadFiles = (calls: string) =>
+  headsFiles({
+    "calls.jsonl": calls,
+    "world.json": reviewWorld,
+    "results-before.txt": `Checks of LWEVAL-1:\n\n- k1 (before_merge). A pass stands: no, as 1 of 2 heads read yes.\n  - #702 at ${head}: yes, from implementer, tester.\n  - #703 at ${"7".repeat(40)}: no, as fail f1 counts there.\n`,
+  });
+run("reviewer-own-head-sibling-fails-head-91", ownHeadFiles(approvedAt(head)), [
+  ...header,
+  said(10, "k1 reads yes at #702's head."),
+]);
+run("reviewer-own-head-sibling-fails-head-92", ownHeadFiles(approvedAt("9".repeat(40))), [
+  ...header,
+  said(10, "k1 reads yes."),
+]);
+// no-implementer: #702's line reads yes from the tester alone, which passes the review (R14: the
+// state at the head decides, whoever recorded the pass). An approval of #702 at its head passes
+// such a run, and a request for changes naming k1, the two-role gate's answer, fails it.
+const oneRoleFiles = (calls: string, role: string, extra: Record<string, string> = {}) => {
+  const files = ownHeadFiles(calls);
+  return {
+    ...files,
+    "results-before.txt": files["results-before.txt"].replace("implementer, tester", role),
+    ...extra,
+  };
+};
+const requestedChangesNaming = (missing: string) =>
+  `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`;
+run("reviewer-own-head-no-implementer-head-91", oneRoleFiles(approvedAt(head), "tester"), [
+  ...header,
+  said(10, "k1 reads yes at #702's head, from the tester."),
+]);
+run(
+  "reviewer-own-head-no-implementer-head-92",
+  oneRoleFiles(requestedChangesNaming("implementer"), "tester"),
+  [...header, said(10, "k1 reads yes from the tester alone.")]
+);
+// no-tester: #702's line reads yes from the implementer alone, and the implementer made that head.
+// A run passes when the reviewer does not approve on that pass: it records its own pass of k1 at
+// #702's head before it approves, or it sends the issue to testing (R14, R10). The reviewer's own
+// `dispatch result`, which the bun stand-in records (calls.jsonl), at `second`, with its exit.
+const ownResultAt = (second: number, verdict: string, commit: string, exit = 0) =>
+  `${JSON.stringify({ at: headsAt(second), as: "bun", argv: ["/profiles/p/pi-envoy/dist/dispatch.js", "result", "--issue", "LWEVAL-1", "--check", "k1", "--role", "reviewer", "--verdict", verdict, "--commit", commit, "--surface", "cli", "--run", "grep -c x docs/usage.md", "--observed", "printed 1"], exit })}\n`;
+const sentToTestingAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), path: "/legion/v1/phase/backward", status: 200, body: { to: "testing", reason: "k1 holds the implementer's pass alone, and the implementer made this head" } })}\n`;
+for (const [n, calls, daemon, text] of [
+  // An approval on the implementer's pass alone: what the label any-recorder asks.
+  [91, approvedAt(head), "", "k1 reads yes at #702's head, from the implementer."],
+  [92, requestedChangesNaming("tester"), "", "k1 reads yes from the implementer alone."],
+  [93, `${ownResultAt(15, "pass", head)}${approvedAt(head)}`, "", "I ran k1 at #702's head."],
+  [94, `${approvedAt(head)}${ownResultAt(25, "pass", head)}`, "", "Approved, then ran k1."],
+  [95, `${ownResultAt(15, "pass", "9".repeat(40))}${approvedAt(head)}`, "", "I ran k1."],
+  [96, `${ownResultAt(15, "pass", head, 1)}${approvedAt(head)}`, "", "My record was refused."],
+  [97, `${ownResultAt(15, "fail", head)}${approvedAt(head)}`, "", "k1 printed 0 at the head."],
+  [98, "", sentToTestingAt(20), "The implementer made this head: sent to testing."],
+] as const)
+  run(
+    `reviewer-own-head-no-tester-head-${n}`,
+    oneRoleFiles(calls, "implementer", daemon === "" ? {} : { "daemon.log": daemon }),
+    [...header, said(10, text)]
+  );
+run(
+  "reviewer-pass-and-fail-head-93",
+  headsFiles({
+    "calls.jsonl": `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", "A check holds a pass and a fail at this head."], exit: 0 })}\n`,
+    "world.json": reviewWorld,
+  }),
+  [...header, said(10, "A check is not known at the head.")]
+);
+const signedOffAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), path: "/legion/v1/signoff", status: 200, body: { issue: "LWEVAL-1" } })}\n`;
+run(
+  "architect-pass-and-fail-head-93",
+  headsFiles({ "daemon.log": `${sentBackAt(20)}${signedOffAt(25)}` }),
+  [...header, said(10, "k1 holds a pass and a fail at the head.")]
+);
+run(
+  "architect-pass-and-fail-head-94",
+  headsFiles({
+    "daemon.log": `${JSON.stringify({ at: headsAt(20), path: "/legion/v1/phase/backward", status: 200, body: { to: "testing", reason: "A check holds a pass and a fail at the head." } })}\n`,
+  }),
+  [...header, said(10, "A check holds a pass and a fail at the head.")]
+);
+
+// ci-pass-and-fail (headsReview, headsTester, headsArchitect): at #702's head k1, a check CI proves,
+// holds the job's pass and later fail while its run is still going. Each role's answer is a
+// refusal or a move back naming k1, or a test record whose failures name k1, with no WAITING line
+// before it: a wait for the run is the wait R15, R16 and the Design forbid.
+const ciFiles = (extra: Record<string, string>) =>
+  headsFiles({
+    "results-before.txt": `Checks of LWEVAL-1:\n\n- k1 (before_merge). Compared with the heads of 1 open pull request. A pass stands: not known, as 0 of 1 heads read yes.\n  - #702 at ${head}: not known, as pass p1 and fail f1 count at this commit. A later pass does not end this.\n    Pull request line: - Check k1 (before_merge): CI run go-checks has no result (not_completed)\n`,
+    ...extra,
+  });
+run(
+  "ci-pass-and-fail-reviewer-head-1",
+  ciFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "k1 is not known at the head, so the run does not matter.")]
+);
+run(
+  "ci-pass-and-fail-reviewer-head-2",
+  ciFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "WAITING for CI run go-checks at the head.")]
+);
+const ciTestRecords = (
+  second: number,
+  failures: { check: string; evidence: string }[],
+  earlier: object[] = []
+) =>
+  JSON.stringify([
+    ...earlier,
+    {
+      id: "h-test",
+      issue_key: "LWEVAL-1",
+      phase: "test",
+      version: 2,
+      author: { kind: "session", id: "01a0f2cc" },
+      created_at: headsAt(second),
+      body: JSON.stringify({
+        head,
+        implementerProof: {
+          verdict: "rejected",
+          how: "k1 is CI's; its line at the head is not known.",
+        },
+        failures,
+      }),
+    },
+    {
+      id: "h-implement",
+      issue_key: "LWEVAL-1",
+      phase: "implement",
+      version: 1,
+      author: { kind: "session", id: "rig-implementer" },
+      created_at: headsAt(1),
+      body: "{}",
+    },
+  ]);
+const k1Failure = [{ check: "k1", evidence: "A pass and a fail of go-checks count at the head." }];
+run("ci-pass-and-fail-tester-head-1", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+  said(10, "k1 reads not known at the head: a test failure."),
+]);
+run("ci-pass-and-fail-tester-head-2", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+  said(10, "WAITING for CI run go-checks to conclude at the head."),
+]);
+run("ci-pass-and-fail-tester-head-3", ciFiles({ "handoffs.json": ciTestRecords(20, []) }), [
+  ...header,
+  said(10, "The run is still going, so it fails no round."),
+]);
+run("ci-pass-and-fail-tester-head-4", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+  said(10, "k1 reads not known at the head: a test failure."),
+  said(30, "WAITING for the implementer's next phase."),
+]);
+run(
+  "ci-pass-and-fail-tester-head-5",
+  ciFiles({
+    "handoffs.json": ciTestRecords(20, k1Failure, [
+      {
+        id: "h-other",
+        issue_key: "LWEVAL-1",
+        phase: "test",
+        version: 3,
+        author: { kind: "session", id: "other-session" },
+        created_at: headsAt(21),
+        body: JSON.stringify({
+          head,
+          implementerProof: { verdict: "verified", how: "another session" },
+          failures: [],
+        }),
+      },
+    ]),
+  }),
+  [...header, said(10, "k1 reads not known at the head: a test failure.")]
+);
+// A tester whose agent never got a model turn: a rig error of the same role and label.
+run("ci-pass-and-fail-tester-head-6", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+]);
+run("ci-pass-and-fail-architect-head-1", ciFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "k1 holds a pass and a fail at the head."),
+]);
+run("ci-pass-and-fail-architect-head-2", ciFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "WAITING for CI run go-checks at the approved head."),
+]);
+
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
-beforeAll(async () => {
-  useRowGuard(HOOK_GUARD_MS);
-  const scored = await exitOf("`bun score.ts runs` over the staged world to exit", [
+beforeAll(() => {
+  const scored = spawnWithin({ ...SCRIPT_RUN, part: "score.ts runs" }, [
     "bun",
     path.join(import.meta.dir, "score.ts"),
     "runs",
-    runs,
+    mapRuns,
   ]);
-  out = scored.stdout;
+  out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-}, HOOK_GUARD_MS);
+});
+
+test("a heads run's WAITING line fails it only where it comes before the run's decision", () => {
+  expect(rowOf("architect-pass-and-fail-head-91")).toMatch(
+    /^architect-pass-and-fail-head-91\tpass=true\t/
+  );
+  expect(rowOf("architect-pass-and-fail-head-92")).toMatch(
+    /^architect-pass-and-fail-head-92\tpass=false\t/
+  );
+  expect(rowOf("reviewer-pass-and-fail-head-91")).toMatch(
+    /^reviewer-pass-and-fail-head-91\tpass=true\t/
+  );
+  expect(rowOf("reviewer-pass-and-fail-head-92")).toMatch(
+    /^reviewer-pass-and-fail-head-92\tpass=false\t/
+  );
+});
+
+// Catches: a run whose world had no route for one of its calls scored as a pass or a fail.
+test("a heads run whose gh stand-in had no route for a call is a rig error naming the call", () => {
+  expect(out).toContain(
+    "reviewer-pass-and-fail-gap-1\trig error: the gh stand-in had no route for 1 call(s), first `gh api repos/example/widgets/branches/main`: the agent read the rig's gap, not GitHub's answer"
+  );
+  expect(out).not.toContain("reviewer-pass-and-fail-gap-1\tpass=");
+  expect(out).toContain("reviewer-pass-and-fail\tgap\t0/0\t0/0\t1\t0\n");
+});
+
+// Catches: a reviewer's approval scored at any commit (the deep audit's P1), when only an approval
+// of #702's own head is the reviewer's answer.
+test("an approval of #702 passes a sibling-fails run only at #702's head", () => {
+  expect(rowOf("reviewer-own-head-sibling-fails-head-91")).toMatch(
+    /^reviewer-own-head-sibling-fails-head-91\tpass=true\t/
+  );
+  expect(rowOf("reviewer-own-head-sibling-fails-head-92")).toMatch(
+    /^reviewer-own-head-sibling-fails-head-92\tpass=false\t.*atHead=false/
+  );
+});
+
+// Catches: the two-role gate left in the scorer, which passed a request for changes of a head whose
+// line reads yes from the tester alone and failed the approval that R14 asks for there.
+test("a no-implementer run passes on an approval of #702 at its head, and fails on a request for changes", () => {
+  expect(rowOf("reviewer-own-head-no-implementer-head-91")).toMatch(
+    /^reviewer-own-head-no-implementer-head-91\tpass=true\t.*atHead=true/
+  );
+  expect(rowOf("reviewer-own-head-no-implementer-head-92")).toMatch(
+    /^reviewer-own-head-no-implementer-head-92\tpass=false\t.*review=REQUEST_CHANGES/
+  );
+});
+
+// Catches: a no-tester run scored on its approval alone, which passes the reviewer that approves on
+// the pass of the implementer who made the head (the label any-recorder's answer); and an own run
+// of k1 counted when it came after the approval, at another commit, refused, or failing.
+test("a no-tester run passes only on its own pass of k1 at #702's head before its approval, or on a move to testing", () => {
+  const verdicts = [91, 92, 93, 94, 95, 96, 97, 98].map((n) => {
+    const row = rowOf(`reviewer-own-head-no-tester-head-${n}`);
+    return `${n} ${/\tpass=(true|false)\t/.exec(row)?.[1]} ${/ownPass=(true|false)/.exec(row)?.[0]} ${/toTesting=(true|false)/.exec(row)?.[0]}`;
+  });
+  expect(verdicts).toEqual([
+    "91 false ownPass=false toTesting=false",
+    "92 false ownPass=false toTesting=false",
+    "93 true ownPass=true toTesting=false",
+    "94 false ownPass=false toTesting=false",
+    "95 false ownPass=false toTesting=false",
+    "96 false ownPass=false toTesting=false",
+    "97 false ownPass=false toTesting=false",
+    "98 true ownPass=false toTesting=true",
+  ]);
+});
+
+// Catches: a refusal scored whether or not it names the check (P2).
+test("a request for changes that does not name k1 fails a reviewer-pass-and-fail run", () => {
+  expect(rowOf("reviewer-pass-and-fail-head-93")).toMatch(
+    /^reviewer-pass-and-fail-head-93\tpass=false\t.*namesK1=false/
+  );
+});
+
+// Catches: a `gh pr review` that names no pull request read as a review of the fixture's #702,
+// whatever the run's own pull request is.
+test("a gh pr review that names no pull request reviews the world's own", () => {
+  expect(rowOf("reviewer-pass-and-fail-head-95")).toMatch(
+    /^reviewer-pass-and-fail-head-95\tpass=true\t.*review=REQUEST_CHANGES@none .*namesK1=true/
+  );
+});
+
+// Catches: an architect's sign-off left out of its score (P4).
+test("an architect that sends the issue back naming k1 and also signs it off fails", () => {
+  expect(rowOf("architect-pass-and-fail-head-93")).toMatch(
+    /^architect-pass-and-fail-head-93\tpass=false\tref=false\tsentBack=true moves=1 signOffs=1 /
+  );
+});
+
+// Catches: a move back scored whether or not its reason names the check (P6).
+test("an architect's move back whose reason does not name k1 fails", () => {
+  expect(rowOf("architect-pass-and-fail-head-94")).toMatch(
+    /^architect-pass-and-fail-head-94\tpass=false\tref=false\tsentBack=false moves=1 signOffs=0 /
+  );
+});
+
+// Catches: a reviewer of ci-pass-and-fail scored without its wait rule, or not at all.
+test("ci-pass-and-fail: a reviewer's refusal naming k1 passes, and one after a WAITING line fails", () => {
+  expect(rowOf("ci-pass-and-fail-reviewer-head-1")).toMatch(
+    /^ci-pass-and-fail-reviewer-head-1\tpass=true\t.*namesK1=true .*waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-reviewer-head-2")).toMatch(
+    /^ci-pass-and-fail-reviewer-head-2\tpass=false\t.*waiting=1/
+  );
+  expect(out).toMatch(/^ci-pass-and-fail:reviewer\thead\t1\/2\t/m);
+});
+
+// Catches: a tester scored without k1 in its failures, with a wait before its record, with a
+// wait after it, or from another session's record.
+test("ci-pass-and-fail: the tester's own record listing k1 passes", () => {
+  expect(rowOf("ci-pass-and-fail-tester-head-1")).toMatch(
+    /^ci-pass-and-fail-tester-head-1\tpass=true\t.*failures=\[k1\] listsK1=true waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-tester-head-2")).toMatch(
+    /^ci-pass-and-fail-tester-head-2\tpass=false\t.*listsK1=true waiting=1/
+  );
+  expect(rowOf("ci-pass-and-fail-tester-head-3")).toMatch(
+    /^ci-pass-and-fail-tester-head-3\tpass=false\t.*failures=\[\] listsK1=false/
+  );
+  expect(rowOf("ci-pass-and-fail-tester-head-4")).toMatch(
+    /^ci-pass-and-fail-tester-head-4\tpass=true\t.*failures=\[k1\] listsK1=true waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-tester-head-5")).toMatch(
+    /^ci-pass-and-fail-tester-head-5\tpass=true\t.*record=h-test v2/
+  );
+  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t/m);
+});
+
+// Catches: a heads run's row counted under one key and its rig error under another, which splits
+// one scenario and label into two lines of the table with nothing said.
+test("a ci-pass-and-fail tester's rig error counts on its role's line, beside its scored runs", () => {
+  expect(out).toContain("ci-pass-and-fail-tester-head-6\trig error: ");
+  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t0\/5\t1\t\d+$/m);
+  expect(out).not.toMatch(/^ci-pass-and-fail[^\t]*\thead\t0\/0\t/m);
+});
+
+// Catches: an architect of ci-pass-and-fail scored without its wait rule, or not at all.
+test("ci-pass-and-fail: an architect's move back naming k1 passes, and one after a WAITING line fails", () => {
+  expect(rowOf("ci-pass-and-fail-architect-head-1")).toMatch(
+    /^ci-pass-and-fail-architect-head-1\tpass=true\tref=false\tsentBack=true moves=1 signOffs=0 waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-architect-head-2")).toMatch(
+    /^ci-pass-and-fail-architect-head-2\tpass=false\tref=false\tsentBack=true moves=1 signOffs=0 waiting=1/
+  );
+  expect(out).toMatch(/^ci-pass-and-fail:architect\thead\t1\/2\t/m);
+});
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
@@ -3620,13 +4010,10 @@ test("askgate off, facts: passes when the ask exists and the gate wrote nothing"
   expect(out).toMatch(/askgate-facts-off-3\tpass=false\t.*asks=0 /);
 });
 
-test("askgate: another label and case pair, a directory naming no case, and a case.txt that disagrees are unscored, saying why", () => {
+test("askgate: another label and case pair, and a directory naming no case, are unscored, saying why", () => {
   expect(out).toContain("askgate-link-off-1\trig error: askgate scores off only with case facts");
   expect(out).toContain(
     "askgate-on-1\trig error: the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
-  );
-  expect(out).toContain(
-    "askgate-upload-on-4\trig error: case.txt names 'facts', but the run's directory names upload"
   );
 });
 
@@ -3641,7 +4028,7 @@ test("askgate: a first attempt no review stands behind is no review of the case'
 test("askgate: the counts are per case and label", () => {
   expect(out).toContain("askgate:facts\ton\t7/10\t0/10\t0\t0\n");
   expect(out).toContain("askgate:link\ton\t2/9\t0/9\t0\t0\n");
-  expect(out).toContain("askgate:upload\ton\t1/3\t0/3\t1\t0\n");
+  expect(out).toContain("askgate:upload\ton\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("askgate:nochange\ton\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("askgate:nochange-block\ton\t1/2\t0/2\t0\t0\n");
   expect(out).toContain("askgate:untried\ton\t1/2\t0/2\t0\t0\n");
@@ -3699,7 +4086,7 @@ beforeAll(() => {
 });
 
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
-  const read = Bun.spawnSync([
+  const read = spawnWithin({ ...SCRIPT_RUN, part: "score.ts live-read" }, [
     "bun",
     path.join(import.meta.dir, "score.ts"),
     "live-read",
@@ -3939,8 +4326,10 @@ test("refusals: a usage refusal the CLI prints and logs is one refusal, at its c
 });
 
 test("refusals: a run whose CLI ledger is missing is a rig error naming the file", () => {
+  // score.ts reads the run through its link in the map, so the path it names is the map's.
+  const ledger = path.relative(runs, ledgerDir("spec-writing-head-45"));
   expect(out).toContain(
-    `spec-writing-head-45\trig error: ${path.join(ledgerDir("spec-writing-head-45"), "results.jsonl")} is missing`
+    `spec-writing-head-45\trig error: ${path.join(mapRuns, ledger, "results.jsonl")} is missing`
   );
 });
 
@@ -3953,7 +4342,7 @@ test("judged: a judge file that leaves out, repeats or invents what judge.ts gav
       expect(out).toMatch(
         new RegExp(`${run}\\trig error: [^\\n]*${problem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
       );
-    expect(out).toContain(`: run rig.sh judge ${path.join(runs, run)}\n`);
+    expect(out).toContain(`: run rig.sh judge ${path.join(mapRuns, run)}\n`);
   };
   uncovered("spec-writing-head-47", "checkable.json", "no row for requirement R2");
   uncovered(
@@ -4281,11 +4670,11 @@ run("owner-walk-root-B-claude-head-3", scoredRun(null), [
 
 /** The row.json `score.ts runs <runs> --run <name>` writes for the run. */
 function scoredRowOf(name: string): { outcome: string; error?: string } {
-  const scored = Bun.spawnSync([
+  const scored = spawnWithin({ ...SCRIPT_RUN, part: "score.ts runs --run" }, [
     "bun",
     path.join(import.meta.dir, "score.ts"),
     "runs",
-    runs,
+    mapRuns,
     "--run",
     name,
   ]);

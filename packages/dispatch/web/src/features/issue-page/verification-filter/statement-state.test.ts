@@ -139,7 +139,7 @@ test("a pass at another commit alone names that commit and leaves the statement 
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
 });
 
-// A withdrawn result is no evidence (`results_comparison.go`, `tree-drafts.ts`), so it neither
+// A withdrawn result is no evidence (`results_pass_stands.go`, `tree-drafts.ts`), so it neither
 // names the commit the rest of the issue is read against nor leaves its check reading Failed.
 test("a check whose every result was withdrawn reads Retracted and names no commit", () => {
   const withdrawn = check({
@@ -337,6 +337,37 @@ test("the latest result a check draws is the newest that stands", () => {
 
   expect(read.statements[0]?.checks[0]?.latest?.id).toBe("result-standing");
   expect(read.statements.map((held) => held.state)).toEqual(["met"]);
+});
+
+// A result that counts for nothing stands for nothing, as the server's pass_stands reads it
+// (results_pass_stands.go): here a role's result of a check CI proves. Catches: the body drawing
+// a role's newer pass as the latest result of a check whose CI job's fail at the commit the page
+// names is what decides it.
+test("the latest result a check draws is never one that counts for nothing", () => {
+  const proved = check({
+    block_id: "c-one",
+    pass_stands: { answer: "no", reason: "fail" },
+    results: [
+      result({
+        created_at: "2026-11-15T09:00:00Z",
+        id: "result-role",
+        not_counted:
+          "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves",
+      }),
+      result({
+        branch: "legion/CORE-1",
+        created_at: "2026-11-14T00:58:00Z",
+        id: "result-job",
+        role: "ci",
+        verdict: "fail",
+      }),
+    ],
+  });
+  const read = reading([statementNode("r1", "The page draws it.", [checkNode(proved)])], [proved]);
+
+  expect(read.statements[0]?.checks[0]?.latest?.id).toBe("result-job");
+  expect(read.statements[0]?.checks[0]?.state).toBe("failed");
+  expect(read.statements.map((held) => held.state)).toEqual(["not_met"]);
 });
 
 // R17: "Not met where one failed there". The commit is the one the server names for the check:

@@ -46,6 +46,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { runFields } from "./run-names";
 import {
   type DispatchProxyLine,
   FAMILIES,
@@ -89,21 +90,14 @@ export function parseOwnerWalkCase(name: string): OwnerWalkCase {
     family: match[3] as OwnerWalkCase["family"],
   };
 }
-/** An owner-walk run's directory name: `owner-walk-<case>-<label>-<n>`. A label may hold a hyphen. */
-const RUN = new RegExp(
-  `^owner-walk-((?:${OWNER_WALK_KINDS.join("|")})-(?:${OWNER_WALK_FORMS.join("|")})-(?:${FAMILIES.join("|")}))-(.+)-(\\d+)$`
-);
-/** The case, the label and the number an owner-walk run's directory names, or undefined. */
+/** The case, the label and the number an owner-walk run's directory names,
+ * `owner-walk-<case>-<label>-<n>` (run-names.ts runFields), or undefined. */
 export function ownerWalkRun(
   name: string
 ): { case: OwnerWalkCase; label: string; n: number } | undefined {
-  const match = RUN.exec(name);
-  if (match === null) return undefined;
-  return {
-    case: parseOwnerWalkCase(match[1] ?? ""),
-    label: match[2] ?? "",
-    n: Number(match[3]),
-  };
+  const fields = runFields(name);
+  if (fields?.scenario !== "owner-walk" || fields.case === undefined) return undefined;
+  return { case: parseOwnerWalkCase(fields.case), label: fields.label, n: fields.n };
 }
 
 // The plan's task blocks.

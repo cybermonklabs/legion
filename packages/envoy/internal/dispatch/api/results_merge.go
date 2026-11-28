@@ -185,7 +185,7 @@ type mergeSet struct {
 }
 
 // mergeRepoKey is the repository part of a memo key of the merges of an issue: "" for the
-// repository it resolves to, whose merges are read by the issue alone
+// repository it resolves to, which is one repository for the whole read
 // (delivery.Attributor.MergeOfIssue), and a linked repository lowercased.
 func mergeRepoKey(repo string, linked bool) string {
 	if !linked {
@@ -195,9 +195,11 @@ func mergeRepoKey(repo string, linked bool) string {
 }
 
 // mergesIn is the merged pull requests of issueKey in repo, read once per read of the results: for
-// the repository the issue resolves to, the ones attributed to it
-// (delivery.Attributor.MergeOfIssue), and for a linked one, the ones its external links name there
-// (delivery.Attributor.MergeIn), each set ordered by when each merged (inMergeOrder).
+// the repository the issue resolves to, the ones of that repository attributed to it
+// (delivery.Attributor.MergeOfIssue, which leaves out a pull request the issue links in another
+// repository, though the attribution gives it the issue), and for a linked one, the ones its
+// external links name there that the attribution gives it (delivery.Attributor.MergeIn), each set
+// ordered by when each merged (inMergeOrder).
 func (c *comparisonReader) mergesIn(ctx context.Context, issueKey, repo string, linked bool) mergeSet {
 	key := [2]string{issueKey, mergeRepoKey(repo, linked)}
 	if set, memoized := c.mergeSets[key]; memoized {
@@ -208,7 +210,7 @@ func (c *comparisonReader) mergesIn(ctx context.Context, issueKey, repo string, 
 	if linked {
 		pulls, err = c.server.deps.Attributor.MergeIn(ctx, c.server.deps.Store.Pool, issueKey, repo, c.answers)
 	} else {
-		pulls, err = c.server.deps.Attributor.MergeOfIssue(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
+		pulls, err = c.server.deps.Attributor.MergeOfIssue(ctx, c.server.deps.Store.Pool, issueKey, repo, c.answers)
 	}
 	set := mergeSet{read: err == nil}
 	if err != nil {

@@ -1,7 +1,8 @@
 # A CI job's result, and its read
 
-These two calls are part of the `dispatch` command, which the package's
-[README](../README.md) ("The `dispatch` command") describes.
+These calls, `dispatch result` and `dispatch results`, each with `--project` or `--issue`, are
+part of the `dispatch` command, which the package's [README](../README.md)
+("The `dispatch` command") describes.
 
 `dispatch result --project <KEY> --check <id> --verdict pass|fail|could_not_run --commit <sha>`
 is a CI job's record of its result of a check of the spec files, and the one call that is no
@@ -99,6 +100,21 @@ own or names a workflow command. A refusal that starts with `::` has that first 
 `\x3a`.
 `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those
 results, one line each, newest first, or the stored results as JSON with `--json`.
+`dispatch result --issue <KEY> --check <id> --verdict pass|fail --commit <sha> [--observed …]`
+under the same `agent-secrets result-grant -- …` is the same job's result of the check of an
+issue's Verification document that the check's `ci_check` gives to it. The placeholder in
+`DISPATCH_RESULTS_TOKEN` makes any `dispatch result` call the job's, since only
+`agent-secrets result-grant` gives it and a session never holds it: the same credential, cut,
+waits, outcome lines and printing rule, an empty `--issue`, `--check` or `--commit` refused the
+same way, and `--issue`, `--check`, `--verdict`, `--commit` and `--observed` alone
+(`dispatch-commands/ci-job-result.ts`). Without the placeholder, `dispatch result --issue` is a
+session's record of a role's result.
+`dispatch results --issue <KEY>` prints every string of Dispatch's answer by the same rule
+(`printableStrings`): a result's reading, a CI job's log among them, is one line, its line breaks
+written as `\n`, so no line of a log names a workflow command or reads as a line of the command's
+own, such as another check's head line or an `A pass stands:` line. A result whose `not_counted`
+says why it counts for nothing prints `It counts for nothing: <reason>` under its reading. The
+`--json` forms of `dispatch results` print by the rule in JSON's escapes (`printableJson`).
 
 ## The Go producer and the broker's grant
 
@@ -125,6 +141,20 @@ The job needs `id-token: write` and the GitHub runner's `ACTIONS_ID_TOKEN_REQUES
 
 A job whose runner writes its signed identity to a file can instead set `AGENT_SECRETS_MACHINE_TOKEN_FILE`. The Go identity source rereads it; no TypeScript metadata client trades this identity. Do not put a bearer, signing key or session login in the command's arguments. A personal `DISPATCH_TOKEN` is not a results credential and cannot replace the placeholder.
 
+The job must be written in the workflow the broker's result entry names, at the repository's default branch. The entry is `<repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person>` in `BROKER_EXCHANGE_RESULT_WORKFLOWS`, its workflow ref the default branch's, such as `refs/heads/main`, and the broker takes a run only where the job's `job_workflow_ref` is exactly that workflow at that ref and the run's `ref` matches the pattern. The workflow on the pushed branch calls it as a reusable workflow (the called file declares `on: workflow_call`):
+
+```yaml
+jobs:
+  results:
+    permissions:
+      id-token: write
+    uses: <owner>/<name>/.github/workflows/ci-results.yaml@main
+```
+
+A job written in the branch's own copy of that workflow, or in the copy at any other ref, is refused `invalid_request`, since a push to that ref changes it. The caller's `inputs` and `secrets` are the branch's to choose, so the called workflow takes none that decides what it records.
+
+GitHub names a called job's check run `<caller's job> / <called job>`, as this repository's own CI names its jobs (`pi-legion / pi-legion`). What works: a branch's run reaches the entry's workflow as the reusable workflow above, and its job records an issue's check whose `ci_check` is written in that form, `<caller's job> / <called job>`, since the issue's results route compares `ci_check` with the check run's name. What is refused: a `--project` write from a branch's run through the caller is `409 CHECK_NOT_THIS_JOBS`, since the project's results route (`jobOfCheckRun`) matches the check run's name with the job the spec files name and reads the job list from the workflow file the job is written in, the entry's workflow at the commit of it the job ran (the token's `job_workflow_sha`), which knows no caller's form; it never reads the branch's own copy at the tested commit, which no job of the run ran. A run on the default branch itself, whose job is written in the entry's workflow directly and whose check run is named the job, records the checks of the spec files on the project's results route, where the entry's ref pattern matches the default branch. The issue's results route takes a job's result only from a push of a branch of the issue's change (`403 BRANCH_NOT_THE_ISSUES`), so the default branch's run records no issue's check. The local stack's live tests run the caller's form on both routes and the default branch's run on the project's route (`src/__tests__/ci-check-results.live.test.ts`, `src/__tests__/ci-results.live.test.ts`).
+
 The broker needs its result-workflow entry, the existing airlock proxy and certificate configuration, and a profile in its profiles file (`BROKER_PROFILES_FILE`) whose proxy block binds the actual Dispatch host and allows the results write:
 
 ```json
@@ -138,7 +168,7 @@ The broker needs its result-workflow entry, the existing airlock proxy and certi
 }
 ```
 
-The profile is a name and a proxy block and nothing else: the broker refuses a profiles file whose profile of kind `dpop` sets a `source`, `tier`, `requesters`, `maxGrant`, `github` or `google`. The allow list names a `POST` under `/api/v1/projects/` and one under `/api/v1/issues/`, as the local stack's profile (`test/ci-results-stack.ts`) and the broker's tests do. Dispatch's results list names one route, `POST /api/v1/projects/{key}/results`, and a prefix covers other routes too (`POST /api/v1/projects/{key}/artifacts` matches); Dispatch answers a results token `403 RESULTS_ONLY_TOKEN` on every route whose declaration does not state `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `internal/dispatch/api`), so the allow list bounds where the placeholder goes and Dispatch's list bounds what it may do there.
+The profile is a name and a proxy block and nothing else: the broker refuses a profiles file whose profile of kind `dpop` sets a `source`, `tier`, `requesters`, `maxGrant`, `github` or `google`. The allow list names a `POST` under `/api/v1/projects/` and one under `/api/v1/issues/`, as the local stack's profile (`test/ci-results-stack.ts`) and the broker's tests do: a job's `--project` write goes under `/api/v1/projects/`, and its `--issue` write under `/api/v1/issues/`. Dispatch's results list names two routes, `POST /api/v1/projects/{key}/results` and `POST /api/v1/issues/{key}/results`, and a prefix covers other routes too (`POST /api/v1/projects/{key}/artifacts` matches); Dispatch answers a results token `403 RESULTS_ONLY_TOKEN` on every route its results list does not name (the routes whose declaration states `ResultsScope`, `routeDecl.ResultsScope` in each route's file under `internal/dispatch/api`), so the allow list bounds where the placeholder goes and Dispatch's list bounds what it may do there.
 
 The proxy block carries the placeholder only in `Authorization`, and the proxy sends only the requests its allow list names. Every broker with a profiles file checks the profile at start, whether or not it has result-workflow entries, since every broker with an airlock port serves every minted grant of its database: its proxy block is of kind `dpop`, and, as every `dpop` block, it binds one exact host (Dispatch's, with no `*.` name, since the run's token and a proof of the pod's key go to every host the block binds) that an entry of `BROKER_PROXY_PRIVATE_UPSTREAM` names, has a non-empty allow list none of whose entries names every path (the path prefix `""` or `/`), has `Authorization` as its one header, and no proxy block of another kind binds that host; each entry of `BROKER_PROXY_PRIVATE_UPSTREAM` names the host of a `dpop` block. A broker with a result-workflow entry and no such profile refuses to start too. `envoy-broker profiles check <file> --private-upstream '<host>=<url> ...' --cluster-ranges <CIDR prefixes>` runs the same check on the file, and the start's check of each destination's address, given the broker's values of `BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`; a destination whose address the start refuses exits 2, as a value the setting does not take. A deployment's pull-request check of its profiles file passes both values as the deployment renders them for its broker: without `--cluster-ranges`, an address outside the private ranges, which only those ranges can admit, is reported as not judged rather than refused. Each result grant records the profile and the destination it was made under, and a broker of another profile or destination refuses the grant's writes, so the brokers that share one database need the same profile and the same destination. The profile does not grant a project or choose a run: the broker derives those from the verified GitHub identity and its result-workflow entry. A workflow authorized only for ordinary credentials cannot obtain a placeholder through this endpoint. Use HTTPS outside the isolated loopback test environment.
 
@@ -162,7 +192,7 @@ DISPATCH_TEST_DATABASE_URL=postgres://… bun packages/envoy-client/test/ci-resu
 
 The stack runs two real brokers on one database and the real Dispatch, built from this checkout, with a stand-in for GitHub. It claims no fixed host port and changes no host setting. As two pods of one deployment, the brokers sit behind one `dev-proxy-stands front` for their API ports and another for their proxy ports, and each new connection goes to the next broker in turn. Dispatch's public URL is `https://dispatch.ci-results.test`, a name no resolver answers, and each broker's private destination (`BROKER_PROXY_PRIVATE_UPSTREAM`) is Dispatch's own loopback port, which `BROKER_AIRLOCK_TEST_DIAL_ALLOW` lets the proxy dial. So a job's write reaches Dispatch through the proxy alone, and a write around it opens no connection. The stack seeds project ACME and one commit with the probe spec, prints the variables of one job of a push run and complete `agent-secrets result-grant -- …` commands, the controls among them (another commit, another job, a write around the proxy and a forged token), and runs until Ctrl-C.
 
-`src/__tests__/ci-results.live.test.ts` runs the same stack with `LEGION_E2E_DISPATCH_STACK=1` and `DISPATCH_TEST_DATABASE_URL`, each CI job's command under `agent-secrets result-grant`. It asserts the stored statement and its run-only recorder, wrong-commit and wrong-job refusals, forged issuer and unlisted-ref refusals, a random access token refused as not active, session-token restrictions, results-only route restrictions, no person in the stored result or the command's output, refusals of spec files that the graph logic refuses, and an observed text of 1 MiB stored as its start and its end. Its rows A1 to A7 hold the airlock itself: a result stored with the placeholder alone in the job's environment and the results token bound to a broker's own key, with one proxy line for the write; a write around the proxy that cannot authenticate; two runs that cannot use each other's grant; a grant that ended refused at the proxy's CONNECT; another private address and an address in `BROKER_AIRLOCK_CLUSTER_RANGES` refused; one grant served by both brokers; and Dispatch seeing the broker's address and never the command's forwarding headers.
+`src/__tests__/ci-results.live.test.ts` runs the same stack with `LEGION_E2E_DISPATCH_STACK=1` and `DISPATCH_TEST_DATABASE_URL`, each CI job's command under `agent-secrets result-grant`. It asserts the stored statement and its run-only recorder, wrong-commit and wrong-job refusals, forged issuer and unlisted-ref refusals, a job written in the branch's own copy of the workflow refused at the broker, a random access token refused as not active, session-token restrictions, results-only route restrictions, no person in the stored result or the command's output, refusals of spec files that the graph logic refuses, and an observed text of 1 MiB stored as its start and its end. Each row that stores a result is a direct run of the default branch, `refs/heads/main`: its job is written in the entry's workflow, and its check run is named the job. A branch's run whose caller calls the workflow, whose check run GitHub names `ci / go-checks`, is refused `409 CHECK_NOT_THIS_JOBS` for the check that names the job `go-checks`. It is refused `409 CHECK_NOT_THIS_JOBS` too for a check that names the job `ci / go-checks` where the branch's own copy of the workflow adds a job of that name, since Dispatch reads the job list from the default branch's copy at the token's `job_workflow_sha`, which has no such job, and the refusal names that commit. Its rows A1 to A7 hold the airlock itself: a result stored with the placeholder alone in the job's environment and the results token bound to a broker's own key, with one proxy line for the write; a write around the proxy that cannot authenticate; two runs that cannot use each other's grant; a grant that ended refused at the proxy's CONNECT; another private address and an address in `BROKER_AIRLOCK_CLUSTER_RANGES` refused; one grant served by both brokers; and Dispatch seeing the broker's address and never the command's forwarding headers.
 
 To exercise the forged-issuer case separately:
 

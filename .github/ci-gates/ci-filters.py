@@ -2,7 +2,9 @@
 # dependencies' and the test files, without the files tests read), reads the target lists
 # the runs above expand, reads every workflow of .github/workflows, and is its own script,
 # engine, data, rules and path model. The job runs the workflow-file size check beside it,
-# which reads that same directory and is a script of its own.
+# which reads that same directory and is a script of its own. The job also runs the guard that
+# no CI file compares the spec files with the approved spec, here because this gate already
+# reads every workflow file, so a change to one job's own file starts no other job for the guard.
 GATE = gate("ci_filters", "ci-filters", runs=[
     run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
         text=".github/scripts/check-ci-filters.sh"),
@@ -10,6 +12,14 @@ GATE = gate("ci_filters", "ci-filters", runs=[
         text=".github/scripts/check-ci-filters.sh"),
     run(INFRA, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the envoy-infra module", mode="vet", step=CHECK_STEP,
         text=".github/scripts/check-ci-filters.sh"),
+], exact=[
+    # `go run` is not one of the three forms the reducer reads, so the step is pinned whole,
+    # and the Run stands for the command it builds.
+    pinned_step("ci-filters", SPEC_GUARD_STEP, ENVOY, "go run ./cmd/spec-check guard --root ../..", [
+        (ENVOY, ["./cmd/spec-check"],
+         "go run ./cmd/spec-check guard, which builds the command and runs it over the "
+         "repository root", {"mode": "build"}),
+    ]),
 ], reads=reads(
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
     (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
@@ -59,6 +69,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     ("**/*_test.go", "check-ci-filters.sh reads the //ci: lines of the tests and computes each filter's `!` "
                      "patterns out of the repository's Go test files, so one added, deleted or edited changes "
                      "this check's own answer"),
+    *[(glob, f"{at('ci-filters', SPEC_GUARD_STEP)}: spec-check guard reads every file under it")
+      for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
 ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
             for name, path in PUSH_WORKFLOWS.items()))
   + setup_go("ci-filters", f"{DAEMON}/go.mod"))

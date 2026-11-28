@@ -35,7 +35,9 @@ beforeEach(() => {
   resetAdviceMemory();
 });
 
-/** A Dispatch that records each request and posts a comment on DSP-1; it answers nothing else. */
+/** A Dispatch that records each request and posts a comment on DSP-1; it answers nothing else.
+ *  Its answer names the write's Idempotency-Key back, as Dispatch's keyed layer does on every
+ *  answer to a keyed write, so the client reads it as this write's answer (docs/write-answers.md). */
 const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) => {
   const request = new Request(input, init);
   const { pathname } = new URL(request.url);
@@ -51,8 +53,6 @@ const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) 
       issue_key: "DSP-1",
       advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
     });
-    // Dispatch's keyed layer names a keyed write's key back on each answer; a 2xx that names none
-    // is no answer of Dispatch's to the write (dispatch-http.ts), so the stub names it too.
     const key = request.headers.get("Idempotency-Key");
     if (key !== null) answer.headers.set("Idempotency-Key", key);
     return answer;

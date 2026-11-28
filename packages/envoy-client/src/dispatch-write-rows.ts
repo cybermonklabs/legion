@@ -175,8 +175,9 @@ const actor = InboundActorSchema;
  *  `postFileRoundTrip`, parse and render the text and answer it, and call no store), the
  *  related-item check (`related`, `POST /api/v1/projects/{key}/related`: its
  *  handler's `answerRelated` runs `relatedCheck` with `record` unset, so no related_checks record
- *  is written), and a result's dry run (`dryRunResult`, a validation-only preview, which records
- *  nothing). */
+ *  is written), and a result's dry run (`dryRunResult`, a validation-only preview,
+ *  `POST /api/v1/issues/{key}/results/dry-run`: its handler, `dryRunCheckResult`, records nothing
+ *  and appends no event). */
 const STORE_NOTHING = new WeakSet<z.ZodType>();
 
 /** `row`, marked as the row of a route that stores nothing (`rowStores`). */
@@ -320,6 +321,12 @@ export const WRITE_ROWS = {
       check_issue_key: z.string(),
       commit_sha: z.string(),
     }),
+  }),
+  /** `ciJobResultCommand` prints the answer whole and reads the line and the result's id, check
+   *  and verdict. */
+  recordCIJobResult: z.looseObject({
+    line: z.string(),
+    result: z.looseObject({ id: z.string(), verdict: z.string(), check_block_id: z.string() }),
   }),
   dryRunResult: storesNothing(z.looseObject({ line: z.string(), result: z.unknown() })),
   retractResult: z.looseObject({

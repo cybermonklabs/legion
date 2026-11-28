@@ -98,16 +98,17 @@ export function coverageStatements(
  * check and a pass at a commit the check no longer compares with stand for nothing. The other
  * states read what no pass standing is:
  *
- * - **`no-result`,** no result recorded at all, which the results say by themselves.
+ * - **`no-result`,** no result recorded that counts for something (`countsForSomething`), which
+ *   the results say by themselves: a check whose only results count for nothing has none.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
  *   not send the field - an older build behind the same load balancer as the one this page
  *   came from. It is read before everything the answer decides, because without it the page
  *   knows nothing of how the check stands; it is the page's own blindness and no verdict of
  *   the check's.
- * - **`retracted`,** every result of the check withdrawn (`CheckResultRetracted`, which is on
- *   the result and never on the check): nothing stands for it and nothing stands against it,
- *   so neither "Passed" nor "Failed" is true of it, and the withdrawal is what the reader is
- *   owed.
+ * - **`retracted`,** every result of the check that counts for something withdrawn
+ *   (`CheckResultRetracted`, which is on the result and never on the check): nothing stands for
+ *   it and nothing stands against it, so neither "Passed" nor "Failed" is true of it, and the
+ *   withdrawal is what the reader is owed.
  * - **`older`,** a newest result that stands and no longer speaks for the work as it stands,
  *   whatever it found, because its commit is not one the check compared with or the check's
  *   own words have moved under it.
@@ -116,28 +117,30 @@ export function coverageStatements(
  * - **`unmarked`,** where nothing could be judged: a repository Dispatch cannot read, or a
  *   commit it cannot place.
  *
- * A retracted result is no evidence, as the server counts it (`results_comparison.go`'s
- * `passStandsOf` skips it), so `older` and `failed` are read from the newest result that still
- * stands and never from a withdrawn one: a pass taken back at the compared commit over an older
- * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
- * whatever commit the withdrawn pass ran at. The newest is read by the time each result was
- * recorded (`newestFirst`) and never by the order the read sent them in, as `checkStanding` and
- * the Verification filter's body read it, so the three name one result whatever that order is.
+ * A retracted result is no evidence, as the server counts it (`results_pass_stands.go`'s
+ * `passStandsOf` skips it), and neither is a result that counts for nothing, which it skips too,
+ * so `older` and `failed` are read from the newest result that still stands and never from a
+ * withdrawn one: a pass taken back at the compared commit over an older pass at another commit
+ * is `older`, and a pass taken back over a fail that stands is `failed`, whatever commit the
+ * withdrawn pass ran at. `standing` is the results that stand (`standingResults`), newest first
+ * by the time each was recorded (`newestFirst`) and never in the order the read sent them in:
+ * `checkStanding` sorts them once and hands them here, and the Verification filter's body reads
+ * the newest by the same times, so the two name one result whatever that order is.
  *
  * It is how a check stands against the basis the check itself carries, which is the server's
  * own reading (`pass_stands`, `commit_stands`), where no result over the check's words now is at
  * that basis, so one check reads one state wherever it is drawn, each told apart by a word and a
  * shape (R15, R21).
  */
-function checkState(check: CheckStateReads): CheckState {
-  if ((check.results ?? []).length === 0) return "no-result";
+function checkState(check: CheckStateReads, standing: readonly CheckResult[]): CheckState {
+  if (!(check.results ?? []).some(countsForSomething)) return "no-result";
   if (check.pass_stands === undefined) return "unreadable";
   if (check.pass_stands.answer === "yes") return "passed";
   if (check.pass_stands.answer === "unknown") return "unmarked";
-  const standing = newestFirst(standingResults(check))[0];
-  if (standing === undefined) return "retracted";
-  if (standing.check_words_moved === true) return "older";
-  return standing.commit_stands?.answer === "other_commit" ? "older" : "failed";
+  const newest = standing[0];
+  if (newest === undefined) return "retracted";
+  if (newest.check_words_moved === true) return "older";
+  return newest.commit_stands?.answer === "other_commit" ? "older" : "failed";
 }
 
 /** What a check's state is read from: the server's answer over its results and the results
@@ -172,26 +175,26 @@ export interface CheckStanding {
  * Each result is read against the commit the server names for its own check - the basis the
  * check compares with, which the result's `commit_stands` answers (`at_basis`, `other_commit`,
  * `unknown`) - as the server's `standingCommit` and `passStandsOf` read it
- * (`results_comparison.go`), and never against one commit the page names for every check: two
+ * (`results_pass_stands.go`), and never against one commit the page names for every check: two
  * checks of one issue compare with different commits, a `before_merge` check with the pull
  * request's head and an `after_merge` one with the branch it merged into, so a pass at its own
  * check's basis reads Passed whatever newer result another check holds at another commit, as its
  * own fact reads "Up to date" (`check-facts.ts`'s `resultFacts`). A result stands for something
- * at the basis only where nobody withdrew it and its check's words have not moved since it was
- * recorded.
+ * at the basis only where nobody withdrew it, it counts for something (`countsForSomething`) and
+ * its check's words have not moved since it was recorded.
  *
- * **The latest evidence at the basis decides.** A check with no result reads No result, and one
- * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
- * where a result stands for something at the basis, the newest of them is the check's state: a
- * fail there is Failed, whatever older pass the server still counts as standing (`pass_stands`
- * says yes for any pass at a basis, later fails or not), and a pass there is Passed. A newer
- * result at another commit, or at one Dispatch could not place, says nothing about the basis,
- * so it neither hides a fail there nor turns a pass there over; and a result recorded against
- * words the check no longer has stands for nothing, since it is evidence about a check that no
- * longer reads that way. The results read sends no verdict but `pass` and `fail`
- * (`api/results.go` refuses any other). Where nothing stands at the basis, it is `checkState`'s
- * answer: Out of date for a newest result at another commit or over moved words, Retracted,
- * Cannot tell, or Failed for a newest fail at a commit Dispatch could not place.
+ * **The latest evidence at the basis decides.** A check with no result that counts for something
+ * reads No result, and one whose payload carries no `pass_stands` reads Could not read, as
+ * `checkState` reads them. Else, where a result stands for something at the basis, the newest
+ * of them is the check's state: a fail there is Failed, whatever older pass the server still
+ * counts as standing (`pass_stands` says yes for any pass at a basis, later fails or not), and a
+ * pass there is Passed. A newer result at another commit, or at one Dispatch could not place,
+ * says nothing about the basis, so it neither hides a fail there nor turns a pass there over;
+ * and a result recorded against words the check no longer has stands for nothing, since it is
+ * evidence about a check that no longer reads that way. The results read sends no verdict but
+ * `pass` and `fail` (`api/results.go` refuses any other). Where nothing stands at the basis, it
+ * is `checkState`'s answer: Out of date for a newest result at another commit or over moved
+ * words, Retracted, Cannot tell, or Failed for a newest fail at a commit Dispatch could not place.
  */
 export function checkStanding(check: CheckStateReads): CheckStanding {
   const standing = newestFirst(standingResults(check));
@@ -202,7 +205,7 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
   if (here !== undefined) {
     return { stands: here, state: here.verdict === "pass" ? "passed" : "failed" };
   }
-  const state = checkState(check);
+  const state = checkState(check, standing);
   // No pass is at the basis in the read, so a check the server says passed stands on none of
   // its results here.
   const stands = state === "passed" ? undefined : standing[0];
@@ -214,15 +217,34 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
  *  `at_basis`), as the server's `standingCommit` reads it. It is the one reading of "this result
  *  stands at its check's basis" that a check's state (`checkStanding`) and its body's mark
  *  (`statement-state.ts`'s `atBasis`) share, so the two never disagree. Whether anybody withdrew
- *  the result is no part of it: both read it only of a result that stands (`standingResults`). */
+ *  the result, or it counts for nothing, is no part of it: both read it only of a result that
+ *  stands (`standingResults`). */
 export function standsAtBasis(result: CheckResult): boolean {
   return result.check_words_moved !== true && result.commit_stands?.answer === "at_basis";
 }
 
-/** Every result of `check` nobody withdrew, which is every result that stands as evidence: the
- *  server's `passStandsOf` skips a withdrawn one, and so does every reading of the page. */
+/** Whether `result` counts for something: the server gives no reason why it counts for nothing
+ *  (`not_counted` is absent or empty). A role's result of a check CI proves counts for nothing,
+ *  and so does a reading recorded before the current deploy of the program its check reads. It is
+ *  the page's one reading of "this result counts": a check none of whose results counts reads No
+ *  result (`checkState`), and only a result that counts stands as evidence (`standsAsEvidence`). */
+export function countsForSomething(result: CheckResult): boolean {
+  return (result.not_counted ?? "") === "";
+}
+
+/** Whether `result` stands as evidence: nobody withdrew it, and it counts for something. The
+ *  server's `passStandsOf` skips a withdrawn result and one that counts for nothing
+ *  (`results_pass_stands.go`), and so does every reading of the page: it picks a check's standing
+ *  results (`standingResults`) and the latest result the Verification filter's body draws under a
+ *  check (`statement-state.ts`'s `checkReading`). */
+export function standsAsEvidence(result: CheckResult): boolean {
+  return result.retracted === undefined && countsForSomething(result);
+}
+
+/** Every result of `check` that stands as evidence (`standsAsEvidence`), in the order the read
+ *  sent them. */
 export function standingResults(check: CheckStateReads): readonly CheckResult[] {
-  return (check.results ?? []).filter((result) => result.retracted === undefined);
+  return (check.results ?? []).filter(standsAsEvidence);
 }
 
 /** `results` newest first, by the time each was recorded (`newestTimeFirst`). The server already
@@ -235,11 +257,11 @@ export function newestFirst(results: readonly CheckResult[]): readonly CheckResu
 /**
  * The one commit the page names for the issue's results (root R17): the commit of the newest
  * result recorded against any check of the issue that still stands, against the words its check
- * has now, and names one. A result nobody withdrew is the evidence the page reads, so a withdrawn
- * result names no commit here; nor does one recorded against words its check no longer has
- * (`check_words_moved`), which the server's `standingCommit` (`results_comparison.go`) gives no
- * standing; and a result recorded with no commit at all names none either. It is `undefined`
- * where no result names one.
+ * has now, and names one. A result that stands is the evidence the page reads, so a withdrawn
+ * result, and one that counts for nothing, names no commit here; nor does one recorded against
+ * words its check no longer has (`check_words_moved`), which the server's `standingCommit`
+ * (`results_pass_stands.go`) gives no standing; and a result recorded with no commit at all names
+ * none either. It is `undefined` where no result names one.
  *
  * The Verification view's body names it, and every statement's state is read at it (R6): each
  * check of a statement is read there by `stateAtCommit`, which Dashboard's two tiles read too, so

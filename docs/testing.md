@@ -116,8 +116,8 @@ itself, whose tests import its sources by relative path.
   `describe`, never inside a test body. It reserves the path at the call and returns it, and
   registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
   called; with `{ removeInBackground: true }` the `afterAll` hands the directory to a removal in a
-  process of its own and does not wait for it, so no removal runs under Bun's 5 s default hook
-  limit, which a slow disk's removal of a large tree (a stack's built binaries) can outlast. A
+  process of its own and does not wait for it, so no removal runs under the limit a file states,
+  which a slow disk's removal of a large tree (a stack's built binaries) can outlast. A
   directory per test is
   `temporaryDirectories(prefix)`, registered in those same two
   places, which returns a maker that makes a directory at each call and removes every one of them in
@@ -156,7 +156,13 @@ itself, whose tests import its sources by relative path.
   Both remove a tree a test left read-only: the removal chmods `u+rwX` down the tree first,
   following no symlink out of it and leaving a file's own mode alone, because `rmSync` alone fails
   on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a
-  tree can be a hard link to one outside it.
+  tree can be a hard link to one outside it. The removal runs as a process of its own
+  (`remove-trees.ts`), and the hooks give Bun no limit, since Bun judges a synchronous hook only
+  after it returns: a limit would stop no removal and fail only a slow one that ended. A file that
+  states its limit through `fileLimit` of `@legion/test-fixtures/row-clock` gives each removal that
+  limit on a clock of the hook's own, so a removal that never ends fails its hook naming the
+  directory; in a file that states none, a removal that never ends is stopped by the CI job's own
+  timeout, and its folder is not named.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held

@@ -33,34 +33,47 @@ type resultsHeadsRead struct {
 	// the Attributor whose rename pairs their statements read (NewAttributor).
 	function string
 	// statement is the name of the package-level constant or variable that holds the read's one
-	// statement text: the text after its WITH list. function must reach it through the package's
-	// own functions and values, and no other exported function may reach it but through function.
+	// statement text, the text after its WITH list, or of the function that builds that text from
+	// an Attributor's rename pairs, as mergeOfIssueQuery compares repositories under their
+	// canonical names. function must reach it through the package's own functions and values, and
+	// no other exported function may reach it but through function.
 	statement string
-	// text is that constant or variable's value: the one statement the read sends, given a
-	// request's answers or none, ends with it.
-	text string
+	// text is that statement's text over an Attributor's rename pairs: the one statement the read
+	// sends, given a request's answers or none, ends with it. A constant or variable ignores the
+	// pairs (fixedText).
+	text func(refs.Renames) string
 }
 
-// resultsHeadsReads is the head reads of the results path, including merge refresh, each with
-// its one function and its one statement.
+// fixedText is the text of a statement that is one constant or variable, whatever the pairs.
+func fixedText(statement string) func(refs.Renames) string {
+	return func(refs.Renames) string { return statement }
+}
+
+// resultsHeadsReads is the registry of the reads of pull_request_heads on the results path: the
+// reads of an issue's heads, its merges and their landings, whether a branch belongs to an issue,
+// and the two reads a refresh of a merged pull request reads back (MergedPullRequestOf,
+// headForRefresh), each with its one function and its one statement.
 // TestEachHeadsReadOnTheResultsPathIsOneStatement holds the package to it, and
 // TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of it its questions (foldQuestions).
 var resultsHeadsReads = []resultsHeadsRead{
-	{read: "headsAttributedQuery", function: "Attributor.HeadsAttributedTo", statement: "headsAttributedQuery", text: headsAttributedQuery},
-	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: headStoredAtQuery},
+	{read: "headsAttributedQuery", function: "Attributor.HeadsAttributedTo", statement: "headsAttributedQuery", text: fixedText(headsAttributedQuery)},
+	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: fixedText(headStoredAtQuery)},
 	{read: "mergeOfIssueQuery", function: "Attributor.MergeOfIssue", statement: "mergeOfIssueQuery", text: mergeOfIssueQuery},
-	{read: "mergeInQuery", function: "Attributor.MergeIn", statement: "mergeInQuery", text: mergeInQuery},
-	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: newestPullRequestHeadQuery},
-	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: landingQuery},
-	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestOfQuery", text: mergedPullRequestOfQuery},
-	{read: "headForRefresh", function: "headForRefresh", statement: "headForRefreshQuery", text: headForRefreshQuery},
+	{read: "mergeInQuery", function: "Attributor.MergeIn", statement: "mergeInQuery", text: fixedText(mergeInQuery)},
+	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: fixedText(newestPullRequestHeadQuery)},
+	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: fixedText(landingQuery)},
+	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestOfQuery", text: fixedText(mergedPullRequestOfQuery)},
+	{read: "headForRefresh", function: "headForRefresh", statement: "headForRefreshQuery", text: fixedText(headForRefreshQuery)},
+	{read: "branchOfIssueQuery", function: "Attributor.BranchOfIssue", statement: "branchOfIssueQuery", text: branchOfIssueQuery},
 }
 
 // answeredReads is the functions and methods besides the reads' own that take the request's
 // answers: the one that passes them to a read's statement as its parameters
-// (headsStatement.query), and the branch reads, which read no pull_request_heads row and read a
+// (headsStatement.query), the branch reads, which read no pull_request_heads row and read a
 // merge the request's read-throughs learned as the yes a writer's store of it would have written
-// (Branches.ReadCommitOnBranch). A function is named by its name, and a method as Type.Method.
+// (Branches.ReadCommitOnBranch), and the read half of a merged pull request's refresh, which
+// passes them to headForStamp (Attributor.ReadPullRequestHead). A function is named by its name,
+// and a method as Type.Method.
 var answeredReads = []string{
 	"headsStatement.query",
 	"readMerged",
@@ -68,6 +81,7 @@ var answeredReads = []string{
 	"Branches.ReadCommitOnBranch",
 	"Branches.readCommitOnBranch",
 	"mergeLearnedOnBranch",
+	"Attributor.ReadPullRequestHead",
 }
 
 // requestAnswers is the type the reads of the results path take one request's answers in: the
@@ -105,8 +119,9 @@ var processHolds = map[string][]string{
 //   - a function or method that takes the request's answers (requestAnswers) and that the registry
 //     does not name (resultsHeadsReads, answeredReads);
 //   - a name in the registry that the package does not declare;
-//   - a read whose statement is not a constant or variable of the package, or is not reached from
-//     the read's function, or is reached from another exported function: a second entry point.
+//   - a read whose statement is not a constant, variable or function of the package, or is not
+//     reached from the read's function, or is reached from another exported function: a second
+//     entry point.
 //
 // Then, in each fold history (foldHistories), on a database of its own (a subtest, which skips
 // where none is set), it runs each read on a traced pool (storetest.Traced) with the history's
@@ -190,8 +205,8 @@ func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 		if !source.declaresFunction(read.function) {
 			t.Errorf("the read %s names its function %s, which is no function of the package", read.read, read.function)
 		}
-		if !source.values[read.statement] {
-			t.Errorf("the read %s names its statement %q, which is no constant or variable of the package", read.read, read.statement)
+		if !source.values[read.statement] && !source.declaresFunction(read.statement) {
+			t.Errorf("the read %s names its statement %q, which is no constant, variable or function of the package", read.read, read.statement)
 			continue
 		}
 		if source.declaresFunction(read.function) && !source.reaches(read.function, read.statement, "") {
@@ -227,7 +242,7 @@ func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 						continue
 					}
 					read := reads[question.read]
-					if sent := recorder.Statements()[before:]; len(sent) != 1 || !strings.HasSuffix(sent[0], read.text) {
+					if sent := recorder.Statements()[before:]; len(sent) != 1 || !strings.HasSuffix(sent[0], read.text(attributor.renames)) {
 						t.Errorf("%s, given the request's answers, sent %d statements:\n\t%s\nwant one, the read's own, which ends with %s (resultsHeadsReads): "+
 							"both callers of a read run its one statement, and nothing beside it",
 							question, len(sent), strings.Join(sent, "\n\t"), read.statement)
@@ -695,6 +710,26 @@ func foldHistories() []foldHistory {
 			delivered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
 			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(20))),
 		}},
+		// Pull request 5 merged into main at 9:05 and pull request 6 into release at a time no
+		// writer stored. The request's read of pull request 6 learns its merge at 9:07, so the
+		// newest merge is 6's, into release, as the writer's store of that answer makes it.
+		{"a merge time an answer learned orders the merges", []foldStep{
+			delivered(mergedAt(timed(credited(merged(head(5, sha("1")), "main", sha("m")), foldIssue), at(1), read(10)), 5)),
+			delivered(timed(credited(merged(head(6, sha("6")), "release", sha("n")), foldIssue), at(2), read(11))),
+			answered(mergedAt(timed(credited(merged(head(6, sha("6")), "release", sha("n")), foldIssue), at(3), read(20)), 7)),
+		}},
+		// An answer of an older event carries a merge time: the event-time guard refuses it, so
+		// the row keeps no time, as the refused upsert leaves it.
+		{"a merge time in an answer the event-time guard refuses", []foldStep{
+			delivered(timed(credited(merged(head(5, sha("1")), "main", sha("m")), foldIssue), at(4), read(10))),
+			answered(mergedAt(timed(credited(merged(head(5, sha("1")), "main", sha("m")), foldIssue), at(3), read(20)), 2)),
+		}},
+		// The pull request's next push moved its head to another branch: the branch the row was
+		// on belongs to the issue no more, and the new one does, as the writer's store makes it.
+		{"an answer that moves a pull request to another branch", []foldStep{
+			delivered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
+			answered(timed(credited(onBranch(head(5, sha("2")), "legion/next"), foldIssue), at(2), read(20))),
+		}},
 	}
 }
 
@@ -769,7 +804,7 @@ func foldSetup(t *testing.T, steps []foldStep) (*store.Pool, context.Context, *A
 			t.Fatalf("step %d, %s, comes after an answer of the request: the fold lays one request's answers "+
 				"on the rows stored when its statements run, so every writer's step comes first", index, step.writer)
 		}
-		foldWrite(t, ctx, pool, step)
+		foldWrite(t, ctx, pool, attributor, step)
 	}
 	return pool, ctx, attributor, answers
 }
@@ -825,6 +860,19 @@ func eventless(head PullRequestHead, readAt *time.Time) PullRequestHead {
 // merged is head merged into base by the merge commit commit.
 func merged(head PullRequestHead, base, commit string) PullRequestHead {
 	head.State, head.BaseRef, head.MergeCommitSHA = "merged", base, commit
+	return head
+}
+
+// mergedAt is head carrying the merge time minute minutes past 9:00 (at).
+func mergedAt(head PullRequestHead, minute int) PullRequestHead {
+	moment := at(minute)
+	head.MergedAt = &moment
+	return head
+}
+
+// onBranch is head with its head branch ref.
+func onBranch(head PullRequestHead, ref string) PullRequestHead {
+	head.HeadRef = ref
 	return head
 }
 
@@ -886,17 +934,17 @@ func seedFoldIssues(t *testing.T, ctx context.Context, pool *store.Pool) *Attrib
 }
 
 // foldWrite runs a writer's step through the writer's own statement.
-func foldWrite(t *testing.T, ctx context.Context, pool *store.Pool, step foldStep) {
+func foldWrite(t *testing.T, ctx context.Context, pool *store.Pool, attributor *Attributor, step foldStep) {
 	t.Helper()
 	switch step.writer {
 	case foldDelivery:
 		for _, head := range step.pulls.Heads {
-			if err := UpsertPullRequestHead(ctx, pool, nil, head); err != nil {
+			if err := attributor.UpsertPullRequestHead(ctx, pool, nil, head); err != nil {
 				t.Fatalf("%s of %s#%d: %v", step.writer, head.Repo, head.Number, err)
 			}
 		}
 	case foldReadThrough:
-		if _, err := StoreCommitPulls(ctx, pool, nil, step.pulls); err != nil {
+		if _, err := attributor.StoreCommitPulls(ctx, pool, nil, step.pulls); err != nil {
 			t.Fatalf("%s: %v", step.writer, err)
 		}
 	default:
@@ -906,16 +954,26 @@ func foldWrite(t *testing.T, ctx context.Context, pool *store.Pool, step foldSte
 
 // foldQuestions is every question the fold test asks of each read of resultsHeadsReads in a
 // history: the heads of each issue, whether each commit of each repository a step names heads a
-// stored pull request, the merged branch of each issue and of foldLinkingIssue in deliveryRepo,
-// and the newest head of each issue. A read it has no question for fails the test.
+// stored pull request, the merges of each issue in deliveryRepo and gadgetsRepo and of
+// foldLinkingIssue in deliveryRepo through its links, the newest head of each issue, whether each
+// branch a step names belongs to each issue, the landings of each branch a step names, and the
+// merged row and the row a refresh stamps of each pull request a step names. A read it has no
+// question for fails the test.
 func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 	t.Helper()
 	var questions []foldQuestion
+	issues := []string{foldIssue, foldLinkingIssue}
 	for _, read := range resultsHeadsReads {
 		switch read.read {
-		case "headsAttributedQuery", "mergeOfIssueQuery", "NewestPullRequestHead":
-			for _, issue := range []string{foldIssue, foldLinkingIssue} {
+		case "headsAttributedQuery", "NewestPullRequestHead":
+			for _, issue := range issues {
 				questions = append(questions, foldQuestion{read: read.read, args: []string{issue}})
+			}
+		case "mergeOfIssueQuery":
+			for _, issue := range issues {
+				for _, repo := range []string{deliveryRepo, gadgetsRepo} {
+					questions = append(questions, foldQuestion{read: read.read, args: []string{issue, repo}})
+				}
 			}
 		case "HeadStoredAt":
 			asked := map[[2]string]bool{}
@@ -929,6 +987,20 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 			}
 		case "mergeInQuery":
 			questions = append(questions, foldQuestion{read: read.read, args: []string{foldLinkingIssue, deliveryRepo}})
+		case "branchOfIssueQuery":
+			asked := map[string]bool{}
+			for _, step := range steps {
+				for _, head := range step.pulls.Heads {
+					if !asked[head.HeadRef] {
+						asked[head.HeadRef] = true
+						for _, issue := range issues {
+							for _, repo := range []string{deliveryRepo, gadgetsRepo} {
+								questions = append(questions, foldQuestion{read: read.read, args: []string{issue, repo, head.HeadRef}})
+							}
+						}
+					}
+				}
+			}
 		case "LandingOf", "MergedPullRequestOf", "headForRefresh":
 			asked := map[[2]string]bool{}
 			for _, step := range steps {
@@ -969,7 +1041,7 @@ func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, attributor 
 			continue
 		}
 		for _, head := range step.pulls.Heads {
-			if _, err := upsertHeadRow(ctx, tx, head); err != nil {
+			if _, err := attributor.upsertHeadRow(ctx, tx, head); err != nil {
 				t.Fatalf("the oracle's step %d, %s of %s#%d: %v", index, step.writer, head.Repo, head.Number, err)
 			}
 			if !strings.EqualFold(step.pulls.storedUnder, head.Repo) {
@@ -1008,8 +1080,13 @@ func foldAnswerRuns(steps []foldStep) int {
 				renamedFrom = step.pulls.storedUnder
 			}
 			pull := fmt.Sprintf("%s#%d", head.Repo, head.Number)
-			answer := fmt.Sprintf("%s %s %s %s %t %s %s", head.HeadSHA, head.BaseRef, head.State,
-				foldColumn(head.IssueKey), head.AttributionComplete, foldColumn(head.EventAt), renamedFrom)
+			// HeadAnswers.Add holds no merge on a row that is not merged, as upsertHeadRow stores none.
+			mergeCommit, mergedAt := "", (*time.Time)(nil)
+			if head.State == "merged" {
+				mergeCommit, mergedAt = head.MergeCommitSHA, head.MergedAt
+			}
+			answer := fmt.Sprintf("%s %s %s %s %s %t %s %s %s %s", head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
+				foldColumn(head.IssueKey), head.AttributionComplete, foldColumn(head.EventAt), mergeCommit, foldColumn(mergedAt), renamedFrom)
 			if answer != last[pull] {
 				runs++
 			}
@@ -1040,7 +1117,7 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 		stored, err := HeadStoredAt(ctx, q, args[0], args[1], answers)
 		return fmt.Sprint(stored), err
 	case "mergeOfIssueQuery":
-		merged, err := attributor.MergeOfIssue(ctx, q, args[0], answers)
+		merged, err := attributor.MergeOfIssue(ctx, q, args[0], args[1], answers)
 		return fmt.Sprintf("%+v", merged), err
 	case "mergeInQuery":
 		merged, err := attributor.MergeIn(ctx, q, args[0], args[1], answers)
@@ -1048,6 +1125,9 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 	case "NewestPullRequestHead":
 		head, found, err := NewestPullRequestHead(ctx, q, args[0], answers)
 		return describeNewestHead(head, found), err
+	case "branchOfIssueQuery":
+		belongs, err := attributor.BranchOfIssue(ctx, q, args[0], args[1], args[2], answers)
+		return fmt.Sprint(belongs), err
 	case "LandingOf":
 		merged, err := LandingOf(ctx, q, args[0], args[1], answers)
 		return fmt.Sprintf("%+v", merged), err
@@ -1074,12 +1154,13 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 }
 
 // describeAttributedHeads is heads in short, in their order: each pull request's number, head,
-// two times and linked repository.
+// three times, the rule that last judged it and linked repository.
 func describeAttributedHeads(heads []AttributedHead) string {
 	described := make([]string, 0, len(heads))
 	for _, head := range heads {
-		described = append(described, fmt.Sprintf("#%d at %.7s read %s updated %s linked %q",
-			head.Number, head.HeadSHA, describeFoldTime(head.CheckedAt), describeFoldTime(head.EventAt), head.LinkedRepo))
+		described = append(described, fmt.Sprintf("#%d at %.7s read %s updated %s merged %s rule %d linked %q",
+			head.Number, head.HeadSHA, describeFoldTime(head.CheckedAt), describeFoldTime(head.EventAt),
+			describeFoldTime(head.MergedAt), head.AttributionRule, head.LinkedRepo))
 	}
 	return "[" + strings.Join(described, "; ") + "]"
 }

@@ -713,8 +713,9 @@ func (d Deps) reportParked(err error, answered <-chan struct{}) {
 // which sessions exist, '[]' when the listener has not answered and no row at all before the
 // first answer, so a deployment that resolves none counts 0), a document version from
 // artifact_versions (only a document's latest text is indexed, and then as windows of its
-// blocks, so no version row is an item of any covered kind), a result from check_results and a
-// handoff from handoffs.
+// blocks, so no version row is an item of any covered kind), a result of a check block from
+// check_results, which holds what a role recorded, and from ci_check_results, which holds what a
+// CI job recorded, and a handoff from handoffs.
 //
 // Naming them is the point: with the report carrying the covered kinds alone, a reader could
 // not tell a kind that is covered with nothing left to embed from one nothing indexes.
@@ -723,7 +724,8 @@ func (d Deps) reportParked(err error, answered <-chan struct{}) {
 // session's: the recount counts a kept kind from its table (items) into its one class
 // (countsGroups) and the report reads that class, while route_roster holds one row whatever the
 // sessions it lists, so the report reads the session count (items) from that row itself
-// (coverageReadStatement).
+// (coverageReadStatement). A result's count is kept from both its tables, check_results and
+// ci_check_results, whose counting triggers each add their rows to the one result class.
 var notIndexedKinds = []struct {
 	kind, items string
 	kept        bool
@@ -731,7 +733,7 @@ var notIndexedKinds = []struct {
 	{"component", "(select count(*) from components)", true},
 	{"session", "coalesce((select jsonb_array_length(sessions) from route_roster), 0)", false},
 	{"document_version", "(select count(*) from artifact_versions)", true},
-	{"result", "(select count(*) from check_results)", true},
+	{"result", "((select count(*) from check_results) + (select count(*) from ci_check_results))", true},
 	{"handoff", "(select count(*) from handoffs)", true},
 }
 

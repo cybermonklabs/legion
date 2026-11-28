@@ -247,9 +247,10 @@ type routeDecl struct {
 	// (resolveIDPrefixes, ID) runs inside this gate - register wraps the gate around it, so a
 	// credential that holds none of the route's scopes is refused before any id is read, and
 	// the one check a request meets ahead of the route's scopes is whether a read-only token may
-	// call the route at all, or a results token may call it (refuseLimitedToken) - and it only
-	// rewrites the path value, so a short id reaches exactly the scopes the whole id reaches, and
-	// a route that needs none with a whole id needs none with a prefix.
+	// call the route at all, and at its cut, or a results token or an approve-only token may
+	// call it (refuseLimitedToken) - and it only rewrites the path value, so a short id reaches
+	// exactly the scopes the whole id reaches, and a route that needs none with a whole id needs
+	// none with a prefix.
 	OAuthScopes routeScopeSet
 
 	// Read is the read class of a GET route: what it writes when it serves a request, the note
@@ -274,11 +275,14 @@ type routeDecl struct {
 	// project and the run (model.Credential.ResultsOnly). Every route that does not state
 	// ResultsScope, and GET /ws/live beside them, answers such a token 403 RESULTS_ONLY_TOKEN
 	// before anything else the route does (refuseLimitedToken), so a route added later stays
-	// closed to it until its file states it. It is no value of OAuthScopes: a scope there is one
-	// the caller must hold, and no person holds results, so ResultsScope says what a credential
-	// that holds results alone may still call rather than what a route requires; for the same
-	// reason the route index (GET /api/v1), the OpenAPI document and the reference generated from
-	// it do not carry it, and only the limited-token gate reads it.
+	// closed to it until its file states it. The two routes that state it are where a CI job
+	// records a result: POST /api/v1/projects/{key}/results, of a check of the spec files, and
+	// POST /api/v1/issues/{key}/results, of a check CI proves whose ci_check names its check run
+	// (refuseResultOfAnotherRecorder). It is no value of OAuthScopes: a scope there is one the
+	// caller must hold, and no person holds results, so the field says what a credential that
+	// holds results alone may still call rather than what a route requires. For the same reason
+	// the route index (GET /api/v1), the OpenAPI document and the reference generated from it do
+	// not carry it, and only the limited-token gate reads it.
 	ResultsScope bool
 
 	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints

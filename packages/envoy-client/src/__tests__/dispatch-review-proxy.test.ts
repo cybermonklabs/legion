@@ -378,23 +378,23 @@ test("after an answer that may have reached Dispatch, the proxy's refusal on the
 });
 
 /** A fetch that takes each step in turn (the last one from then on): a step that answers is the
- *  answer, one that names no answer rejects as a fetch that reached no server does. */
+ *  answer (a 2xx behind Dispatch's keyed layer, `keyedLayer`), one that names no answer rejects as
+ *  a fetch that reached no server does. */
 function stepFetch(steps: readonly ((() => Response) | "unreachable")[]): typeof fetch & {
   readonly sent: Sent[];
 } {
   const sent: Sent[] = [];
-  const impl = async (
-    input: Parameters<typeof fetch>[0],
-    init?: RequestInit
-  ): Promise<Response> => {
-    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
-    const step = steps[Math.min(sent.length, steps.length) - 1];
-    if (step === undefined) throw new Error("stepFetch was given no step");
-    if (step === "unreachable") {
-      throw new TypeError("Unable to connect. Is the computer able to access the url?");
+  const impl = keyedLayer(
+    async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+      const step = steps[Math.min(sent.length, steps.length) - 1];
+      if (step === undefined) throw new Error("stepFetch was given no step");
+      if (step === "unreachable") {
+        throw new TypeError("Unable to connect. Is the computer able to access the url?");
+      }
+      return step();
     }
-    return step();
-  };
+  );
   return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
     readonly sent: Sent[];
   };

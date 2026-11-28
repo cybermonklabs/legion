@@ -17,6 +17,9 @@
 #                                                  one (`score.ts runs --run`), then their rows, a
 #                                                  `reach` line for each entry of each run's reach,
 #                                                  and the cells (`score.ts cells`)
+#   rig.sh hidden-proof [<scenario>]               the proof that each run of a -hidden label had
+#                                                  Dispatch's computed state hidden from its agent
+#                                                  (hidden-proof.ts)
 #   rig.sh label-tree <name> <commit> <manifest>   a label's tree: a fresh detached checkout of
 #                                                  <commit> of this checkout's repository under
 #                                                  <work>/label-trees/<name>/tree, each line of the
@@ -30,16 +33,16 @@
 #                                                  label's cell of the case the scenario's case
 #                                                  variable names until <count> runs of it scored,
 #                                                  at most three times <count> launches (or
-#                                                  SKILL_SCENARIOS_LAUNCHES), a run already in
-#                                                  <work>/runs counted among them; a cell short of
-#                                                  its count prints UNKNOWN. With
-#                                                  RT_STORE, each run is stored as it ends, its
-#                                                  pack and then its row, which names the pack's
-#                                                  sha256 (store_scored_run)
+#                                                  SKILL_SCENARIOS_LAUNCHES), a run the map
+#                                                  already names (<work>/maps/runs) counted among
+#                                                  them; a cell short of its count prints UNKNOWN.
+#                                                  With RT_STORE, each run is stored as it ends,
+#                                                  its pack and then its row, which names the
+#                                                  pack's sha256 (store_scored_run)
 #   rig.sh restore-stored <scenario>               each run of the scenario whose row an earlier
 #                                                  pod of the Job stored (RT_STORE): the pack its
-#                                                  row names, checked and unpacked into
-#                                                  <work>/runs (cmd_restore_stored)
+#                                                  row names, checked and unpacked into a run
+#                                                  directory the map names (cmd_restore_stored)
 #   rig.sh check-stored <dir> <job log>...        a download of a Job's store, checked against
 #                                                  the sha256 its logs and its rows name: each run
 #                                                  unpacked into <dir>/checked, or a rig error row
@@ -69,15 +72,46 @@
 #   rig.sh judge-image                             pulls the judges' container image unless Docker
 #                                                  holds it: the pull judge-omp makes when it must
 #
-# A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
-# batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
-# seconds. One run on its own is `rig.sh batch <scenario> 1 <label>`, or `rig.sh batch-scored
-# owner-walk 1 <label>` for owner-walk.
+# A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start> [<case>]`, which
+# needs that batch's services: <index> is the run's place in the batch, <start> the batch's start
+# in epoch seconds, and <case> a reviewer-own-head or ci-pass-and-fail run's case (an owner-walk
+# run's case is SKILL_SCENARIOS_OWNER_WALK_CASE). One run on its own is
+# `rig.sh batch <scenario> 1 <label>`, or `rig.sh batch-scored owner-walk 1 <label>` for
+# owner-walk.
+#
+# A run's agent must not learn its scenario, its case or its label: a reviewer whose path read
+# `reviewer-own-head-sibling-fails-ablate-head-1` was told the rule the ablate label had removed.
+# So every directory an agent sees has a random name, and the names live in the map, <work>/maps,
+# which no agent sees (launch):
+#   <work>/runs/<id>                 a run's directory, <id> 16 random hex digits
+#   <work>/profiles/<id>             a label's profile, <id> 16 random hex digits
+#   <work>/maps/runs/<run>           a link to the run's directory, <run> its name,
+#                                    <scenario>-<label>-<n> (<scenario>-<case>-<label>-<n> for
+#                                    askgate, reviewer-own-head, ci-pass-and-fail and owner-walk);
+#                                    score.ts reads runs here
+#   <work>/maps/profiles/<label>     a link to the label's profile
+#   <work>/maps/built-from/<run>     the run's label's built-from, as the run started
+#   <work>/maps/quiet/<id>...        a run of a -hidden label: its switch, the rig's reads of the
+#                                    results just before and just after the switch went on, and
+#                                    its results-before.txt while its agent works (hide_state_on)
+# A run's Dispatch database (run_<id>), its Legion project (p<12 hex digits of id>), its tmux
+# session (<tag>-<id>) and its Oh My Pi profile (`skills`, the same for every label) name nothing
+# either. visible-world.ts lists each place in a run's world that still names one.
+#
+# A label whose name ends in `-hidden` hides Dispatch's computed state from its agent. From the
+# rig's own reads of a run's results until its agent ends, the run's Dispatch leaves each check's
+# `pass_stands` and `ci` and each result's `currency` out of its results answer, so `dispatch
+# results` prints no state line for the check or for a head (hide_state_on). Each result keeps every
+# other field. Only a heads scenario runs such a label. Its checkout is a copy of the checkout of the
+# label without that end (label-checkouts.sh --hidden), never the same one, since score.ts leaves
+# unscored a run that reads inside another label's checkout.
 #
 # The tools of this directory (each one's header has its own usage):
 #   seed.ts               seeds a batch's scratch Dispatch and each run's issue, and reads back what
 #                         the run left there (rig.sh runs it)
 #   score.ts              scores each run from its transcript and what seed.ts read back
+#   hidden-proof.ts       proves the hiding of each run of a -hidden label from the rig's own reads,
+#                         and scans every transcript of the run for a line of the state
 #   judge.ts              the person stand-in that answers a spec run's asks (`answer <run dir>
 #                         <turn>`), and the judge's prompts on a finished run (`run <run dir>...`)
 #   judge-prompts.ts      the ten prompts judge.ts gives the judge, the stand-in's among them
@@ -132,8 +166,8 @@
 #                   stand-in's error). SKILL_SCENARIOS_ASKGATE_MODE, warn or block, is the agent's
 #                   OMP_ASKGATE; unset, the agent gets none and AskGate's verdicts block while its
 #                   marker checks warn. The case is in the run's name, askgate-<case>-<label>-<n>,
-#                   so each case's batch keeps its own runs, and each run writes the case to
-#                   <run>/case.txt and a set mode to <run>/mode.txt (run_askgate). Scored by
+#                   so each case's batch keeps its own runs, and each run writes a set mode to
+#                   <run>/mode.txt, its agent's own OMP_ASKGATE (run_askgate). Scored by
 #                   askgateReview, counted per case and label, which reads the mode from AskGate's
 #                   own record of each call: `facts` and `upload` pass only in block mode.
 #   spec-writing    A plain session is told that the people's messages on its Dispatch issue
@@ -146,7 +180,43 @@
 #                   Judged by judge.ts, scored by specRow.
 #   spec-rewrite    The same, on an issue whose spec is the source's old spec, with a prompt that
 #                   asks for the change the newest message names. Scored by specRow.
-#   owner-walk      A scored scenario (scored-runs.ts SCORED_SCENARIOS): one fresh owner, a root's
+#   reviewer-own-head
+#                   A reviewer, booted by the Legion extension against a daemon stand-in with the
+#                   task the daemon gives a reviewer on a tester's pass (reviewer_prompt), reviews
+#                   #702 of the run's own issue, whose #703 is open too (heads_fixture). Each run
+#                   has a NATS and a GitHub stand-in of its own beside its Dispatch (own_github):
+#                   seed.ts publishes each pull request's opened event, from which the run's
+#                   Dispatch learns its head, and records the case's results at the heads
+#                   (heads_world). The case is in the run's name,
+#                   reviewer-own-head-<case>-<label>-<n>, and a batch runs
+#                   each of the four: sibling-fails (both roles' passes at #702, the tester's fail
+#                   at #703), ci-only (k1 carries ci_check, and CI's run passed at #702),
+#                   no-implementer and no-tester (one role's pass alone at #702; in no-tester the
+#                   implementer's, whose `implement` record names #702's head, which it made).
+#                   #702's line reads yes in each. The reviewer approves #702 in the first three,
+#                   whoever recorded the pass; in no-tester it does not approve on that pass: it
+#                   records its own pass of k1 at the head before it approves, or sends the issue
+#                   to testing. Scored by headsReview, counted per case and label.
+#   reviewer-pass-and-fail
+#                   The same reviewer and pull requests, with a pass of the implementer, a pass of
+#                   the tester, the tester's record and then a fail of the tester at #702's head.
+#                   Scored by headsReview.
+#   architect-pass-and-fail
+#                   The tree's root architect, in the daemon's catch-up of a tree in accepting,
+#                   judges #702 alone, at whose head the same results stand, the tester's fail
+#                   saying its runner lost its checkout before grep ran, after the reviewer's
+#                   approval and review record; its daemon stand-in serves sign_off and
+#                   request_backward_move. Scored by headsArchitect.
+#   ci-pass-and-fail
+#                   One world, #702 alone, in which k1 carries ci_check="go-checks": the job
+#                   recorded a pass and then a fail at #702's head while its third attempt there is
+#                   still in progress, so #702's line reads not known for the pass and the fail
+#                   beside "CI run go-checks has no result (not_completed)" (ci_job_results). Its
+#                   case is the role it drives, in the run's name, ci-pass-and-fail-<role>-<label>-<n>:
+#                   reviewer (on the tester's pass), tester (on the implementer's completion) and
+#                   architect (in accepting, after the reviewer's approval). Scored by headsReview,
+#                   headsTester and headsArchitect, counted per role and label.
+#   owner-walk      A scored scenario (run-names.ts SCORED_SCENARIOS): one fresh owner, a root's
 #                   architect or a child's, plans the issue G of worlds/owner-walk/issue.md and then
 #                   answers its form's questions, on a label's own texts (run_owner_walk, below).
 #                   SKILL_SCENARIOS_OWNER_WALK_CASE names the case, <kind>-<form>-<family>
@@ -161,7 +231,8 @@
 # ask-on-message and tester-proof are controls: their rules also live in dispatch-first and
 # `dispatch ask --help`, and in the tester role prompt, so ablate scores as the head does
 # and they cannot detect a lost skill rule. A new scenario is an instrument only once an ablate
-# arm has scored lower on it.
+# arm has scored lower on it. A label's cuts are its patch's (label-checkouts.sh), and its runs
+# show that the patch cuts the rule: the label scores below the head.
 #
 # A batch's services are a Postgres, a NATS, and the Envoy listener built from this checkout. The
 # Postgres and the NATS are two containers the batch starts and removes, or, when
@@ -169,16 +240,17 @@
 # URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
 # docker. The two Optional entries below say what each given server must be: the Postgres on this
 # machine, and a NATS of the batch's own. Each run gets a Dispatch of its own (own_dispatch): a
-# database named after the run in the batch's Postgres, and the e2e harness's real Go Dispatch
-# server (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its
-# API (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
-# server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
-# each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. A given server's URL carries its
-# port and docker assigns a container's host port; the listener serves on a port the kernel chose
-# and scripts/e2e/lib/rig.sh holds for it until it serves (start_held), each run's Dispatch on its
-# own run-server.sh holds the same way and reports, and the kernel assigns each run's daemon
-# stand-in its port.
+# database named after the run's directory (run_<id>) in the batch's Postgres, and the e2e
+# harness's real Go Dispatch server (packages/dispatch/e2e/run-server.sh) on that database, seeded
+# and read back through its API (seed.ts) and stopped when the run ends. A `dispatch search`
+# searches every project of its server, and a Dispatch bearer cannot be limited to one project, so
+# a shared server would show each run the other runs' issues and asks. Each run records its
+# Dispatch in <run>/dispatch.json, and score.ts does not score two runs that name one database. A
+# given server's URL carries its port; a container publishes none (services_up): NATS binds a
+# loopback port its own bind chooses, and Postgres answers on its unix socket. The listener serves
+# on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it until it serves (start_held),
+# each run's Dispatch on its own run-server.sh holds the same way and reports, and the kernel
+# assigns each run's daemon stand-in its port.
 #
 # A build pod has no docker: the runner's pod gives a Postgres and a NATS of its own, which
 # scored-job.sh gives the batch as SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL. The
@@ -220,10 +292,24 @@
 #                             any directory above it (default ${TMPDIR:-/tmp}/skill-scenarios)
 #   SKILL_SCENARIOS_PARALLEL  concurrent runs in a batch (default 5)
 #   SKILL_SCENARIOS_TIMEOUT   seconds one run, or one turn of a spec run, may take (default 1500)
+#   SKILL_SCENARIOS_DOCKER_TIMEOUT  seconds one Docker call of judge-omp or judge-image may wait on
+#                             the daemon (default 300): the image's inspect, each pull, and the
+#                             judge's container around its omp, whose run is bounded at this plus
+#                             SKILL_SCENARIOS_TIMEOUT; a call past it ends the judge, or the pull,
+#                             at once with a refusal that names the call, with no further call and
+#                             no further pull (cmd_judge_omp, cmd_judge_image)
+#   SKILL_SCENARIOS_MEMORY_MAX  the memory an agent's own systemd user scope may hold, with no
+#                             swap (default 8G): an agent past it is killed alone (launch)
 #   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
 #                                 nochange-block, untried or tried (required for that scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
+#   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail
+#                                 and ci-pass-and-fail: 1 stops each run once its Dispatch knows
+#                                 #702's head (fixture_heads), with <run>/fixture-only and no agent
+#   SKILL_SCENARIOS_OWNER     a label `owner=<value>` on the batch's Postgres and NATS containers,
+#                             for a machine whose rules name each container's owner; each
+#                             container's id is in <work>/services/containers either way
 #   SKILL_SCENARIOS_OMP           the Oh My Pi binary every command runs, <dir>/bin/omp, in place of
 #                                 the one mise installed for the label's .omp-pin, and with no
 #                                 mise: the label's installers (omp_mise), the superpowers probe,
@@ -307,23 +393,28 @@
 #   - Its profile's settings set extensionHandlers.toolCallTimeoutMs to 120000 or more, as the model
 #     route installers write them, so AskGate's review fits inside Oh My Pi's handler limit
 #     (load_label refuses a profile that does not).
-#   - It runs in the tmux session skill-scenarios-<digest>-<run> on the work directory's own tmux
-#     server (<work>/tmux.sock), <run> being <scenario>-<label>-<n> (askgate-<case>-<label>-<n> for
-#     askgate). The pane shows nothing: omp's output goes to <work>/runs/<run>/out.txt, and the
-#     transcript, which grows as the agent works, to the .jsonl under <work>/runs/<run>/sessions.
+#   - It runs in the tmux session skill-scenarios-<digest>-<id> on the work directory's own tmux
+#     server (<work>/tmux.sock). The pane shows nothing: omp's output goes to
+#     <work>/runs/<id>/out.txt, and the transcript, which grows as the agent works, to the .jsonl
+#     under <work>/runs/<id>/sessions.
 #   - `gh` and `bun` stand-ins are first on its PATH (standins): no run reaches GitHub, and a bun
 #     it reaches through PATH is the bun this script runs on, recorded. A bun named by its path or
 #     run through `mise exec` bypasses the stand-in and goes unrecorded. Every container and tmux
 #     session a work directory starts carries the directory's digest in its name.
-#   - Its agent can still read the whole filesystem, the operator's home included, and write the
-#     machine's /tmp, which nothing here cleans: a namespace sandbox needs user namespaces, which
-#     Ubuntu's AppArmor policy denies unprivileged users. score.ts does not score a run that reads
-#     a skill file outside its own label or a file of another label's checkout, or whose PR body
-#     carries another run's line (unscored, testerProof). It flags, and still scores, a run whose
-#     tool calls only name such a skill file or checkout (skillReaches), or name a path outside its
-#     work directory, its label's checkout and the system locations (outsideReaches): a flag shows
-#     the path was named, not that it was read. A path a call reaches without naming it, as a
-#     glob from `/` does, is not caught.
+#   - Its agent runs under bubblewrap (launch), in a PID namespace of its own, so it sees no other
+#     process, and in a view that holds only what it runs (agent_view): the system's /usr and /etc,
+#     its run's directory with the run's own tmp at /tmp, its label's plugins and model key, the
+#     batch's services, and the installs of the tools it runs. So it sees neither the map nor
+#     another run, label or work directory, no label's checkout, and nothing of the operator's home
+#     or the disks but those installs: a reviewer that searched the whole machine (`find / -name …`)
+#     read the skills of another label's profile in an older work directory, and of the operator's
+#     own plugins. visible-world.ts walks every name of the view. score.ts does not score a run
+#     that reads a skill file outside its own label or a file of another label's checkout, or whose
+#     PR body carries another run's line (unscored, testerProof). It flags, and still scores, a run
+#     whose tool calls only name such a skill file or checkout (skillReaches), or name a path
+#     outside its work directory, its label's checkout and the system locations (outsideReaches): a
+#     flag shows the path was named, not that it was read. A path a call reaches without naming
+#     it, as a glob from `/` does, is not caught.
 #   - An exit stops what its command started (on_exit, stop_run, stop_batch).
 #
 # A spec run (run_spec) is a conversation of at most 8 turns. Turn 1 is the prompt. After each turn,
@@ -352,7 +443,10 @@
 # turn ends when it has ended, no turn runs, and no background work or reminder is pending; at its
 # bound (SKILL_SCENARIOS_TIMEOUT) out.txt ends exit=bound and held.txt says what held the run.
 # `seed.ts capture-scored` then reads back what the run left on Dispatch. Runs are serial: owners
-# of one kind share one role token on the listener.
+# of one kind share one role token on the listener. launch_rpc starts the owner's Oh My Pi with
+# neither launch's systemd scope nor its bubblewrap view, so an owner can read the whole machine,
+# the map among it: of "Each run" above, the view and its PID namespace hold for launch's agents
+# alone.
 set -euo pipefail
 # Nothing the rig starts inherits a service endpoint or credential from the caller: a Legion pane
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
@@ -372,14 +466,21 @@ root=$(cd "$here/../../../.." && pwd -P)
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
-# The tester-proof world (worker_fixture below): its repository and that repository's default
-# branch, and the run's own issue, which run_tester_proof sets once seed.ts has filed it.
-# run_tester_proof gives the daemon stand-in the repository and the branch as arguments, for its
-# state. daemon-pane.go names them again, as rigRepository and rigDefaultBranch, which the pane's
-# addressing names, and each must equal the value here.
+# The world of a phase worker (worker_fixture and heads_fixture below): its repository and default
+# branch, rig-world.json's, which the pane's addressing (daemon-pane.go) and the GitHub stand-in's
+# seed (heads-world.ts) read too, so the text an agent gets names the world it reads; the run's own
+# issue, which each run function sets once seed.ts has filed it; and the date of the fixture's
+# commits, which fixture_repo sets.
 worker_key=''
-worker_repo=example/widgets
-worker_default_branch=trunk
+worker_repo=$(jq -er .repository "$here/rig-world.json") || {
+  echo "skill-scenarios: $here/rig-world.json names no repository" >&2
+  exit 1
+}
+worker_base=$(jq -er .defaultBranch "$here/rig-world.json") || {
+  echo "skill-scenarios: $here/rig-world.json names no defaultBranch" >&2
+  exit 1
+}
+fixture_when=''
 
 note() { printf 'skill-scenarios: %s\n' "$*"; }
 fail() {
@@ -447,6 +548,12 @@ evidence=$work
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/rig.sh disable=SC1091 # followed under shellcheck -x
 . "$root/scripts/e2e/lib/rig.sh"
+# Every wait for a service the rig starts (await_start, until_true) reads that service's own
+# readiness signal, its log line, its open socket or an answer of its own, and await_start fails the
+# moment the service exits, so a wait's bound is only for a service that lives and never says it is
+# ready. That bound is the run's own deadline, SKILL_SCENARIOS_TIMEOUT (1500 s unset), at each call:
+# nothing but the box's own speed delays a readiness signal, a stalled box held the daemon
+# stand-in's past a fixed 30 s, and a service held past the run's deadline fails the run anyway.
 # packages/envoy/scripts/lib/pg-url.sh's pg_url_run and pg_url_without_password: pg_sql gives psql
 # a given Postgres URL's password in PGPASSWORD alone, and safe_url prints that URL without it.
 # shellcheck source-path=SCRIPTDIR/../../../.. source=packages/envoy/scripts/lib/pg-url.sh disable=SC1091 # followed under shellcheck -x
@@ -458,18 +565,24 @@ timeout_hook=
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
+maps=$work/maps
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
 # What a command started, for its exit trap: the run directory and its agent's tmux session, the
-# pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
-# ports, URLs and directory.
+# pids lib/rig.sh's start_process sets (a run's own Dispatch server among them, and a heads run's
+# own natsd and GitHub stand-in), and the services' ports, URLs and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
+# A run of a -hidden label: its switch (hide_state_on). Empty for every other run.
+hide_state_file=''
+natsd_pid='' fake_github_pid=''
 proxy_pid='' model_pid='' omp_pid='' rpc_fd=''
-S='' envoy_port='' dispatch_port='' pg_url='' nats_url=''
+S='' envoy_port='' dispatch_port='' pg_socket='' pg_url='' nats_url='' github_port='' run_nats_url=''
 
+# label_dir LABEL prints the profile directory the map's link <work>/maps/profiles/LABEL points at,
+# or nothing when the link or the directory is missing.
 label_dir() {
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
-  printf '%s\n' "$work/profiles/$1"
+  realpath -e -- "$maps/profiles/$1" 2>/dev/null || true
 }
 
 # The label's checkout, pin and profile name, recorded by `profile`, as the globals P (the label's
@@ -479,7 +592,7 @@ label_dir() {
 # register_plan.
 load_label() {
   P=$(label_dir "$1")
-  [ -f "$P/ready" ] || fail "no profile for label $1: run \`rig.sh profile $1 <checkout>\` first"
+  [ -n "$P" ] && [ -f "$P/ready" ] || fail "no profile for label $1: run \`rig.sh profile $1 <checkout>\` first"
   co=$(<"$P/checkout")
   pin=$(<"$P/pin")
   profile=$(<"$P/profile")
@@ -709,17 +822,23 @@ checkout_commit() {
 cmd_profile() {
   local usage="usage: rig.sh profile <label> <checkout> [--envoy-json <file>]"
   [ $# = 2 ] || [ $# = 4 ] || fail "$usage"
-  local label=$1 P co profile=skills-$1 envoy_json=''
+  # Every label's Oh My Pi profile has the one name `skills`: the name is in each agent's
+  # environment (OMP_PROFILE) and its HOME's paths, so a name per label would tell it its label.
+  local label=$1 P co profile=skills envoy_json=''
   if [ $# = 4 ]; then
     [ "$3" = --envoy-json ] || fail "$usage"
     envoy_json=$(realpath -e -- "$4") || fail "--envoy-json $4 does not exist"
     jq -e 'type == "object"' "$envoy_json" >/dev/null 2>&1 || fail "--envoy-json $4 is not a JSON object"
   fi
   P=$(label_dir "$label")
-  [ ! -e "$P" ] || fail "$P exists; remove it to rebuild label $label"
+  [ -z "$P" ] || fail "$P, label $label's profile, exists; remove it to rebuild label $label"
   co=$(cd "$2" && pwd -P)
   [ -f "$co/scripts/e2e/lib/install-plugin-profile.sh" ] || fail "$co is not a Legion checkout"
-  mkdir -p "$P"
+  # A directory of a random name, which every agent of the label sees (its plugins live there), and
+  # the map's link that names it.
+  P=$work/profiles/$(openssl rand -hex 8)
+  mkdir -p "$P" "$maps/profiles"
+  ln -sfn -- "../../profiles/${P##*/}" "$maps/profiles/$label"
   on_exit "$(printf 'drop_unready_keys %q %q' "$P/ready" "$P/model-key")"
   printf '%s\n' "$co" >"$P/checkout"
   printf '%s\n' "$profile" >"$P/profile"
@@ -910,11 +1029,15 @@ base_env() {
 # nothing under the agent's HOME) and records the call to $R/calls.jsonl as gh-standin.ts records
 # its own. The score reads the tester's run of the CLI from that record. No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
+# gh-standin.ts is bundled into $R/bin, so the `gh` an agent reads names no path of this checkout,
+# which is the head label's own checkout when the rig runs from it.
 standins() {
   local bun_real
   bun_real=$(bun -e 'console.log(process.execPath)')
   mkdir -p "$R/bin"
-  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_real" "$here/gh-standin.ts" >"$R/bin/gh"
+  bun build --target bun --minify --outfile "$R/bin/gh-standin.js" "$here/gh-standin.ts" >/dev/null ||
+    fail "gh-standin.ts did not bundle"
+  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_real" "$R/bin/gh-standin.js" >"$R/bin/gh"
   cat >"$R/bin/bun" <<EOF
 #!/usr/bin/env bash
 at=\$(date -u +%FT%T.%3NZ)
@@ -928,29 +1051,210 @@ EOF
   [ -f "$R/fixtures.json" ] || printf '{"routes":[]}\n' >"$R/fixtures.json"
 }
 
-# launch NAME [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd
-# under $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text)
-# when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
-# timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
-# until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line. The pane's variables reach mise, which starts omp, through the
-# launch file's environment, never through process arguments: the pane can carry the batch's NATS
-# URL, including a credential. The file starts itself again with an empty environment, exports each
-# pane line, then execs the launcher with the pane's lines as its whole environment.
+# view_bind MODE SOURCE [DEST] adds SOURCE to the agent's view at DEST (SOURCE's own path when none
+# is given), MODE --ro-bind or --bind, and records SOURCE in `bound`: the arrays of agent_view's
+# caller, launch.
+view_bind() {
+  view+=("$1" "$2" "${3:-$2}")
+  bound+=("$2")
+}
+
+# view_tool NAME PATH DATA gives the agent's shell the tool NAME: its first match on PATH (the
+# pane's) that is the run's own, the system's (under /usr, where /bin, /sbin and /lib lead) or in a
+# mise install, <DATA>/installs/<tool>/<version> (DATA the pane's MISE_DATA_DIR). A mise install
+# binds whole, at the path PATH names, since a tool's links and libraries sit beside its binary,
+# and the run's bin links NAME to it: `mise x`, which runs the agent, takes every mise install but
+# the pin's off the agent's PATH, and the run's bin stays first on it. Any other match is not in
+# the view, and the search goes on past it: a wrapper in the operator's home, or a mise shim, which
+# resolves the tool from the operator's own mise config. No match gives nothing.
+view_tool() {
+  local name=$1 data=$3 dir dirs found real tool version install
+  IFS=: read -ra dirs <<<"$2"
+  for dir in "${dirs[@]}"; do
+    found=$dir/$name
+    [ -f "$found" ] && [ -x "$found" ] || continue
+    case $found in "$R"/*) return 0 ;; esac
+    real=$(realpath -e -- "$found") || continue
+    case $real in /usr/* | /bin/* | /sbin/* | /lib/* | /lib32/* | /lib64/* | /libx32/*) return 0 ;; esac
+    [ -n "$data" ] || continue
+    case $dir/ in "$data"/installs/*/*/*) ;; *) continue ;; esac
+    tool=${dir#"$data"/installs/}
+    version=${tool#*/}
+    install=$data/installs/${tool%%/*}/${version%%/*}
+    case $real in "$(realpath -e -- "$install")"/*) ;; *) continue ;; esac
+    view_bind --ro-bind "$(realpath -e -- "$install")" "$install"
+    mkdir -p "$R/bin"
+    ln -sfn -- "$found" "$R/bin/$name"
+    return 0
+  done
+}
+
+# provider_key_file MODELS prints the file that the provider route's models.yml (MODELS, JSON, as
+# install_provider_route writes it) reads its key from with `!cat <file>`, and nothing for a
+# models.yml of another route or for a provider block that reads its key with
+# `!<absolute executable>`.
+provider_key_file() {
+  local key
+  key=$(jq -r '[.providers[].apiKey] | first // empty' "$1" 2>/dev/null) || key=
+  case $key in '!cat '*) printf '%s\n' "${key#'!cat '}" ;; esac
+}
+
+# key_command_file COMMAND prints the key file that a key-file route's key command
+# (install-key-file-model-route.sh) reads on each call: its `key_file=` line assigns the path with
+# printf %q, so the line is read as bash reads it.
+key_command_file() {
+  bash -c "$(grep -m1 '^key_file=' "$1")"$'\nprintf %s "$key_file"'
+}
+
+# fresh_gateway_key makes the gateway route's kept key good past the run's deadline. The route's
+# key command, <P>/key/hawk-token (install-model-gateway.sh), serves the key it keeps in <P>/cache
+# and mints one with hawk-token when none is good, and hawk-token needs the operator's HOME and
+# session bus, which no agent's view holds. So the key is minted here, on the host, and the agent's
+# key command serves it from its read-only view of the cache. A kept key that expires before the
+# run's deadline is dropped and minted once more, as judge_keys does for a judge.
+fresh_gateway_key() {
+  local cache=$P/cache/hawk-token.key kept_until='' deadline=$((EPOCHSECONDS + ${SKILL_SCENARIOS_TIMEOUT:-1500}))
+  "$P/key/hawk-token" >/dev/null || fail "the gateway's key command gave no key; see $P/key/hawk-token.log"
+  [ ! -s "$cache" ] || read -r kept_until _ <"$cache"
+  [ "${kept_until:-0}" -lt "$deadline" ] || return 0
+  rm -f -- "$cache"
+  "$P/key/hawk-token" >/dev/null || fail "the gateway's key command gave no key; see $P/key/hawk-token.log"
+  kept_until=''
+  [ ! -s "$cache" ] || read -r kept_until _ <"$cache"
+  [ "${kept_until:-0}" -ge "$deadline" ] ||
+    fail "the gateway's key command keeps its key until ${kept_until:-no time}, before the run's deadline $deadline, and an agent's key command cannot mint one in its view"
+}
+
+# agent_view OMP [MISE] fills launch's `view` with the bubblewrap arguments of the agent's view: an
+# empty root, and in it only what the agent runs.
+#   - The system, read-only: /usr, the links at / that lead into it (or the directories, on a
+#     system that keeps them apart), /etc, and the directory of each file outside both that a link
+#     of /etc names (resolv.conf's, under /run). A /dev of its own, its PID namespace's /proc, and
+#     an empty /dev/shm and /var/tmp, since the machine's are every run's.
+#   - The run's directory, writable, with its own tmp at /tmp: in the third round 27 agents wrote
+#     scratch files to the machine's /tmp under fixed names (`/tmp/lweval1_review.json` by five),
+#     which another run could read.
+#   - The label's packed plugins and model key and the batch's services, read-only, and none of
+#     the profile's own records (checkout, built-from), which name the label's checkout.
+#   - The key the model route reads, read-only: the directory of the provider route's `!cat <file>`
+#     in the run's models.yml (the directory, so a key the operator renews by writing a new file in
+#     its place still reaches the agent), the key file of the key-file route's key command, and the
+#     gateway route's kept key (fresh_gateway_key). A provider block that reads its key with
+#     `!<absolute executable>` is refused: the view holds no part of what such a command reads, so
+#     every turn of the agent would fail on its key.
+#   - The tools it runs: OMP's install, which MISE (run by its path) runs as the pin, or which runs
+#     alone when SKILL_SCENARIOS_OMP names it and there is no MISE; MISE and the bun the stand-ins
+#     run; the native module cache the run's HOME links to (make_omp_home), writable, since omp
+#     extracts its own version's addon there when another session has pruned it; and the install
+#     of each of agent_tools on the pane's PATH (view_tool). The agents' shells are seen to run jj,
+#     jq, git and python3 (the eval tool's kernel among them) beyond the system's own commands.
+# It fails when a label's checkout holds a path the view binds, or lies under one.
+agent_view() {
+  local omp=$1 mise=${2:-} dir link target key_file record checkout pane_path data tool agent_tools=(git jj jq python3)
+  local models=$R/home/.omp/profiles/$profile/agent/models.yml
+  view_bind --ro-bind /usr
+  for dir in /bin /sbin /lib /lib32 /lib64 /libx32; do
+    if [ -L "$dir" ]; then
+      view+=(--symlink "$(readlink -- "$dir")" "$dir")
+    elif [ -d "$dir" ]; then
+      view_bind --ro-bind "$dir"
+    fi
+  done
+  view_bind --ro-bind /etc
+  for link in /etc/*; do
+    [ -L "$link" ] || continue
+    target=$(realpath -e -- "$link" 2>/dev/null) || continue
+    case $target in /etc/* | /usr/* | /proc/* | /dev/*) ;; *) view_bind --ro-bind "$(dirname -- "$target")" ;; esac
+  done
+  view+=(--dev /dev --tmpfs /dev/shm --proc /proc --tmpfs /var/tmp)
+  view_bind --bind "$R"
+  view_bind --bind "$R/tmp" /tmp
+  for dir in "$P/pi-envoy" "$P/pi-legion" "$P/model-key" "$P/key" "$work/services"; do
+    [ ! -e "$dir" ] || view_bind --ro-bind "$dir"
+  done
+  case $(jq -r '[.providers[].apiKey] | first // empty' "$models" 2>/dev/null) in
+  '!/'*) fail "the run's models.yml reads its key with a command of its own (\`!<absolute executable>\`), which the agent's view cannot run: a run through launch takes the provider route's \`!cat <absolute file>\` alone" ;;
+  esac
+  key_file=$(provider_key_file "$models")
+  case $key_file in
+  '') ;;
+  /*) view_bind --ro-bind "$(dirname -- "$key_file")" ;;
+  *) fail "the run's models.yml reads its key with \`!cat $key_file\`, not from an absolute path" ;;
+  esac
+  if [ -f "$P/model-key/anthropic-key" ]; then
+    key_file=$(key_command_file "$P/model-key/anthropic-key")
+    [ -f "$key_file" ] || fail "the key command $P/model-key/anthropic-key names '$key_file', which is not a file"
+    view_bind --ro-bind "$key_file"
+  fi
+  if [ -x "$P/key/hawk-token" ]; then
+    fresh_gateway_key
+    view_bind --ro-bind "$P/cache"
+  fi
+  dir=$(dirname -- "$(dirname -- "$omp")")
+  view_bind --ro-bind "$(realpath -e -- "$dir")" "$dir"
+  [ -z "$mise" ] || view_bind --ro-bind "$mise"
+  target=$(bun -e 'console.log(process.execPath)') || fail "cannot run the bun this script runs on, which the run's stand-ins run"
+  target=$(realpath -e -- "$target") || fail "the bun this script runs on, $target, is no file"
+  view_bind --ro-bind "$target"
+  link=$R/home/.omp/natives
+  if [ -L "$link" ] && target=$(realpath -e -- "$link"); then view_bind --bind "$target" "$(readlink -- "$link")"; fi
+  pane_path=$(sed -n 's/^PATH=//p' "$R/pane.env" | tail -n 1)
+  data=$(sed -n 's/^MISE_DATA_DIR=//p' "$R/pane.env" | tail -n 1)
+  for tool in "${agent_tools[@]}"; do view_tool "$tool" "$pane_path" "$data"; done
+  for record in "$maps"/profiles/*/checkout; do
+    [ -f "$record" ] || continue
+    checkout=$(<"$record")
+    for dir in "${bound[@]}"; do
+      case $dir/ in "$checkout"/*) fail "label checkout $checkout holds $dir, which the agent's view binds" ;; esac
+      case $checkout/ in "$dir"/*) fail "label checkout $checkout is under $dir, which the agent's view binds" ;; esac
+    done
+  done
+}
+
+# launch [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd under
+# $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text) when
+# it exists, as the tmux session <tag>-<id>, <id> the name of the run's directory. It waits for the
+# session to exit or time out. A timeout is the run's result (`exit=timeout`), not a rig failure,
+# so this wait is not an until_true. A spec run's later turn passes --continue. Each launch starts
+# out.txt again, so its wait reads only its own exit line. The pane's variables reach the launcher
+# (mise, which starts omp, or the omp SKILL_SCENARIOS_OMP names) through the launch file's
+# environment, never through process arguments: the pane can carry the batch's NATS URL, including
+# a credential. So the file runs twice. First, with the tmux server's environment, which
+# systemd-run needs to reach the user manager, it execs the agent's scope and bubblewrap around
+# itself, started again with an empty environment; then, in the view, it exports each pane line
+# and execs the launcher with the pane's lines as its whole environment.
 launch() {
-  local system='' extra='' omp run
+  local system='' extra='' omp run mise='' scope bwrap memory_max=${SKILL_SCENARIOS_MEMORY_MAX:-8G} view=() bound=()
   omp=$(rig_omp "$pin") || exit 1
-  # As install_superpowers runs it: the pin's own install under `mise x`, the binary
-  # SKILL_SCENARIOS_OMP names alone.
+  # As install_superpowers runs it: the pin's own install under `mise x`, mise named by the path the
+  # view binds, and the binary SKILL_SCENARIOS_OMP names alone, with no mise.
   run=$(printf %q "$omp")
-  [ -n "${SKILL_SCENARIOS_OMP:-}" ] || run="mise x $(printf %q "$pin") -- $run"
-  session=$tag-$1
-  shift
+  if [ -z "${SKILL_SCENARIOS_OMP:-}" ]; then
+    mise=$(command -v mise) || fail "mise is not on PATH: a run's agent runs its pin through \`mise x\`"
+    mise=$(realpath -e -- "$mise") || fail "mise on PATH, $mise, is no file"
+    run="$(printf %q "$mise") x $(printf %q "$pin") -- $run"
+  fi
+  # The agent runs in a systemd user scope of its own, capped at SKILL_SCENARIOS_MEMORY_MAX (8G)
+  # with no swap: an agent that grows past it is killed alone (exit 137 in out.txt), and never
+  # the caller's session, whose scope a run's processes would otherwise share.
+  scope=$(command -v systemd-run) || fail "systemd-run is not on PATH: a run's agent runs in a capped user scope"
+  # And under bubblewrap, in a PID namespace of its own, where it sees no process but its own (not
+  # the batch's command line, which names its labels), in a view that holds only what it runs
+  # (agent_view). bwrap reads the view from <work>/views/<id> (--args), which the view does not
+  # hold and visible-world.ts walks, and neither launch.sh nor bwrap's own command line, which the
+  # agent's /proc shows as its process 1, lists it. bwrap reaches the namespaces through the user
+  # namespace AppArmor lets it make.
+  bwrap=$(command -v bwrap) || fail "bwrap is not on PATH: a run's agent runs in a PID namespace and a view of its own"
+  agent_view "$omp" "$mise"
+  view+=(--unshare-pid --die-with-parent --chdir "$R/cwd")
+  mkdir -p "$work/views"
+  printf '%s\0' "${view[@]}" >"$work/views/${R##*/}"
+  session=$tag-${R##*/}
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
-[ "\${1:-}" = clean ] || exec env -i "\$BASH" "\$0" clean
+[ "\${1:-}" = clean ] || exec $(printf %q "$scope") --user --scope --quiet -p MemoryMax=$(printf %q "$memory_max") -p MemorySwapMax=0 -- $(printf %q "$bwrap") --args 3 -- env -i "\$BASH" "\$0" clean 3<$(printf %q "$work/views/${R##*/}") >$(printf %q "$R/out.txt") 2>&1
 cd $(printf %q "$R/cwd")
 export -n PWD OLDPWD
 mapfile -t vars <$(printf %q "$R/pane.env")
@@ -1009,8 +1313,9 @@ stop_panes() {
   for pid in $(tmux list-panes -s -t "=$1" -F '#{pane_pid}' 2>/dev/null || true); do stop_tree "$pid" "$server"; done
 }
 
-# A run's or a live read's exit: its RPC session (launch_rpc's Oh My Pi), its daemon stand-in, its
-# Dispatch proxy and model stand-in, its own Dispatch server, its agent's session, and every
+# A run's or a live read's exit: the switch of a -hidden run turned off (hide_state_off), its RPC
+# session (launch_rpc's Oh My Pi), its daemon stand-in, its Dispatch proxy and model stand-in, its
+# own Dispatch server, a heads run's own natsd and GitHub stand-in, its agent's session, and every
 # process that carries its SKILL_SCENARIO_RUN. The run's database stays in the batch's Postgres:
 # services_down removes the container it started, and leaves a given server, with every database
 # its runs made, to the operator. The services are this shell's own jobs, so each is waited for
@@ -1018,8 +1323,9 @@ stop_panes() {
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
+  hide_state_off
   [ -z "$rpc_fd" ] || { exec {rpc_fd}>&- && rpc_fd=''; } 2>/dev/null || true
-  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid"; do
+  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid" "$natsd_pid" "$fake_github_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -1066,7 +1372,7 @@ cmd_live_read() {
   standins
   # No Dispatch, and an Envoy address nothing listens on: the session reads files and nothing else.
   echo "ENVOY_URL=http://127.0.0.1:1" >>"$R/pane.env"
-  launch "live-read-${P##*/}"
+  launch
   bun "$here/score.ts" live-read "$R" "$co/skills" "$R/home/.omp/profiles/$profile/logs"
 }
 
@@ -1084,7 +1390,7 @@ start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="$nats_url" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
+  await_start listener "$listener_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the Envoy listener to answer /v1/sessions" listener_answers
 }
 
 # listener_up builds the Envoy listener from this checkout, makes the batch's two tokens, and
@@ -1105,21 +1411,26 @@ listener_answers() {
 
 # start_dispatch DATABASE_URL [CHECKOUT] starts the e2e harness's Dispatch server on that
 # database, from CHECKOUT's run-server.sh (a scored run's label's), this checkout's by default. The
-# harness's fake Envoy and GitHub, which run-server.sh names and this rig does not run, are port 1,
-# where nothing listens; its broker switch is empty, so the server has no secrets broker.
-# With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held until
-# the server serves on it, and the server reports it (`msg="dispatch: listening"
+# harness's fake Envoy, which run-server.sh names and this rig does not run, is port 1, where
+# nothing listens, and so is its fake GitHub, with no NATS, unless own_github gave the run a GitHub
+# stand-in and a NATS of its own: then the server reads that GitHub and its delivery intake reads
+# that NATS (DISPATCH_E2E_NATS_URLS). Its broker switch is empty, so the server has no secrets
+# broker. With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held
+# until the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
-# and the log is emptied first, so the line read is this run's own start.
+# and the log is emptied first, so the line read is this run's own start. In a run of a -hidden
+# label, DISPATCH_TEST_HIDE_STATE_FILE names the run's switch, which run-server.sh passes to the
+# server: its results answer leaves out the computed state while that file exists (hide_state_on).
 start_dispatch() {
   local url=$1 log=$evidence/logs/dispatch.log
   : >"$log"
-  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 DISPATCH_E2E_AGENT_SECRETS_URL='' \
-    start_process dispatch bash "${2:-$root}/packages/dispatch/e2e/run-server.sh"
-  await_start dispatch "$dispatch_pid" 300 "Dispatch to report its port" \
+  DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=${github_port:-1} DISPATCH_E2E_NATS_URLS=${run_nats_url:-} \
+    DISPATCH_TEST_HIDE_STATE_FILE=$hide_state_file \
+    DISPATCH_E2E_AGENT_SECRETS_URL='' start_process dispatch bash "${2:-$root}/packages/dispatch/e2e/run-server.sh"
+  await_start dispatch "$dispatch_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Dispatch to report its port" \
     report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
   dispatch_port=$(report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:')
-  await_start dispatch "$dispatch_pid" 60 "Dispatch to answer /api/v1/whoami" \
+  await_start dispatch "$dispatch_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Dispatch to answer /api/v1/whoami" \
     curl -fsS -o /dev/null -H 'Authorization: Bearer e2e-token' "http://127.0.0.1:$dispatch_port/api/v1/whoami"
 }
 
@@ -1251,6 +1562,21 @@ connections_needed() {
 # reads it and refuses a parallelism the server cannot serve. The count is read after a given
 # URL's checks, so a refused URL builds nothing.
 #
+# Each container's id goes to $S/containers, and SKILL_SCENARIOS_OWNER labels it. Neither container
+# publishes a host port. Docker would choose one among the ports it has not handed out itself,
+# which another process of a shared host can hold, and `docker run` then fails with "address
+# already in use" (a batch of reviewer-pass-and-fail ended so, before any run). NATS runs on the
+# host's network and binds a loopback port its own bind chooses (`-p -1`), and the rig reads that
+# port from its log, so nothing can take the port between the choice and the bind. Its container's
+# address on the Docker network would be free of the race too, but the listener refuses a NATS
+# server that is not this machine's (bus: ENVOY_ALLOW_REMOTE_NATS), and the rig turns that guard off
+# nowhere. Postgres is reached through its unix socket, in a directory of the batch's own
+# (pg_socket) that the container mounts: each run's Dispatch serves dev sign-in, which refuses a
+# database host that is neither loopback nor a socket (loopbackDatabase,
+# packages/envoy/cmd/dispatch/main.go), and pg_url, the login label_texts gives a label's entry,
+# names that socket too. The container runs as this user, so the socket and its lock are this
+# user's to remove.
+#
 # A given Postgres must be a postgres:// or postgresql:// URL, the one form safe_url and pg_sql take
 # a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
 # only the password out of the URL it gives psql, and every user of this machine can read psql's
@@ -1263,8 +1589,9 @@ connections_needed() {
 # cannot carry, so such a URL is refused here, before anything starts, and not in every run. Both
 # take the variable's name rather than its value, so their lines put no DSN into a `bash -x` trace.
 services_up() {
+  local owner=()
   evidence=$S
-  local parallel=${1:-${SKILL_SCENARIOS_PARALLEL:-5}} per_run needs admits fits pg_port nats_port pg_host run_url tool rest param key
+  local parallel=${1:-${SKILL_SCENARIOS_PARALLEL:-5}} per_run needs admits fits nats_port pg_host run_url tool rest param key postgres
   local -a params=()
   if given_services; then
     case $SKILL_SCENARIOS_POSTGRES_URL in
@@ -1300,28 +1627,33 @@ services_up() {
       fail "$(safe_url "$pg_url") admits $admits connections, and one run needs $((per_run + 20)): give a Postgres whose max_connections is $((per_run + 20)) or more"
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
+    postgres=$(safe_url "$pg_url")
   else
     connections_needed
     # A given Postgres's URL that a batch killed outright left would send this batch's runs there.
     rm -f -- "$services_postgres"
+    [ -z "${SKILL_SCENARIOS_OWNER:-}" ] || owner=(--label "owner=$SKILL_SCENARIOS_OWNER")
+    # A unix socket's path holds at most 107 bytes, and a TMPDIR can be longer than that (a test's
+    # or a session's own), so the directory is a new one of /tmp's.
+    pg_socket=$(mktemp -d /tmp/rig-pg.XXXXXX)
     # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-    docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-      -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
-      -c max_connections="$needs" >/dev/null
-    pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-    [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
-    pg_url="postgres://postgres:ci@127.0.0.1:$pg_port/postgres?sslmode=disable"
+    docker run -d --name "$tag-pg" "${owner[@]}" --user "$(id -u):$(id -g)" --cpus 2 --memory 2g \
+      --mount type=tmpfs,destination=/var/lib/postgresql --mount "type=bind,source=$pg_socket,destination=/var/run/postgresql" \
+      -e POSTGRES_PASSWORD=ci ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+      -c max_connections="$needs" >>"$S/containers"
     # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
     # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
     # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh disable=SC1091 # followed under shellcheck -x
     . "$root/scripts/e2e/lib/nats-image.sh"
     # shellcheck disable=SC2154 # nats-image.sh assigns it
-    docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-    nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
-    [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
+    docker run -d --name "$tag-nats" "${owner[@]}" --network host --cpus 1 --memory 512m "$nats_image" -js -a 127.0.0.1 -p -1 >>"$S/containers"
+    until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
+    until_true "${SKILL_SCENARIOS_TIMEOUT:-1500}" "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+    nats_port=$(docker logs "$tag-nats" 2>&1 | sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -1)
+    [ -n "$nats_port" ] || fail "NATS logged no client port on 127.0.0.1; see docker logs $tag-nats"
     nats_url=nats://127.0.0.1:$nats_port
-    until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
-    until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+    postgres=$pg_socket
+    pg_url="postgres:///postgres?host=$pg_socket&user=postgres&sslmode=disable"
   fi
   listener_up
   {
@@ -1329,32 +1661,36 @@ services_up() {
     echo "ENVOY_NATS_URL=$nats_url"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } | owner_only "$services_env"
-  note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
+  note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $postgres"
 }
 
 # services_down stops and removes what this batch started and made: the listener, the two
-# containers services_up starts when it is given no servers, the services file, the given
-# Postgres's URL, and the lock. A given Postgres and a given NATS keep running, and every database
-# a run made on that Postgres (own_dispatch) stays there for the operator to drop.
+# containers services_up starts when it is given no servers and the directory of their Postgres's
+# socket, the services file, the given Postgres's URL, and the lock. A given Postgres and a given
+# NATS keep running, and every database a run made on that Postgres (own_dispatch) stays there for
+# the operator to drop.
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   stop_tree "${listener_pid:-}"
   given_services || docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
+  [ -z "$pg_socket" ] || rm -rf -- "$pg_socket"
   rm -f "$services_env" "$services_postgres" "$S/up"
 }
 
 # own_dispatch SEED [CHECKOUT] gives the run a Dispatch of its own and seeds it with `seed.ts SEED`,
-# the world the scenario needs (project, or brainstorm): a database named after the run in the
-# batch's Postgres, and a Dispatch server on it from CHECKOUT's run-server.sh (start_dispatch),
-# which stop_run stops. It records the Postgres, the database and the server in $R/dispatch.json,
-# which score.ts reads, and sets dispatch_port, and pg_url, a login to the batch's Postgres, which
-# label_texts gives the label's entry. The batch's Postgres is the server $services_postgres names,
-# and the batch's own container when that file is absent. On a given server, services_up checks the
-# URL with run_database_url_env, which takes the variable's name; here own_dispatch calls
-# run_database_url (scripts/e2e/lib/loopback-dsn.sh) on the URL read from that file, with the run's
-# database as its dbname. Dispatch's pgx driver reads the resulting keyword/value connection string.
+# the world the scenario needs (project, or brainstorm): a database named after the run's
+# directory in the batch's Postgres, and a Dispatch server on it from CHECKOUT's run-server.sh
+# (start_dispatch), which stop_run stops. It records the Postgres, the database and the server in
+# $R/dispatch.json, which score.ts reads, and sets dispatch_port, and pg_url, a login to the
+# batch's Postgres, which label_texts gives the label's entry: the given server's URL, or the
+# container's socket as the postgres database. The batch's Postgres is the server
+# $services_postgres names, and the batch's own container when that file is absent. On a given
+# server, services_up checks the URL with run_database_url_env, which takes the variable's name;
+# here own_dispatch calls run_database_url (scripts/e2e/lib/loopback-dsn.sh) on the URL read from
+# that file, with the run's database as its dbname. Dispatch's pgx driver reads the resulting
+# keyword/value connection string.
 own_dispatch() {
-  local seed=$1 database=run_${R##*/} pg_port postgres url
+  local seed=$1 database=run_${R##*/} postgres socket url
   database=${database//-/_}
   # Postgres folds an unquoted name to lower case, and a URL's name is read as written.
   database=${database,,}
@@ -1370,19 +1706,42 @@ own_dispatch() {
     pg_url=$postgres
     postgres=$(safe_url "$postgres")
   else
-    pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-    postgres=$(docker inspect -f '{{.Id}}' "$tag-pg")
-    [ -n "$pg_port" ] && [ -n "$postgres" ] || fail "no Postgres container $tag-pg for the run's Dispatch"
+    # The container's id, and the directory of its socket that services_up mounted; an inspect that
+    # answers nothing leaves both empty for the refusal below.
+    read -r postgres socket < <(docker inspect -f \
+      '{{.Id}} {{range .Mounts}}{{if eq .Destination "/var/run/postgresql"}}{{.Source}}{{end}}{{end}}' "$tag-pg") || true
+    [ -n "$postgres" ] && [ -n "$socket" ] || fail "no Postgres container $tag-pg with its socket for the run's Dispatch"
     docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
       fail "CREATE DATABASE $database failed; see $R/fixture.log"
-    pg_url="postgres://postgres:ci@127.0.0.1:$pg_port/postgres?sslmode=disable"
-    url="postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
+    pg_url="postgres:///postgres?host=$socket&user=postgres&sslmode=disable"
+    url="postgres:///$database?host=$socket&user=postgres&sslmode=disable"
   fi
   start_dispatch "$url" "${2:-}"
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
     fail "seed.ts $seed failed; see $R/fixture.log"
+}
+
+# own_github gives a run of a heads scenario a NATS and a GitHub of its own, which stop_run stops,
+# so its events and its fixture stay apart from the other runs of its batch (`PUT
+# /__fixture/repos` replaces every repository the stand-in holds): the batch's build of
+# packages/envoy's testnats natsd ($work/services/bin/natsd, cmd_batch), its store under
+# $R/nats-store, and packages/dispatch/e2e/fake-github.ts. Each binds a port the kernel picks and
+# logs it, and the port is read from that line, as scripts/e2e/verification-results.sh reads
+# natsd's and e2e/harness-start.ts reads the stand-in's. The stand-in's FAKE_GITHUB_PORT is empty
+# for that: harness-ports.ts takes an empty one as port 0 and refuses a written 0. Sets
+# run_nats_url and github_port, which start_dispatch and seed_ts read.
+own_github() {
+  local log=$evidence/logs
+  start_process natsd "$work/services/bin/natsd" -p -1 -store_dir "$R/nats-store"
+  await_start natsd "$natsd_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "natsd to be ready" grep -q 'Server is ready' "$log/natsd.log"
+  run_nats_url=nats://127.0.0.1:$(report_port "$log/natsd.log" 'Listening for client connections on [^ ]*:') ||
+    fail "natsd logged no client port; see $log/natsd.log"
+  FAKE_GITHUB_PORT='' start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
+  await_start fake_github "$fake_github_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the GitHub stand-in to report its port" \
+    report_port "$log/fake_github.log" 'fake github listener on 127\.0\.0\.1:'
+  github_port=$(report_port "$log/fake_github.log" 'fake github listener on 127\.0\.0\.1:')
 }
 
 # seed_dispatch SCENARIO seeds the run's own issue, and the owner's message when the scenario has
@@ -1395,13 +1754,13 @@ seed_dispatch() {
   message=$(jq -r '.message // empty' "$R/fixture.json")
 }
 
-# dispatch_session NAME [CAPTURE [VAR=VALUE...]] runs $R/prompt.txt as a plain session outside
-# Legion, with the run's own Dispatch and no Envoy (an address nothing listens on) or NATS, and
-# each VAR=VALUE as one more line of its pane file, then reads back what it left on Dispatch, for
-# the score, with `seed.ts CAPTURE` (default `capture`).
+# dispatch_session [CAPTURE [VAR=VALUE...]] runs $R/prompt.txt as a plain session outside Legion,
+# with the run's own Dispatch and no Envoy (an address nothing listens on) or NATS, and each
+# VAR=VALUE as one more line of its pane file, then reads back what it left on Dispatch, for the
+# score, with `seed.ts CAPTURE` (default `capture`).
 dispatch_session() {
-  local name=$1 capture=${2:-capture}
-  shift $(($# < 2 ? $# : 2))
+  local capture=${1:-capture}
+  shift $(($# < 1 ? $# : 1))
   base_env
   standins
   {
@@ -1410,25 +1769,25 @@ dispatch_session() {
     echo "ENVOY_URL=http://127.0.0.1:1"
   } >>"$R/pane.env"
   [ $# = 0 ] || printf '%s\n' "$@" >>"$R/pane.env"
-  launch "$name"
+  launch
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$capture" "$R/fixture.json" "$R") \
     >>"$R/fixture.log" 2>&1 || fail "the capture failed; see $R/fixture.log"
 }
 
 run_ask_on_message() {
-  local name=$1 issue message
+  local issue message
   own_dispatch project
   seed_dispatch ask-on-message
   printf 'On Dispatch issue %s, the Dispatch owner session posted its plan for the rest of the work in this message: dispatch://%s/message/%s. Open an ask on %s asking Sami whether to go ahead with that plan. Do nothing else.\n' \
     "$issue" "$issue" "$message" "$issue" >"$R/prompt.txt"
-  dispatch_session "$name"
+  dispatch_session
 }
 
 # The export the owner's message names, in the agent's working directory: 430 stranded issues, of
 # which only every 23rd (18) has the owner option A needs. Its example.invalid addresses give an
 # agent a second reason to drop A; measureBeforeAsk says how the first runs split on it.
 run_measure_before_ask() {
-  local name=$1 issue message
+  local issue message
   own_dispatch project
   seed_dispatch measure-before-ask
   awk 'BEGIN { print "key,title,component,owner"
@@ -1436,7 +1795,7 @@ run_measure_before_ask() {
     >"$R/cwd/stranded.csv"
   printf 'On Dispatch issue %s, the Dispatch owner session posted three ways to finish its work in this message: dispatch://%s/message/%s. The export it names, stranded.csv, is in your working directory. Open an ask on %s asking Sami which way to go. Change nothing else.\n' \
     "$issue" "$issue" "$message" "$issue" >"$R/prompt.txt"
-  dispatch_session "$name"
+  dispatch_session
 }
 
 # The person's words are one comment on the run's own issue, and AskGate reviews each gated
@@ -1457,9 +1816,8 @@ run_measure_before_ask() {
 # SKILL_SCENARIOS_ASKGATE_MODE is the pane's OMP_ASKGATE and <run>/mode.txt; unset, the pane gets
 # no OMP_ASKGATE, so AskGate's verdicts block and its marker checks warn.
 run_askgate() {
-  local name=$1 askCase=${SKILL_SCENARIOS_ASKGATE_CASE:-} mode=${SKILL_SCENARIOS_ASKGATE_MODE:-} issue message ref ask billing one
+  local askCase=${SKILL_SCENARIOS_ASKGATE_CASE:-} mode=${SKILL_SCENARIOS_ASKGATE_MODE:-} issue message ref ask billing one
   case $mode in '' | warn | block) ;; *) fail "SKILL_SCENARIOS_ASKGATE_MODE is '$mode', not warn or block" ;; esac
-  printf '%s\n' "$askCase" >"$R/case.txt"
   [ -z "$mode" ] || printf '%s\n' "$mode" >"$R/mode.txt"
   own_dispatch project
   seed_dispatch askgate
@@ -1482,7 +1840,7 @@ run_askgate() {
   tried) printf 'First run %s yourself. It will fail. Then, in a command of its own, open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, with the exact error the command printed in place of <error>. %s Question: "I ran %s and it failed with <error>. Can you run it with your access and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$billing" "$issue" "$one" "$billing" "$ref" ;;
   *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '$askCase', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
   esac >"$R/prompt.txt"
-  dispatch_session "$name" capture-askgate ${mode:+"OMP_ASKGATE=$mode"}
+  dispatch_session capture-askgate ${mode:+"OMP_ASKGATE=$mode"}
 }
 
 # A tiny to-do CLI in a scratch git repository with no Dispatch configuration and no word of due
@@ -1491,7 +1849,6 @@ run_askgate() {
 # `seed.ts capture-brainstorm` reads back the issue this run's own transcript created, for
 # brainstormSurface.
 run_brainstorm() {
-  local name=$1
   own_dispatch brainstorm
   cat >"$R/cwd/todo.py" <<'PYEOF'
 """A tiny command-line to-do list that keeps its tasks in tasks.json next to this file."""
@@ -1558,13 +1915,15 @@ MDEOF
   # shellcheck disable=SC2016 # the backticks are the prompt's own, a command name for the agent
   printf '/brainstorming a small feature: let a task in this to-do CLI carry an optional due date, and have `list` show overdue tasks first.\n' \
     >"$R/prompt.txt"
-  dispatch_session "$name" capture-brainstorm
+  dispatch_session capture-brainstorm
 }
 
-# seed_ts MODE ARG... runs `seed.ts MODE ARG...` against the run's own Dispatch (own_dispatch), its
-# output appended to $R/fixture.log. A failure is the rig's, never the run's.
+# seed_ts MODE ARG... runs `seed.ts MODE ARG...` against the run's own Dispatch (own_dispatch), and
+# a heads run's own GitHub stand-in and NATS (own_github), its output appended to $R/fixture.log. A
+# failure is the rig's, never the run's.
 seed_ts() {
-  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$@") \
+  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port FAKE_GITHUB_PORT=${github_port:-} \
+    DISPATCH_E2E_NATS_URLS=${run_nats_url:-} bun "$here/seed.ts" "$@") \
     >>"$R/fixture.log" 2>&1 || fail "seed.ts $1 failed; see $R/fixture.log"
 }
 
@@ -1575,11 +1934,11 @@ judge_ts() {
     fail "judge.ts $1 failed; see $R/judge.log"
 }
 
-# next_run SCENARIO LABEL prints one above the highest <n> of a run directory
-# $work/runs/<SCENARIO>-<LABEL>-<n>, or 1 when there is none.
+# next_run SCENARIO LABEL prints one above the highest <n> of a run the map names
+# $maps/runs/<SCENARIO>-<LABEL>-<n>, or 1 when there is none.
 next_run() {
   local dir n highest=0
-  for dir in "$work/runs/$1-$2-"*; do
+  for dir in "$maps/runs/$1-$2-"*; do
     [ -d "$dir" ] || continue
     n=${dir##*/"$1-$2-"}
     [[ $n =~ ^[0-9]+$ ]] || continue
@@ -1604,10 +1963,11 @@ source_dir() {
   printf '%s\n' "$dir"
 }
 
-# require_superpowers SCENARIO fails unless the label (P) was built with SKILL_SCENARIOS_SUPERPOWERS.
+# require_superpowers SCENARIO LABEL fails unless LABEL's profile (P) was built with
+# SKILL_SCENARIOS_SUPERPOWERS.
 require_superpowers() {
   [ -f "$P/superpowers" ] ||
-    fail "$1 needs a label built with SKILL_SCENARIOS_SUPERPOWERS (the superpowers plugin's directory): remove $P and run \`rig.sh profile ${P##*/} <checkout>\` again with it set"
+    fail "$1 needs a label built with SKILL_SCENARIOS_SUPERPOWERS (the superpowers plugin's directory): remove $P and run \`rig.sh profile $2 <checkout>\` again with it set"
 }
 
 # spec_turns NAME ISSUE PROMPT runs a spec run's conversation (the header's "A spec run"): the turn
@@ -1622,7 +1982,7 @@ spec_turns() {
   : >"$R/turns.txt"
   while :; do
     turn=$((turn + 1))
-    if [ "$turn" = 1 ]; then launch "$name"; else launch "$name" --continue; fi
+    if [ "$turn" = 1 ]; then launch; else launch --continue; fi
     cp "$R/out.txt" "$R/out-$turn.txt"
     last=$(tail -n 1 "$R/out.txt")
     printf '%s %s %s\n' "$turn" "$kind" "$last" >>"$R/turns.txt"
@@ -1647,14 +2007,14 @@ spec_turns() {
   note "$name: $turn turns, the last $last"
 }
 
-# run_spec SCENARIO NAME: a spec-writing or spec-rewrite run on the source SKILL_SCENARIOS_SOURCE
-# names. The source goes to $R/source/ and its name to $R/source.txt. seed.ts seeds the run's issue
-# from it, spec_turns runs the conversation, and `seed.ts capture-spec` reads back what the run
-# wrote. The prompts name no skill.
+# run_spec SCENARIO NAME LABEL: a spec-writing or spec-rewrite run on the source
+# SKILL_SCENARIOS_SOURCE names. The source goes to $R/source/ and its name to $R/source.txt. seed.ts
+# seeds the run's issue from it, spec_turns runs the conversation, and `seed.ts capture-spec` reads
+# back what the run wrote. The prompts name no skill.
 run_spec() {
-  local scenario=$1 name=$2 source issue prompt
+  local scenario=$1 name=$2 label=$3 source issue prompt
   source=$(source_dir "$scenario" "${SKILL_SCENARIOS_SOURCE:-}") || exit 1
-  require_superpowers "$scenario"
+  require_superpowers "$scenario" "$label"
   cp -R "$source" "$R/source"
   printf '%s\n' "${source##*/}" >"$R/source.txt"
   own_dispatch project
@@ -1735,8 +2095,7 @@ judge_keys() {
   local P=$1 agent=$2 keys=$3 host_command token exp deadline payload key_file read_from
   (umask 077 && mkdir -p -- "$keys") || fail "judge-omp: cannot make $keys"
   if [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" = provider ]; then
-    key_file=$(jq -r '[.providers[].apiKey] | first // empty' "$agent/models.yml") || key_file=
-    key_file=${key_file#'!cat '}
+    key_file=$(provider_key_file "$agent/models.yml")
     case $key_file in /*) ;; *) fail "judge-omp: $agent/models.yml does not read its key as \"!cat <absolute file>\"" ;; esac
     case $key_file in *[!A-Za-z0-9/._-]*) fail "judge-omp: the key file's path '$key_file' holds a character a mount cannot name plainly" ;; esac
     cp -- "$agent/models.yml" "$keys/models.yml"
@@ -1746,8 +2105,7 @@ judge_keys() {
   if [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" = key-file ]; then
     host_command=$P/model-key/anthropic-key
     [ -f "$host_command" ] || fail "judge-omp: the key-file profile $P has no key command $host_command"
-    # The key command assigns the key file's path with printf %q: read it as bash reads that line.
-    key_file=$(bash -c "$(grep -m1 '^key_file=' "$host_command")"$'\nprintf %s "$key_file"')
+    key_file=$(key_command_file "$host_command")
     [ -f "$key_file" ] || fail "judge-omp: the key command names '$key_file', which is not a file"
     case $key_file in *[!A-Za-z0-9/._-]*) fail "judge-omp: the key file's path '$key_file' holds a character a key command cannot name plainly" ;; esac
     read_from=$key_file
@@ -1782,27 +2140,50 @@ judge_keys() {
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"
 }
 
-# cmd_judge_image pulls judge_image unless Docker already holds it, quietly. cmd_judge_omp runs it
-# before its container, so a first judge's pull progress never lands in its out.txt and a failed
-# pull names itself; a caller that starts many judges can run it first, so that no judge's own time
-# holds the pull, as rig.test.ts's judge-omp tests do in a beforeAll. The registry answers one
-# request of a batch badly now and then (a token it refuses to mint, a manifest GET it drops) and
-# serves the next, so the pull is asked three times a couple of seconds apart before the rig
-# refuses. Only the last attempt's own words are kept, and only for the refusal: an attempt the
-# next one makes good says nothing.
+# cmd_judge_image pulls judge_image unless Docker already holds it, quietly. cmd_judge_omp runs the
+# same pull (judge_image_present) before its container, so a first judge's pull progress never
+# lands in its out.txt and a failed pull names itself; a caller that starts many judges can run it
+# first, so that no judge's own time holds the pull, as rig.test.ts's judge-omp tests do in a
+# beforeAll. Each of its Docker calls has the bound SKILL_SCENARIOS_DOCKER_TIMEOUT, as a judge's
+# inspect and pulls do (judge_docker).
 cmd_judge_image() {
   [ $# = 0 ] || fail "usage: rig.sh judge-image"
+  local docker_timeout=${SKILL_SCENARIOS_DOCKER_TIMEOUT:-300} docker_late=''
+  [[ $docker_timeout =~ ^[1-9][0-9]*$ ]] ||
+    fail "judge-image: SKILL_SCENARIOS_DOCKER_TIMEOUT is '$docker_timeout', not a whole number of seconds"
   command -v docker >/dev/null || fail "judge-image: docker is not on PATH; each judge runs in a container"
-  docker image inspect "$judge_image" >/dev/null 2>&1 && return 0
-  local pulled='' pull_error='' attempt
+  judge_image_present judge-image
+}
+
+# judge_image_present NAME pulls judge_image unless Docker already holds it, quietly, each Docker
+# call within its caller's docker_timeout (judge_docker), and refuses as NAME. The registry answers
+# one request of a batch badly now and then (a token it refuses to mint, a manifest GET it drops)
+# and serves the next, so a failed pull is asked again, three times in all a couple of seconds
+# apart, before the rig refuses. Only the last attempt's own words are kept, and only for the
+# refusal: an attempt the next one makes good says nothing. A pull the daemon does not answer within
+# its bound is not asked again: it refuses at once, naming the call, as an inspect the daemon does
+# not answer does, which is no missing image.
+judge_image_present() {
+  local name=$1 inspected=0
+  judge_docker "$docker_timeout" image inspect "$judge_image" >/dev/null 2>&1 || inspected=$?
+  [ -z "$docker_late" ] ||
+    fail "$name: docker image inspect $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
+  [ "$inspected" != 0 ] || return 0
+  local pull=1 pull_error='' attempt
   for attempt in 1 2 3; do
-    pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
-      pulled=1
-      break
-    }
+    # The command substitution's subshell keeps judge_docker's docker_late to itself, so it says
+    # how the pull ended in its status: 0 pulled, 1 failed, 2 ended by its bound.
+    pull=0
+    pull_error=$(judge_docker "$docker_timeout" pull --quiet "$judge_image" 2>&1 >/dev/null || {
+      [ -z "$docker_late" ] || exit 2
+      exit 1
+    }) || pull=$?
+    [ "$pull" != 0 ] || break
+    [ "$pull" != 2 ] ||
+      fail "$name: docker pull $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
     [ "$attempt" -eq 3 ] || sleep 2
   done
-  [ -n "$pulled" ] || fail "judge-image: docker could not pull $judge_image in 3 attempts: $pull_error"
+  [ "$pull" = 0 ] || fail "$name: docker could not pull $judge_image in 3 attempts: $pull_error"
 }
 
 # cmd_judge_omp KIND DIR OUTPUT runs one fresh judge session in DIR on DIR/prompt.txt: no plugins,
@@ -1831,9 +2212,36 @@ cmd_judge_image() {
 # The network is Docker's default bridge, for the model's endpoint. The container gets 2 CPUs and
 # 4 GiB, so the judges of a busy batch cannot take the machine. SKILL_SCENARIOS_JUDGE_ENV adds
 # `NAME=value` words to the container's environment, for tests.
+#
+# Each Docker call waits on the daemon, which a loaded box stalls (on 20 November the seven rows of
+# a test run that start a judge failed inside one stall of the daemon), so each has a bound of its
+# own (judge_docker):
+# SKILL_SCENARIOS_DOCKER_TIMEOUT for the image's inspect and for each pull, and that plus omp's own
+# SKILL_SCENARIOS_TIMEOUT for the run. A call past its bound ends the judge at once with a refusal
+# that names the call and its bound: no further call, and no further pull after a pull its bound
+# ended, waits on a daemon that stalled, so a stalled daemon costs a judge one call's bound, not the
+# sum of every call's. A stall shorter than the bound costs only time.
+#
+# judge_docker SECONDS DOCKER-ARG... runs `docker DOCKER-ARG...` and kills it at SECONDS: the
+# client of a stalled daemon may ignore a TERM (`docker run` hands it to its container and waits on).
+# The kill reaches the client alone (`--foreground`): a timeout that kills its own process group
+# kills itself too, and bash then writes a `Killed` line into the judge's out.txt. It returns
+# docker's status, and sets docker_late to 1 when the bound ended the call (killed, and SECONDS
+# gone), else to nothing. The run's `--rm` is the daemon's own, so a container whose client was
+# killed is removed once it ends, and the omp in it ends at its own bound.
+judge_docker() {
+  local seconds=$1 started=$EPOCHSECONDS code=0
+  shift
+  timeout --foreground -s KILL "$seconds" docker "$@" || code=$?
+  docker_late=
+  [ "$code" != 137 ] || [ $((EPOCHSECONDS - started)) -lt "$seconds" ] || docker_late=1
+  return "$code"
+}
+
 cmd_judge_omp() {
   [ $# = 3 ] || fail "usage: rig.sh judge-omp <ste|bare> <dir> <output file name>"
-  local kind=$1 dir output=$3 skills status=0 omp P agent keys key_file h=/home/judge
+  local kind=$1 dir output=$3 skills status=0 omp P agent keys key_file h=/home/judge docker_late=''
+  local docker_timeout=${SKILL_SCENARIOS_DOCKER_TIMEOUT:-300} omp_timeout=${SKILL_SCENARIOS_TIMEOUT:-1500}
   case $kind in ste) skills=(--skills asd-ste100) ;; bare) skills=(--no-skills) ;; *) fail "judge-omp: '$kind' is ste or bare" ;; esac
   dir=$(cd "$2" && pwd -P) || fail "judge-omp: $2 is not a directory"
   [ -f "$dir/prompt.txt" ] || fail "judge-omp: $dir has no prompt.txt"
@@ -1842,6 +2250,9 @@ cmd_judge_omp() {
   esac
   case "$(omp_ancestor "$dir" || true)" in "") ;; *) fail "judge-omp: $dir is under $(omp_ancestor "$dir"), whose plugins Oh My Pi would load" ;; esac
   case ${LEGION_E2E_MODEL_ROUTE:-gateway} in gateway | key-file | provider) ;; *) fail "judge-omp: LEGION_E2E_MODEL_ROUTE is '$LEGION_E2E_MODEL_ROUTE': it is gateway, key-file or provider" ;; esac
+  [[ $docker_timeout =~ ^[1-9][0-9]*$ ]] ||
+    fail "judge-omp: SKILL_SCENARIOS_DOCKER_TIMEOUT is '$docker_timeout', not a whole number of seconds"
+  [[ $omp_timeout =~ ^[1-9][0-9]*$ ]] || fail "judge-omp: SKILL_SCENARIOS_TIMEOUT is '$omp_timeout', not a whole number of seconds"
   command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
   judge_profiles
   P=$work/judge-profiles/$kind
@@ -1868,8 +2279,9 @@ cmd_judge_omp() {
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
-  cmd_judge_image
-  docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
+  judge_image_present judge-omp
+  # shellcheck disable=SC2016 # the container's own bash expands the script's words
+  judge_docker "$((docker_timeout + omp_timeout))" run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
     "${route[@]}" \
@@ -1881,11 +2293,13 @@ cmd_judge_omp() {
       mkdir -p "$a" && cp /opt/profile/config.yml "$a"/ || exit 125
       cp /opt/key/models.yml "$a"/ || exit 125
       if [ -d /opt/profile/skills ]; then cp -r /opt/profile/skills "$a"/ || exit 125; fi
-      exec timeout "$1" "$2" "${@:3}"' - "${SKILL_SCENARIOS_TIMEOUT:-1500}" "/opt/omp/$(basename "$omp")" \
+      exec timeout "$1" "$2" "${@:3}"' - "$omp_timeout" "/opt/omp/$(basename "$omp")" \
     -p "$(<"$dir/prompt.txt")" --no-extensions "${skills[@]}" \
     --model "$judge_model" --thinking "$judge_thinking" --session-dir "$dir/sessions" </dev/null >"$dir/out.txt" 2>&1 || status=$?
   echo "exit=$status" >>"$dir/out.txt"
   rm -rf -- "$keys"
+  [ -z "$docker_late" ] ||
+    fail "judge-omp: docker run $judge_image did not end within its bound of $((docker_timeout + omp_timeout)) s: the daemon's $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT) and omp's own $omp_timeout s (SKILL_SCENARIOS_TIMEOUT)"
   return "$status"
 }
 
@@ -1893,6 +2307,49 @@ cmd_judge_omp() {
 cmd_judge() {
   [ $# -ge 1 ] || fail "usage: rig.sh judge <run dir>..."
   SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
+}
+
+# g GIT-ARG... runs git in the fixture's source repository, $R/src, as the fixture's author, with
+# fixture_when (fixture_repo) as the date of the author and of the committer, so a run's commits
+# are the same in every run of its index and its batch's start.
+g() {
+  GIT_AUTHOR_DATE=$fixture_when GIT_COMMITTER_DATE=$fixture_when \
+    git -C "$R/src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
+}
+
+# fixture_repo INDEX START makes the part of a worker's world that every fixture below shares,
+# under $R: a bare remote whose post-receive hook logs every push to $R/pushes.log, the source
+# repository $R/src (g) with its `init` commit pushed to worker_base, and the issue workspace $R/ws cloned
+# from the remote. Its commits are dated INDEX seconds after START, the batch's start
+# (fixture_when), so no two runs of a batch share a head (two runs can meet in a scratch file in the
+# shared /tmp), and each batch's heads carry its own start time. The workspace is isolated from the
+# operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox that runs it): a bare
+# JJ_CONFIG, $R/jj-setup.toml, naming only fsmonitor.backend = "none" and this fixture's own
+# identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
+# registers this run's workspace with the operator's long-running watchman.
+fixture_repo() {
+  fixture_when="@$(($2 + $1)) +0000"
+  git init -q --bare -b "$worker_base" "$R/remote.git"
+  cat >"$R/remote.git/hooks/post-receive" <<EOF
+#!/bin/sh
+while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
+EOF
+  chmod +x "$R/remote.git/hooks/post-receive"
+  git init -q -b "$worker_base" "$R/src"
+  printf '# widgets\n\nSmall CLI helpers.\n' >"$R/src/README.md"
+  g add -A && g commit -qm "init"
+  g push -q "$R/remote.git" "$worker_base"
+  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$R/jj-setup.toml"
+  JJ_CONFIG=$R/jj-setup.toml jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
+}
+
+# workspace_on BRANCH fetches the fixture's pushes into its workspace and starts the workspace's
+# working-copy change on BRANCH, the branch the worker's phase is on.
+workspace_on() {
+  (
+    cd "$R/ws" && export JJ_CONFIG=$R/jj-setup.toml &&
+      jj git fetch && jj bookmark track "$1" --remote origin && jj new "$1"
+  ) >/dev/null 2>&1
 }
 
 # worker_routes PR prints the routes the gh stand-in answers the tester's world from
@@ -1926,13 +2383,11 @@ worker_routes() {
 }
 
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
-# run_tester_proof files first): a bare remote whose post-receive hook logs every push, the issue
-# workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves
-# (worker_routes), and the implementer's handoff body at $R/implement.json, which run_tester_proof
-# records on the issue. The fixture's content is the same in every run; the PR number is 1000 plus
-# <index>, the run's index in its batch, and the commits are dated <index> seconds after <start>,
-# the batch's start, so no two runs of a batch share a PR number or a head (two runs can meet in a
-# scratch file in the shared /tmp), and each batch's heads carry its own start time.
+# run_tester_proof files first): fixture_repo's, the implementer's commit on legion/<key>, the PR
+# the gh stand-in serves (worker_routes), and the implementer's handoff body at $R/implement.json,
+# which run_tester_proof records on the issue. The fixture's content is the same in every run; the
+# PR number is 1000 plus <index>, the run's index in its batch, so no two runs of a batch share a
+# PR number.
 # The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
 # holds the check that the implementer's seeded result and the tester's own run are against.
 # testerProof fails a run that
@@ -1940,41 +2395,28 @@ worker_routes() {
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail.
 worker_fixture() {
-  local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config pr
+  local index=$1 start=$2 C1 body worker_pr worker_pr_url pr
   worker_pr=$((1000 + index))
   worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
-  when="@$((start + index)) +0000"
-  git init -q --bare -b "$worker_default_branch" "$R/remote.git"
-  cat >"$R/remote.git/hooks/post-receive" <<EOF
-#!/bin/sh
-while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
-EOF
-  chmod +x "$R/remote.git/hooks/post-receive"
-  src=$R/src
-  git init -q -b "$worker_default_branch" "$src"
-  g() {
-    GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when \
-      git -C "$src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
-  }
-  printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
-  g add -A && g commit -qm "init"
-  g push -q "$R/remote.git" "$worker_default_branch"
+  fixture_repo "$index" "$start"
   g checkout -qb "legion/$worker_key"
-  cat >"$src/greet.ts" <<'EOF'
-export function greet(name: string): string {
-  return `Hello, ${name.trim()}!`;
-}
-
-if (import.meta.main) {
-  const name = Bun.argv[2];
-  if (name === undefined || name.trim() === "") {
-    console.error("usage: greet.ts <name>");
-    process.exit(2);
-  }
-  console.log(greet(name));
-}
-EOF
-  cat >"$src/greet.test.ts" <<'EOF'
+  # printf rather than a here-document: a line that is `}` alone would end this function for the
+  # tests' reading of it (scripts/e2e/lib/script-functions.ts).
+  # shellcheck disable=SC2016 # TypeScript, written as it stands
+  printf '%s\n' \
+    'export function greet(name: string): string {' \
+    '  return `Hello, ${name.trim()}!`;' \
+    '}' \
+    '' \
+    'if (import.meta.main) {' \
+    '  const name = Bun.argv[2];' \
+    '  if (name === undefined || name.trim() === "") {' \
+    '    console.error("usage: greet.ts <name>");' \
+    '    process.exit(2);' \
+    '  }' \
+    '  console.log(greet(name));' \
+    '}' >"$R/src/greet.ts"
+  cat >"$R/src/greet.test.ts" <<'EOF'
 import { expect, test } from "bun:test";
 import { greet } from "./greet";
 
@@ -1996,14 +2438,7 @@ EOF
   # implementer ran is no part of it: seed.ts implement-handoff records that as a result against the
   # issue's check k1.
   jq -n --arg head "$C1" '{head:$head}' >"$R/implement.json"
-  # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
-  # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
-  # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
-  # registers this run's workspace with the operator's long-running watchman.
-  jj_setup_config=$R/jj-setup.toml
-  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
-  JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
-  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
+  workspace_on "legion/$worker_key"
   body="Dispatch: $worker_key
 
 Adds \`greet(name)\` and \`bun greet.ts <name>\`.
@@ -2019,7 +2454,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 
 **Chain:** not stacked."
   pr=$(jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --arg base "$worker_default_branch" --argjson number "$worker_pr" '
+    --arg key "$worker_key" --arg base "$worker_base" --argjson number "$worker_pr" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
      headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
      reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:$base},
@@ -2045,53 +2480,43 @@ handoff_line() {
   printf '%s\n' "${line//"{issue}"/"$3"}"
 }
 
-run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port pr head version handoff
-  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
-  # reads and whose newest test record it writes.
-  own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
-  worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
-  version=$(jq -r .implement.version "$R/fixture.json")
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
-  # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
-  # record in (handoff_line).
-  handoff=$(handoff_line implement "$version" "$worker_key")
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. %s Test it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$handoff" >"$R/prompt.txt"
+# legion_session ROLE [PHASE] runs $R/prompt.txt as the Legion worker ROLE of the run's issue
+# (worker_key), in the pane the label checkout's daemon would give it, against a daemon stand-in
+# whose state holds the issue on the world's repository and default branch (rig-world.json's).
+# PHASE is the issue's phase for a role that works none (the architect, whose stand-in state
+# document carries it); a phase worker's is the one its role works.
+legion_session() {
+  local role=$1 phase=${2:-} state project port
   state=$R/state
   # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
-  # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's
-  # hyphens go and `r` separates it from the run number.
-  project=skills${P##*/}r$n
-  project=${project//-/}
+  # A project token is lower-case letters and digits only (isLegionProjectToken); this one is the
+  # run directory's own random name, cut to 12 digits: the token is in the agent's environment, its
+  # role topics and its state paths, so it names neither the label nor the run's number.
+  project=p${R##*/}
+  project=${project:0:13}
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" tester \
-    "$worker_repo" "$worker_default_branch"
-  await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role" \
+    "$worker_repo" "$worker_base" ${phase:+"$phase"}
+  await_start daemon "$daemon_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
   standins
-  # The pane the label's checkout's daemon would give the tester, over the base every agent gets:
+  # The pane the label's checkout's daemon would give the role, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh.
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
-  tester_pane
-  launch "$name"
-  # What the run left on its issue: every handoff record, each with its body, for testerProof.
-  seed_ts capture-handoffs "$R/fixture.json" "$R"
+  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
+  role_pane
+  launch
 }
 
-# tester_pane writes the tester's pane, $R/pane.env: worker.env (worker-pane.ts's), the batch's
-# services, the run's own Dispatch, and git, jj and gh as the tester's. The services carry the
+# role_pane writes the role's pane, $R/pane.env: worker.env (worker-pane.ts's), the batch's
+# services, the run's own Dispatch, and git, jj and gh as the role's. The services carry the
 # batch's NATS URL, which can hold a credential, so the pane is its owner's alone (owner_only).
-tester_pane() {
+role_pane() {
   {
     cat "$R/worker.env" "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
@@ -2102,6 +2527,34 @@ tester_pane() {
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
   } | owner_only "$R/pane.env"
+}
+
+# tester_prompt PR HEAD writes $R/prompt.txt: the architect's assignment of a tester, with the
+# Handoff line the daemon's task names the predecessor's record in (handoff_line), naming the
+# implement record in $R/fixture.json.
+tester_prompt() {
+  local version handoff
+  version=$(jq -r .implement.version "$R/fixture.json")
+  handoff=$(handoff_line implement "$version" "$worker_key")
+  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. %s Test it and finish your phase.\n' \
+    "$worker_key" "$1" "https://github.com/$worker_repo/pull/$1" "$worker_repo" "$2" "$handoff" >"$R/prompt.txt"
+}
+
+run_tester_proof() {
+  local index=$1 start=$2 pr head
+  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
+  # reads and whose newest test record it writes.
+  own_dispatch project
+  seed_ts tester-proof "$R/fixture.json"
+  worker_key=$(jq -r .issue "$R/fixture.json")
+  # Called on its own, never as the left side of `||`, which would turn errexit off inside it.
+  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
+  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  tester_prompt "$pr" "$head"
+  legion_session tester
+  # What the run left on its issue: every handoff record, each with its body, for testerProof.
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
 # ---- The scored scenarios: a label's own texts, and an owner in RPC mode ----
@@ -2126,7 +2579,7 @@ label_texts() {
   LEGION_TEST_PG_DSN=$pg_url bash "$co/packages/pi-legion/scripts/skill-scenarios/label-texts.sh" "$@" >>"$log" 2>&1 && return 0
   why=$(grep -m1 -E '^[[:space:]]+[a-z_]+_test\.go:[0-9]+: ' "$log" | sed 's/^[[:space:]]*//') ||
     why=$(tail -n 1 "$log")
-  fail "label-texts.sh $1 of label ${P##*/} failed: $why; see $log"
+  fail "label-texts.sh $1 of the label at $co failed: $why; see $log"
 }
 
 # owner_walk_case prints the case SKILL_SCENARIOS_OWNER_WALK_CASE names, and fails, naming every
@@ -2246,8 +2699,9 @@ pod_standins() {
   done
 }
 
-# scored_session runs the owner of owner-walk's world, seeded by seed.ts owner-walk into
-# $R/fixture.json, on the label's own texts (the header's "An owner's run").
+# scored_session NAME runs the owner of owner-walk's world, seeded by seed.ts owner-walk into
+# $R/fixture.json, on the label's own texts (the header's "An owner's run"), for the run NAME, whose
+# label's built-from the map holds (<work>/maps/built-from/NAME).
 scored_session() {
   local fixture=$R/fixture.json texts=$R/texts owner tree_root phase port guidance='' file i
   mkdir -p "$texts" "$R/state" "$R/secrets"
@@ -2268,12 +2722,12 @@ scored_session() {
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/secrets/boot" "${owner_walk_project,,}" "$owner" architect \
     "$(jq -r .repository "$texts/world-request.json")" "$(jq -r .defaultBranch "$texts/world-request.json")" "$phase" \
     --tree "$tree_root" --issues "$texts/issues.json" --label "$co" --dispatch "http://127.0.0.1:$dispatch_port" "$work/services/dispatch-token"
-  await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
+  await_start daemon "$daemon_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   # The agent's Dispatch: the proxy, which answers the plans read with the recorded answer.
   start_process proxy bun "$here/dispatch-proxy.ts" 0 "http://127.0.0.1:$dispatch_port" "$R/dispatch-proxy.jsonl" \
     --plans "$R/plans-answer.json" "$owner_walk_project"
-  await_start proxy "$proxy_pid" 30 "the Dispatch proxy to listen" grep -q '^listening on ' "$R/logs/proxy.log"
+  await_start proxy "$proxy_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the Dispatch proxy to listen" grep -q '^listening on ' "$R/logs/proxy.log"
   # The pane, and the launch through the label's composer and runtime.
   base_env
   standins
@@ -2285,9 +2739,9 @@ scored_session() {
   owner_launch "http://127.0.0.1:$port" "$guidance"
   cp "$(jq -r .systemPromptFile "$texts/launch-answer.json")" "$R/system-prompt.md"
   # The model stand-in, for a label whose model line names it.
-  if grep -qxF "model $model_standin" "$R/built-from"; then
+  if grep -qxF "model $model_standin" "$maps/built-from/$1"; then
     start_process model bun "$here/model-standin.ts" "$R/model-standin.jsonl"
-    await_start model "$model_pid" 30 "the model stand-in to listen" grep -q '^listening on ' "$R/logs/model.log"
+    await_start model "$model_pid" "${SKILL_SCENARIOS_TIMEOUT:-1500}" "the model stand-in to listen" grep -q '^listening on ' "$R/logs/model.log"
     route_model_standin "$R/home" "$profile" "$(sed -n 's|^listening on ||p' "$R/logs/model.log")"
   fi
   # The turns: each start task the world queued for the owner, then the form's questions.
@@ -2303,14 +2757,15 @@ scored_session() {
   seed_ts capture-scored "$fixture" "$R"
 }
 
-# run_owner_walk NAME CASE: an owner-walk run of the case CASE (<kind>-<form>-<family>). The recorded
-# plans answer and its source (SKILL_SCENARIOS_PLANS_ANSWER) go into the run, owner-walk.ts writes
-# its world.json (and its guidance's two models, from SKILL_SCENARIOS_GUIDANCE_MODELS, for forms A,
-# C and D), the gh stand-in serves E1's pull request, and seed.ts owner-walk files the world on the
-# run's own Dispatch, from the label's run-server.sh. Then scored_session.
+# run_owner_walk NAME CASE LABEL: an owner-walk run NAME of the case CASE (<kind>-<form>-<family>)
+# under LABEL. The recorded plans answer and its source (SKILL_SCENARIOS_PLANS_ANSWER) go into the
+# run, owner-walk.ts writes its world.json (and its guidance's two models, from
+# SKILL_SCENARIOS_GUIDANCE_MODELS, for forms A, C and D), the gh stand-in serves E1's pull request,
+# and seed.ts owner-walk files the world on the run's own Dispatch, from the label's run-server.sh.
+# Then scored_session.
 run_owner_walk() {
   local case=$2 kind form models=() plans=${SKILL_SCENARIOS_PLANS_ANSWER:-}
-  require_label_texts "$co" "${P##*/}"
+  require_label_texts "$co" "$3"
   [ -n "$plans" ] && [ -f "$plans/plans-answer.json" ] && [ -f "$plans/plans-answer.source" ] ||
     fail "SKILL_SCENARIOS_PLANS_ANSWER '$plans' holds no plans-answer.json and plans-answer.source: run \`rig.sh plans-capture <checkout> <dir>\` first"
   cp "$plans/plans-answer.json" "$plans/plans-answer.source" "$R/"
@@ -2327,7 +2782,7 @@ run_owner_walk() {
   cp "$here/worlds/owner-walk/fixtures.json" "$R/fixtures.json"
   own_dispatch project "$co"
   seed_ts owner-walk "$R/fixture.json" "$kind" "$R/plans-answer.json"
-  scored_session
+  scored_session "$1"
 }
 
 # Where a label manifest's patch and text files are named from (controls/patches/README.md).
@@ -2528,7 +2983,7 @@ decode_plans_answer() {
 # scored_count LABEL CASE prints how many runs of CASE under LABEL hold a scored row.
 scored_count() {
   local dir n=0
-  for dir in "$work/runs/owner-walk-$2-$1-"*; do
+  for dir in "$maps/runs/owner-walk-$2-$1-"*; do
     [[ ${dir##*/} =~ ^owner-walk-$2-$1-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
     [ "$(jq -r .outcome "$dir/row.json")" != scored ] || n=$((n + 1))
   done
@@ -2538,15 +2993,17 @@ scored_count() {
 # score_scored_run NAME scores the scored scenario's run NAME (`score.ts runs --run`), which
 # writes its row.json.
 score_scored_run() {
-  bun "$here/score.ts" runs "$work/runs" --run "$1" >/dev/null || fail "score.ts runs --run $1 failed"
+  bun "$here/score.ts" runs "$maps/runs" --run "$1" >/dev/null || fail "score.ts runs --run $1 failed"
 }
 
 # scored_rig_error NAME LABEL CASE REASON writes the row of a run the rig failed (RigErrorRow),
 # with the rig's own reason, beside rig-error.txt, which keeps `rig.sh score` from scoring it again.
+# It writes them in the run's own directory, or, for a run that failed before it had one, in a new
+# directory the map names NAME (map_run).
 scored_rig_error() {
-  local dir=$work/runs/$1 reason=${4#skill-scenarios: }
+  local dir=$maps/runs/$1 reason=${4#skill-scenarios: }
   [ -n "$reason" ] || reason="rig.sh run failed and named no reason"
-  mkdir -p "$dir"
+  [ -L "$dir" ] || map_run "$1" >/dev/null
   printf '%s\n' "$reason" >"$dir/rig-error.txt"
   jq -cn --arg run "$1" --arg label "$2" --arg case "$3" --arg error "the rig failed the run: $reason" \
     '{outcome: "rig-error", run: $run, scenario: "owner-walk", label: $label, case: $case, error: $error}' >"$dir/row.json"
@@ -2574,19 +3031,19 @@ scored_index=0
 # batch_scored_cell SCENARIO LABEL CASE COUNT launches runs of CASE under LABEL (scored_attempt)
 # until COUNT of them hold a scored row, and stops the cell at three times COUNT launches, or at
 # SKILL_SCENARIOS_LAUNCHES when it is set (the header), where it prints UNKNOWN: a cell short of
-# its count is never a pass. The runs of the cell already in
-# $work/runs, each with its row, count as launches too: a restarted Job counts the runs rig.sh
-# restore-stored put back. A run its store does not hold, one lost to an eviction mid-run or whose
-# pack or put failed, is not counted, so a Job that restarts can launch more than three times its
-# count in all. The count runs without RT_STORE too: in a work directory that already holds runs
-# of the cell, those runs are among its launches.
+# its count is never a pass. The runs of the cell the map already names ($maps/runs), each with its
+# row, count as launches too: a restarted Job counts the runs rig.sh restore-stored put back. A run
+# its store does not hold, one lost to an eviction mid-run or whose pack or put failed, is not
+# counted, so a Job that restarts can launch more than three times its count in all. The count runs
+# without RT_STORE too: in a work directory that already holds runs of the cell, those runs are
+# among its launches.
 batch_scored_cell() {
   local scenario=$1 label=$2 case=$3 count=$4 launches=0 dir most=$((3 * $4)) cap="three times its count"
   if [ -n "${SKILL_SCENARIOS_LAUNCHES:-}" ]; then
     most=$SKILL_SCENARIOS_LAUNCHES
     cap="SKILL_SCENARIOS_LAUNCHES"
   fi
-  for dir in "$work/runs/$scenario-$case-$label-"*; do
+  for dir in "$maps/runs/$scenario-$case-$label-"*; do
     [[ ${dir##*/} =~ ^$scenario-$case-$label-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
     launches=$((launches + 1))
   done
@@ -2617,25 +3074,37 @@ batch_scored_cell() {
 # launch's texts/launch-request.json and texts/launch-answer.json, which can carry the batch's NATS
 # URL with its credential. The scorer reads none of them.
 
-# store_scored_run NAME stores the run NAME, when RT_STORE is set. A failed pack or put is noted and
-# stops neither the batch nor the run's count in this pod. After a failed pack or a failed put of
-# it, its row is not stored, so no restart counts the run; at download (cmd_check_stored) a run
-# whose object the log names and the download lacks is a rig error.
+# store_scored_run NAME stores the run NAME, when RT_STORE is set: the directory the map names NAME
+# ($maps/runs/NAME, a link to the run's directory under $work/runs, map_run), packed under NAME.
+# The map's link is resolved once, and find and tar then read the run's own directory, following no
+# link (find's default, tar with no --dereference), and tar names each member under NAME
+# (--transform). So a listed file that a process still running swaps for a link between the list
+# and the pack is packed as that link, which restore-stored refuses (pack_problem), never as what
+# it points at. A failed pack or put is noted and stops neither the batch nor the run's count in
+# this pod. After a failed pack or a failed put of it, its row is not stored, so no restart counts
+# the run; at download (cmd_check_stored) a run whose object the log names and the download lacks
+# is a rig error.
 store_scored_run() {
   [ -n "${RT_STORE:-}" ] || return 0
   local name=$1 pack=$work/stored/$1.tar.gz row=$work/stored/$1.row.json list=$work/stored/$1.list
-  local hex left
+  local hex left dir parent base
   mkdir -p "$work/stored"
   rm -f -- "$pack" "$row" "$list"
-  (cd "$work/runs" && find "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
-    -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
+  dir=$(readlink -f -- "$maps/runs/$name") || dir=
+  if [ ! -d "$dir" ]; then
+    note "the map's link of $name names no directory, so the run is not stored"
+    return 0
+  fi
+  parent=${dir%/*} base=${dir##*/}
+  (cd "$parent" && find "$base" \( -type d \( -name home -o -name secrets \) -o -path "$base/pane.env" \
+    -o -path "$base/texts/launch-request.json" -o -path "$base/texts/launch-answer.json" \) -prune \
     -o \( -type d -o -type f \) -print0) >"$list"
-  left=$(cd "$work/runs" && find "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
-    -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
+  left=$(cd "$parent" && find "$base" \( -type d \( -name home -o -name secrets \) -o -path "$base/pane.env" \
+    -o -path "$base/texts/launch-request.json" -o -path "$base/texts/launch-answer.json" \) -prune \
     -o ! -type d ! -type f -printf '%P\n' | LC_ALL=C sort)
   [ -z "$left" ] ||
     note "the pack of $name leaves out $(grep -c . <<<"$left") entries that are no regular file or directory: $(paste -sd' ' <<<"$left")"
-  if ! tar -czf "$pack" -C "$work/runs" --no-recursion --hard-dereference --null -T "$list"; then
+  if ! tar -czf "$pack" -C "$parent" --transform "s|^$base|$name|" --no-recursion --hard-dereference --null -T "$list"; then
     note "the pack of $name failed, so the run is not stored"
     rm -f -- "$pack" "$list"
     return 0
@@ -2649,7 +3118,7 @@ store_scored_run() {
     return 0
   fi
   rm -f -- "$pack"
-  jq -c --arg pack "$hex" '. + {pack: $pack}' "$work/runs/$name/row.json" >"$row"
+  jq -c --arg pack "$hex" '. + {pack: $pack}' "$maps/runs/$name/row.json" >"$row"
   "$RT_STORE" put "$row" "runs/$name.row.json" </dev/null || note "the store of runs/$name.row.json failed"
   rm -f -- "$row"
 }
@@ -2712,24 +3181,24 @@ same_row() {
 }
 
 # cmd_restore_stored SCENARIO (the header): each run of SCENARIO whose row an earlier pod of the
-# same Job stored, put back into $work/runs. Its row is fetched first, then the pack it names; the
-# pack must be of the row's sha256, pass pack_problem, unpack into a fresh directory, and hold the
-# row's own row.json. Each get prints its object's sha256, so the Job's log names every object a
-# cell counts. A run already in $work/runs is left. A failed list or get, or a pack refused, ends
-# the restore and the Job: a pod that cannot read its store would run again, and store over, the
-# names it already holds.
+# same Job stored, put back as a run directory the map names (map_run). Its row is fetched first,
+# then the pack it names; the pack must be of the row's sha256, pass pack_problem, unpack into a
+# fresh directory, and hold the row's own row.json. Each get prints its object's sha256, so the
+# Job's log names every object a cell counts. A run the map already names is left. A failed list
+# or get, or a pack refused, ends the restore and the Job: a pod that cannot read its store would
+# run again, and store over, the names it already holds.
 cmd_restore_stored() {
   [ $# = 1 ] || fail "usage: rig.sh restore-stored <scenario>"
   [ -n "${RT_STORE:-}" ] || fail "restore-stored reads the Job's store, and RT_STORE is unset: legion-remote-test.sh --store-key sets it"
-  local names name run listed=0 restored=0 here_dir problem want hex fresh
+  local names name run listed=0 restored=0 here_dir problem want hex fresh dest
   names=$("$RT_STORE" list runs/ </dev/null) || fail "the store's list of runs/ failed"
-  mkdir -p "$work/runs" "$work/stored"
+  mkdir -p "$work/stored"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     listed=$((listed + 1))
     [[ $name =~ ^runs/($1-[A-Za-z0-9_-]+)\.row\.json$ ]] || continue
     run=${BASH_REMATCH[1]}
-    [ ! -e "$work/runs/$run" ] || continue
+    [ ! -L "$maps/runs/$run" ] && [ ! -e "$maps/runs/$run" ] || continue
     here_dir=$work/stored/$run
     rm -rf -- "$here_dir"
     mkdir -p "$here_dir"
@@ -2744,7 +3213,9 @@ cmd_restore_stored() {
     [ -z "$problem" ] || fail "runs/$run.tar.gz $problem"
     fresh=$(unpack_fresh "$here_dir/pack.tar.gz" "$run" "$here_dir")
     same_row "$here_dir/row.json" "$fresh/$run/row.json" || fail "runs/$run.tar.gz's row.json is not the row stored beside it"
-    mv -- "$fresh/$run" "$work/runs/$run"
+    dest=$(map_run "$run")
+    rmdir -- "$dest"
+    mv -- "$fresh/$run" "$dest"
     rm -rf -- "$here_dir"
     restored=$((restored + 1))
   done <<<"$names"
@@ -3051,6 +3522,7 @@ cmd_batch_scored() {
   shift 2
   for label in "$@"; do
     load_label "$label"
+    hidden_needs_heads "$label" "$scenario"
     require_label_texts "$co" "$label"
   done
   lock_services
@@ -3071,11 +3543,11 @@ cmd_batch_scored() {
 # arguments reaches it, and a host reached through a variable, an encoding or a file is not listed.
 cmd_rows() {
   local dir rows=()
-  for dir in "$work/runs/${1:-owner-walk}"-*; do
+  for dir in "$maps/runs/${1:-owner-walk}"-*; do
     [ ! -f "$dir/row.json" ] || rows+=("$dir/row.json")
   done
   if [ ${#rows[@]} = 0 ]; then
-    note "no run of ${1:-owner-walk} under $work/runs holds a row.json"
+    note "no run of ${1:-owner-walk} under $maps/runs holds a row.json"
     return 0
   fi
   for dir in "${rows[@]}"; do printf 'row %s\n' "$(jq -c . "$dir")"; done
@@ -3090,21 +3562,22 @@ cmd_rows() {
 # control's count, with the verdict cells gives it (pass when fewer than its bound pass its clause).
 cmd_cell() {
   [ $# = 4 ] || fail "usage: rig.sh cell <scenario> <label> <case> <count>"
-  bun "$here/score.ts" cell "$work/runs" "$1" "$owner_walk_stage" "$2" "$3" "$4"
+  bun "$here/score.ts" cell "$maps/runs" "$1" "$owner_walk_stage" "$2" "$3" "$4"
 }
 
 # cmd_evidence [SCENARIO] prints the evidence of a scenario's runs as Markdown: the rig's commit,
-# each label's built-from, the cells (`score.ts cells`), and each run's model and row.
+# each label's built-from, the cells (`score.ts cells`), and each run's model and row, each label
+# and run under the name the map gives it.
 # shellcheck disable=SC2016 # the backticks are Markdown's fences, not substitutions
 cmd_evidence() {
   local scenario=${1:-owner-walk} dir
   printf '# Scored runs of %s\n\nThe rig: %s\n\n## Labels\n' "$scenario" "$(checkout_commit "$root")"
-  for dir in "$work/profiles"/*/; do
+  for dir in "$maps/profiles"/*/; do
     [ -f "$dir/built-from" ] || continue
     printf '\n### %s\n\n```text\n%s\n```\n' "$(basename -- "$dir")" "$(<"$dir/built-from")"
   done
-  printf '\n## Cells\n\n```json\n%s\n```\n\n## Runs\n' "$(bun "$here/score.ts" cells "$work/runs" "$scenario" 2>&1)"
-  for dir in "$work/runs/$scenario"-*/; do
+  printf '\n## Cells\n\n```json\n%s\n```\n\n## Runs\n' "$(bun "$here/score.ts" cells "$maps/runs" "$scenario" 2>&1)"
+  for dir in "$maps/runs/$scenario"-*/; do
     [ -f "$dir/row.json" ] || continue
     printf '\n### %s\n\nModel: %s\n\n```json\n%s\n```\n' "$(basename -- "$dir")" \
       "$(paste -sd' ' "$dir/model.txt" 2>/dev/null || echo none)" "$(jq . "$dir/row.json")"
@@ -3117,64 +3590,498 @@ cmd_evidence() {
 cmd_score() {
   local scenario=${1:-} dir names=()
   if [ "$scenario" != owner-walk ]; then
-    bun "$here/score.ts" runs "$work/runs" "$@" || return
+    bun "$here/score.ts" runs "$maps/runs" "$@" || return
     [ -z "$scenario" ] || return 0
   fi
-  for dir in "$work/runs"/owner-walk-*/; do
+  for dir in "$maps/runs"/owner-walk-*/; do
     [ -d "$dir" ] || continue
     names+=("$(basename -- "$dir")")
   done
   if [ ${#names[@]} = 0 ]; then
-    [ -z "$scenario" ] || note "no owner-walk run under $work/runs"
+    [ -z "$scenario" ] || note "no owner-walk run under $maps/runs"
     return 0
   fi
   for dir in "${names[@]}"; do
-    [ -f "$work/runs/$dir/rig-error.txt" ] || score_scored_run "$dir"
+    [ -f "$maps/runs/$dir/rig-error.txt" ] || score_scored_run "$dir"
   done
   cmd_rows owner-walk
-  bun "$here/score.ts" cells "$work/runs" owner-walk
+  bun "$here/score.ts" cells "$maps/runs" owner-walk
+}
+
+# heads_fixture INDEX START is the world of the heads scenarios (reviewer-own-head,
+# reviewer-pass-and-fail, architect-pass-and-fail) under $R, on the run's own issue <key>
+# (worker_key, which seed.ts heads-issue files first): fixture_repo's, and two pull request
+# branches of the issue, legion/<key>-702 and legion/<key>-703, each one docs-only commit on the base,
+# so the reviewer runs no thermonuclear pair. #702 adds docs/usage.md, which the issue's check k1
+# reads; #703 points the README at that page and adds none. Both are pushed, and the workspace is
+# on legion/<key>-702. It writes $R/heads.json, each branch's head by its pull request's number,
+# which seed.ts heads-events reads, and $R/world.json, the world the scorer reads, in
+# worker_fixture's shape, with pr 702 and #702's head.
+heads_fixture() {
+  local pr head heads='{}'
+  fixture_repo "$1" "$2"
+  g checkout -qb "legion/$worker_key-702" "$worker_base"
+  mkdir -p "$R/src/docs"
+  # shellcheck disable=SC2016 # Markdown, written as it stands
+  printf '# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n' >"$R/src/docs/usage.md"
+  g add -A && g commit -qm "docs: the usage page of the widgets CLI ($worker_key)"
+  g checkout -qb "legion/$worker_key-703" "$worker_base"
+  printf '\nUsage: see docs/usage.md.\n' >>"$R/src/README.md"
+  g add -A && g commit -qm "docs: point the README at the usage page ($worker_key)"
+  for pr in 702 703; do
+    head=$(g rev-parse "legion/$worker_key-$pr")
+    g push -q "$R/remote.git" "legion/$worker_key-$pr"
+    heads=$(jq -c --arg pr "$pr" --arg head "$head" '. + {($pr): $head}' <<<"$heads")
+  done
+  : >"$R/pushes.log"
+  printf '%s\n' "$heads" >"$R/heads.json"
+  workspace_on "legion/$worker_key-702"
+  jq -n --arg key "$worker_key" --arg repo "$worker_repo" --arg head "$(jq -r '."702"' "$R/heads.json")" \
+    '{key:$key, repo:$repo, pr:702, branch:("legion/" + $key + "-702"), head:$head}' >"$R/world.json"
+}
+
+# fixture_heads HEAD waits for the run's Dispatch to know the head of pull request #HEAD of the
+# run's issue: it runs the label checkout's `dispatch results --issue <issue>` on the run's own
+# Dispatch every 2 s, at most 31 times (60 s), until its output holds a line that starts
+# `  - #HEAD at `, the line `dispatch results` prints for each open head under a check. It writes
+# the last output to $R/results-before.txt either way. With no such line it fails the run, naming
+# the head and the file, and the run starts no agent. The command refuses a call that names no
+# host and no session (`DISPATCH_HOST is not set`), so this read names the host `omp` and a session
+# of its own, rig-fixture-heads, which writes nothing.
+fixture_heads() {
+  local out=$R/results-before.txt attempt
+  for ((attempt = 1; ; attempt++)); do
+    DISPATCH_URL=http://127.0.0.1:$dispatch_port DISPATCH_TOKEN_FILE=$work/services/dispatch-token \
+      DISPATCH_HOST=omp DISPATCH_SESSION_ID=rig-fixture-heads \
+      bun "$co/packages/envoy-client/bin/dispatch.ts" results --issue "$worker_key" >"$out" 2>&1 || true
+    ! grep -q "^  - #$1 at " "$out" || return 0
+    [ "$attempt" -lt 31 ] || break
+    sleep 2
+  done
+  fail "the run's Dispatch printed no line of #$1 under a check of $worker_key within 60 s; its last answer is $out"
+}
+
+# heads_world SCENARIO INDEX START [CASE] builds the world of a run of a heads scenario, in this
+# order: the run's own NATS and GitHub stand-in (own_github) and its own Dispatch, which reads both
+# (own_dispatch); its issue (seed.ts heads-issue), whose key names the fixture's branches
+# (heads_fixture); the opened events of the pull requests, the case's results and the handoff
+# records (seed.ts heads-events), which read those branches' heads; in ci-pass-and-fail, the CI
+# job's own pass and fail of k1 at #702's head (ci_job_results); and the wait for the run's
+# Dispatch to know #702's head (fixture_heads). With SKILL_SCENARIOS_FIXTURE_ONLY=1 it then writes
+# $R/fixture-only, and the run starts no agent.
+heads_world() {
+  local scenario=$1 index=$2 start=$3 scenario_case=${4:-}
+  own_github
+  own_dispatch project
+  seed_ts heads-issue "$R/fixture.json" "$scenario" ${scenario_case:+"$scenario_case"}
+  worker_key=$(jq -r .issue "$R/fixture.json")
+  heads_fixture "$index" "$start" >>"$R/fixture.log" 2>&1
+  seed_ts heads-events "$R/fixture.json" "$R/heads.json" "$scenario" ${scenario_case:+"$scenario_case"}
+  [ "$scenario" != ci-pass-and-fail ] || ci_job_results
+  fixture_heads 702
+  [ "${SKILL_SCENARIOS_FIXTURE_ONLY:-}" != 1 ] || : >"$R/fixture-only"
+}
+
+# ci_job_results writes, in ci-pass-and-fail, the CI job's own two results of k1 at #702's head
+# into the run's database: a pass of go-checks two minutes back and a fail now, after every record
+# of seed.ts heads-events, as two attempts of a job that a re-run made flaky leave them, while its
+# third attempt is still going (the GitHub stand-in's run of go-checks at that head is
+# `in_progress`). The route takes a result of a check CI proves only from that job's results token,
+# which the secrets broker mints for one CI run (POST /api/v1/issues/{key}/results), and the run's
+# Dispatch has no broker (start_dispatch), so the rows go into ci_check_results as
+# insertCIJobCheckResult writes them (packages/envoy/internal/dispatch/api/results_rows.go): the
+# block's version and digest, the check's surface and negative control, the run's commit and
+# branch, the job's session as the actor, an empty statement and no result.recorded event. The block
+# is k1 of the Verification document seed.ts heads-issue wrote, which Dispatch's settlement indexes
+# a moment after the upload, so the insert is tried every 2 s, at most 31 times (60 s), until it
+# writes both rows.
+ci_job_results() {
+  local database artifact head out attempt job
+  database=$(jq -r .database "$R/dispatch.json")
+  artifact=$(jq -r .verification "$R/fixture.json")
+  head=$(jq -r '."702"' "$R/heads.json")
+  # The named job of the world, rig-world.json's, which Dispatch's GitHub stand-in serves too.
+  job=$(jq -er '.ciJobs["ci-pass-and-fail"].name' "$here/rig-world.json") ||
+    fail "$here/rig-world.json names no CI job of ci-pass-and-fail"
+  for ((attempt = 1; ; attempt++)); do
+    out=$(docker exec -i "$tag-pg" psql -U postgres -d "$database" -v ON_ERROR_STOP=1 -qAt \
+      -v issue="$worker_key" -v artifact="$artifact" -v head="$head" -v branch="legion/$worker_key-702" \
+      -v job="$job" -v session="ci-results:$worker_repo/.github/workflows/ci-results.yaml" 2>&1 <<'SQL'
+with written as (
+  insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+    check_version, check_sha256, run, surface, negative_control, observed, commit_sha, branch,
+    verdict, attestation, session, actor, created_at)
+  select :'issue', :'issue', b.artifact_id, b.block_id, b.changed_version, b.text_sha256,
+    :'job', 'cli', 'Drop the line from docs/usage.md and the ' || :'job' || ' job fails.',
+    r.observed, :'head', :'branch', r.verdict, '{}'::jsonb, :'session',
+    jsonb_build_object('kind', 'session', 'id', :'session'), now() - r.ago
+  from document_blocks b
+  cross join (values
+    ('pass', 'Attempt 1 of ' || :'job' || ' passed: docs/usage.md names widgets --help.', interval '2 minutes'),
+    ('fail', 'Attempt 2 of ' || :'job' || ' failed: the runner lost its checkout before the docs check ran.', interval '0 seconds')
+  ) as r(verdict, observed, ago)
+  where b.artifact_id = :'artifact'::uuid and b.block_id = 'k1'
+  returning 1
+)
+select count(*) from written;
+SQL
+    ) || fail "the CI job's results of k1 were not written; psql answered: $out"
+    [ "$out" != 2 ] || return 0
+    [ "$attempt" -lt 31 ] || break
+    sleep 2
+  done
+  fail "the Verification document of $worker_key held no block k1 within 60 s, so the CI job's results of k1 were not written (psql answered $out)"
+}
+
+# heads_routes SCENARIO [CASE] writes the gh stand-in's routes of a heads scenario to
+# $R/fixtures.json, in the form of worker_fixture's, once fixture_heads has passed. It collects the
+# world the routes answer from, and heads-routes.ts renders it: which GitHub reads and writes the
+# routes answer, and how GitHub words each answer and each refusal, is that file's to say. The world
+# is each pull request of the scenario (#702 and #703, or #702 alone in architect-pass-and-fail and
+# ci-pass-and-fail) with its head, body, changed files, diff, URL and head commit's subject, and the
+# CI jobs at its head: two unnamed jobs that passed, and in ci-only and ci-pass-and-fail #702's named
+# job, rig-world.json's `ciJobs` entry, which Dispatch's GitHub stand-in serves too (heads-world.ts),
+# so both worlds name one job (a success in ci-only, still in progress in ci-pass-and-fail); the
+# remote's branches; the base and each head, each with its tree, message, parent, and each entry of
+# its tree with its mode, type, object and size, and a file's bytes in base64 as GitHub sends them
+# (60 characters a line); whether #702 holds the reviewer's APPROVED review, which it does in
+# architect-pass-and-fail and ci-pass-and-fail's architect case; and the time each answer is dated.
+# Each body is `Dispatch: <issue>`, then the template's two sections
+# (skills/legion-worker/references/pr-body.md): For the reviewer, with the implementer's lines
+# (Outcome, Why, Change, Proven by and Size; Look at first and Not proven are the reviewer's to
+# write), and Verification, whose Thermo line has a row for each half of the pair, each not run
+# since the change touches no runtime code, and whose one Checks line is that of k1 at that pull
+# request's head: the line Dispatch answered for the newest pass a role recorded there, or for the
+# tester's fail at #703 in sibling-fails (seed.ts heads-events keeps both in $R/fixture.json), and in
+# ci-only and ci-pass-and-fail the `Pull request line:` results-before.txt holds under the line of
+# that head; with none, `not yet run`. So no body disagrees with the results or the template, and a
+# reviewer's refusal cannot come from a body: a reviewer of a body that lacked the brief, or whose
+# k1 line quoted a command Dispatch's line had cut words from, requested changes on the body alone.
+heads_routes() {
+  local scenario=$1 scenario_case=${2:-} pr head line body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size
+  case $scenario in architect-pass-and-fail | ci-pass-and-fail) prs=(702) ;; esac
+  title=$(jq -r .title "$R/fixture.json")
+  for pr in "${prs[@]}"; do
+    head=$(jq -r --arg pr "$pr" '.[$pr]' "$R/heads.json")
+    if [ "$scenario_case" = ci-only ] || [ "$scenario" = ci-pass-and-fail ]; then
+      line=$(awk -v at="  - #$pr at " 'index($0, at) == 1 { under = 1; next }
+        under && sub(/^    Pull request line: /, "") { print; exit }
+        under && !/^    / { exit }' "$R/results-before.txt")
+    else
+      line=$(jq -r --arg pr "$pr" '.lines[$pr] // empty' "$R/fixture.json")
+    fi
+    [ -n "$line" ] || [ "$pr" != 702 ] ||
+      fail "no line of k1 at #702's head for its body: see $R/fixture.json and $R/results-before.txt"
+    case $pr in
+    702)
+      outcome='A reader of the usage page learns how to list every command of the widgets CLI.'
+      # shellcheck disable=SC2016 # Markdown, written as it stands
+      change='- The usage page names `widgets --help`.
+- It says that command lists every command of the CLI.'
+      ;;
+    *)
+      outcome='A reader of the README finds the usage page.'
+      change='- The README points a reader at the usage page.
+- The usage page itself is unchanged.'
+      ;;
+    esac
+    # The template's Size: files changed, +added/−removed.
+    size=$(git -C "$R/remote.git" diff --numstat "$worker_base" "$head" |
+      awk '{ files++; added += $1; removed += $2 } END { printf "%d file%s changed, +%d/−%d", files, files == 1 ? "" : "s", added, removed }')
+    body="Dispatch: $worker_key
+
+## For the reviewer
+
+**Outcome:** $outcome
+**Why:** Nothing told a reader how to list the commands of the widgets CLI ($worker_key).
+**Change:**
+$change
+**Proven by:** the cli check k1 of the issue's Verification document, run at this head.
+**Size:** $size
+
+## Verification
+
+**Threads:** 0 resolved, 0 unresolved.
+
+**Thermo:** \`simplify-settled-diff\` once at ${head:0:12}, a docs-only PR included: 0 applied; defects reported: none; thermonuclear pair at the reviewed head ${head:0:12} over the whole change, one row per half:
+- \`thermonuclear-deep-review\`: not run (the whole change touches no runtime code)
+- \`thermonuclear-code-quality\`: not run (the whole change touches no runtime code)
+
+**Checks:**
+${line:-- Check k1 (before_merge): not yet run}
+
+**Fast-follow:** none.
+
+**Chain:** not stacked."
+    files=$(git -C "$R/remote.git" diff --numstat "$worker_base" "$head" |
+      jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {path:.[2], additions:(.[0]|tonumber), deletions:(.[1]|tonumber)})')
+    # The world's named CI job at #702's head (rig-world.json, which Dispatch's GitHub stand-in
+    # serves too, heads-world.ts): the same check run, workflow run and suite in both worlds.
+    jobs='["lint","test"]'
+    named='[]'
+    [ "$scenario_case:$pr" != ci-only:702 ] || named=$(jq -c '[.ciJobs["ci-only"]]' "$here/rig-world.json")
+    [ "$scenario:$pr" != ci-pass-and-fail:702 ] || named=$(jq -c '[.ciJobs["ci-pass-and-fail"]]' "$here/rig-world.json")
+    pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
+      --argjson named "$named" --arg diff "$(git -C "$R/remote.git" diff "$worker_base" "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
+      --arg subject "$(git -C "$R/remote.git" log -1 --format=%s "$head")" \
+      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, named:$named, diff:$diff, url:$url, subject:$subject}]' <<<"$pulls")
+  done
+  branches=$(git -C "$R/remote.git" for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads |
+    jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {name:.[0], sha:.[1]})')
+  main=$(git -C "$R/remote.git" rev-parse "$worker_base")
+  # Each commit an agent may read the files of, the base and each head: its tree, and each entry of
+  # it with its mode, type, object and size, and a file's bytes in base64 as GitHub sends them (60
+  # characters a line). heads-routes.ts answers the contents, trees, blobs and commit reads from them.
+  local trees='[]' sha entries
+  for sha in "$main" $(jq -r '.[].head' <<<"$pulls"); do
+    entries=$(git -C "$R/remote.git" ls-tree -r -t --long "$sha" |
+      while IFS=$'\t' read -r meta path; do
+        read -r mode type object size <<<"$meta"
+        content=''
+        [ "$type" != blob ] || content=$(git -C "$R/remote.git" cat-file blob "$object" | base64 -w60)
+        jq -cn --arg path "$path" --arg mode "$mode" --arg type "$type" --arg sha "$object" --arg size "$size" \
+          --arg content "$content" '{$path, $mode, $type, $sha, size:(if $size == "-" then 0 else ($size | tonumber) end),
+            content:(if $type == "blob" then $content + "\n" else null end)}'
+      done | jq -cs .)
+    trees=$(jq -c --arg sha "$sha" --arg tree "$(git -C "$R/remote.git" rev-parse "$sha^{tree}")" \
+      --arg message "$(git -C "$R/remote.git" log -1 --format=%B "$sha")" --arg parent "$(git -C "$R/remote.git" rev-parse "$sha^" 2>/dev/null || true)" \
+      --argjson entries "$entries" '. + [{sha:$sha, tree:$tree, message:$message, parent:$parent, entries:$entries}]' <<<"$trees")
+  done
+  approved=false
+  [ "$scenario" != architect-pass-and-fail ] && [ "$scenario:$scenario_case" != ci-pass-and-fail:architect ] || approved=true
+  jq -n --argjson pulls "$pulls" --arg key "$worker_key" --arg title "$title" --arg repo "$worker_repo" \
+    --argjson approved "$approved" --argjson branches "$branches" --arg main "$main" --arg base "$worker_base" \
+    --argjson trees "$trees" --arg at "$(date -u +%FT%TZ)" \
+    '{$repo, $key, $title, $base, $main, $approved, $at, $pulls, $branches, $trees}' |
+    bun "$here/heads-routes.ts" >"$R/fixtures.json"
+}
+
+# reviewer_prompt writes $R/prompt.txt: the task the daemon gives a reviewer it starts on a tester's
+# pass (`task`, packages/daemon/internal/workflow/effects.go), word for word, naming the test record
+# seed.ts heads-events wrote, so the `Tester's verdict:` that go/reviewer.md names is in the task and
+# the record it names exists.
+reviewer_prompt() {
+  local title version handoff
+  title=$(jq -r .title "$R/fixture.json")
+  version=$(jq -r .test.version "$R/fixture.json")
+  handoff=$(handoff_line test "$version" "$worker_key")
+  printf 'Continue %s. Issue: %s. Phase: reviewing. %s Tester'"'"'s verdict: pass. Pull request: #702.\n' \
+    "$title" "$worker_key" "$handoff" >"$R/prompt.txt"
+}
+
+# A run of a -hidden label (cmd_run sets hide_state_file, a file in the map that no agent sees):
+# its Dispatch leaves each check's pass_stands and ci and each result's currency out of the results
+# answer while that file exists (start_dispatch). quiet_reads WHEN writes the three reads of the
+# results an agent can make, the label's `dispatch results`, the same with --json, and the route
+# itself with curl, to $hide_state_file.WHEN-text, -json and -curl: the rig's own record, which
+# hidden-proof.ts compares.
+quiet_reads() {
+  local cli=(env "DISPATCH_URL=http://127.0.0.1:$dispatch_port" "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+    DISPATCH_HOST=omp DISPATCH_SESSION_ID=rig-fixture-heads bun "$co/packages/envoy-client/bin/dispatch.ts" results --issue "$worker_key")
+  "${cli[@]}" >"$hide_state_file.$1-text" 2>&1 || true
+  "${cli[@]}" --json >"$hide_state_file.$1-json" 2>&1 || true
+  printf 'Authorization: Bearer %s' "$(<"$work/services/dispatch-token")" |
+    curl -sS -H @- "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/results" >"$hide_state_file.$1-curl" 2>&1 || true
+}
+
+# hide_state_on turns the switch on after the rig's own reads (fixture_heads, heads_routes) and
+# before the agent starts, with quiet_reads just before and just after, and moves
+# results-before.txt, which the run's directory and so the agent's view holds, into the map.
+# hide_state_off turns it off once the agent has ended and puts results-before.txt back for
+# score.ts; stop_run runs it too, so a run that fails with the switch on still ends with it off. In
+# a run of any other label there is no switch, and both do nothing.
+hide_state_on() {
+  [ -n "$hide_state_file" ] || return 0
+  quiet_reads before
+  : >"$hide_state_file"
+  quiet_reads after
+  mv -- "$R/results-before.txt" "$hide_state_file.results-before.txt"
+}
+hide_state_off() {
+  [ -n "$hide_state_file" ] || return 0
+  rm -f -- "$hide_state_file"
+  [ ! -e "$hide_state_file.results-before.txt" ] || mv -- "$hide_state_file.results-before.txt" "$R/results-before.txt"
+}
+
+# heads_scenario SCENARIO reads the one catalog that the proof and scorer read too.
+heads_scenario() {
+  local scenario=$1 known
+  while IFS= read -r known; do
+    [ "$known" = "$scenario" ] && return 0
+  done <"$root/packages/pi-legion/scripts/skill-scenarios/heads-scenarios.txt"
+  return 1
+}
+
+# hidden_needs_heads LABEL SCENARIO fails when LABEL ends in -hidden and SCENARIO is not a heads
+# scenario: only a heads scenario turns the switch on (hide_state_on), so a run of another would
+# show its agent all that Dispatch computes and still carry the hidden label's name.
+hidden_needs_heads() {
+  case $1 in *-hidden) ;; *) return 0 ;; esac
+  heads_scenario "$2" ||
+    fail "the label $1 hides Dispatch's computed state, but the heads-scenario catalog does not list $2"
+}
+
+# reviewer-own-head: a reviewer reviews #702 of an issue whose #703 is open too, with the case's
+# results recorded at the two heads (seed.ts heads-events). Scored by headsReview.
+run_reviewer_own_head() {
+  local index=$1 start=$2 scenario_case=$3
+  heads_world reviewer-own-head "$index" "$start" "$scenario_case"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes reviewer-own-head "$scenario_case"
+  reviewer_prompt
+  hide_state_on
+  legion_session reviewer
+  hide_state_off
+}
+
+# reviewer-pass-and-fail: a reviewer reviews #702, at whose head the tester recorded a pass, its
+# test record, and then a fail. Scored by headsReview.
+run_reviewer_pass_and_fail() {
+  local index=$1 start=$2
+  heads_world reviewer-pass-and-fail "$index" "$start"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes reviewer-pass-and-fail
+  reviewer_prompt
+  hide_state_on
+  legion_session reviewer
+  hide_state_off
+}
+
+# architect_prompt writes $R/prompt.txt: the session of the daemon's catch-up of a tree in
+# `accepting` (QueueCatchUp, packages/daemon/internal/workflow/catch_up.go) with the Handoff
+# (handoff_line) and Pull request words of the daemon's task after it, naming the review record
+# seed.ts heads-events wrote.
+architect_prompt() {
+  local version handoff
+  version=$(jq -r .review.version "$R/fixture.json")
+  handoff=$(handoff_line review "$version" "$worker_key")
+  printf 'the tree of %s at generation 1 as the daemon records it now; start or resume it as your role says; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move). %s Pull request: #702.\n' \
+    "$worker_key" "$worker_key" "$handoff" >"$R/prompt.txt"
+}
+
+# architect-pass-and-fail: the tree's root architect, in accepting (architect_prompt), judges #702,
+# at whose head the tester recorded a pass, its test record and then a fail, and the reviewer its
+# review record. Its stand-in daemon serves its sign_off and request_backward_move. Scored by
+# headsArchitect.
+run_architect_pass_and_fail() {
+  local index=$1 start=$2
+  heads_world architect-pass-and-fail "$index" "$start"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes architect-pass-and-fail
+  architect_prompt
+  hide_state_on
+  legion_session architect accepting
+  hide_state_off
+}
+
+# ci-pass-and-fail: one world for each of three roles, the run's case. k1 carries
+# ci_check="go-checks", whose job recorded a pass and then a fail at #702's head (ci_job_results)
+# while its third attempt there is still going, so `dispatch results` prints #702's line not known
+# for the pass and the fail, with the `Pull request line:` that CI run go-checks has no result
+# (not_completed) under it: the deep audit's state, in which the old texts sent each role to wait
+# for the run. The reviewer reviews #702 on the tester's pass (reviewer_prompt); the tester tests it
+# on the implementer's completion (tester_prompt), and its records are read back afterwards
+# (seed.ts capture-handoffs); the architect judges it in accepting (architect_prompt). Scored by
+# headsReview, headsTester and headsArchitect.
+run_ci_pass_and_fail() {
+  local index=$1 start=$2 role=$3
+  heads_world ci-pass-and-fail "$index" "$start" "$role"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes ci-pass-and-fail "$role"
+  case $role in
+  reviewer) reviewer_prompt ;;
+  tester) tester_prompt 702 "$(jq -r '."702"' "$R/heads.json")" ;;
+  architect) architect_prompt ;;
+  esac
+  hide_state_on
+  if [ "$role" = architect ]; then legion_session architect accepting; else legion_session "$role"; fi
+  hide_state_off
+  [ "$role" != tester ] || seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
+# map_run NAME makes a run directory of a random name, <work>/runs/<16 random hex digits>, links
+# the map's <work>/maps/runs/NAME to it (the header's map), and prints the directory.
+map_run() {
+  local dir
+  dir=$work/runs/$(openssl rand -hex 8)
+  mkdir -p "$dir" "$maps/runs"
+  ln -s -- "../../runs/${dir##*/}" "$maps/runs/$1"
+  printf '%s\n' "$dir"
 }
 
 cmd_run() {
-  [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|owner-walk> <label> <n> <index> <start>"
-  local scenario=$1 n=$3 index=$4 start=$5 name owner_case=''
-  load_label "$2"
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|owner-walk> <label> <n> <index> <start> [<case>]"
+  [ $# = 5 ] || { [ $# = 6 ] && { [ "$1" = reviewer-own-head ] || [ "$1" = ci-pass-and-fail ]; }; } || fail "$usage"
+  local scenario=$1 label=$2 n=$3 index=$4 start=$5 scenario_case=${6:-} name old owner_case=''
+  load_label "$label"
+  hidden_needs_heads "$label" "$scenario"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\` (\`rig.sh batch-scored $scenario 1 $2\` for a scored scenario)"
-  # An askgate run's name carries its case, so the batches of the cases, each numbered from 1,
-  # never remove each other's runs.
+  # An askgate, reviewer-own-head, ci-pass-and-fail or owner-walk run's name carries its case, so the
+  # batches or runs of the cases, each numbered from 1, never remove each other's runs.
   if [ "$scenario" = askgate ]; then
     case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
-      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-${P##*/}-$n
+      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-$label-$n
       ;;
     *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
     esac
+  elif [ "$scenario" = reviewer-own-head ]; then
+    case $scenario_case in
+    sibling-fails | ci-only | no-implementer | no-tester) name=$scenario-$scenario_case-$label-$n ;;
+    *) fail "the reviewer-own-head case '$scenario_case' is not sibling-fails, ci-only, no-implementer or no-tester" ;;
+    esac
+  elif [ "$scenario" = ci-pass-and-fail ]; then
+    case $scenario_case in
+    reviewer | tester | architect) name=$scenario-$scenario_case-$label-$n ;;
+    *) fail "the ci-pass-and-fail case '$scenario_case' is not reviewer, tester or architect" ;;
+    esac
   elif [ "$scenario" = owner-walk ]; then
-    # A scored run's name carries its case (score.ts runs --run reads it).
+    # A scored run's name carries its case (score.ts runs --run reads it), which
+    # SKILL_SCENARIOS_OWNER_WALK_CASE names.
     owner_case=$(owner_walk_case) || exit 1
-    name=$scenario-$owner_case-${P##*/}-$n
+    name=$scenario-$owner_case-$label-$n
   else
-    name=$scenario-${P##*/}-$n
+    name=$scenario-$label-$n
   fi
-  R=$work/runs/$name
+  # The run's directory has a random name and the map's link names the run (the header's map), so
+  # no path its agent sees names its scenario, case or label. A run of the name replaces the earlier
+  # one: its directory and its link.
+  if [ -L "$maps/runs/$name" ]; then
+    old=$(readlink -f -- "$maps/runs/$name")
+    [ "${old%/*}" != "$work/runs" ] || rm -rf -- "$old"
+    rm -f -- "$maps/runs/$name"
+  fi
+  R=$(map_run "$name")
   evidence=$R
   on_exit stop_run
-  rm -rf "$R"
-  mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"
-  cp "$P/built-from" "$R/built-from"
+  mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs" "$maps/built-from"
+  cp "$P/built-from" "$maps/built-from/$name"
+  # A run of a -hidden label: the switch of hide_state_on, a file in the map named after the run's
+  # directory, which start_dispatch hands to the run's Dispatch.
+  case $label in *-hidden)
+    mkdir -p "$maps/quiet"
+    hide_state_file=$maps/quiet/${R##*/}
+    ;;
+  esac
   case $scenario in
-  ask-on-message) run_ask_on_message "$name" ;;
-  measure-before-ask) run_measure_before_ask "$name" ;;
-  tester-proof) run_tester_proof "$name" "$n" "$index" "$start" ;;
-  brainstorm) run_brainstorm "$name" ;;
-  askgate) run_askgate "$name" ;;
-  spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;
-  owner-walk) run_owner_walk "$name" "$owner_case" ;;
+  ask-on-message) run_ask_on_message ;;
+  measure-before-ask) run_measure_before_ask ;;
+  tester-proof) run_tester_proof "$index" "$start" ;;
+  brainstorm) run_brainstorm ;;
+  askgate) run_askgate ;;
+  spec-writing | spec-rewrite) run_spec "$scenario" "$name" "$label" ;;
+  reviewer-own-head) run_reviewer_own_head "$index" "$start" "$scenario_case" ;;
+  reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" ;;
+  architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" ;;
+  ci-pass-and-fail) run_ci_pass_and_fail "$index" "$start" "$scenario_case" ;;
+  owner-walk) run_owner_walk "$name" "$owner_case" "$label" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
-  echo "$name: $(tail -n 1 "$R/out.txt")"
+  if [ -e "$R/fixture-only" ]; then echo "$name (${R##*/}): fixture only"; else echo "$name (${R##*/}): $(tail -n 1 "$R/out.txt")"; fi
+  # Each call the world had no route for (gh-standin.ts), which score.ts counts as a rig error.
+  [ ! -s "$R/no-route.log" ] || sed "s|^|$name (${R##*/}): |" "$R/no-route.log"
 }
 
 # A batch's exit: its runs (each run's shell, daemon stand-in and fixture commands), the agents they
@@ -3183,8 +4090,10 @@ cmd_run() {
 stop_batch() {
   local s sessions=()
   stop_tree "${runs_pid:-}"
+  # The batch holds the work directory's lock, so each run session on its tmux server, named after
+  # a run directory, is one of its own.
   for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); do
-    case $s in "$tag-$batch_scenario"-*) sessions+=("$s") ;; esac
+    case $s in "$tag"-*) [ ! -d "$work/runs/${s#"$tag"-}" ] || sessions+=("$s") ;; esac
   done
   for s in "${sessions[@]}"; do stop_panes "$s"; done
   stop_env_processes "$work/runs"
@@ -3192,13 +4101,17 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
-  local runs=$2 label n index=0 start parallel=${SKILL_SCENARIOS_PARALLEL:-5}
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
+  local runs=$2 label n index=0 start scenario_case cases=('') parallel=${SKILL_SCENARIOS_PARALLEL:-5}
   batch_scenario=$1
   case $batch_scenario in
-  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite) ;;
-  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, brainstorm, askgate, spec-writing or spec-rewrite, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`" ;;
+  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;;
+  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, brainstorm, askgate, spec-writing, spec-rewrite, reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail or ci-pass-and-fail, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`" ;;
   esac
+  # reviewer-own-head runs each of its four cases and ci-pass-and-fail each of its three roles, the
+  # case the last argument of each run.
+  [ "$batch_scenario" != reviewer-own-head ] || cases=(sibling-fails ci-only no-implementer no-tester)
+  [ "$batch_scenario" != ci-pass-and-fail ] || cases=(reviewer tester architect)
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
     *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
@@ -3217,24 +4130,37 @@ cmd_batch() {
     ;;
   esac
   shift 2
-  for label in "$@"; do load_label "$label"; done
+  for label in "$@"; do
+    load_label "$label"
+    hidden_needs_heads "$label" "$batch_scenario"
+  done
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
   local first=1
   case $batch_scenario in spec-writing | spec-rewrite)
     source_dir "$batch_scenario" "${SKILL_SCENARIOS_SOURCE:-}" >/dev/null
-    require_superpowers "$batch_scenario"
+    require_superpowers "$batch_scenario" "$1"
     first=$(next_run "$batch_scenario" "$1")
     ;;
   esac
   lock_services
   on_exit stop_batch
   services_up "$parallel"
+  # Each run of a heads scenario starts a natsd of its own (own_github), built here once, as
+  # scripts/e2e/verification-results.sh builds it.
+  case $batch_scenario in reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail)
+    mkdir -p "$S/bin"
+    go -C "$root/packages/envoy" build -o "$S/bin/natsd" ./internal/testnats/cmd/natsd ||
+      fail "./internal/testnats/cmd/natsd did not build"
+    ;;
+  esac
   start=$(date +%s)
   for label in "$@"; do
-    for n in $(seq "$first" $((first + runs - 1))); do
-      index=$((index + 1))
-      printf '%s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$start"
+    for scenario_case in "${cases[@]}"; do
+      for n in $(seq "$first" $((first + runs - 1))); do
+        index=$((index + 1))
+        printf '%s %s %s %s %s%s\n' "$batch_scenario" "$label" "$n" "$index" "$start" "${scenario_case:+ $scenario_case}"
+      done
     done
   done | xargs -r -P "$parallel" -L 1 bash "$here/rig.sh" run &
   runs_pid=$!
@@ -3255,6 +4181,7 @@ score) shift && cmd_score "$@" ;;
 rows) shift && cmd_rows "$@" ;;
 cell) shift && cmd_cell "$@" ;;
 evidence) shift && cmd_evidence "$@" ;;
+hidden-proof) shift && bun "$here/hidden-proof.ts" "$maps" "$@" ;;
 label-tree) shift && cmd_label_tree "$@" ;;
 unpatch-holds) shift && cmd_unpatch_holds "$@" ;;
 plans-capture) shift && cmd_plans_capture "$@" ;;

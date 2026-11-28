@@ -37,7 +37,9 @@ import (
 // (spec_check_results) or github_rate_limits, whose scope names no repository. A row of
 // spec_check_results is the record of one CI run, with its repository as the run's results token
 // named it, which the row's in-toto statement holds too: nothing updates or deletes such a row,
-// and no read selects or compares by its repository column.
+// and no read selects or compares by its repository column. The in-toto statement of a CI job's
+// result of an issue's check (ci_check_results.attestation) is such a record of its run too, and
+// the pass writes only that row's commit_repo.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -402,9 +404,25 @@ func nameLine(table, column string) repoRenameLine {
 	}
 }
 
-// citedNamed is true where a delivery pull request cites an issue URL that names the old name.
+// citedNamed is true where a pull request row, of delivery_pull_requests or of
+// pull_request_heads, cites an issue URL that names the old name.
 func citedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(attribution_cited_issues) e(url) where ` + r.urlNamed("e.url") + `)`
+}
+
+// citedWrite rewrites each cited URL of table's attribution_cited_issues in its place. A URL the
+// array then holds twice is kept once, at its first place, as delivery's citedIssues keeps each
+// URL once.
+func citedWrite(r repoRename, table string) repoRenameStep {
+	where := citedNamed(r)
+	return repoRenameStep{table: table, where: where, write: "attribution_cited_issues", sql: `
+		update ` + table + ` set attribution_cited_issues = array(
+			select cited.url from (
+				select ` + r.url.RewriteSQL("e.url") + ` as url, min(e.n) as n
+				from unnest(attribution_cited_issues) with ordinality e(url, n)
+				group by 1
+			) cited order by cited.n)
+		where ` + where}
 }
 
 // excludedNamed is true where the delivery settings exclude the old name.
@@ -419,6 +437,9 @@ var repoRenameLines = []repoRenameLine{
 	nameLine("issues", "repo"),
 	nameLine("projects", "default_repo"),
 	nameLine("check_results", "commit_repo"),
+	// A CI job's result names the repository other than the check's issue's that the record route
+	// took its commit to be of, as a role's does (check_results.commit_repo).
+	nameLine("ci_check_results", "commit_repo"),
 	{
 		// A URL links one issue (issue_external_links_url), and readers compare a link in lower
 		// case (issue_external_links_url_lower). So an old URL collides with every link whose
@@ -445,12 +466,16 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
-		fields: "pull_request_heads.repo, .url",
+		// A row stores the GitHub issues its body cites (attribution_cited_issues), which a change
+		// of an issue's links judges the row from (delivery.Attributor.LinksChanged), so they are
+		// rewritten as delivery_pull_requests' are.
+		fields: "pull_request_heads.repo, .url, .attribution_cited_issues",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				collisions(r, "pull_request_heads", "number"),
 				nameWrite(r, "pull_request_heads", "repo"),
 				urlWrite(r, "pull_request_heads", "url"),
+				citedWrite(r, "pull_request_heads"),
 			}
 		},
 	},
@@ -478,23 +503,13 @@ var repoRenameLines = []repoRenameLine{
 	// table holds the repository, so nothing collides.
 	nameLine("deploys", "repo"),
 	{
-		// Each cited URL is rewritten in its place. A URL the array then holds twice is kept once,
-		// at its first place, as delivery's citedIssues keeps each URL once.
 		fields: "delivery_pull_requests.repo, .url, .attribution_cited_issues",
 		steps: func(r repoRename) []repoRenameStep {
-			where := citedNamed(r)
 			return []repoRenameStep{
 				collisions(r, "delivery_pull_requests", "number"),
 				nameWrite(r, "delivery_pull_requests", "repo"),
 				urlWrite(r, "delivery_pull_requests", "url"),
-				{table: "delivery_pull_requests", where: where, write: "attribution_cited_issues", sql: `
-					update delivery_pull_requests set attribution_cited_issues = array(
-						select cited.url from (
-							select ` + r.url.RewriteSQL("e.url") + ` as url, min(e.n) as n
-							from unnest(attribution_cited_issues) with ordinality e(url, n)
-							group by 1
-						) cited order by cited.n)
-					where ` + where},
+				citedWrite(r, "delivery_pull_requests"),
 			}
 		},
 	},

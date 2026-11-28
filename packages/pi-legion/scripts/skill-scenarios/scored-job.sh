@@ -214,8 +214,10 @@ for name in "${selected[@]}"; do
 done
 bash "$rig" rows "$scenario"
 # A run the rig failed keeps its logs in the pod alone, and the pod keeps nothing: the last lines of
-# each, so the Job's log says why.
-for row in "$SKILL_SCENARIOS_WORK/runs/$scenario"-*/row.json; do
+# each, so the Job's log says why. A run is read through the rig's map, <work>/maps/runs/<name>,
+# which links the run's own directory: a run's directory is named by random hex digits, so that no
+# path an agent sees names its scenario or its label (rig.sh, launch).
+for row in "$SKILL_SCENARIOS_WORK/maps/runs/$scenario"-*/row.json; do
   [ -f "$row" ] && [ "$(jq -r .outcome "$row")" = rig-error ] || continue
   dir=$(dirname -- "$row")
   for log in "$dir"/logs/*.log "$dir"/daemon.log "$dir"/fixture.log "$dir"/texts/label-texts.log "$dir"/omp-stderr.txt \
@@ -225,7 +227,7 @@ for row in "$SKILL_SCENARIOS_WORK/runs/$scenario"-*/row.json; do
     tail -n 20 "$log" | sed 's/^/  /'
   done
 done
-[ -n "$one_case" ] || bun "$here/score.ts" cells "$SKILL_SCENARIOS_WORK/runs" "$scenario"
+[ -n "$one_case" ] || bun "$here/score.ts" cells "$SKILL_SCENARIOS_WORK/maps/runs" "$scenario"
 for name in "${selected[@]}"; do
   IFS=- read -r _ form _ <<<"$name"
   cell=$(bash "$rig" cell "$scenario" "$(label_of "$form")" "$name" "$(case_count "$name")")

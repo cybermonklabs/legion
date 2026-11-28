@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { removeTree } from "./remove-tree";
+import { onHookClock, spawnWithinAsync } from "./row-clock";
 
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
@@ -35,11 +35,11 @@ export type TemporaryDirectoryOptions = {
   root?: string;
   /**
    * Removes the directory in a process of its own that the `afterAll` starts and does not wait
-   * for, in place of removing it inside the `afterAll`. It is for a directory whose removal can
-   * outlast Bun's default hook limit of 5 s on a slow disk, such as a stack's working directory,
-   * which holds the binaries the stack built: Bun reports such an `afterAll` as a hook that timed
-   * out and fails the file, for a time that depends on the disk and not on the code under test.
-   * The directory can outlive its scope by the time its removal takes.
+   * for, in place of the removal the `afterAll` waits for. It is for a directory whose removal can
+   * take long on a slow disk, such as a stack's working directory, which holds the binaries the
+   * stack built: a removal the `afterAll` waits for runs on the limit the file states, and one past
+   * it fails the hook (NO_HOOK_LIMIT says how), for a time that depends on the disk and not on the
+   * code under test. The directory can outlive its scope by the time its removal takes.
    */
   removeInBackground?: boolean;
 };
@@ -103,6 +103,40 @@ export function memoryRoot(options: MemoryRootOptions = {}): string {
 export type TemporaryDirectoryMaker = (suffix?: string) => string;
 
 /**
+ * The limit each hook of this fixture gives Bun: `Infinity`, which Bun 1.4.4 reads as none
+ * whether a hook waits for a process through `Bun.spawnSync` or awaits the `exited` of a
+ * `Bun.spawn`, as these hooks do. A limit of 0 is not the same: under it a hook that awaits a
+ * `Bun.spawn`'s `exited` ends at about 5 s with no failure, and Bun kills the process as a
+ * dangling one, while a hook that runs `Bun.spawnSync` waits for the process's end (a probe of
+ * each form, for an afterEach and an afterAll, with a process of 7 s).
+ *
+ * What a hook waits for is the removal, and the removal runs as a process of its own
+ * (`remove-trees.ts`) through spawnWithinAsync, on a clock of its own at the limit the running
+ * file states (`onHookClock` of `row-clock.ts`): a removal that ends passes however slow the disk,
+ * and one that never ends is killed within the file's limit and fails its hook naming the
+ * directories it was removing. A file that states no limit gives the removal no clock: in CI a
+ * removal there that never ends is stopped by the job's own timeout, and its folder is not named.
+ * The hook awaits the process, so a removal waiting on a loaded disk holds the hook alone, never
+ * the process's event loop.
+ *
+ * A limit of Bun's own would be the wrong bound. These hooks used to remove in this process, and
+ * Bun judges a synchronous hook only after it returns, so a limit stopped no removal that never
+ * returned and failed only one that had ended: on the devbox one removal of a row's folder of a
+ * few files ran past Bun's 5 s at a 1-minute load of 476, and failed a row whose assertions had
+ * all passed; a removal of a copy of the role texts took 36 s at a load of about 690; and the
+ * afterAll of `score.test.ts`, removing its staged runs, ran past a limit of 60 s at a load of 570.
+ * Now that the removal is a process, a limit of Bun's kills that process at the limit and fails
+ * the hook, a removal that would have ended among them.
+ *
+ * The making stays in this process: it is one `mkdirSync`, no tree to walk, under the same limit
+ * of none.
+ */
+const NO_HOOK_LIMIT = Number.POSITIVE_INFINITY;
+
+/** The script each removal runs, as a process of its own. */
+const REMOVAL_SCRIPT = join(import.meta.dir, "remove-trees.ts");
+
+/**
  * Registers the removal of every directory the returned maker makes, and returns the maker.
  *
  * Call it at the test file's module scope, or in the body of a `describe`: it registers the
@@ -135,10 +169,9 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  *
  * The `afterEach` attempts every directory even when one of them cannot be removed, since the
  * directories are independent and one refusal must not leave the rest on disk, and reports the
- * refusals together at the end. It removes them asynchronously, so a removal waiting on a loaded
- * disk holds the hook alone, never the process's event loop. Like every hook, it states no bound of
- * its own (`docs/testing.md`): its bound is the command's `--timeout`, or the default a file whose
- * package sets no measured one takes from `@legion/test-fixtures/hang-guard` above its first row.
+ * refusals together at the end. It removes them in a process of its own that it awaits, so a
+ * removal waiting on a loaded disk holds the hook alone, never the process's event loop, under the
+ * hook limit and the clock NO_HOOK_LIMIT describes.
  */
 export function temporaryDirectories(
   prefix: string,
@@ -148,7 +181,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(async () => {
     await removeEvery(made.splice(0));
-  });
+  }, NO_HOOK_LIMIT);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -196,24 +229,26 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  });
+  }, NO_HOOK_LIMIT);
   afterAll(async () => {
     if (options.removeInBackground === true) removeInBackground(directory);
-    else await removeTree(directory);
-  });
+    else await removeEvery([directory]);
+  }, NO_HOOK_LIMIT);
   return directory;
 }
 
 /**
- * Starts the removal of `directory` in a process of its own (`remove-tree.ts`) and returns at
- * once, so the `afterAll` that calls it takes no time the disk decides. The process is not waited
- * for: it may outlive the `bun test` process, and Bun's hook limits do not judge it. A directory a
- * `-t` filter or a skipped `describe` never made is nothing to remove. A directory it cannot remove
- * is named on the run's stderr; unlike a hook that throws, it fails no file, since by then the file
- * may be over.
+ * Starts the removal of `directory` in a process of its own (REMOVAL_SCRIPT) and returns at once,
+ * so the `afterAll` that calls it takes no time the disk decides. The process is not waited for:
+ * it may outlive the `bun test` process, and neither Bun's hook limits nor the file's limit judge
+ * it. A directory a `-t` filter or a skipped `describe` never made is nothing to remove. A
+ * directory it cannot remove is named on the run's stderr; unlike a hook that throws, it fails no
+ * file, since by then the file may be over. It starts in this package's directory, for the reason
+ * removeEvery gives.
  */
 function removeInBackground(directory: string): void {
-  Bun.spawn([process.execPath, join(import.meta.dir, "remove-tree.ts"), directory], {
+  Bun.spawn([process.execPath, REMOVAL_SCRIPT, directory], {
+    cwd: import.meta.dir,
     stdin: "ignore",
     stdout: "ignore",
     stderr: "inherit",
@@ -240,23 +275,28 @@ function nameTemplate(prefix: string, suffix: string | undefined): string {
 }
 
 /**
- * Removes every directory of `directories`, newest first, so one made inside another goes before
- * the directory holding it. Every tree is attempted even when one of them refuses, since the
- * directories are independent and one refusal must not leave the rest on disk, and the refusals
- * are reported together at the end: a hook that stopped at the first failure would leave every
- * later directory behind and name only the one it stopped on (the behaviour
- * `packages/envoy-client/test/temp-dir.ts` had, which this fixture took over from it).
+ * Removes every directory of `directories` in a process of its own (`remove-trees.ts`, which
+ * removes them newest first, attempts each one even when another refuses, and reports the
+ * refusals together), on the hook's own clock (NO_HOOK_LIMIT says why). Its working directory is
+ * this package's, whatever the caller's is: bun reads a `bunfig.toml` from the directory it
+ * starts in, and a test's own could preload something into the removal.
  */
 async function removeEvery(directories: readonly string[]): Promise<void> {
-  const failures: string[] = [];
-  for (const directory of [...directories].reverse()) {
-    try {
-      await removeTree(directory);
-    } catch (error) {
-      failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (failures.length > 0) {
-    throw new Error(`temporary directories left behind:\n  ${failures.join("\n  ")}`);
+  if (directories.length === 0) return;
+  const removal = await onHookClock(() =>
+    spawnWithinAsync(
+      {
+        part: `the removal of ${directories.join(", ")}`,
+        boundMs: Number.POSITIVE_INFINITY,
+      },
+      [process.execPath, REMOVAL_SCRIPT, ...directories],
+      { cwd: import.meta.dir }
+    )
+  );
+  if (removal.exitCode !== 0) {
+    const said = removal.stderr.trim();
+    throw new Error(
+      said === "" ? `the removal of ${directories.join(", ")} exited ${removal.exitCode}` : said
+    );
   }
 }

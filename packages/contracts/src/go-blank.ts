@@ -1,4 +1,12 @@
 /**
+ * Go's white space as the contents of a character class, the one place the set is written out:
+ * `goBlankPattern` below is built from it, and so are the patterns with which the `dispatch`
+ * command trims a flag's value and reads a step of a URL path
+ * (`packages/envoy-client/src/go-space.ts`). The comment of `goBlankPattern` says what it holds.
+ */
+export const GO_SPACE = String.raw`\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000`;
+
+/**
  * Text Go's `strings.TrimSpace` empties: no characters at all, or only characters Go's
  * `unicode.IsSpace` reports - `\t`, `\n`, `\v`, `\f`, `\r`, a space, U+0085 and U+00A0, and the
  * Unicode `White_Space` property above Latin-1, which is U+1680, U+2000 to U+200A, U+2028,
@@ -33,8 +41,7 @@
  * `packages/envoy/internal/dispatch/text/whitespace_fixture_test.go`: a character either side
  * gains or loses reddens its test, and the list and this pattern are corrected together.
  */
-export const goBlankPattern =
-  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
+export const goBlankPattern = new RegExp(`^[${GO_SPACE}]*$`, "u");
 
 /** The two characters on which `String.prototype.trim` and Go's `strings.TrimSpace` differ:
  * U+0085, blank to Go and content to `trim`, and U+FEFF, content to Go and blank to `trim`. */

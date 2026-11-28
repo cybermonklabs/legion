@@ -19,6 +19,7 @@ import type {
   DisplayTree,
   EventType,
   IssueAskRow,
+  IssueCheckResults,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
@@ -33,8 +34,10 @@ import {
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
+import { blockNodeId } from "./statement-rules";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
+import { COMMIT, check, result } from "./verification-filter/verification-fixtures";
 
 /** The name the page published for `reference`, as a surface under the store reads it, or
  *  `undefined` where it published none. */
@@ -174,8 +177,8 @@ type TreeRead =
   | "results";
 
 /** Every read the hook makes, answered empty but for the plan's one task block, the reader's
- *  login and `comments`. The `held` read stays out until its `until` settles, and then answers
- *  as it would have. */
+ *  login, `comments` and `results`. The `held` read stays out until its `until` settles, and then
+ *  answers as it would have. */
 function stubTreeReads(
   answerNames: (refs: readonly string[]) => Promise<{
     targets: ReferenceTarget[];
@@ -184,10 +187,12 @@ function stubTreeReads(
     asks = [],
     comments = [],
     held,
+    results = { checks: [], issue: KEY, verification_artifact_id: "" },
   }: {
     readonly asks?: readonly IssueAskRow[];
     readonly comments?: readonly Comment[];
     readonly held?: { readonly read: TreeRead; readonly until: Promise<void> };
+    readonly results?: IssueCheckResults;
   } = {}
 ) {
   const answered = (read: TreeRead): Promise<void> =>
@@ -203,7 +208,7 @@ function stubTreeReads(
     }),
     spyOn(api, "getIssueResults").mockImplementation(async () => {
       await answered("results");
-      return { checks: [], issue: KEY, verification_artifact_id: "" };
+      return results;
     }),
     spyOn(api, "getIssueReferences").mockResolvedValue({
       linked_from: [],
@@ -1370,6 +1375,70 @@ test("Only the spec and the plan, Verification and decisions documents have thei
       expect(api.getArtifactBlocks).toHaveBeenCalledWith(one.id);
     }
     expect(api.getArtifactBlocks).not.toHaveBeenCalledWith(notes.id);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The server sends a check CI proves the results derived from its run in `results` and every
+// result recorded against it in `recorded_results`, so a dispatch command released before that
+// field reads `results` as it did. Catches: the issue page drawing `results` alone, so the result
+// the check's CI job recorded, and a role's that counts for nothing, never reach the page. Each is
+// a result node under the check, and the role's says it counts for nothing, as the server says.
+test("a check CI proves draws each result recorded against it, which the server sends apart", async () => {
+  const verification = issueDocument("artifact-verification", "verification-md", {
+    role: "verification",
+  });
+  const withVerification: IssueDetails = {
+    ...issue,
+    artifacts: [plan, verification],
+    verification_artifact_id: verification.id,
+  };
+  const notCounted =
+    "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+  const ciCheck = check({
+    block_id: "c-ci",
+    ci: {
+      case: "job_recorded",
+      commit: COMMIT,
+      detail: `CI run contracts concluded success at ${COMMIT}, the head of acme/widgets#7, and its job recorded its own result of c-ci there.`,
+      line: `- Check c-ci (before_merge): pass at ${COMMIT}, from the CI job's result. The page draws c-ci.`,
+      repo: "acme/widgets",
+      run: "contracts",
+      state: "no_result",
+    },
+    ci_check: "contracts",
+    recorded_results: [
+      result({
+        branch: "legion/CORE-1",
+        check_block_id: "c-ci",
+        created_at: "2026-11-14T01:00:00Z",
+        id: "job-1",
+        role: "ci",
+        run: "contracts",
+      }),
+      result({ check_block_id: "c-ci", id: "role-1", not_counted: notCounted }),
+    ],
+    results: [],
+    run: "",
+  });
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    results: { checks: [ciCheck], issue: KEY, verification_artifact_id: verification.id },
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(withVerification).root, { wrapper });
+    const checkId = blockNodeId(verification.slug, "c-ci");
+    const checkNode = () => nodesInOrder(view.result.current).find((node) => node.id === checkId);
+    await waitFor(() => expect(checkNode()).toBeDefined());
+    const results = checkNode()?.children.filter((child) => child.type === "result") ?? [];
+    expect(results.map((child) => child.id).sort()).toEqual(["job-1", "role-1"]);
+    const role = results.find((child) => child.id === "role-1");
+    expect(role?.facts.find((fact) => fact.name === "not_counted")?.value).toBe(notCounted);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();

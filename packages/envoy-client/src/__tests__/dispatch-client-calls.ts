@@ -92,6 +92,8 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
       verdict: "pass",
       commit: "1111111111111111111111111111111111111111",
     }),
+  recordCIJobResult: (client) =>
+    client.recordCIJobResult("DSP-1", { check: "k1", commit: "1".repeat(40), verdict: "pass" }),
   dryRunResult: (client) =>
     client.dryRunResult("DSP-1", {
       actor,

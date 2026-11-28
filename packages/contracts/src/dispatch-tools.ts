@@ -282,14 +282,23 @@ function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
 /**
  * The `as_of` argument of the seven read tools (dispatch://INFRA-4620, R3), which derives
  * `--as-of`, `--as-of-file` and their help. `parts` says what the tool leaves out at a past time.
+ * `json` is set for a tool that also takes `json`, whose output with it is the JSON alone: the
+ * `Left out at` line then goes to standard error.
  */
-function asOfArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, parts: string): E {
+function asOfArgument<E extends SchemaNode<E>>(
+  z: SchemaApi<E>,
+  parts: string,
+  { json = false }: { readonly json?: boolean } = {}
+): E {
   return z
     .string()
     .describe(
       "A past time in RFC 3339, such as 2026-11-10T12:00:00Z. The command reads Dispatch as it " +
         `stood at that time. ${parts} The first line, "Left out at <time>:", names each part ` +
         "that the command did not read and each field that Dispatch cannot give at that time. " +
+        (json
+          ? "With json, standard output is the JSON alone, and that line goes to standard error. "
+          : "") +
         "A token that carries a cut reads at its cut, and its cut replaces this time."
     )
     .optional();
@@ -844,15 +853,16 @@ const SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs say
  *  negative_control it changes. */
 const CI_CHECK_RULE =
   "A check block whose ci_check names the CI check run that proves it carries no run, keeps when " +
-  "before_merge, names its negative_control, and holds no recorded result. A write that adds a " +
-  "check block, or changes a check's ci_check, run, when or negative_control, so that it breaks " +
-  "one of those rules is refused with 400 INVALID_CI_CHECK, which names the block and the rule. " +
-  "A check that already holds a result never becomes CI's: write a new check block under a new id.";
+  "before_merge, names its negative_control, and holds no result a role recorded. A write that " +
+  "adds a check block, or changes a check's ci_check, run, when or negative_control, so that it " +
+  "breaks one of those rules is refused with 400 INVALID_CI_CHECK, which names the block and the " +
+  "rule. A check that already holds a result a role recorded, retracted or not, never becomes " +
+  "CI's: write a new check block under a new id.";
 
 /** Which check CI proves, written once for the two tools that record and read results, each
  *  ending it with its own punctuation. */
 const CHECK_PROVED_BY_CI =
-  "A check whose ci_check names a CI check run, and that holds no recorded result, is proved by CI";
+  "A check whose ci_check names a CI check run, and that keeps the rules of such a block, is proved by CI";
 
 /**
  * The `images` argument of the three tools that write text a person reads: local picture files,
@@ -1162,7 +1172,10 @@ function resultProblem(value: unknown): string | undefined {
     readonly retract?: unknown;
     readonly reason?: unknown;
   };
-  if (input["project"] !== undefined) {
+  // Destructured, not read as `input.project`: claude-envoy compiles this file under
+  // noPropertyAccessFromIndexSignature, and Biome asks for no `input["project"]`.
+  const { project, verdict } = input;
+  if (project !== undefined) {
     const others = RESULT_NOT_PROJECT_FIELDS.filter((field) => input[field] !== undefined);
     if (others.length > 0) {
       return `${RESULT_PROJECT_RULE} This call also carries ${others.join(", ")}.`;
@@ -1173,7 +1186,7 @@ function resultProblem(value: unknown): string | undefined {
     }
     return undefined;
   }
-  if (input["verdict"] === "could_not_run") {
+  if (verdict === "could_not_run") {
     return "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail.";
   }
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
@@ -1207,23 +1220,24 @@ const RESULTS_OWNER_RULE =
  *  them: one owner, and each form's own arguments alone. */
 function resultsProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
-  if ((input["issue"] === undefined) === (input["project"] === undefined)) {
+  const { issue, project, commit } = input;
+  if ((issue === undefined) === (project === undefined)) {
     return RESULTS_OWNER_RULE;
   }
-  if (input["project"] !== undefined) {
+  if (project !== undefined) {
     const issueOnly = ["at", "brief", "as_of"].filter((field) => input[field] !== undefined);
     if (issueOnly.length > 0) {
       return `With project, the read takes commit, check and json alone, and this call also carries ${issueOnly.join(", ")}.`;
     }
-    if (input["commit"] === undefined) {
+    if (commit === undefined) {
       return "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.";
     }
     return undefined;
   }
-  const projectOnly = ["commit", "check", "json"].filter((field) => input[field] !== undefined);
+  const projectOnly = ["commit", "check"].filter((field) => input[field] !== undefined);
   return projectOnly.length === 0
     ? undefined
-    : `With issue, the read takes at, brief and as_of alone, and this call also carries ${projectOnly.join(", ")}.`;
+    : `With issue, the read takes at, brief, as_of and json alone, and this call also carries ${projectOnly.join(", ")}.`;
 }
 
 /**
@@ -2607,38 +2621,31 @@ export const dispatchToolSpecs = [
       "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +
       "or of an issue above it holds is 400 UNKNOWN_CHECK. " +
       `${CHECK_PROVED_BY_CI}. ` +
-      "Dispatch reads its result from that run, so a record for it is 409 " +
-      "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
+      "A run of that CI job records such a check's result through the secrets broker, and no " +
+      "role does: a record from a role is 409 CHECK_PROVED_BY_CI, which names the check and the " +
+      "job. The job runs the command under agent-secrets result-grant, as the project form below " +
+      "does: it presents the airlock's placeholder of its run (DISPATCH_RESULTS_TOKEN) alone and " +
+      "trades nothing, and sends issue, check, verdict, commit and observed alone. Dispatch takes the " +
+      "recorder, the commit and the branch of the push from the token and from GitHub, and the " +
+      "command sends what a result keeps of observed, as the project form does. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
-      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. If " +
-      "GitHub does not say that it does, Dispatch reads the external links of the check's issue: " +
-      "a link to a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open " +
-      "or merged, in a repository that Dispatch's GitHub App is installed on and can read, adds " +
-      "the repository of that pull request. One record reads at most 10 linked pull requests. A " +
-      "commit that none of these repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and each owner/repo that Dispatch asked. It also names, with its reason " +
-      "(owner/repo#n (repository_unreadable)), each linked pull request that Dispatch could not " +
-      "read, at most 10 and a count of the rest, and every linked pull request in whose " +
-      "repository it could not read the commit, since each of those spent one of the record's 10 " +
-      "reads, and says to grant Dispatch's GitHub App that repository or to link a readable pull " +
-      "request. It says how many linked pull requests it left unread past that bound. Record the " +
-      "result after the commit is pushed. A linked repository that the App is not installed on " +
-      "or cannot read does " +
-      "not count. Where a read of " +
-      "a linked pull request or of a linked repository does not answer, and no repository is shown " +
-      "to hold the commit, the record is 502 GITHUB_UNREADABLE and nothing is recorded: record the " +
-      "result again, after the wait the refusal names for a rate limit. Where the issue has no " +
-      "repository, the result is recorded as before. Where Dispatch cannot read the repository " +
-      "of the check's issue, the result is recorded as before only when every linked read " +
-      "answers and no linked repository holds the commit: a linked read that does not answer " +
-      "is 502 GITHUB_UNREADABLE and nothing is recorded. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit, then " +
+      "the repository of each other open or merged pull request of that issue, which for a pull " +
+      "request the issue links may be another repository, and then the repository of each open " +
+      "or merged pull request that an external link of the check's issue names " +
+      "(https://github.com/<owner>/<repo>/pull/<n>), in a repository that Dispatch's GitHub App " +
+      "is installed on and can read. One record reads at most 10 linked pull requests. A result " +
+      "at the head of a pull request of the issue needs no question. A commit that none of these " +
+      "repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the commit and each owner/repo " +
+      "that Dispatch asked, and says how many linked pull requests it left unread past that " +
+      "bound. Record the result after the commit is pushed. A repository Dispatch cannot read, " +
+      "and a read of GitHub that does not answer, records the result as before. " +
+      "Where the issue has no repository, the result is recorded as before. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
       "every other record with 409 ISSUE_CLOSED. " +
-      "A check a document version rewords while the result is being written is 409 " +
-      "CHECK_CONTENDED, with nothing recorded: run the same command again. " +
       RESULT_RETRACT_RULE +
       " The retraction keeps both records: the result stays readable, and it proves nothing " +
       "from then on. Record a new result where the check still needs one. A retraction is " +
@@ -2800,7 +2807,9 @@ export const dispatchToolSpecs = [
       "it, newest first. " +
       "Each check prints what Dispatch compared its results with. A before_merge check is " +
       "compared with every open pull request head, or the final head of the last to merge when " +
-      "none is open. An after_merge result counts only at a commit that holds the work's merge " +
+      "none is open. Where none is open, it is also compared with the head of each branch that a " +
+      "CI job's result on that issue names, as GitHub answers it. " +
+      "An after_merge result counts only at a commit that holds the work's merge " +
       "on the compared branch. A default_branch check names the default branch alone. " +
       "With no known merge, an after_merge check compares with nothing and says so. " +
       "A read that failed is not known, never a pass or a fail. The newest branch result decides " +
@@ -2808,6 +2817,20 @@ export const dispatchToolSpecs = [
       "Production and graph checks count only results recorded for the current deploy of the " +
       "program they read. The output names that deploy and says why an excluded result counts " +
       "for nothing. The check's words must be unchanged and the result unretracted. " +
+      "A before_merge check with an open pull request prints `- <id> (before_merge). Compared " +
+      "with the heads of <n> open pull requests. A pass stands: <answer>.`, where the answer is " +
+      "`yes, from <roles>`, or `no` or `not known`, as <k> of <n> heads read yes. A pass stands " +
+      "only where each head reads yes. One line for each head follows, `  - #<number> at " +
+      "<commit>: <state>`: `yes, from <roles>. Pass <id> decides it.`; `no, as fail <id> counts " +
+      "there.`; `no, as it holds no result.`; `not known, as pass <id> and fail <id> count at " +
+      "this commit.`, which a later pass does not end and a retraction of the wrong one does; " +
+      "`not known, as Dispatch could not read CI run <run> there.`; or `not known, as Dispatch " +
+      "could not read the repository of its issue, which says whether the CI job's result " +
+      "there takes the place of CI run <run>.`. A merged pull request's " +
+      "head prints as `#<number> (merged)`, a pull request of another repository than the " +
+      "issue's as `<owner>/<repo>#<number>`, and a branch head as `branch <name>`. A reviewer and " +
+      "a tester read the line of their own head. Then `  The <m> merged pull requests decide " +
+      "nothing while one is open.`, where an open head and a merged one are both compared with. " +
       "The check's own words print once, under the check. Each result then prints its verdict, " +
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
@@ -2815,16 +2838,27 @@ export const dispatchToolSpecs = [
       "the reason and the caller that retracted it. A check with no result says so. " +
       `${CHECK_PROVED_BY_CI}: ` +
       "no role records its result. Dispatch reads GitHub at every open head, or the final head " +
-      "of the last pull request to merge when none is open. Its result prints as `- <id> (before_merge): <verdict> at " +
+      "of the last pull request to merge when none is open, each in that pull request's own " +
+      "repository, and derives one result from the run that its ci_check names at each head it " +
+      "reads. A run of that CI job on a push of the change's branch also records its own result, " +
+      "at the commit it tested. The derived result at the open pull request of the highest " +
+      "number prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
-      "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
-      "and the line to write into the pull-request body unchanged, then the reading: the " +
+      "words>`, then the `A pass stands:` line a recorded check prints, then the line of each " +
+      "head, each followed by `    Pull request line:` and the line to write into that pull " +
+      "request's body unchanged, then the reading: the " +
       "conclusion, the run's output title and summary, and its URL. A run that proves nothing " +
       "prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's " +
-      "words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> " +
+      "words, then the `A pass stands:` line, then the line of each head with its `Pull request " +
+      "line:`, such as `- Check <id> " +
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
-      "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
+      "issue with no pull request head, or GitHub not read, with what GitHub answered. An issue " +
+      "with no pull request head prints no `Pull request line:`, since it has no pull-request " +
+      "body to write it in. Each other result, a derived one at another head or one that the CI " +
+      "job recorded, prints after these lines as a " +
+      "recorded result prints, with `on branch <branch>` after `by ci` for the job's, in the " +
+      "order Dispatch serves them. " +
       "A pull-request line writes `CI run <name>` only when it keeps every word of the name, " +
       "and `the CI run the check names` in its place where it drops one: a word the line drops, " +
       "such as an issue key or a word holding `_`. " +
@@ -2834,8 +2868,8 @@ export const dispatchToolSpecs = [
       "With project and commit, the read prints each result that CI jobs stored for checks of " +
       "the project's spec files at that commit, newest first in Dispatch's record order, one " +
       "line each: its record number, the check, the verdict, the job, the leg of the matrix, " +
-      "the run and its attempt, and the commit. check limits the read to one check, and json " +
-      "prints the stored results as JSON. " +
+      "the run and its attempt, and the commit. check limits the read to one check. json " +
+      "prints the read as JSON. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
@@ -2860,7 +2894,7 @@ export const dispatchToolSpecs = [
       at: z
         .string()
         .describe(
-          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at each open pull request head, or with none open the final head of the newest merged one, as on every read, so that check's result stands at this commit only where it is the head it was read at."
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves. Where this commit is the head of an open or merged pull request of the issue, it reads them at that head alone. Otherwise it reads them at each open pull request head, or with none open the final head of the newest merged one, as on every read, so that check's result stands at this commit only where it is the head it was read at."
         )
         .optional(),
       brief: z
@@ -2871,12 +2905,13 @@ export const dispatchToolSpecs = [
         .optional(),
       as_of: asOfArgument(
         z,
-        "It reads the checks and results that Dispatch recorded by that time. It reads nothing from GitHub, so it leaves out what each check is compared with and where each commit stands. Name no --at with it. It goes with issue alone: Dispatch keeps no history of the results CI jobs stored for the spec files."
+        "It reads the checks and results that Dispatch recorded by that time. It reads nothing from GitHub, so it leaves out what each check is compared with and where each commit stands. Name no --at with it. It goes with issue alone: Dispatch keeps no history of the results CI jobs stored for the spec files.",
+        { json: true }
       ),
       json: z
         .boolean()
         .describe(
-          "Print the complete results wire answer as JSON; with project, the stored results, one in-toto statement each."
+          'Print the complete results wire answer as JSON: with project, the stored results, one in-toto statement each; with issue, the route\'s answer whole, where each result a CI job recorded carries the in-toto statement of its run as attestation. At a past time, standard output is still the JSON alone, and the "Left out at <time>:" line goes to standard error.'
         )
         .optional(),
     }),

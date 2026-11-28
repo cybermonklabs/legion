@@ -183,6 +183,16 @@ const CASES: readonly WriteRowCase[] = [
       } as Parameters<DispatchClient["recordResult"]>[1]),
   },
   {
+    method: "recordCIJobResult",
+    route: "POST /api/v1/issues/{key}/results",
+    call: (client) =>
+      client.recordCIJobResult("ACME-1", {
+        check: "probe",
+        verdict: "pass",
+        commit: "c8".repeat(20),
+      }),
+  },
+  {
     method: "retractResult",
     route: "POST /api/v1/results/{id}/retract",
     call: (client) => client.retractResult("result-1", { actor, reason: "wrong commit" }),

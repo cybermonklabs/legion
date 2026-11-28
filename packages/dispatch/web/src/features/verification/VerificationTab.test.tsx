@@ -183,13 +183,20 @@ test("each check reads the server's answer over every result of it", async () =>
   );
 });
 
-// R9: no state of a check is read from its newest result alone. The newest result of this
-// check is a fail, and the pass recorded before it still stands at the head, so the check
-// reads that a pass stands and names the role whose pass it is.
+// No state of a check is read from its newest result alone. The newest result of this check is a
+// fail at a commit the head has moved past, and the pass at the head stands, so the check reads
+// that a pass stands and names the role whose pass it is.
 test("a check whose newest result failed still reads the pass that stands", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [
-      result({ failed: 2, id: "result-new", role: "reviewer", verdict: "fail" }),
+      result({
+        commit_sha: otherCommit,
+        commit_stands: { answer: "other_commit" },
+        failed: 2,
+        id: "result-new",
+        role: "reviewer",
+        verdict: "fail",
+      }),
       result({ id: "result-old" }),
     ]),
   ]);
@@ -209,6 +216,45 @@ test("a check whose newest result failed still reads the pass that stands", asyn
   expect(
     rows.map((row) => within(row).getByTestId("verification-result-verdict").textContent)
   ).toEqual(["Fail", "Pass"]);
+});
+
+// R13: one row for each head a pass of the check must stand at, under the pill, in the words
+// `dispatch results` prints on the line of that head; then the one line that counts the merged
+// pull requests, which decide nothing while one is open. The pill keeps the whole check's answer.
+test("each open head has a row in the words of the command, and the merged ones one count", async () => {
+  const second: CheckBasis = { commit: otherCommit, kind: "pull_request", pull_request: 8 };
+  const merged: CheckBasis = {
+    commit: "f".repeat(40),
+    kind: "pull_request",
+    merged: true,
+    pull_request: 5,
+  };
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c1", [result({ id: "result-pass" })], {
+      compared_with: [head, second, merged],
+      pass_stands: {
+        answer: "no",
+        subjects: [
+          { answer: "yes", basis: head, results: ["result-pass"], roles: ["tester"] },
+          { answer: "no", basis: second, reason: "no_result" },
+        ],
+      },
+    }),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe("No pass stands");
+  expect(screen.getAllByTestId("verification-check-head").map((row) => row.textContent)).toEqual([
+    `#7 at ${commit}: yes, from tester. Pass result-pass decides it.`,
+    `#8 at ${otherCommit}: no, as it holds no result.`,
+  ]);
+  expect(screen.getByTestId("verification-check-merged").textContent).toBe(
+    "The 1 merged pull request decides nothing while one is open."
+  );
 });
 
 // The two facts of R4, kept apart: where the result's commit stands, and whether the check's
@@ -306,6 +352,12 @@ test("a check names what the server compared its results with", async () => {
       compared_with: [],
       pass_stands: { answer: "no" },
     }),
+    // A CI job pushed its issue's branch, and its pass stands at that branch's head, which the
+    // server lists in branch_heads, out of the compared_with a command released before it reads.
+    check("c-pushed", [result({ id: "result-3" })], {
+      branch_heads: [{ branch: "legion/CORE-1", commit, kind: "branch_head" }],
+      compared_with: [],
+    }),
   ]);
   restore = () => {
     getIssueResults.mockRestore();
@@ -321,6 +373,7 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[0]).toContain("Dispatch read it");
   // A check that compared with nothing says why instead of showing a blank.
   expect(compared[1]).toBe("This issue holds no pull request and no branch.");
+  expect(compared[2]).toBe(`the head of branch legion/CORE-1 ${commit}`);
 });
 
 test("a check whose work has not merged says so", async () => {
@@ -500,6 +553,67 @@ test("a result shows how it ran, what was seen, its counts, its role and its scr
   expect(within(row).queryByTestId("verification-result-retracted")).toBeNull();
 });
 
+// A result a CI job recorded names the branch whose push it ran on, so a reader tells it from the
+// result derived from the check run, and a role's result names none.
+test("a CI job's result names the branch it was pushed on", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c1", [
+      result({ branch: "legion/CORE-1", id: "result-job", role: "ci" }),
+      result({ id: "result-role" }),
+    ]),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const [job, role] = await screen.findAllByTestId("verification-result");
+  expect(within(job as HTMLElement).getByTestId("verification-result-branch").textContent).toBe(
+    "on branch legion/CORE-1"
+  );
+  expect(within(role as HTMLElement).queryByTestId("verification-result-branch")).toBeNull();
+});
+
+// A role's result of a check CI proves counts for nothing, and the server says why in
+// not_counted: the result's entry ends with that reason as served. The derived result and the
+// result the CI job recorded carry no not_counted and show no such line (the control).
+test("a result that counts for nothing says why, and a result that counts says nothing of it", async () => {
+  const reason =
+    "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+  const { getIssueResults, view } = renderTab(verification, [
+    ciCheck(
+      "c-ci",
+      {
+        case: "success",
+        detail: `CI run contracts concluded success at ${commit}, the head of acme/widgets#7.`,
+        line: `- Check c-ci (before_merge): pass at ${commit}, from CI run contracts. Check c-ci`,
+        run: "contracts",
+        state: "pass",
+      },
+      [
+        ciResult(),
+        result({ branch: "legion/CORE-1", id: "result-job", role: "ci" }),
+        result({ id: "result-role", not_counted: reason }),
+      ]
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const [derived, job, role] = await screen.findAllByTestId("verification-result");
+  expect(
+    within(role as HTMLElement).getByTestId("verification-result-not-counted").textContent
+  ).toBe(`It counts for nothing: ${reason}`);
+  for (const counted of [derived, job]) {
+    expect(
+      within(counted as HTMLElement).queryByTestId("verification-result-not-counted")
+    ).toBeNull();
+    expect(counted?.textContent).not.toContain("It counts for nothing");
+  }
+});
+
 // The reading is the record this page exists for, so a result that carries none says so
 // rather than drawing a blank.
 test("a result with no reading says it carries none", async () => {
@@ -585,8 +699,122 @@ test("a check CI proves with no derived result shows why its run proved nothing"
   expect(within(card).queryByTestId("verification-result")).toBeNull();
 });
 
-// A block that carries `ci_check` and also holds a recorded result is no check CI proves, so the
-// server gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
+// Catches: the server's sentence shown only where a check holds no result at all, so a check whose
+// run derived nothing and whose CI job recorded a result of its own lists the job's result and
+// never says why the run derived none, where `dispatch results --issue` says it on the head line.
+test("a check CI proves whose run derived nothing shows why above the result its job recorded", async () => {
+  const detail = `CI run contracts concluded failure at ${commit}, the head of acme/widgets#7, and its CI job recorded a result of its own for the check.`;
+  const jobResult = result({
+    actor: { id: "ci-session", kind: "session" },
+    id: "job-1",
+    role: "ci",
+    run: "contracts",
+  });
+  const { getIssueResults, view } = renderTab(verification, [
+    ciCheck(
+      "c-job",
+      {
+        case: "job_recorded",
+        detail,
+        line: "- Check c-job (before_merge): pass at the head by ci",
+        run: "contracts",
+        state: "no_result",
+      },
+      [jobResult]
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const card = await screen.findByTestId("verification-check");
+  expect(within(card).getByTestId("verification-check-ci-unproved").textContent).toBe(detail);
+  expect(within(card).getByTestId("verification-result-role").textContent).toBe("ci");
+  expect(within(card).queryByTestId("verification-check-no-results")).toBeNull();
+});
+
+// Two open pull requests, #7 and #8. A check's `ci` is the read of #8, the open one of the highest
+// number, and `ci.result` names the result that read derived, the only result of it. Catches: the
+// tab reading any derived result as the read's own, so c-first, whose read of #8 derived nothing
+// while the run at #7 derived a pass, hides why #8's run derived none, where `dispatch results
+// --issue` heads the check with "no result: <detail>". The control, c-second: the read of #8 names
+// the pass it derived, which the check holds, and the tab says nothing of why.
+test("a check CI proves whose read derived nothing says why beside a result derived at another head", async () => {
+  const eight: CheckBasis = { commit: otherCommit, kind: "pull_request", pull_request: 8 };
+  const detail = `CI run contracts is in_progress at ${otherCommit}, the head of acme/widgets#8, and has not concluded.`;
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-first", [result({ ...ciResult(), id: "ci-run:701" })], {
+      ci: {
+        case: "not_completed",
+        commit: otherCommit,
+        detail,
+        line: "- Check c-first (before_merge): CI run contracts has no result (not_completed)",
+        repo: "acme/widgets",
+        run: "contracts",
+        state: "no_result",
+      },
+      ci_check: "contracts",
+      compared_with: [head, eight],
+      pass_stands: {
+        answer: "no",
+        subjects: [
+          { answer: "yes", basis: head, results: ["ci-run:701"], roles: ["ci"] },
+          { answer: "no", basis: eight, reason: "no_result" },
+        ],
+      },
+      run: "",
+    }),
+    check(
+      "c-second",
+      [
+        result({
+          ...ciResult(),
+          commit_sha: otherCommit,
+          commit_stands: { answer: "at_basis", basis: eight },
+          id: "ci-run:802",
+        }),
+      ],
+      {
+        ci: {
+          case: "success",
+          commit: otherCommit,
+          detail: `CI run contracts concluded success at ${otherCommit}, the head of acme/widgets#8.`,
+          line: `- Check c-second (before_merge): pass at ${otherCommit}, from CI run contracts. Check c-second`,
+          repo: "acme/widgets",
+          result: "ci-run:802",
+          run: "contracts",
+          state: "pass",
+        },
+        ci_check: "contracts",
+        compared_with: [head, eight],
+        pass_stands: {
+          answer: "no",
+          subjects: [
+            { answer: "no", basis: head, reason: "no_result" },
+            { answer: "yes", basis: eight, results: ["ci-run:802"], roles: ["ci"] },
+          ],
+        },
+        run: "",
+      }
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const [first, second] = await screen.findAllByTestId("verification-check");
+  const firstCard = within(first as HTMLElement);
+  const secondCard = within(second as HTMLElement);
+  expect(firstCard.getByTestId("verification-check-ci-unproved").textContent).toBe(detail);
+  expect(firstCard.getByTestId("verification-result-commit").textContent).toBe(commit);
+  expect(secondCard.queryByTestId("verification-check-ci-unproved")).toBeNull();
+  expect(secondCard.getByTestId("verification-result-commit").textContent).toBe(otherCommit);
+});
+
+// A block that carries `ci_check` and breaks one of its rules is no check CI proves, so the server
+// gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
 test("a check the server gives no ci reads as an ordinary check", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c-recorded", [result()], { ci_check: "contracts", run: "" }),

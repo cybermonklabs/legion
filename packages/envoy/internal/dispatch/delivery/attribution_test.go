@@ -474,6 +474,55 @@ func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStore
 	}
 }
 
+// TestResolvedCandidatesSayWhichCandidateIsHeldInAnyRepository: ResolvedCandidates answers what
+// each candidate's holding is made of. An issue of another repository whose link is the pull
+// request's own URL is held in any repository (AnyRepository), though the repository it names is
+// not the pull request's (OwnedHere false). An issue of the pull request's own repository that
+// the title names is held by that repository alone (OwnedHere true, AnyRepository false). Each
+// issue names its repository itself, so Owned is read from the issue and OwnedHere is a
+// comparison that ran. The two candidates hold by opposite columns, so a source literal that
+// marks another source, a holding given to every candidate, or one column read into the other's
+// place each changes a field this compares.
+func TestResolvedCandidatesSayWhichCandidateIsHeldInAnyRepository(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	const url = "https://github.com/acme/widgets/pull/260"
+	linking := seedGadgetsIssue(t, ctx, pool, 26)
+	const titled = "ATTR-261"
+	seedAttributionIssues(t, ctx, pool, []string{titled}, nil)
+	for key, repo := range map[string]string{linking: gadgetsRepo, titled: deliveryRepo} {
+		if _, err := pool.Exec(ctx, `update issues set repo = $2 where key = $1`, key, repo); err != nil {
+			t.Fatalf("record %s under %s: %v", key, repo, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github')`, linking, url); err != nil {
+		t.Fatalf("seed link %s -> %s: %v", url, linking, err)
+	}
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	pull := PullRequestKey{Repo: deliveryRepo, Number: 260}
+	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+		Repo: pull.Repo, Number: pull.Number, Title: "feat: " + titled, URL: url,
+		Author: "octocat", CreatedAt: &merged, MergedAt: &merged,
+		Attribution: &AttributionInputs{TitleKeys: []string{titled}},
+	}); err != nil {
+		t.Fatalf("seed %s#%d: %v", pull.Repo, pull.Number, err)
+	}
+	resolved, err := unrenamed().ResolvedCandidates(ctx, pool, []PullRequestKey{pull})
+	if err != nil {
+		t.Fatalf("read the stored row's candidates: %v", err)
+	}
+	want := []ResolvedCandidate{
+		{Key: linking, Project: "GDGT", Owned: gadgetsRepo, AnyRepository: true},
+		{Key: titled, Project: deliveryProject, Owned: deliveryRepo, OwnedHere: true},
+	}
+	if got := resolved[pull]; !slices.Equal(got, want) {
+		t.Fatalf("%s#%d's candidates read\n%+v\nwant\n%+v\n"+
+			"the link to the pull request's URL is held in any repository, the title only in the pull request's own",
+			pull.Repo, pull.Number, got, want)
+	}
+}
+
 // TestAttributionRefusesAKeyDispatchDoesNotHave: a key-shaped string in every source that names
 // no stored issue credits nothing.
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {

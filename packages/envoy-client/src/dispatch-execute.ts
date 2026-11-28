@@ -1,5 +1,5 @@
 import type { WhoamiResponse } from "@legion/contracts";
-import { readAtCut, withLeftOut } from "./dispatch-commands/as-of";
+import { printsJson, readAtCut, withLeftOut } from "./dispatch-commands/as-of";
 import { checkDispatchCall, dispatchServerUrls } from "./dispatch-commands/check";
 import { commandContext } from "./dispatch-commands/command-context";
 import {
@@ -101,5 +101,7 @@ export async function executeDispatchTool(
     command.origin === "none"
       ? await command.run({ ...session, reading })
       : await command.run({ ...(await commandContext(session, reading.cut)), reading });
-  return withLeftOut(result, reading.cut);
+  // A call whose whole output is one JSON object (`printsJson`) carries the cut's line as a
+  // warning, so a program parses its text whole at a cut too.
+  return withLeftOut(result, reading.cut, printsJson(checked.args));
 }

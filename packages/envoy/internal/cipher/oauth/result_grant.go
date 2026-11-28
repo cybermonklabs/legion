@@ -54,7 +54,8 @@ type AirlockSettings struct {
 	GrantLifetime time.Duration
 }
 
-// proxyRoots is the roots a trade hands the run now.
+// proxyRoots is the roots a trade hands the run now, and "" where the settings answer none, as
+// a deployment whose pod holds no intermediate yet does (ApproveSettings.proxyRoots).
 func (s *AirlockSettings) proxyRoots() string {
 	if s.ProxyRoots == nil {
 		return ""

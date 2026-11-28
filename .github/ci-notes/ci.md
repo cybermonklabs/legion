@@ -3074,8 +3074,9 @@ suite), and the script tests, envoy-go-checks, are slow suites
 (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue). No
 Postgres service: nothing here opens a database. It restores go-envoy rather than
 go-envoy-test, the family of the slow half (the test binary of every package of the envoy
-module) and of dispatch-browser.yaml's Go-building jobs. It also runs the guard that no CI file
-of this repository compares the spec files with the approved spec.
+module) and of dispatch-browser.yaml's Go-building jobs. The guard that no CI file of this
+repository compares the spec files runs in the ci-filters job
+(.github/ci-notes/ci-job-ci-filters.md).
 
 ## envoy-go-checks: envoy's script tests, in the merge queue only
 
@@ -3629,7 +3630,9 @@ the session state rig 88 s, claude-envoy's stall 77 s, the broker credential tes
 mention 17 s, the design-gate advice 9 s, the keyed resend 8 s and the moved-approval advice 7 s.
 The three that joined the job after that probe are placed by their walls in job 140859710731:
 the CI-result suite 56.3 s, queued after claude-envoy's stall, and the role topics 16.4 s and the
-refused result 17.0 s, queued after the comment mention.
+refused result 17.0 s, queued after the comment mention. The two suites of a check an issue's
+ci_check gives to a CI job, its result 24.6 s and its refused result 22.1 s in job 141046039355,
+are queued after pi-envoy's stall and before the comment mention.
 
 ## What the refill live proof shows
 
@@ -3656,10 +3659,13 @@ those its mode writes: each workflow ci_job_reads.py's PUSH_WORKFLOWS names for 
 filters and the .inputs file beside them for `generate`. The job's next step,
 .github/scripts/testcontainers_links.py, lists the commands and self-starting test binaries of the
 daemon and envoy modules with their third-party packages, so it downloads the modules they need
-into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox. The job restores
-no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's own parser reads
-(.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a second
-time, in a file small enough to start when this one is too large to.
+into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox. It also holds
+every workflow file to 64,000 bytes and to what GitHub's own parser reads
+(.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a
+second time, in a file small enough to start when this one is too large to. The job also runs the
+guard that no CI file of this repository compares the spec files with the approved spec
+(.github/ci-notes/ci-job-ci-filters.md), whose `go run` downloads the modules ./cmd/spec-check
+imports; the job restores no cache.
 
 It also holds every step a filter gates that names a declared script to a Run that cites it: rule
 4's script half in .github/scripts/check-ci-filters.sh's header says how a step names a script.

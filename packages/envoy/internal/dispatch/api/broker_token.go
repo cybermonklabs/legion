@@ -36,9 +36,10 @@ import (
 // always was. The one layer that reads the decision before the route resolves its caller is the
 // limited-token gate inside it (refuseLimitedToken), which verifies no broker-issued token
 // itself: it answers a read-only token on every route outside the read class, and one that
-// carries a cut on every read that holds no past answer, and a results token on every route the
-// results list does not name. A personal token is the gate's own to resolve, and the gate
-// carries that result, its refusal included, as this carries its decision.
+// carries a cut on every read that holds no past answer, a results token on every route that
+// does not state ResultsScope, and an approve-only token on every route that does not state
+// ApproveOnly. A personal token is the gate's own to resolve, and the gate carries that result,
+// its refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); !presented {
@@ -150,7 +151,7 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // AS_OF_TOKEN_NOT_SERVED. On a read it serves, it is the session it names, reading as that
 // session does.
 //
-// A results token is held to its list the same way: the scope results alone, the project scope
+// A results token is held to its routes the same way: the scope results alone, the project scope
 // results, a person, one project and the CI run it was minted for (ciphertoken.Caller.ResultsOnly,
 // which a verifier built with Options.ServesResults answers, and Dispatch's is). Its credential
 // is marked results-only with the run (model.Credential.ResultsOnly, model.Credential.CI) and

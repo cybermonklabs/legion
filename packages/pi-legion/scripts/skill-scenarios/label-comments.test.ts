@@ -1,9 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { isYes, main, QUESTIONS } from "./label-comments";
+import { fileRowLimit } from "./test-limit";
+
+// Each row reads and writes its files in this process, which a loaded machine stretches: each test
+// and hook gets the limit test-limit.ts computes from the bounds of what they wait for.
+setDefaultTimeout(fileRowLimit());
 
 const scratch = temporaryDirectory("label-comments", { real: true });
 

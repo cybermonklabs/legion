@@ -1,6 +1,6 @@
 --- a/packages/envoy/internal/dispatch/api/server.go	2026-11-27 19:20:00.000000000 +0000
 +++ b/packages/envoy/internal/dispatch/api/server.go	2026-11-27 19:20:00.000000000 +0000
-@@ -1740,7 +1740,7 @@
+@@ -1759,7 +1759,7 @@
  			writeError(w, codeResultsOnlyToken, http.StatusForbidden, resultsOnlyRefusal())
  			return
  		}

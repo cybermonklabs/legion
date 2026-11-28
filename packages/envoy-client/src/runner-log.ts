@@ -82,6 +82,23 @@ export function printableLine(text: string): string {
 }
 
 /**
+ * `value`, JSON data such as an answer of Dispatch, with each string in it, at any depth, as
+ * `printable` writes it, and every other value as it is. A command that prints the strings of an
+ * answer inside lines of its own reads them from this, so no line break of the answer starts a
+ * line and no line holds a "##[": the command's own line breaks are the only ones it prints.
+ */
+export function printableStrings<T>(value: T): T {
+  if (typeof value === "string") return printable(value) as T;
+  if (Array.isArray(value)) return value.map(printableStrings) as T;
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([name, member]) => [name, printableStrings(member)])
+    ) as T;
+  }
+  return value;
+}
+
+/**
  * `json`, JSON text such as JSON.stringify writes, as a command prints it in a runner's log: each
  * character `printable` escapes is written as JSON's `\uNNNN` (DEL, C1, a format character, U+2028,
  * U+2029; JSON.stringify already escapes C0 and a lone surrogate), and the "[" of every "##[" as

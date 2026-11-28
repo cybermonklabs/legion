@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  The Codex plugin's manifest names `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` in `env_vars`, the two variables a GitHub Actions runner sets for the broker path's `github-actions` identity, so Codex hands them to the server as it hands every other variable that path reads.

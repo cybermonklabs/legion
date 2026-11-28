@@ -3375,7 +3375,7 @@ test("a check whose result stands and failed is still drawn as failed", () => {
   ).toBe("failed");
 });
 
-// The server counts a retracted result as no evidence at all (`results_comparison.go`'s
+// The server counts a retracted result as no evidence at all (`results_pass_stands.go`'s
 // `passStandsOf` skips it), so the page reads how a check stands from the results that still
 // stand. Read from the withdrawn newest result instead, a pass taken back at the compared commit
 // over an older pass at another commit was drawn "Failed", although nothing failed. The result
@@ -3420,9 +3420,9 @@ test("a retracted pass over an older fail that stands is drawn as failed", () =>
 // left standing as the newest, while `checkStanding` and the Verification filter's body sort them
 // by the time each was recorded. Sent oldest first, a fail at the compared commit under a newer
 // pass at another commit read Failed, where read newest first it read Out of date. Every reading
-// sorts by time now, so the order the read sends changes no state. The state it reads is the
-// latest evidence at the check's basis: the fail there, which the newer pass at another commit
-// says nothing about, so it reads Failed in both orders, and the order still changes nothing.
+// sorts by time now, so the order the read sends changes no state. Here the fail stands at the
+// check's basis, so `checkStanding` decides Failed before `checkState` reads any order; the order
+// `checkState` reads when nothing stands at the basis is statement-rules.test.ts's to hold.
 test("a check reads one state whatever order the read sends its results in", () => {
   const failed = recorded("result-failed", "Fix the fault and it passes.", {
     created_at: "2026-11-05T00:00:00Z",

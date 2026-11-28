@@ -5,6 +5,7 @@ import {
   checkStanding,
   namedCommit,
   newestFirst,
+  standsAsEvidence,
   standsAtBasis,
   stateAtCommit,
   statementState,
@@ -24,9 +25,10 @@ import {
  * - **Met, Not met, Unknown.** A statement reads Met where every check of it passed at that
  *   commit, Not met where one failed there, and Unknown otherwise - no check at all, a result
  *   recorded at another commit than the one the page names, a result recorded against another
- *   commit than its check compares with, a withdrawn one, or a check Dispatch could not read. It
- *   is `statement-rules.ts`'s `statementState` over each check read by `stateAtCommit`, the rule
- *   Dashboard's two tiles read too, so a tile and this body count one statement alike.
+ *   commit than its check compares with, a withdrawn one or one that counts for nothing, or a
+ *   check Dispatch could not read. It is `statement-rules.ts`'s `statementState` over each check
+ *   read by `stateAtCommit`, the rule Dashboard's two tiles read too, so a tile and this body
+ *   count one statement alike.
  * - **Covered.** How many statements carry a check. It is covered and never proven or met: a
  *   statement that has a check is not a statement that is true (R17, R22).
  *
@@ -238,9 +240,10 @@ function checkReading(
   const standing = checkStanding(block);
   const { state, stands } = standing;
   const results = newestFirst(block.results ?? []);
-  // What the body draws under the check: the newest result that stands, and where a retraction
-  // left none standing the newest withdrawn one, which is what a retracted check has to show.
-  const latest = results.find((result) => result.retracted === undefined) ?? results[0];
+  // What the body draws under the check: the newest result that stands (`standsAsEvidence`:
+  // nobody withdrew it and it counts for something), and where none stands the newest of them
+  // all, a withdrawn one being what a retracted check has to show.
+  const latest = results.find(standsAsEvidence) ?? results[0];
   const resultNodes = new Map(
     node.children.filter((child) => child.type === "result").map((child) => [child.id, child])
   );
