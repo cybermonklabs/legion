@@ -81,6 +81,7 @@ func TestARequirementUnderACriterionInAListIsReachedAtOnce(t *testing.T) {
 				}
 			}
 			requireTwinListsRequirement(t, s.deps, s.database, issue, "r5")
+			requireCoverageHoldsTheChain(t, s.handler, issue, chain)
 			requireInTheViews(t, s.handler, issue, s.specKey, deferral.converted, chain)
 			requireWrittenAtOnce(t, s.database, deferral.converted, chain)
 			if t.Failed() {
@@ -197,7 +198,8 @@ func TestARoomLeftOwedRunsTheTypedNodePassOnItsFragment(t *testing.T) {
 
 // requireGoneAtOnce fails t unless, right after what and with no reconciliation run, the store
 // holds the block node key#id of type typ gone, holds no document_blocks row and no block_refs row
-// of it, and its view of the tree read of issueKey answers no node of it.
+// of it, and no view of the tree read of issueKey answers a node of it: neither the read with no
+// view nor any of issueTreeViews (everyTreeView).
 func requireGoneAtOnce(t *testing.T, handler http.Handler, database *store.Store, issueKey, key, typ, id, what string) {
 	t.Helper()
 	address := key + "#" + id
@@ -212,8 +214,10 @@ func requireGoneAtOnce(t *testing.T, handler http.Handler, database *store.Store
 	case held.rows != 0 || refsHeld != 0:
 		t.Errorf("after %s the %s %s holds %d document_blocks rows and %d block_refs rows, want none", what, typ, address, held.rows, refsHeld)
 	}
-	if node, found := blockNodeOf(treeRead(t, handler, issueKey, acceptedViews[typ], "alice", false), id); found {
-		t.Errorf("after %s %s of %s still answers the %s %s, at state %s", what, acceptedViews[typ], issueKey, typ, id, node.State)
+	for _, query := range everyTreeView() {
+		if node, found := blockNodeOf(treeRead(t, handler, issueKey, query, "alice", false), id); found {
+			t.Errorf("after %s the tree read %q of %s still answers the %s %s, at state %s", what, query, issueKey, typ, id, node.State)
+		}
 	}
 }
 
@@ -401,12 +405,9 @@ func TestAnOwedDocumentIsNamedByTheReads(t *testing.T) {
 		converted     bool
 		tree, version []acceptedBlock
 	}{
-		{"an upload whose written tree does not render as its version", false,
-			[]acceptedBlock{acceptedCheck("c1", "r1"), acceptedCheck("c2", "r1")}, []acceptedBlock{acceptedCheck("c1", "r1"), acceptedCheck("c3", "r1")}},
-		{"a write to an issue room whose writer wrote no tree", true,
-			nil, []acceptedBlock{acceptedCheck("c1", "r1"), acceptedCheck("c4", "r1")}},
-		{"a write to an issue room whose tree does not render as its version", true,
-			[]acceptedBlock{acceptedCheck("c1", "r1"), acceptedCheck("c5", "r1")}, []acceptedBlock{acceptedCheck("c1", "r1"), acceptedCheck("c6", "r1")}},
+		{"an upload whose written tree does not render as its version", false, disagreeingBlocks("2"), disagreeingBlocks("3")},
+		{"a write to an issue room whose writer wrote no tree", true, nil, disagreeingBlocks("4")},
+		{"a write to an issue room whose tree does not render as its version", true, disagreeingBlocks("5"), disagreeingBlocks("6")},
 	} {
 		issue, verification := verificationOf("The owed document of "+disagreeing.name, disagreeing.converted, acceptedCheck("c1", "r1"))
 		tree := ""

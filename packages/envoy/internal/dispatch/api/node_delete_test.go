@@ -306,15 +306,15 @@ const (
 )
 
 // deleteSpec is the spec of the delete test's issue: a criterion K first, so no callout is its
-// memo, the requirements R1 and R2, R6 with the decision D6 alice decides, a callout Y holding one
-// paragraph, and R7, under which alice moves Y's paragraph.
+// memo, the requirements R1 and R2, R6 with the decision D6 alice decides, a callout Z holding one
+// paragraph, P9, and R9, under which alice moves P9.
 const deleteSpec = ":::criterion{#k}\nThe store answers every reader.\n:::\n\n" +
 	":::requirement{#r1}\n" + deleteR1Words + "\n:::\n\n" +
 	":::requirement{#r2}\n" + deleteR2Words + "\n:::\n\n" +
 	":::requirement{#r6}\nThe ledger keeps every write.\n:::\n\n" +
 	":::decision{#d6}\n" + deleteD6Words + "\n:::\n\n" +
-	":::callout{#y kind=\"note\" title=\"\"}\n" + deleteYWords + "\n:::\n\n" +
-	":::requirement{#r7}\nA requirement that holds the callout's paragraph.\n:::\n"
+	":::callout{#z kind=\"note\" title=\"\"}\n" + deleteYWords + "\n:::\n\n" +
+	":::requirement{#r9}\nA requirement that holds the callout's paragraph.\n:::\n"
 
 // deleteVerification is the Verification document of the issue key: C1 hanging under R1 and
 // serving R1 and R2; C2 serving R1 and R2, which alice moves under R2; C3, serving nothing, which
@@ -350,13 +350,13 @@ const (
 //
 // On the server of c-settle's tests (settleRig), alice, in the browser, creates an issue born
 // converted and approves its spec query. The spec holds the criterion K and the requirements R1,
-// R2, R6 (with alice's decision D6 moved under it), R7 and a callout Y; alice moves R1 under K. The
+// R2, R6 (with alice's decision D6 moved under it), R9 and a callout Z; alice moves R1 under K. The
 // Verification document holds C1 under R1 serving R1 and R2, C2 serving both, which alice moves
 // under R2, C3 with a result, and the callout X1 holding C4, which serves R2 alone; alice moves X1
 // under R1, writes P into the room's own fragment and moves it under R1, invokes a lens L with a
 // finding F on R1 and comments on L's text by node anchor, moves a child issue's node, which holds
 // no part_of yet, under K with the tag of its child_of, which the repeat of that move then names
-// stale, and moves that child's paragraph Q under R1 and Y's paragraph under R7. The first agent writes R4,
+// stale, and moves that child's paragraph Q under R1 and Z's paragraph P9 under R9. The first agent writes R4,
 // the callout X4 holding two asks, one of which alice answers, moves X4 under R4, writes R5 and
 // comments on R1's and R2's text; the second agent reserves a lens on R5 for itself.
 func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
@@ -385,9 +385,10 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	if _, held := treeNodes(t, handler, key, approvedView)[spec.address("r1")]; !held {
 		t.Fatalf("the approved spec version %d does not answer R1 before the delete", approved.Version)
 	}
-	r1, r2, r6, r7, k := spec.address("r1"), spec.address("r2"), spec.address("r6"), spec.address("r7"), spec.address("k")
+	r1, r2, r6, r9, k := spec.address("r1"), spec.address("r2"), spec.address("r6"), spec.address("r9"), spec.address("k")
+	d6 := spec.address("d6")
 	move(alice, key, r1, k)
-	move(alice, key, spec.address("d6"), r6)
+	move(alice, key, d6, r6)
 	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", deleteVerification(key))
 	verification := readDecisionDocument(t, database, key, model.ArtifactSlugVerification)
 	c1, c2, c3, c4, x1 := verification.address("c1"), verification.address("c2"), verification.address("c3"), verification.address("c4"), verification.address("x1")
@@ -435,7 +436,8 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	q := blockWithText(t, database, deleteQWords)
 	move(alice, child.Key, q, r1)
 	result := decodeBody[recordedResult](t, created(t, "C3's result", recordResult(t, handler, key, resultBody("c3", "pass", headCommit, nil)))).Result
-	move(alice, key, blockWithText(t, database, deleteYWords), r7)
+	p9 := blockWithText(t, database, deleteYWords)
+	move(alice, key, p9, r9)
 	premortem := decodeBody[lensInvoked](t, created(t, "a pre-mortem on R2", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/lenses",
 		map[string]any{"on": r2, "kind": graphstore.LensKindPreMortem}, "alice")))
 	risk := decodeBody[struct {
@@ -474,11 +476,23 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 		"the spec": issue.PrimaryArtifactID, "the Verification document": verification.id, "the room's own fragment": tree.id,
 		"the child's room": child.PrimaryArtifactID,
 	}
+	// C1 hangs under R1, D6 is alice's decision, and the tree keeps the stored placement of P, Q
+	// and P9, each moved under a requirement through PATCH.
+	if !holdsRelation(t, database, "block", c1, graphstore.TuplePartOf, r1) {
+		t.Errorf("C1 %s does not hang under R1 %s", c1, r1)
+	}
+	requireDecidedByNode(t, database, "D6", d6, graphstore.KindPerson, "alice")
+	for name, block := range map[string]string{"P": p, "Q": q, "P9": p9} {
+		if placement := placementValueOf(t, database, block); placement != refs.PlacementStored {
+			t.Errorf("the tree holds %s %s at the placement %q after its move, want %q", name, block, placement, refs.PlacementStored)
+		}
+	}
 
 	// The dry run of R1 counts R1, C1, P, L, F and X1: no typed block's own paragraph, which no read
 	// returns, and not Q, a node of the child issue the walk of the issue passes over.
 	before := readDeleteCounts(t, database)
-	if count := deletedCount(t, "the dry run of "+r1, deleteNodeAs(alice, key, r1, true, -1, "")); count != 6 {
+	if count := deletedCount(t, "the dry run of "+r1, requireDryRunTakesNoWriteLock(t, database, "the dry run of "+r1,
+		func() *httptest.ResponseRecorder { return deleteNodeAs(alice, key, r1, true, -1, "") }, key, child.Key)); count != 6 {
 		t.Errorf("the dry run of %s answered the count %d, want 6: R1, C1, P, L, F and X1", r1, count)
 	}
 	requireUnchanged(t, database, "the dry run of "+r1, before)
@@ -495,17 +509,32 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	for name, id := range documents {
 		versions[name] = versionCount(t, database, id)
 	}
-	deleted := deleteNodeAs(alice, key, r1, false, 6, tag)
+	readOwn := holdDeleteVersions(t, rig.deps.Docs.(*docs.Service), database, documents, key, child.Key)
+	preceding := newestTupleSeq(t, database)
+	// The DELETE, unlike its dry run, takes the owner locks: it waits behind the test's hold of them.
+	deleted := requireDeleteWaitsOnOwnerLock(t, database, "DELETE of "+r1,
+		func() *httptest.ResponseRecorder { return deleteNodeAs(alice, key, r1, false, 6, tag) }, key, child.Key)
+	own, texts := readOwn()
 	if deleted.Code != http.StatusOK {
-		t.Fatalf("DELETE of %s answered %d %s, want 200", r1, deleted.Code, deleted.Body.String())
+		live, _ := documentTexts(t, handler, issue.PrimaryArtifactID)
+		t.Fatalf("DELETE of %s answered %d %s, want 200: the room's text holds R1 %t, and R1's node reads %s",
+			r1, deleted.Code, deleted.Body.String(), strings.Contains(live, deleteR1Words), nodeStateOf(t, database, "block", r1))
 	}
 	if count := decodeBody[nodeDeleted](t, deleted).Count; count != 6 {
 		t.Errorf("DELETE of %s answered the count %d, want 6", r1, count)
 	}
 	awaitNoSettlementOwed(t, database)
 	for name, id := range documents {
-		if now := versionCount(t, database, id); now != versions[name]+1 {
-			t.Errorf("DELETE of %s left %s at %d versions, want %d: one version of each document whose text it changes", r1, name, now, versions[name]+1)
+		if own[name] != versions[name]+1 {
+			t.Errorf("DELETE of %s left %s at %d versions of its own, apart from the versions that the query drain writes, want %d: one version of each document whose text it changes", r1, name, own[name], versions[name]+1)
+		}
+		for _, words := range []string{deleteR1Words, deleteC1Words, deletePWords, deleteQWords, "callout{#x1"} {
+			if strings.Contains(texts[name], words) {
+				t.Errorf("the version the DELETE of %s wrote of %s still holds %q:\n%s", r1, name, words, texts[name])
+			}
+		}
+		if empty := emptyCallouts(t, newestQueryVersion(t, database, id).markdown); len(empty) > 0 || len(emptyCallouts(t, texts[name])) > 0 {
+			t.Errorf("a version of %s after the DELETE of %s holds a callout with no content: %v", name, r1, empty)
 		}
 		var events int
 		if err := database.Pool.QueryRow(ctx, `
@@ -531,6 +560,9 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 			t.Errorf("after DELETE of %s, %s %s still holds %d tuples out of it: %+v", r1, name, node[1], len(held), held)
 		}
 	}
+	for _, gone := range [][2]string{{graphstore.KindLens, lens.ID}, {"block", finding}} {
+		requireNoEventTuples(t, database, "the DELETE of "+r1, gone[0], gone[1], preceding)
+	}
 	if holdsRelation(t, database, "block", c1, "serves", r2) || holdsRelation(t, database, "block", c1, "serves", r1) {
 		t.Errorf("C1's serves tuple to R2 still standing after C1 goes gone")
 	}
@@ -545,6 +577,9 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	}
 	if !holdsRelation(t, database, "block", c4, graphstore.TuplePartOf, r2) {
 		t.Errorf("C4 no longer stands under R2 after the delete")
+	}
+	if text, at := texts["the Verification document"], strings.Index(texts["the Verification document"], ":::check{#c4"); at < 0 || at < strings.Index(text, ":::check{#c3") || strings.Contains(text, "callout") {
+		t.Errorf("the version the DELETE of %s wrote of the Verification document does not hold C4 where X1's text stood, after C3 and in no callout:\n%s", r1, text)
 	}
 	newest := func(id string) string {
 		t.Helper()
@@ -562,33 +597,34 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	if text := newest(child.PrimaryArtifactID); strings.Contains(text, deleteQWords) {
 		t.Errorf("the newest version of the child's room still holds Q:\n%s", text)
 	}
-	for _, requirement := range readCoverage(t, handler, key).Requirements {
-		if requirement.BlockID == "r2" && requirement.Checks != 2 {
-			t.Errorf("R2's coverage counts %d checks after the delete, want 2: C2 and C4, and no C1", requirement.Checks)
-		}
+	if state := nodeStateOf(t, database, "block", r2); state != graphstore.StateLive {
+		t.Errorf("R2 reads %s after the delete of R1, want live", state)
 	}
+	requireCoverageChecks(t, handler, key, "r2", c1, c2, c4)
 
 	// The comments on what the delete took stay live and are orphaned.
-	if state := nodeStateOf(t, database, graphstore.KindComment, onR1.ID); state != graphstore.StateLive {
-		t.Errorf("the agent's comment on R1's text is %s after the delete, want live", state)
+	for name, comment := range map[string]string{"the agent's comment on R1's text": onR1.ID, "alice's comment on L's text": onLens.ID} {
+		if state := nodeStateOf(t, database, graphstore.KindComment, comment); state != graphstore.StateLive {
+			t.Errorf("%s is %s after the delete, want live", name, state)
+		}
 	}
-	if holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TupleAnchoredIn, r1Paragraph) || holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TuplePartOf, r1Paragraph) {
-		t.Errorf("the agent's comment on R1's text keeps its anchored_in or its part_of to R1's paragraph %s", r1Paragraph)
+	if anchored, under := holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TupleAnchoredIn, r1Paragraph), holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TuplePartOf, r1Paragraph); anchored || under {
+		t.Errorf("the agent's comment on R1's text keeps its anchored_in (%t) or its part_of (%t) to R1's paragraph %s standing", anchored, under, r1Paragraph)
 	}
-	if holdsRelation(t, database, graphstore.KindComment, onLens.ID, graphstore.TupleAnchoredIn, lens.ID) || holdsRelation(t, database, graphstore.KindComment, onLens.ID, graphstore.TuplePartOf, lens.ID) {
-		t.Errorf("alice's comment on L's text keeps its anchored_in or its part_of to L")
+	if anchored, under := holdsRelation(t, database, graphstore.KindComment, onLens.ID, graphstore.TupleAnchoredIn, lens.ID), holdsRelation(t, database, graphstore.KindComment, onLens.ID, graphstore.TuplePartOf, lens.ID); anchored || under {
+		t.Errorf("alice's comment on L's text keeps its anchored_in (%t) or its part_of (%t) to L standing", anchored, under)
 	}
 	read := commentsWithNodeAnchors(t, handler, key)
 	if comment := read[onR1.ID]; comment.Anchor == nil || !comment.Anchor.Orphaned || comment.NodeAnchor == nil ||
 		comment.NodeAnchor.Node.ID != r1Paragraph || comment.NodeAnchor.Node.State != graphstore.StateGone || comment.NodeAnchor.Quote != "answers in a second" {
-		t.Errorf("the agent's comment on R1's text reads %+v, want orphaned with its quote and a node_anchor naming %s gone", comment, r1Paragraph)
+		t.Errorf("the agent's comment on R1's text reads %s, want orphaned with its quote and a node_anchor naming %s gone", anchorWords(comment), r1Paragraph)
 	}
 	if comment := read[onLens.ID]; comment.NodeAnchor == nil || !comment.NodeAnchor.Orphaned || comment.NodeAnchor.Quote != "one cache" ||
 		comment.NodeAnchor.Node.State != graphstore.StateGone {
-		t.Errorf("alice's comment on L's text reads %+v, want its node anchor on L orphaned, its quote kept, and L gone", comment)
+		t.Errorf("alice's comment on L's text reads %s, want its node anchor on L orphaned, its quote kept, and L gone", anchorWords(comment))
 	}
-	if anchor := treeNodes(t, handler, key, "")[onLens.ID].Anchor; anchor == nil || anchor.Node == nil || anchor.Node.State != graphstore.StateGone {
-		t.Errorf("the tree read answers alice's comment on L with the anchor %+v, want L in the state gone", anchor)
+	if node := treeNodes(t, handler, key, "")[onLens.ID]; node.Anchor == nil || node.Anchor.Node == nil || node.Anchor.Node.State != graphstore.StateGone || node.Parent == nil || node.Parent.ID != key {
+		t.Errorf("the tree read answers alice's comment on L under %+v with the anchor %+v, want it under the issue %s, with L in the state gone", node.Parent, node.Anchor, key)
 	}
 
 	// An edit that drops the quote of the agent's comment on R2 orphans it with R2 live, so
@@ -619,10 +655,9 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}
-	for _, kind := range census.Kinds {
-		if kind.Kind == "comment_anchor_block" && kind.RowDifferences+kind.NodeDifferences != 0 {
-			t.Errorf("the store census reads %d differences of comment_anchor_block after the delete, want 0", kind.RowDifferences+kind.NodeDifferences)
-		}
+	at := slices.IndexFunc(census.Kinds, func(kind graphcensus.KindReport) bool { return kind.Kind == "comment_anchor_block" })
+	if at < 0 || census.Kinds[at].RowDifferences+census.Kinds[at].NodeDifferences != 0 {
+		t.Errorf("the store census reads comment_anchor_block at index %d of %d kinds after the delete, want it read at 0 differences", at, len(census.Kinds))
 	}
 	if _, held := treeNodes(t, handler, key, approvedView)[r1]; !held {
 		t.Errorf("the spec query at the approved version %d no longer answers R1", approved.Version)
@@ -630,9 +665,14 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	if newestQuery := newestQueryVersion(t, database, specQuery); newestQuery.number <= approved.Version {
 		t.Errorf("the spec query stands at version %d after the delete, want a version after the approved %d", newestQuery.number, approved.Version)
 	}
+	if approval := readApproval(t, handler, specQuery).Approval; approval == nil || approval.State != "stale" || approval.Version == nil || *approval.Version != approved.Version {
+		t.Errorf("the spec's approval reads %+v after the delete, want alice's approval of version %d changed since (stale)", approval, approved.Version)
+	}
 
 	// A count that moved since the dry run is refused with the count now, while R2's If-Match holds.
+	before = readDeleteCounts(t, database)
 	counted := deletedCount(t, "the dry run of "+r2, deleteNodeAs(alice, key, r2, true, -1, ""))
+	requireUnchanged(t, database, "the dry run of "+r2, before)
 	_, r2Tag := placementOf(t, database, "block", r2)
 	if edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+tree.id+"/edits", map[string]any{"ops": []map[string]any{{
 		"op": "insert", "after": "end", "markdown": "A prose block that comes to stand under R2.\n",
@@ -653,7 +693,9 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	// K goes, and the child issue keeps its node, its child_of and its part_of to K, hung from its
 	// parent issue by the walk.
 	_, kTag := placementOf(t, database, "block", k)
+	before = readDeleteCounts(t, database)
 	kCount := deletedCount(t, "the dry run of "+k, deleteNodeAs(alice, key, k, true, -1, ""))
+	requireUnchanged(t, database, "the dry run of "+k, before)
 	deletedCount(t, "DELETE of "+k, deleteNodeAs(alice, key, k, false, kCount, kTag))
 	if !holdsRelation(t, database, graphstore.KindIssue, child.Key, graphstore.TuplePartOf, k) || !holdsRelation(t, database, graphstore.KindIssue, child.Key, graphstore.TupleChildOf, key) {
 		t.Errorf("the child issue %s lost its part_of to %s or its child_of to %s after the delete of %s", child.Key, k, key, k)
@@ -662,28 +704,42 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 		t.Errorf("the tree read of %s answers the child %s at %+v, want under the issue", key, child.Key, node.Parent)
 	}
 
-	// C3 holds a result, retracted and never deleted: the dry run and the delete refuse it alike.
+	// pair sends a delete's dry run and then its write, as as, with expected and tag, and fails
+	// unless two refusals hold the same status, code and words (requireSameRefusal).
+	pair := func(what string, as nodeCaller, id string, expected int, tag string) [2]*httptest.ResponseRecorder {
+		t.Helper()
+		answers := [2]*httptest.ResponseRecorder{deleteNodeAs(as, key, id, true, expected, tag), deleteNodeAs(as, key, id, false, expected, tag)}
+		if answers[0].Code != http.StatusOK && answers[1].Code != http.StatusOK {
+			requireSameRefusal(t, what, answers[0], answers[1])
+		}
+		return answers
+	}
+	runs := [2]string{"dry run of ", "DELETE of "}
+
+	// C3 holds a result, retracted and never deleted: the dry run and the delete refuse it alike. The
+	// write names the count of what it would take, C3 and its result, so its refusal alone stops it.
 	before = readDeleteCounts(t, database)
 	_, c3Tag := placementOf(t, database, "block", c3)
-	for _, dry := range []bool{true, false} {
-		what := "DELETE of " + c3
-		if dry {
-			what = "dry run of " + c3
-		}
-		response := deleteNodeAs(alice, key, c3, dry, 1, c3Tag)
-		if response.Code == http.StatusOK {
-			t.Errorf("%s answered 200, not 409: the result %s goes with it", what, result.ID)
-			continue
-		}
-		if message := refusedWith(t, what, response, http.StatusConflict, codeNodeHoldsResult); !strings.Contains(message, "c3") || !strings.Contains(message, result.ID) {
-			t.Errorf("%s does not name C3 and its result: %s", what, message)
+	for index, response := range pair("the deletes of "+c3, alice, c3, 2, c3Tag) {
+		what := runs[index] + c3
+		switch {
+		case response.Code == http.StatusOK && index == 0:
+			t.Errorf("%s answered 200, want 409 NODE_HOLDS_RESULT: the result %s goes with it", what, result.ID)
+		case response.Code == http.StatusOK:
+			t.Errorf("%s answered 200, not 409: C3, the check of the result %s, reads %s", what, result.ID, nodeStateOf(t, database, "block", c3))
+		default:
+			if message := refusedWith(t, what, response, http.StatusConflict, codeNodeHoldsResult); !strings.Contains(message, "c3") || !strings.Contains(message, result.ID) {
+				t.Errorf("%s does not name C3 and its result: %s", what, message)
+			}
 		}
 	}
 	requireUnchanged(t, database, "the refused deletes of "+c3, before)
 
 	// The agent deletes R4 and X4 and leaves both asks' blocks in the spec, where X4's text stood.
 	specVersions := versionCount(t, database, issue.PrimaryArtifactID)
+	before = readDeleteCounts(t, database)
 	r4Count := deletedCount(t, "the agent's dry run of "+r4, deleteNodeAs(first, key, r4, true, -1, ""))
+	requireUnchanged(t, database, "the agent's dry run of "+r4, before)
 	if r4Count != 2 {
 		t.Errorf("the agent's dry run of %s answered %d, want 2: R4 and X4, and neither ask's block", r4, r4Count)
 	}
@@ -711,48 +767,60 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 		}
 	}
 
-	// R6 holds alice's decision: the agent's dry run and its delete refuse it, quoting the decision;
-	// a lens alice puts on R6 does not move that refusal behind the state route's.
+	// R6 holds alice's decision: the agent's dry run and its delete refuse it, quoting the decision,
+	// alone and again once alice puts a lens on R6, which does not move that refusal behind the
+	// state route's. Each names the count alice's dry run reads.
+	answerKept := func(when string) {
+		t.Helper()
+		count := deletedCount(t, "alice's dry run of "+r6+" "+when, deleteNodeAs(alice, key, r6, true, -1, ""))
+		before = readDeleteCounts(t, database)
+		_, r6Tag := placementOf(t, database, "block", r6)
+		for index, response := range pair("the agent's deletes of "+r6+" "+when, first, r6, count, r6Tag) {
+			what := "agent " + runs[index] + r6 + " " + when
+			if response.Code == http.StatusOK {
+				t.Errorf("%s answered 200, not 409: it took the decision %s, which reads %s", what, d6, nodeStateOf(t, database, "block", d6))
+				continue
+			}
+			if message := refusedWith(t, what, response, http.StatusConflict, codeAnsweredAskKept); !strings.Contains(message, deleteD6Words) || !strings.Contains(message, "d6") {
+				t.Errorf("the refusal of the %s does not quote and name the decision: %s", what, message)
+			}
+		}
+		requireUnchanged(t, database, "the agent's refused deletes of "+r6+" "+when, before)
+	}
+	answerKept("alone")
 	created(t, "alice's lens on R6", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/lenses",
 		map[string]any{"on": r6, "kind": "trade-off"}, "alice"))
-	before = readDeleteCounts(t, database)
-	_, r6Tag := placementOf(t, database, "block", r6)
-	for _, dry := range []bool{true, false} {
-		response := deleteNodeAs(first, key, r6, dry, 2, r6Tag)
-		if response.Code == http.StatusOK {
-			t.Errorf("agent DELETE of %s answered 200, not 409: it took the decision %s", r6, spec.address("d6"))
-			continue
-		}
-		if message := refusedWith(t, "the agent's delete of "+r6, response, http.StatusConflict, codeAnsweredAskKept); !strings.Contains(message, deleteD6Words) || !strings.Contains(message, "d6") {
-			t.Errorf("the refusal of the agent's delete of %s does not quote and name the decision: %s", r6, message)
-		}
-	}
-	requireUnchanged(t, database, "the agent's refused deletes of "+r6, before)
+	answerKept("under alice's lens")
 
 	// A node the delete never takes: an ask, a comment, a message, a result, the issue node and a
-	// document, refused on the dry run and on the delete alike.
+	// document, refused on the dry run and on the delete alike, each with its own tag.
 	before = readDeleteCounts(t, database)
 	for _, address := range []string{
 		graphstore.KindAsk + "/" + openAsk, graphstore.KindComment + "/" + onR2.ID, graphstore.KindMessage + "/" + message.ID,
 		graphstore.KindResult + "/" + result.ID, graphstore.KindIssue + "/" + key, graphstore.KindArtifact + "/" + spec.refKey,
 	} {
-		for _, dry := range []bool{true, false} {
-			refusedWith(t, fmt.Sprintf("the delete (dry run %t) of %s", dry, address), deleteNodeAs(alice, key, address, dry, 1, `"1"`), http.StatusBadRequest, codeNodeNotDeletable)
+		for index, response := range pair("the deletes of "+address, alice, address, 1, nodeTagOf(t, database, address)) {
+			refusedWith(t, runs[index]+address, response, http.StatusBadRequest, codeNodeNotDeletable)
 		}
 	}
 	requireUnchanged(t, database, "the deletes of nodes the delete never takes", before)
 
-	// A text the delete would leave holding Y with no block of its own: refused on the dry run, read
-	// off the document's tree, and on the delete alike.
+	// A text the delete would leave holding Z with no block of its own: refused on the dry run, read
+	// off the document's tree, and on the delete alike. R9's count is 1: P9 is Z's own paragraph,
+	// which no read returns.
 	before = readDeleteCounts(t, database)
-	_, r7Tag := placementOf(t, database, "block", r7)
-	for _, dry := range []bool{true, false} {
-		if message := refusedWith(t, fmt.Sprintf("the delete (dry run %t) of %s", dry, r7), deleteNodeAs(alice, key, r7, dry, 1, r7Tag),
-			http.StatusConflict, codeContainerWouldEmpty); !strings.Contains(message, "callout") || !strings.Contains(message, `"y"`) {
-			t.Errorf("the refusal of the delete of %s does not name the callout Y: %s", r7, message)
+	_, r9Tag := placementOf(t, database, "block", r9)
+	for index, response := range pair("the deletes of "+r9, alice, r9, 1, r9Tag) {
+		if message := refusedWith(t, runs[index]+r9, response, http.StatusConflict, codeContainerWouldEmpty); !strings.Contains(message, "callout") || !strings.Contains(message, `"z"`) {
+			t.Errorf("the refusal of the %s does not name the callout Z: %s", runs[index]+r9, message)
 		}
 	}
-	requireUnchanged(t, database, "the refused deletes of "+r7, before)
+	requireUnchanged(t, database, "the refused deletes of "+r9, before)
+	for name, block := range map[string]string{"P9": p9, "R9": r9} {
+		if state := nodeStateOf(t, database, "block", block); state != graphstore.StateLive {
+			t.Errorf("%s %s reads %s after the refused deletes of R9, want live", name, block, state)
+		}
+	}
 
 	// R5 holds the second agent's author-only lens: alice counts R5 alone, and the first agent is
 	// refused the state route's way, naming no hidden node.
@@ -761,9 +829,8 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 		t.Errorf("alice's dry run of %s answered %d, want 1: R5, and not the lens she may not see", r5, count)
 	}
 	_, r5Tag := placementOf(t, database, "block", r5)
-	for _, dry := range []bool{true, false} {
-		response := deleteNodeAs(first, key, r5, dry, 1, r5Tag)
-		refusedWith(t, fmt.Sprintf("the first agent's delete (dry run %t) of %s", dry, r5), response, http.StatusForbidden, codeStateNotPermitted)
+	for index, response := range pair("the first agent's deletes of "+r5, first, r5, 1, r5Tag) {
+		refusedWith(t, "the first agent's "+runs[index]+r5, response, http.StatusForbidden, codeStateNotPermitted)
 		if strings.Contains(response.Body.String(), hidden.ID) {
 			t.Errorf("the first agent's delete of %s names the hidden lens %s: %s", r5, hidden.ID, response.Body.String())
 		}
@@ -774,9 +841,9 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	_, hiddenTag := placementOf(t, database, graphstore.KindLens, hidden.ID)
 	notFound := fmt.Sprintf("no node %q under %s", hiddenAddress, key)
 	for what, response := range map[string]*httptest.ResponseRecorder{
-		"agent dry run":  deleteNodeAs(first, key, hiddenAddress, true, -1, ""),
-		"agent DELETE":   deleteNodeAs(first, key, hiddenAddress, false, 1, hiddenTag),
-		"agent PATCH of": patchNodeAs(first, key, hiddenAddress, hiddenTag, map[string]any{"parent": r2}),
+		"agent dry run of": deleteNodeAs(first, key, hiddenAddress, true, -1, ""),
+		"agent DELETE of":  deleteNodeAs(first, key, hiddenAddress, false, 1, hiddenTag),
+		"agent PATCH of":   patchNodeAs(first, key, hiddenAddress, hiddenTag, map[string]any{"parent": r2}),
 	} {
 		if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusNotFound || refusal.Code != "NOT_FOUND" || !strings.Contains(refusal.Error, notFound) {
 			t.Errorf("%s %s answered %d %s, want 404 NOT_FOUND with the words %q: %s", what, hiddenAddress, response.Code, refusal.Code, notFound, refusal.Error)
@@ -819,10 +886,12 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 		_, writerTag := placementOf(t, writers.database, "block", requirement)
 		worker := writers.caller(t, writers.worker)
 		counts := readDeleteCounts(t, writers.database)
+		var answers []*httptest.ResponseRecorder
 		for _, dry := range []bool{true, false} {
-			refusedWith(t, fmt.Sprintf("the worker's delete (dry run %t) of %s", dry, requirement),
-				deleteNodeAs(worker, writers.issue, requirement, dry, 1, writerTag), http.StatusForbidden, specWriterRefusalCode)
+			answers = append(answers, deleteNodeAs(worker, writers.issue, requirement, dry, 1, writerTag))
+			refusedWith(t, fmt.Sprintf("the worker's delete (dry run %t) of %s", dry, requirement), answers[len(answers)-1], http.StatusForbidden, specWriterRefusalCode)
 		}
+		requireSameRefusal(t, "the worker's deletes of "+requirement, answers[0], answers[1])
 		requireUnchanged(t, writers.database, "the worker's refused deletes", counts)
 	})
 

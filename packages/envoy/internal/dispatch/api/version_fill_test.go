@@ -244,7 +244,11 @@ func versionFillApprovalsAfter(t *testing.T, database *store.Store, artifactID s
 //     paragraph the spec query's record does not take has written, at the pause after its COMMIT,
 //     no review, no carry row and no artifact.approved; its fill appends one artifact.digest
 //     reading approval_current true, and the approval still reads approved at the version she
-//     approved.
+//     approved. Each artifact.digest a fill appends carries its seven members as the fill reads
+//     them (requireDigestPayload).
+//   - The cutover carry of R14, by the request and by the tick (requireCutoverCarryFilled).
+//   - A fill the request lost on a version that marks no query, which the tick's repair of lost
+//     fills alone fills (requireTheTickRepairsALostFill).
 func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -300,7 +304,7 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 				t.Errorf("GET /api/v1/artifacts/%s answers %+v while version %d's fill is held, want digest_owed true and current_sha256 the stored markdown's, %s", spec, read, number, contentHash(stored))
 			}
 			if early := versionFillEvents(published, issue.Key)["artifact.version"]; early > 0 {
-				t.Errorf("the server published %d artifact.version events of %s before the fill, want none", early, issue.Key)
+				t.Errorf("artifact.version published locally while its row still owes its digest: version %d of %s, %d events of %s before the fill, want none", number, refKeyOf(t, database, spec), early, issue.Key)
 			}
 			if _, err := database.Pool.Exec(ctx, `
 				insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
@@ -323,8 +327,8 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 				t.Fatalf("the edit answered %d %s, want 200", edited.Code, edited.Body.String())
 			}
 			if filled := versionFillRowOf(t, database, spec, number); filled.digest == nil || *filled.digest != saved.Digest || filled.owed {
-				t.Errorf("after the fill the row of version %d holds record_sha256 %v and digest_owed %t, want the record's digest at the saved cut %s and false",
-					number, filled.digest, filled.owed, saved.Digest)
+				t.Errorf("after the fill the row of version %d holds record_sha256 %s and digest_owed %t, want the record's digest at the saved cut %s and false",
+					number, versionFillWords(filled.digest), filled.owed, saved.Digest)
 			}
 			if got := versionFillDigest(t, database, spec, number); got != saved.Digest {
 				t.Errorf("artifact_version_text_sha256 answers %s for version %d after the fill, want the record's digest %s", got, number, saved.Digest)
@@ -357,10 +361,11 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 					if digest, _ := held.payload["content_sha256"].(string); digest != saved.Digest {
 						t.Errorf("the artifact.digest of %s@v%d carries content_sha256 %q, want the record's digest at the saved cut, %s", issue.Key, number, digest, saved.Digest)
 					}
+					requireDigestPayload(t, database, "the ordinary fill by "+by.name, held.payload, spec, number, saved.Digest)
 				}
 			}
 			if digests != 1 || events["artifact.digest"] != 1 {
-				t.Errorf("no artifact.digest for %s@v%d after its fill: the log holds %d and the server published %d, want the fill's one", spec, number, digests, events["artifact.digest"])
+				t.Errorf("no artifact.digest for %s@v%d after its fill: the log holds %d and the server published %d, want the fill's one", refKeyOf(t, database, spec), number, digests, events["artifact.digest"])
 			}
 		})
 	}
@@ -377,8 +382,8 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 			}
 			stored := contentHash(storedVersionMarkdown(t, database, spec, number))
 			if approval.Version != number || approval.ContentSHA256 == nil || *approval.ContentSHA256 == stored || *approval.ContentSHA256 != *row.digest {
-				t.Errorf("approval of %s@v%d pinned the markdown digest while its digest was owed: alice's review is of version %d pinning %v, want version %d pinning the record's digest %s, not the stored markdown's %s",
-					spec, number, approval.Version, approval.ContentSHA256, number, *row.digest, stored)
+				t.Errorf("approval of %s@v%d pinned the markdown digest while its digest was owed: alice's review is of version %d pinning %s, want version %d pinning the record's digest %s, not the stored markdown's %s",
+					refKeyOf(t, database, spec), number, approval.Version, versionFillWords(approval.ContentSHA256), number, *row.digest, stored)
 			}
 			if approval.CarriedFromVersion != nil {
 				t.Errorf("alice's review of version %d is carried from version %d, want her own", number, *approval.CarriedFromVersion)
@@ -421,20 +426,30 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 			if after := newestCarryOf(t, database, spec); after.id != standing.id || after.from != nil {
 				t.Errorf("after the fill the newest review of the spec is %+v, want alice's %s still: the fill wrote a review", after, standing.id)
 			}
-			var current bool
-			if err := database.Pool.QueryRow(ctx, `
-				select (payload->>'approval_current')::boolean from events
-				where type = 'artifact.digest' and payload->>'artifact_id' = $1 and (payload->>'version')::int = $2`, spec, number).Scan(&current); err != nil {
-				t.Fatalf("no artifact.digest for %s@v%d after its fill: %v", spec, number, err)
+			digests := digestEventsOf(t, database, spec, number)
+			if len(digests) != 1 {
+				t.Fatalf("no artifact.digest for %s@v%d after its fill: the log holds %d, want the fill's one", refKeyOf(t, database, spec), number, len(digests))
 			}
-			if !current {
-				t.Errorf("the artifact.digest of %s@v%d carries approval_current false, want true: a prose edit leaves the spec query's record where alice approved it", spec, number)
+			if current, _ := digests[0].payload["approval_current"].(bool); !current {
+				t.Errorf("the artifact.digest of %s@v%d carries approval_current false, want true: a prose edit leaves the spec query's record where alice approved it", refKeyOf(t, database, spec), number)
 			}
+			requireDigestPayload(t, database, "the fill of a write under an approval, by "+by.name, digests[0].payload, spec, number,
+				versionFillWords(versionFillRowOf(t, database, spec, number).digest))
 			if read := readApproval(t, handler, spec).Approval; read == nil || read.State != "approved" || read.Version == nil || *read.Version != standing.version {
 				t.Errorf("the approval of the spec reads %+v after the fill, want approved at version %d, the one alice approved", read, standing.version)
 			}
 		})
 	}
+
+	for _, by := range versionFillers {
+		t.Run("the cutover carry of R14, by "+by.name, func(t *testing.T) {
+			requireCutoverCarryFilled(t, handler, database, service, project, by)
+		})
+	}
+
+	t.Run("a fill the request lost, which the tick repairs", func(t *testing.T) {
+		requireTheTickRepairsALostFill(t, handler, database, service, issue.Key, spec)
+	})
 
 	t.Run("rows that hold no record digest", func(t *testing.T) {
 		// A version of a document no query takes: its row holds its cut and no record digest, and
