@@ -203,7 +203,7 @@ func TestParseProfilesHoldsTheResultsProfileToANameAndAProxyBlock(t *testing.T) 
 		}
 		entry := profiles.FileRules().Lookup(oauthwire.AirlockResultsName)
 		if entry == nil || entry.Inline == nil || entry.Way != proxyrules.WayDPoP || !reflect.DeepEqual(entry.Inline.Hosts, []string{"dispatch.example.test"}) {
-			t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s on dispatch.example.test", oauthwire.AirlockResultsName, entry, proxyrules.WayDPoP)
+			t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s on dispatch.example.test", oauthwire.AirlockResultsName, entry, policy.ProxyBlockKindDPoP)
 		}
 	})
 }
@@ -318,7 +318,7 @@ func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
 		"SLACK_NONE":  {Name: "SLACK_NONE", Source: "SLACK_TOKEN", ProxyKind: "slack", Allow: []proxyrules.Allow{}},
 		"SLACK_POST":  {Name: "SLACK_POST", Source: "SLACK_TOKEN", Allow: []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/chat.postMessage", Host: "slack.com"}}},
 		"TEST_MINTED_TOKEN": {Name: "TEST_MINTED_TOKEN", Source: "TEST_MINTED_TOKEN", Proxy: &policy.ProxyBlock{
-			Hosts: []string{"dispatch.example.com"}, Allow: []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/v1/"}}, Kind: proxyrules.WayDPoP,
+			Hosts: []string{"dispatch.example.com"}, Allow: []proxyrules.Allow{{Method: "POST", PathPrefix: "/api/v1/"}}, Kind: policy.ProxyBlockKindDPoP,
 		}},
 	} {
 		if got := profiles.Lookup(name); !reflect.DeepEqual(got, want) {
