@@ -3,12 +3,13 @@
 # look's own task text carries, and that the daemon takes the look a report is of from that id and
 # never from the turn the report came in (dispatch://INFRA-3518). The whole daemon is booted by the
 # function `legion start` calls, over a real PostgreSQL and a real nats-server, afresh for each part
-# of late turn and for each of the steps after it that drives a check, and driven only as
-# production drives it: GitHub's merge and Dispatch's move to done on the ENVOY_NOTIFICATIONS
-# stream, the daemon's own HTTP routes for each role's
+# of late turn and of task ends with its look and for each of the other steps that drives a check,
+# and driven only as production drives it: GitHub's pull request, its merge and Dispatch's moves
+# on the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes for each role's
 # registration, readiness, grants and reports — each report the raw JSON body the plugin's
-# handoff_complete sends — and its worker stream, which the driver speaks as `legion worker-shim`
-# and Oh My Pi do, a late answer and the busy answer (session_busy) included. Every result is read
+# handoff_complete sends — and for the operator's suspension and resume and the controller's fresh
+# session, and its worker stream, which the driver speaks as `legion worker-shim` and Oh My Pi do, a
+# late answer, the busy answer (session_busy) and a refusal included. Every result is read
 # back from GET /legion/v1/state, from the record route read_record calls, from the operator's claim
 # listing, from the store, from the daemon's log and from what the daemon sent — or did not send —
 # to a role's own connection (packages/daemon/internal/daemon/production_check_look_id_live_test.go,
@@ -17,8 +18,8 @@
 # SQL while no daemon runs. Each step prints `== <name>`, what it observed and `ok <name>`, or
 # `FAIL <name> at <assertion>`; each runs on its own, so one that fails does not keep the next from
 # running, and the run fails when any step failed. A step of parts prints each part between
-# `-- part <n>: <what>` and `ok part <n>` or `FAIL part <n> at <assertion>`, and fails naming each
-# part that failed.
+# `-- <part>: <what>` and `ok <part>` or `FAIL <part> at <assertion>`, where <part> is `part <n>`
+# or, for the one part no check numbers, its name, and fails naming each part that failed.
 #
 #   late turn                      c-late-turn: a report the checking role makes in the turn of
 #                                  the open look's task is recorded against that look, also when
@@ -40,6 +41,19 @@
 #                                  the next look starts, and one of a look the next look replaced is
 #                                  refused CHECK_LOOK_NOT_OPEN, while the same report with the next
 #                                  look's id is taken
+#   task ends with its look        c-task-ends: the task of a look the turn match fails for ends
+#                                  with its look — ended by its report, its bound, an operator's
+#                                  hold the next look's start meets, a claim failed once its prompt
+#                                  failures ran out, or the check of a later merge (parts 1 to 5) —
+#                                  and the next look's task takes its place, also behind an
+#                                  acknowledged prompt whose turn starts late (part 6); the check of
+#                                  a root reopened inside its linger (part 7) and of a child that
+#                                  re-entered (part 8) stays open and takes the report of the look
+#                                  from the session of its turn, after that turn; it closes as not
+#                                  run at the next merge of the new run (part 9) and at a move to
+#                                  backlog (part 10, a child and then a root), queuing no issue
+#                                  close or suspension of its own; and the ready after a fresh
+#                                  session sends nothing of a look that ended (fresh session)
 #   id hidden                      c-id-hidden, the last step: no look id the run saw is in any body
 #                                  of GET /legion/v1/state, of the record route read_record calls or
 #                                  of an answer to a report, each read before a look's task is sent,
@@ -80,12 +94,17 @@
 # HANDOFF_ALREADY_RECORDED, the report taken for look 1, which the claim was left serving) and at
 # part 3's report (409 CHECK_LOOK_NOT_SERVED, a claim that served its run takes no unconfirmed
 # look), testing turn behind the close at its first call (409 CHECK_LOOK_NOT_SERVED, the session
-# works no look), and ended look at part 1's report (409 CHECK_LOOK_NOT_SERVED). What part 4 of
-# late turn did there, which passes at the base too, and what id hidden did, which has nothing to
-# search at the base, are printed as they came. A proof.log an earlier run left in
-# PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR is removed before the base run, so only that run's steps
-# are read. Its last line is `production check look id negative control: PASS|FAIL …` with the
-# base run's evidence directory.
+# works no look), ended look at part 1's report (409 CHECK_LOOK_NOT_SERVED), and task ends with its
+# look at the next look of parts 2, 3 and 4 (the claim keeps the ended look's task and the start
+# row of the next look waits on `a delivery is already pending`), at part 8's report (409
+# CHECK_NOT_OPEN, the re-entry closed the check), at part 9's close line (the log has no close of
+# the check the next merge's check is written over) and at the move of each half of part 10 (the
+# child's check closed at its re-entry, before the move; the root's stays open after it); that step
+# runs no other part at the base. What part 4 of late turn did there, which passes at the base too,
+# and what id hidden did, which has nothing to search at the base, are printed as they came. A
+# proof.log an earlier run left in PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR is removed before the base
+# run, so only that run's steps are read. Its last line is `production check look id negative
+# control: PASS|FAIL …` with the base run's evidence directory.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -134,6 +153,13 @@ base_failures=(
   'late turn|part 3 report|409 CHECK_LOOK_NOT_SERVED'
   'testing turn behind the close|no-id-refusal|409 CHECK_LOOK_NOT_SERVED'
   'ended look|part 1 report|409 CHECK_LOOK_NOT_SERVED'
+  'task ends with its look|part 2 next-look|a delivery is already pending'
+  'task ends with its look|part 3 next-look|a delivery is already pending'
+  'task ends with its look|part 4 next-look|a delivery is already pending'
+  'task ends with its look|part 8 report|409 CHECK_NOT_OPEN'
+  'task ends with its look|part 9 close-line|has no line `workflow: production check closed`'
+  'task ends with its look|part 10 child closed-at-move|before the move'
+  'task ends with its look|part 10 root closed-at-move|open after the move'
 )
 
 # The negative control's own state, global because its EXIT trap reads it.

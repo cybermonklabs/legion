@@ -24,44 +24,63 @@
 //   - ended look (c-ended-look), two parts on one check: a report of a look whose bound ended it
 //     counts until the next look starts, and a report of a look the next one replaced records
 //     nothing.
+//   - task ends with its look (c-task-ends, departures 3 and 7 of the plan), each part on a daemon
+//     and a check of its own: the task of a look the turn match fails for ends with its look,
+//     however the look ends — a report of it (part 1), its bound (part 2), an operator's hold
+//     that the next look's start meets (part 3), a claim that failed once its prompt failures ran
+//     out (part 4), or a later merge whose check replaces it (part 5) — and the next look's task
+//     takes its place, also behind an acknowledged prompt of the ended look whose turn starts late
+//     (part 6); the check of an issue that runs again stays open at its look and takes the report
+//     of that look from the session whose turn ran its task, once that turn has ended — a root
+//     reopened inside its tree's linger (part 7) and a child that re-enters (part 8); and the
+//     check of an issue that ran again closes as not run when the run's next merge replaces it
+//     (part 9) and when the run leaves with no merge (part 10, a child and then a root), with no
+//     row of its own for the issue's claims and pod. A last part is the plan's proof that no check
+//     names: the ready after a fresh session sends nothing of a look that ended.
 //   - id hidden (c-id-hidden): the last step. It searches every look id the run saw in the routes
 //     a role reads and in the daemon's whole log.
 //
-// The Verification document's other two checks of this proof, `task ends with its look`
-// (c-task-ends) and `upgrade` (c-upgrade), are steps of their own, in that order, between `ended
-// look` and `id hidden` (TestProductionCheckLookIDLive's list), and they feed the step `id hidden`
-// as the steps above do: each prompt a role's agent reads goes through lookIDAgent, which records
-// the look id of each task it reads (lookIDSeen.task), and a step reads the routes a role reads
-// at each moment the check names through lookIDFixture.surfaces.
+// The Verification document's other check of this proof, `upgrade` (c-upgrade), is a step of its
+// own, between `task ends with its look` and `id hidden` (TestProductionCheckLookIDLive's list),
+// and it feeds the step `id hidden` as the steps above do: each prompt a role's agent reads goes
+// through lookIDAgent, which records the look id of each task it reads (lookIDSeen.task), and a
+// step reads the routes a role reads at each moment the check names through
+// lookIDFixture.surfaces.
 //
-// Each step, and each part of `late turn`, runs as a subtest of its own on a daemon of its own,
-// booted as this package's other whole-daemon proofs boot it (startDaemonLogging over the fake
-// runtime, liveIssueProof of live_issue_proof_test.go), so one that fails ends there and the next
-// still runs: the negative control's one run shows every step's own failure, each at the
-// assertion the step names (lookIDLive.fails), as busy_relaunch_live_test.go's steps do. Each
-// fixture is a tree of the run's own project: a root in accepting and its child, the issue whose
-// production check a part drives, as api/handoff_check_route_test.go's fixture holds them. The
-// child reaches testing as production's does — its implementer, a launch the previous daemon
-// never recorded that the boot relaunches, completes over HTTP and its tester takes the testing
-// task over the worker stream — and closes merged as that fixture closes it (departure 2): GitHub's
-// merge of its pull request arrives while it is in testing, and a person then moves it to done on
-// Dispatch, which opens the check and starts its first look on the tester's claim, which the
-// close spares.
+// Each step, and each part of `late turn` and of `task ends with its look`, runs as a subtest of
+// its own on a daemon of its own, booted as this package's other whole-daemon proofs boot it
+// (startDaemonLogging over the fake runtime, liveIssueProof of live_issue_proof_test.go), so one
+// that fails ends there and the next still runs: the negative control's one run shows every
+// step's own failure, each at the assertion the step names (lookIDLive.fails), as
+// busy_relaunch_live_test.go's steps do. Each fixture is a tree of the run's own project: a root
+// in accepting and its child, the issue whose production check a part drives, as
+// api/handoff_check_route_test.go's fixture holds them, or, for a part whose checked issue is a
+// root, that root alone (rootFixture). The checked issue reaches testing as production's does —
+// its implementer, a launch the previous daemon never recorded that the boot relaunches,
+// completes over HTTP and its tester takes the testing task over the worker stream — and closes
+// merged as that fixture closes it (departure 2): GitHub's merge of its pull request arrives while
+// it is in testing, and a person then moves it to done on Dispatch, which opens the check and
+// starts its first look on the tester's claim, which a child's close spares and a root's linger
+// suspends and the look resumes.
 //
 // The checking role's agent is a raw shim (lookIDAgent over liveClaimant): it reads every frame
 // the daemon sends on a goroutine of its own, answers the protocol negotiation and the state probe
 // (get_state) as the real shim and Oh My Pi do, answers busy (the pinned Oh My Pi's session_busy)
 // each prompt that arrives in a turn, and hands every other prompt to the step, which answers it,
 // late, busy or not at all. The implementer that walks the child to testing is liveClaimant as
-// conflict_no_takeover_live_test.go plays it. The daemon's own send deadline is the configuration's
-// (Config.WorkerRPCTimeout), and its wait for a turn is the machines' clock: still (fakeRuntime's
-// stillClock) everywhere but part 4 of `late turn`, which boots on the wall clock (overrides.clock
-// nil). The runtime's sweep of the claims' processes, which sends again a task that waits after a
-// failed send or a turn that never came, is the driver's (lookIDFixture.sweep), since the fake
-// runtime makes none. A look's bound and a look's wake are brought forward by SQL on
-// outbox.next_at, and every seed the plan writes with the daemon stopped
-// (lookIDFixture.restartWith) is written so. Each report is the raw JSON body the plugin's
-// `handoff_complete` sends (checkOpenedAt, lookId, verdict, summary, wakeAt).
+// conflict_no_takeover_live_test.go plays it; the implementer of a run after a re-entry is a
+// lookIDAgent too, so every task that reaches a connection is recorded. The daemon's own send
+// deadline is the configuration's (Config.WorkerRPCTimeout), and its wait for a turn is the
+// machines' clock: still (fakeRuntime's stillClock) everywhere but part 4 of `late turn`, which
+// boots on the wall clock (overrides.clock nil). The runtime's sweep of the claims' processes,
+// which sends again a task that waits after a failed send or a turn that never came, is the
+// driver's (lookIDFixture.sweep), since the fake runtime makes none. A look's bound and a look's
+// wake are brought forward by SQL on outbox.next_at, and every seed the plan writes with the
+// daemon stopped (lookIDFixture.restartWith) is written so. Each report is the raw JSON body the
+// plugin's `handoff_complete` sends (checkOpenedAt, lookId, verdict, summary, wakeAt). An issue
+// that runs again gets its branch from GitHub's stand-in (lookIDGitHub) and its next pull request
+// from GitHub's events; the rows a person's move queues are read from the database's own record
+// of every outbox write (recordOutboxWrites), since the outbox deletes a row once it has run.
 //
 // The driver names no Go symbol the base commit lacks, so it builds over it: it reads the routes
 // as raw JSON, takes the look id from the task's text, and never reads a column the change adds.
@@ -74,13 +93,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -91,7 +114,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -106,13 +132,15 @@ import (
 const lookIDBaseEnv = "PRODUCTION_CHECK_LOOK_ID_BASE"
 
 // The run's fixed values: the script that owns the broker, the base branch of every pull request,
-// the head the child's pull request is at and merges at, and the merge commit GitHub's merge names
-// (publishMergeOf names it for the head).
+// the head the checked issue's pull request is at and merges at, the merge commit GitHub's merge
+// names (publishMergeOf names it for the head), and the head of the next pull request a run of the
+// issue after its re-entry or re-admission opens and merges.
 const (
 	lookIDScript = "scripts/e2e/production-check-look-id.sh"
 	lookIDBranch = "main"
 	lookIDHead   = "c0ffee0000000000000000000000000000000001"
 	lookIDMerge  = "merge-" + lookIDHead
+	lookIDHead2  = "c0ffee0000000000000000000000000000000002"
 )
 
 // lookIDWait bounds every wait of a step for the daemon to do what it is driven to: a step that
@@ -156,8 +184,8 @@ type lookIDLive struct {
 
 // TestProductionCheckLookIDLive drives the proof's steps, each on a daemon of its own, in the
 // order of the Verification document. A step added to the proof goes in this list before `id
-// hidden`: `task ends with its look` (c-task-ends) after `ended look`, then `upgrade` (c-upgrade).
-// `id hidden` stays last, since it searches every look id the steps before it saw.
+// hidden`: `upgrade` (c-upgrade) after `task ends with its look`. `id hidden` stays last, since it
+// searches every look id the steps before it saw.
 func TestProductionCheckLookIDLive(t *testing.T) {
 	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names, which writes the
 	// file LEGION_E2E_DAEMON_LOG names, and whose steps watch spans for what must not happen.
@@ -171,6 +199,7 @@ func TestProductionCheckLookIDLive(t *testing.T) {
 	r.run("late turn", r.lateTurn)
 	r.run("testing turn behind the close", r.testingTurnBehindTheClose)
 	r.run("ended look", r.endedLook)
+	r.run("task ends with its look", r.taskEndsWithItsLook)
 	r.run("id hidden", r.idHidden)
 }
 
@@ -208,8 +237,13 @@ func (r *lookIDLive) run(name string, body func()) {
 // and `ok part n (<s>s)` lines, so a part that fails prints `FAIL part n at <assertion> (<s>s)`
 // and the step's next part still runs; the step then fails naming each part that failed.
 func (r *lookIDLive) part(n int, what string, body func()) {
+	r.partNamed(fmt.Sprintf("part %d", n), what, body)
+}
+
+// partNamed is part under label, for a part the check numbers twice, in halves, and for one it
+// does not number.
+func (r *lookIDLive) partNamed(label, what string, body func()) {
 	step := r.t
-	label := fmt.Sprintf("part %d", n)
 	step.Run(label, func(t *testing.T) {
 		r.t, r.at = t, ""
 		started := time.Now()
@@ -305,9 +339,10 @@ func (s *lookIDSeen) read(moment, route string, body []byte) {
 // ---- one fixture: a daemon of its own over a tree whose child's check a part drives --------------
 
 // lookIDFixture is one daemon of the run and the tree it runs: liveIssueProof grown for a child,
-// whose key is the proof's issue and whose pull request is the proof's, under a root of its own;
-// the daemon's own log kept in memory as it is written; what each boot is tuned with; and the
-// agents whose shims a restart reconnects.
+// whose key is the proof's issue and whose pull request is the proof's, under a root of its own,
+// or for that root itself (rootFixture); each issue as Dispatch's board holds it, which a person's
+// move publishes (move); the daemon's own log kept in memory as it is written; what each boot is
+// tuned with; and the agents whose shims a restart reconnects.
 type lookIDFixture struct {
 	liveIssueProof
 	r *lookIDLive
@@ -315,10 +350,24 @@ type lookIDFixture struct {
 	// and the part.
 	where string
 	root  string
+	// issues is each issue of the fixture as Dispatch's board holds it, by key.
+	issues map[string]*lookIDIssue
 	// logged is the running daemon's own log, kept in memory as it is written.
 	logged *recordingLog
 	tune   func(*overrides)
 	live   []*lookIDAgent
+	// implementer is the implementer that walked the checked issue to testing (toTesting), whose
+	// pane the close stops (closeMerged).
+	implementer *liveClaimant
+}
+
+// lookIDIssue is one issue as Dispatch holds it and its events name it: its parent ("" for a
+// root), title and rank as the fixture seeded them, whether it is handed to Legion, and the
+// sequence number of its latest event, which each move raises.
+type lookIDIssue struct {
+	parent, title, rank string
+	handed              bool
+	seq                 int
 }
 
 // fixture readies a daemon of the run's own over a fresh project, its tree not yet seeded and the
@@ -327,15 +376,98 @@ type lookIDFixture struct {
 // need beyond the fixture's own.
 func (r *lookIDLive) fixture(where string, tune func(*overrides)) *lookIDFixture {
 	r.t.Helper()
+	return r.fixtureOf(where, false, tune)
+}
+
+// rootFixture is fixture for a part whose checked issue is a root: the proof's issue is the root
+// of its own tree, which holds no other issue, and seedRootImplementing seeds it.
+func (r *lookIDLive) rootFixture(where string, tune func(*overrides)) *lookIDFixture {
+	r.t.Helper()
+	return r.fixtureOf(where, true, tune)
+}
+
+// fixtureOf is fixture, with the root as the proof's issue where rootChecked is set. GitHub's
+// stand-in serves the proof's pull request (liveGitHub) and the read and the write that make an
+// issue's branch at the start of a new run (lookIDGitHub).
+func (r *lookIDLive) fixtureOf(where string, rootChecked bool, tune func(*overrides)) *lookIDFixture {
+	r.t.Helper()
 	p := newLiveIssueProof(r.t, lookIDScript, lookIDBranch, "the child whose production check a report names by its look id")
 	f := &lookIDFixture{liveIssueProof: p, r: r, where: where, root: p.cfg.Project + "-1", tune: tune}
-	f.key = p.cfg.Project + "-2"
+	if rootChecked {
+		f.issues = map[string]*lookIDIssue{f.root: {title: f.title, rank: "U", handed: true, seq: 1}}
+	} else {
+		f.key = p.cfg.Project + "-2"
+		f.issues = map[string]*lookIDIssue{
+			f.root: {title: "the tree the checked child merges in", rank: "M", handed: true, seq: 1},
+			f.key:  {parent: f.root, title: f.title, rank: "N", seq: 1},
+		}
+	}
 	f.cfg.Projects = map[string]config.Project{f.cfg.Project: {ProductionCheck: claim.RoleTester}}
 	f.cfg.ProductionCheckBound = 336 * time.Hour
-	f.serveGitHub(&liveGitHub{sha: lookIDHead})
+	// A root's close lingers its tree for the shipped 72 hours, inside which a person's todo
+	// re-admits the root (the package's test configuration lingers none).
+	f.cfg.Linger = 72 * time.Hour
+	g := &liveGitHub{sha: lookIDHead, also: map[string]any{
+		"/git/ref/heads/" + lookIDBranch: map[string]any{"ref": "refs/heads/" + lookIDBranch, "object": map[string]string{"sha": "base-0"}},
+	}}
+	g.t, g.key, g.number, g.base = f.t, f.key, f.number, f.base
+	g.url = githubtest.Server(f.t, githubtest.Spec{Handle: lookIDGitHub{g}.ServeHTTP})
+	f.github = g
+	board := httptest.NewServer(lookIDDispatch{f.board})
+	r.t.Cleanup(board.Close)
+	f.cfg.DispatchURL = board.URL
 	// Registered before the boot, so it runs after the daemon's stop.
 	r.t.Cleanup(f.leaveStreamEmpty)
 	return f
+}
+
+// lookIDDispatch is the fixture's Dispatch: liveDispatch, which also answers the read of a
+// document's reviews as it answers the read of its changes, as Dispatch answers for a document it
+// does not hold (404 ARTIFACT_NOT_FOUND): the board keeps no document. The design news of the
+// root's spec gate, approved (seedRoot), reads the reviews of that document at the minute's tick,
+// which the daemon then records unreadable at once.
+type lookIDDispatch struct {
+	*liveDispatch
+}
+
+func (b lookIDDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/artifacts/") && strings.HasSuffix(req.URL.Path, "/reviews") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
+		return
+	}
+	b.liveDispatch.ServeHTTP(w, req)
+}
+
+// lookIDGitHub is the fixture's GitHub: liveGitHub, which also answers the read of the default
+// branch's head the create of an issue's branch makes (its also), and the create itself, as
+// GitHub answers a new ref (ghbranch.Create). A run that starts again after a re-entry or a
+// re-admission makes its branch before any start of its roles, which waits for it.
+type lookIDGitHub struct {
+	*liveGitHub
+}
+
+func (g lookIDGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method == http.MethodPost && req.URL.Path == "/repos/"+liveRepo+"/git/refs" {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{}`)
+		return
+	}
+	g.liveGitHub.ServeHTTP(w, req)
+}
+
+// serve makes GitHub's stand-in answer number, key's pull request on its branch at head, open,
+// beside the one it answers already: the pull request a new run of key opens.
+func (f *lookIDFixture) serve(key string, number int, head string) {
+	f.github.mu.Lock()
+	defer f.github.mu.Unlock()
+	path := fmt.Sprintf("/pulls/%d", number)
+	f.github.also[path] = map[string]any{
+		"number": number, "state": "open", "mergeable": true,
+		"base": map[string]string{"ref": lookIDBranch}, "head": map[string]string{"ref": claim.IssueBranch(key), "sha": head},
+	}
+	f.github.also[path+"/reviews"] = []any{}
 }
 
 // leaveStreamEmpty leaves the run's ENVOY_NOTIFICATIONS stream as the next fixture's proof
@@ -370,13 +502,18 @@ func (f *lookIDFixture) leaveStreamEmpty() {
 
 // seedRoot records the root as api/handoff_check_route_test.go's fixture holds it: handed to
 // Legion, in accepting, holding its tree's admission slot, its lifecycle open under the workflow,
-// and on Dispatch's board.
+// and on Dispatch's board. A root in accepting had its spec approved before its children ran, so
+// its design gate stands open (openSpecGate): a child set back to todo under it waits at admitted
+// for that gate and for a slot alone before its new run starts (record.Waiting).
 func (f *lookIDFixture) seedRoot(ctx context.Context, tx pgx.Tx) error {
 	if err := f.records.PutIssue(ctx, tx, record.Issue{
 		Key: f.root, Repo: liveRepo, DefaultBranch: lookIDBranch, GitHubRepo: liveRepo, Tree: f.root, Project: f.cfg.Project,
 		Title: "the tree the checked child merges in", Phase: phase.Accepting, Generation: 1, Status: "in_progress",
 		DispatchStatus: "in_progress", Rank: "M", LastDispatchSeq: 1, HandedOver: true,
 	}); err != nil {
+		return err
+	}
+	if err := f.records.PutGate(ctx, tx, openSpecGate(f.root, 1)); err != nil {
 		return err
 	}
 	return f.admit(ctx, tx, f.root)
@@ -433,6 +570,94 @@ func (f *lookIDFixture) seedImplementing() {
 	}
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		writePrompt(t, f.cfg, f.token(role))
+	}
+}
+
+// seedRootImplementing records a root fixture's tree, the root alone, as liveIssueProof's
+// seedImplementing records an issue the moment its implementer began work: implementing on an
+// open pull request at lookIDHead, holding its admission slot, its lifecycle open, and its
+// implementer's claim a launch the boot relaunches.
+func (f *lookIDFixture) seedRootImplementing() {
+	f.t.Helper()
+	f.liveIssueProof.seedImplementing(lookIDHead)
+}
+
+// seedTwinRoot records twin, the root of a tree of its own, as seedRootImplementing records the
+// root a part checks, with its open pull request numbered number and no claim yet: the twin with
+// no open check whose move a part compares (sameRowsAsTheTwin). Its first run leaves with no merge
+// (reopenTwinRoot), so no check opens for it.
+func (f *lookIDFixture) seedTwinRoot(twin string, number int) {
+	f.t.Helper()
+	ctx := context.Background()
+	f.issues[twin] = &lookIDIssue{title: "the twin root, whose first run leaves with no merge", rank: "W", handed: true, seq: 1}
+	f.board.show(twin, "in_progress")
+	f.write("the twin root, its pull request and its slot", func(tx pgx.Tx) error {
+		if err := f.records.PutIssue(ctx, tx, record.Issue{
+			Key: twin, Repo: liveRepo, DefaultBranch: lookIDBranch, GitHubRepo: liveRepo, Tree: twin, Project: f.cfg.Project,
+			Title: f.issues[twin].title, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+			DispatchStatus: "in_progress", Rank: "W", LastDispatchSeq: 1, HandedOver: true,
+		}); err != nil {
+			return err
+		}
+		if err := f.records.PutPullRequest(ctx, tx, record.PullRequest{
+			State: record.PullRequestOpen, Issue: twin, Repo: liveRepo, Number: number, Branch: claim.IssueBranch(twin),
+			HeadSHA: lookIDHead, Base: lookIDBranch, Failing: []string{},
+		}); err != nil {
+			return err
+		}
+		return f.admit(ctx, tx, twin)
+	})
+	if _, err := f.st.OpenTreeLifecycle(ctx, f.project, twin, treelifecycle.AuthorityWorkflow); err != nil {
+		f.t.Fatalf("open the lifecycle of %s: %v", twin, err)
+	}
+	f.serve(twin, number, lookIDHead)
+	f.prompts(twin)
+}
+
+// seedTwinChild records twin, a second child of the root, done on no merged pull request, so no
+// check opened for it: the twin with no open check whose move a part compares
+// (sameRowsAsTheTwin).
+func (f *lookIDFixture) seedTwinChild(twin string) {
+	f.t.Helper()
+	parent := f.root
+	f.issues[twin] = &lookIDIssue{parent: f.root, title: "the twin child, done with no check", rank: "O", seq: 1}
+	f.board.place(twin, "done", f.root, false)
+	f.write("the twin child", func(tx pgx.Tx) error {
+		return f.records.PutIssue(context.Background(), tx, record.Issue{
+			Key: twin, Repo: liveRepo, DefaultBranch: lookIDBranch, GitHubRepo: liveRepo, Tree: f.root, Parent: &parent,
+			Project: f.cfg.Project, Title: f.issues[twin].title, Phase: phase.Done, Generation: 1, Status: "done",
+			DispatchStatus: "done", Rank: "O", LastDispatchSeq: 1,
+		})
+	})
+	f.prompts(twin)
+}
+
+// runsImplementerThenTester gives the project the default steps `implementer tester`, which the
+// first step of a run with no plan of its own takes (workflow's planFirstStep): a child that
+// re-enters runs them, so its new run reaches testing at its implementer's completion. A run
+// seeded before the boot holds no plan rows and walks today's line, which these steps do not
+// change.
+func (f *lookIDFixture) runsImplementerThenTester() {
+	f.t.Helper()
+	steps, err := planwords.ParseSteps("implementer tester")
+	if err != nil {
+		f.t.Fatalf("read the steps implementer tester: %v", err)
+	}
+	project := f.cfg.Projects[f.cfg.Project]
+	project.DefaultSteps = steps
+	f.cfg.Projects[f.cfg.Project] = project
+}
+
+// prompts writes the role prompt of every role of key, as the daemon's own launch writes it: a
+// run that starts again launches roles the seed never launched.
+func (f *lookIDFixture) prompts(key string) {
+	f.t.Helper()
+	for _, role := range claim.Roles {
+		token, err := claim.NewToken(f.project, key, role)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		writePrompt(f.t, f.cfg, token)
 	}
 }
 
@@ -587,23 +812,47 @@ func (f *lookIDFixture) awaitLogged(what string, from int, role claim.Role, pref
 	return *found
 }
 
-// publishDone publishes Dispatch's own issue.updated event of a person moving the child to done
-// under the root, as Dispatch publishes one, the board moving with it.
-func (f *lookIDFixture) publishDone() {
+// move publishes Dispatch's own issue.updated event of a person moving key to status, under its
+// parent as the fixture seeded it (lookIDIssue), as Dispatch publishes one, the board moving with
+// it, and answers the event's id, which awaitMoved waits on. Each move of an issue is the next
+// event of its sequence.
+func (f *lookIDFixture) move(key, status string) string {
 	f.t.Helper()
-	f.board.place(f.key, "done", f.root, false)
+	issue := f.issues[key]
+	if issue == nil {
+		f.t.Fatalf("move %s, an issue the fixture did not seed", key)
+	}
+	issue.seq++
+	f.board.place(key, status, issue.parent, issue.handed)
+	fields := map[string]any{
+		"key": key, "status": status, "title": issue.title, "rank": issue.rank, "labels": liveDispatchLabels(issue.handed),
+		"last_seq": issue.seq, "project": f.cfg.Project, "resolved_repo": liveRepo,
+	}
+	if issue.parent != "" {
+		fields["parent"] = issue.parent
+	}
 	payload, err := json.Marshal(map[string]any{
-		"id": 2, "issue_key": f.key, "project": f.cfg.Project, "seq": 2, "type": "issue.updated",
+		"id": issue.seq, "issue_key": key, "project": f.cfg.Project, "seq": issue.seq, "type": "issue.updated",
 		"actor": map[string]string{"kind": "user", "id": "operator"}, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"payload": map[string]any{
-			"key": f.key, "status": "done", "title": f.title, "parent": f.root, "rank": "N",
-			"labels": liveDispatchLabels(false), "last_seq": 2, "project": f.cfg.Project, "resolved_repo": liveRepo,
-		},
+		"payload": fields,
 	})
 	if err != nil {
-		f.t.Fatalf("encode the Dispatch event of %s: %v", f.key, err)
+		f.t.Fatalf("encode the Dispatch event of %s: %v", key, err)
 	}
-	f.publish("notifications.dispatch.issue."+f.key+".issue.updated", "dispatch", f.key+"-done-2", string(payload))
+	return f.publish("notifications.dispatch.issue."+key+".issue.updated", "dispatch", fmt.Sprintf("%s-%s-%d", key, status, issue.seq), string(payload))
+}
+
+// awaitMoved waits for the daemon to have applied the Dispatch event eventID (move): the intake
+// writes its processed_events row in the transaction that applies it.
+func (f *lookIDFixture) awaitMoved(eventID string) {
+	f.t.Helper()
+	testwait.WithinPolling(f.t, lookIDWait, 50*time.Millisecond, "the daemon to apply the Dispatch event "+eventID, func() bool {
+		var applied bool
+		if err := f.st.Pool().QueryRow(context.Background(), "select exists (select 1 from processed_events where event_id = $1)", eventID).Scan(&applied); err != nil {
+			f.t.Fatalf("read the processed event %s: %v", eventID, err)
+		}
+		return applied
+	})
 }
 
 // grant is a capability grant minted now for session, a session of the child's tree, as its
@@ -640,6 +889,7 @@ func (f *lookIDFixture) toTesting() *lookIDAgent {
 		t.Fatalf("the implementer's completion = %d %s, want 200", status, body)
 	}
 	imp.endTurn()
+	f.implementer = imp
 	f.waitFor("the child in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 	tester := f.agent(f.register(claim.RoleTester, "ses_tester"))
 	tester.ready()
@@ -651,17 +901,17 @@ func (f *lookIDFixture) toTesting() *lookIDAgent {
 	return tester
 }
 
-// closeMerged closes the child merged while it is in testing, as the fixture of
+// closeMerged closes the checked issue merged while it is in testing, as the fixture of
 // api/handoff_check_route_test.go closes it (departure 2): GitHub's merge of its pull request
 // arrives, which the daemon records and tells the architect of, since a merge during testing
-// closes nothing, and then a person moves the child to done on Dispatch. The close spares the
-// check's role and opens the tester's production check, whose first look starts on the tester's
-// claim. It answers the check open at look 1.
+// closes nothing, and then a person moves the issue to done on Dispatch. The close opens the
+// tester's production check, whose first look starts on the tester's claim, which a child's close
+// spares (a root's: closeRootMerged). It answers the check open at look 1.
 func (f *lookIDFixture) closeMerged() record.ProductionCheck {
 	f.t.Helper()
 	f.waitProcessed(f.publishMergeOf(f.number, f.key, lookIDHead, lookIDBranch))
-	f.publishDone()
-	check := f.awaitCheck("the close to open the child's production check at look 1", func(c record.ProductionCheck) bool {
+	f.move(f.key, "done")
+	check := f.awaitCheck("the close to open the production check at look 1", func(c record.ProductionCheck) bool {
 		return c.Open() && c.Looks == 1 && c.LookOpen
 	})
 	if check.Role != claim.RoleTester {
@@ -669,7 +919,40 @@ func (f *lookIDFixture) closeMerged() record.ProductionCheck {
 	}
 	f.r.note("%s: the merge arrived in testing and the person's done closed %s; the check opened at %s for the tester, look 1 open",
 		f.where, f.key, check.OpenedAt.UTC().Format(time.RFC3339Nano))
+	f.stopImplementer()
 	return check
+}
+
+// stopImplementer is the end of the pane of the implementer that walked the checked issue to
+// testing: the close takes its claim out — a child's close retires it, a root's linger suspends it
+// — and the pane it stops closes its connection, as endedLook's tester's does, so a later launch
+// of the claim, a new run's implementing start, binds the stream afresh.
+func (f *lookIDFixture) stopImplementer() {
+	f.t.Helper()
+	if f.implementer == nil {
+		return
+	}
+	token := f.token(claim.RoleImplementer)
+	testwait.WithinPolling(f.t, lookIDWait, 50*time.Millisecond, "the close to stop the implementer's claim", func() bool {
+		state := f.d.claim(token).State
+		return state == string(supervise.StateRetired) || state == string(supervise.StateSuspended)
+	})
+	_ = f.implementer.sh.conn.Close()
+	f.implementer = nil
+}
+
+// closeRootMerged is closeMerged for a root fixture, whose close lingers its tree: the linger
+// suspends every claim of the tree, the tester's, idle, among them (workflow's beginLinger), and
+// look 1's start, queued behind those rows, resumes the tester's session. The suspension stopped
+// the pane tester played (stopAgent), and the tester comes up in the resumed launch. It answers
+// the resumed tester and the check open at look 1.
+func (f *lookIDFixture) closeRootMerged(tester *lookIDAgent) (*lookIDAgent, record.ProductionCheck) {
+	f.t.Helper()
+	launched := f.launches(claim.RoleTester)
+	check := f.closeMerged()
+	f.relaunched(claim.RoleTester, launched, "look 1's start to resume the tester the linger suspended")
+	f.stopAgent(tester)
+	return f.resume(claim.RoleTester, "ses_tester", launched, "look 1's start to resume the tester the linger suspended"), check
 }
 
 // ---- one role's agent ----------------------------------------------------------------------------
@@ -826,6 +1109,13 @@ func (a *lookIDAgent) busy(prompt shimwire.Prompt) {
 // pinned Oh My Pi gives.
 func busyAnswer(prompt shimwire.Prompt) shimwire.Response {
 	return shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: false, Error: keptBusyRefusal, Code: shimwire.CodeSessionBusy}
+}
+
+// refuse is Oh My Pi refusing prompt for a cause of its own while its session is in no turn: a
+// refusal with no code, which the daemon charges to the claim's prompt failures once the agent's
+// answer to its state probe says it streams nothing (supervise's agentRefusalOutcome).
+func (a *lookIDAgent) refuse(prompt shimwire.Prompt) {
+	a.sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: false, Error: "the session could not take the prompt"})
 }
 
 // begin is the agent beginning a turn, on prompt when the turn is that prompt's and on nothing
@@ -1084,22 +1374,44 @@ func (f *lookIDFixture) awaitSuspended(role claim.Role, what string) {
 // reads the routes a role reads while the look's task cannot have been sent yet, and reports the
 // agent ready.
 func (f *lookIDFixture) resume(role claim.Role, session string, launched int, what string) *lookIDAgent {
+	f.t.Helper()
+	return f.comeUp(role, session, "/sessions/"+session+".jsonl", launched, what)
+}
+
+// relaunched waits for the daemon to launch role's claim again after the launched launches it had
+// made, and answers that launch.
+func (f *lookIDFixture) relaunched(role claim.Role, launched int, what string) runtime.SpawnSpec {
+	f.t.Helper()
+	testwait.WithinPolling(f.t, lookIDWait, 50*time.Millisecond, what, func() bool { return f.launches(role) > launched })
+	return lastLaunch(f.t, f.rt, f.token(role))
+}
+
+// comeUp is resume of a launch whose session file is resumes: a resume of a session, or "" for a
+// spawn in a new session, as a fresh session's start makes, whose agent registers in session.
+func (f *lookIDFixture) comeUp(role claim.Role, session, resumes string, launched int, what string) *lookIDAgent {
 	t := f.t
 	t.Helper()
-	testwait.WithinPolling(t, lookIDWait, 50*time.Millisecond, what, func() bool { return f.launches(role) > launched })
-	launch := lastLaunch(t, f.rt, f.token(role))
-	if file := launch.ResumeSessionFile; file != "/sessions/"+session+".jsonl" {
-		t.Fatalf("the daemon launched the %s again with the session file %q, want a resume of its own session's", role, file)
+	launch := f.relaunched(role, launched, what)
+	if launch.ResumeSessionFile != resumes {
+		t.Fatalf("the daemon launched the %s again with the session file %q, want %q", role, launch.ResumeSessionFile, resumes)
 	}
 	testwait.WithinPolling(t, lookIDWait, 50*time.Millisecond, fmt.Sprintf("the %s's claim to hold the process of its launch %d", role, launch.Generation), func() bool {
 		held := f.claimView(role)
 		return held.Generation == launch.Generation && held.Locator != nil
 	})
 	a := f.agent(f.register(role, session))
-	f.surfaces(fmt.Sprintf("the %s registered on its resumed launch, before the look's task is sent", role))
+	f.surfaces(fmt.Sprintf("the %s registered on its new launch, before the look's task is sent", role))
 	a.ready()
-	f.r.note("%s: the %s's session was resumed and came up ready", f.where, role)
+	f.r.note("%s: the %s came up ready in session %s", f.where, role, session)
 	return a
+}
+
+// stopAgent is the end of the pane a's agent played, which the daemon stopped — a suspension, a
+// retirement, a failure: its connection closes, as the stopped pane's does, and a restart of the
+// daemon no longer reconnects it.
+func (f *lookIDFixture) stopAgent(a *lookIDAgent) {
+	_ = a.sh.conn.Close()
+	f.live = slices.DeleteFunc(f.live, func(live *lookIDAgent) bool { return live == a })
 }
 
 // lateSend is the sequence measured on dispatch://INFRA-4207 (part 1 of c-late-turn) up to the
@@ -1269,12 +1581,8 @@ func (r *lookIDLive) testingTurnBehindTheClose() {
 	r.note("the tester's turn of its testing task ended; the tester holds the testing phase, idle")
 	f.closeMerged()
 	first := tester.prompt("the look-1 task", checkTaskLeadText)
-	tester.begin("")
-	mark := f.logMark()
-	tester.busy(first)
-	f.awaitLogged("the daemon to read the busy answer to the look-1 send", mark, claim.RoleTester, "supervise: the agent refused the prompt", map[string]any{"delivery": first.DeliveryID})
+	r.busyTurn(f, tester, first)
 	r.note("the daemon sent the look-1 task; the tester's testing turn started while that send was in flight, and the agent answered it busy")
-	f.surfaces("after a busy answer to look 1's task, in the testing turn")
 	opened := f.readRecordOpenedAt()
 	before := f.check()
 	r.note("read_record (GET /legion/v1/issues/%s/record) gives check.openedAt %s", f.key, opened.UTC().Format(time.RFC3339Nano))
@@ -1320,23 +1628,40 @@ func (r *lookIDLive) testingTurnBehindTheClose() {
 // record), read as raw JSON.
 func (f *lookIDFixture) readRecordOpenedAt() time.Time {
 	f.t.Helper()
-	status, body := f.d.request(http.MethodGet, "/legion/v1/issues/"+f.key+"/record", nil, false)
+	seen := f.recordCheck("read_record in the testing turn")
+	if seen.Check == nil || seen.Check.OpenedAt.IsZero() {
+		f.t.Fatalf("the record of %s shows no check.openedAt: %+v", f.key, seen)
+	}
+	return seen.Check.OpenedAt
+}
+
+// lookIDRecord is what a step reads of the record route read_record calls (GET
+// /legion/v1/issues/<issue>/record), as raw JSON: the issue's phase and its check, present while
+// the check is open (api.CheckView).
+type lookIDRecord struct {
+	Phase phase.Phase `json:"phase"`
+	Check *struct {
+		OpenedAt time.Time `json:"openedAt"`
+		Looks    int       `json:"looks"`
+		LookOpen bool      `json:"lookOpen"`
+	} `json:"check"`
+}
+
+// recordCheck reads the checked issue's record as read_record reads it, and keeps the body for
+// the step `id hidden`, under moment.
+func (f *lookIDFixture) recordCheck(moment string) lookIDRecord {
+	f.t.Helper()
+	route := "/legion/v1/issues/" + f.key + "/record"
+	status, body := f.d.request(http.MethodGet, route, nil, false)
 	if status != http.StatusOK {
 		f.t.Fatalf("GET the record of %s = %d %s, want 200", f.key, status, body)
 	}
-	f.r.seen.read(f.where+": read_record in the testing turn", "GET /legion/v1/issues/"+f.key+"/record", body)
-	var issue struct {
-		Check *struct {
-			OpenedAt time.Time `json:"openedAt"`
-		} `json:"check"`
-	}
-	if err := json.Unmarshal(body, &issue); err != nil {
+	f.r.seen.read(f.where+": "+moment, "GET "+route, body)
+	var seen lookIDRecord
+	if err := json.Unmarshal(body, &seen); err != nil {
 		f.t.Fatalf("decode the record of %s: %v", f.key, err)
 	}
-	if issue.Check == nil || issue.Check.OpenedAt.IsZero() {
-		f.t.Fatalf("the record of %s shows no check.openedAt: %s", f.key, body)
-	}
-	return issue.Check.OpenedAt
+	return seen
 }
 
 // refusedNamingLookOne fails the step at assertion unless the answer of status and failure is a
@@ -1371,13 +1696,7 @@ func (r *lookIDLive) refusedNamingLookOne(assertion string, status int, failure 
 // from the id of the replaced look. At the base commit the report of part 1 is answered 409
 // CHECK_LOOK_NOT_SERVED, and the step ends there (part 1 report).
 func (r *lookIDLive) endedLook() {
-	f := r.fixture("ended look", nil)
-	f.seedImplementing()
-	f.boot()
-	tester := f.toTesting()
-	tester.finish()
-	tester.awaitIdle("the tester's testing turn to end and its task to retire")
-	f.closeMerged()
+	f, tester, _ := r.firstLook("ended look", nil)
 	task := tester.prompt("the look-1 task", checkTaskLeadText)
 	r.lateSend(f, tester, task)
 	read := tester.readLook(task)
@@ -1403,9 +1722,8 @@ func (r *lookIDLive) endedLook() {
 
 	// The suspension stopped the pane the tester's agent played, so that pane's connection closes,
 	// and the stream takes the resumed pane's hello once the listener has read the close.
-	_ = tester.sh.conn.Close()
+	f.stopAgent(tester)
 	launched := f.launches(claim.RoleTester)
-	f.live = slices.DeleteFunc(f.live, func(a *lookIDAgent) bool { return a == tester })
 	f.exec("bring the wake of look 2 forward", "update outbox set next_at = now() where issue = $1 and kind = $2", f.key, string(record.OutboxKindCheckWake))
 	f.awaitCheck("the wake to start look 2", func(c record.ProductionCheck) bool { return c.Looks == 2 && c.LookOpen })
 	f.surfaces("after look 2 starts")
@@ -1447,6 +1765,998 @@ func (f *lookIDFixture) lookReports(n int, verdict string) int {
 		f.t.Fatalf("count the reports of look %d of %s: %v", n, f.key, err)
 	}
 	return count
+}
+
+// ---- step `task ends with its look` --------------------------------------------------------------
+
+// taskEndsWithItsLook is c-task-ends, each part on a daemon and a check of its own. Parts 1 to 5
+// send look 1's task to the tester, the turn match failing for it, and end look 1 one of five
+// ways; each passes when no text of the ended look reaches the tester's connection after the look
+// ended, and the task of the next look, with its own number and look id, reaches the connection
+// and is the claim's pending task. Part 6 is the next look's task taking the place of an
+// acknowledged prompt of the ended look, whose turn starts late. Parts 7 and 8 run the checked
+// issue again with its check open — a root reopened inside its tree's linger, a child that
+// re-enters under its live tree — and take the report of the look from the session whose turn
+// ran its task, once that turn has ended (departure 7); part 8 then takes the new run to testing
+// and to its next merge. Parts 9 and 10 close such a check as not run, at the new run's next merge
+// and at its leave with no merge, with no issue close or suspension of the close's own
+// (departure 3). A last part is the ready after a fresh session, which the plan adds.
+//
+// At the base commit the parts the check's negative control names run: parts 2, 3 and 4 fail at
+// next-look, the start row of the next look waiting on `a delivery is already pending` behind the
+// ended look's task, which the daemon sends again; part 8 at report, 409 CHECK_NOT_OPEN, since the
+// re-entry closed the check; part 9 at close-line, the new check written over the old one; and
+// the halves of part 10 at child closed-at-move and root closed-at-move.
+func (r *lookIDLive) taskEndsWithItsLook() {
+	if r.base {
+		r.note("parts 1, 5, 6 and 7 and the ready after a fresh session do not run at the base commit: the check's negative control names no answer of them there")
+	} else {
+		r.part(1, "look 1 ends by its report, made in the late turn of its task", r.endsByReport)
+	}
+	r.part(2, "look 1 ends by its bound, brought forward while a turn the daemon took for no task's runs", r.endsByBound)
+	r.part(3, "the operator suspends the tester, look 1 ends by its bound, look 2's start meets the operator's hold, and the operator resumes the tester", r.endsByOperatorHold)
+	r.part(4, "look 1 ends with the tester's claim, failed once its prompt failures and its prompt retirements ran out", r.endsByFailedClaim)
+	if !r.base {
+		r.part(5, "the check of the child's next merge replaces look 1's, the child having re-entered while the late turn of look 1's task ran", r.endsByALaterMerge)
+		r.part(6, "the next look's task takes the place of look 1's acknowledged prompt, is answered busy, and that prompt's turn starts late", r.nextTaskBehindALateTurn)
+		r.part(7, "a root reopened inside its tree's linger while the late turn of look 1's task runs reports look 1 from that session after the turn", r.rootRunsAgain)
+	}
+	r.part(8, "a done child set back to todo under its live tree while the late turn of look 1's task runs reports look 1 from that session after the turn, then passes it from its new run's testing turn", r.childRunsAgain)
+	r.part(9, "a root reopened inside its tree's linger, its check open after a pending report, merges the next pull request of its new run", r.rootMergesAgain)
+	r.part(10, "first half: a re-entered child, its check open after a pending report, moves to backlog before any merge of its new run", r.childParked)
+	r.part(10, "second half: a root reopened inside its tree's linger, its check open after a pending report, moves to backlog before any merge of its new run", r.rootParked)
+	if !r.base {
+		r.partNamed("fresh session", "the tester's claim gets a fresh session after look 1 ended", r.freshSessionReady)
+	}
+}
+
+// firstLook readies a part on a daemon and a check of its own, as `ended look` starts: the child,
+// which prepare readies further before the boot where it is not nil, reaches testing, its tester's
+// testing turn ends and its task retires, and the child closes merged, which opens the check at
+// look 1 and sends look 1's task to the idle tester. It answers the fixture, the tester and the
+// check.
+func (r *lookIDLive) firstLook(where string, prepare func(*lookIDFixture)) (*lookIDFixture, *lookIDAgent, record.ProductionCheck) {
+	f := r.fixture(where, nil)
+	f.seedImplementing()
+	if prepare != nil {
+		prepare(f)
+	}
+	f.boot()
+	tester := f.toTesting()
+	tester.finish()
+	tester.awaitIdle("the tester's testing turn to end and its task to retire")
+	return f, tester, f.closeMerged()
+}
+
+// rootLook is firstLook for a root fixture: the root reaches testing, its tester's testing turn
+// ends, and the root closes merged, which lingers its tree and starts look 1 on the tester's
+// resumed session (closeRootMerged).
+func (r *lookIDLive) rootLook(where string, prepare func(*lookIDFixture)) (*lookIDFixture, *lookIDAgent, record.ProductionCheck) {
+	f := r.rootFixture(where, nil)
+	f.seedRootImplementing()
+	if prepare != nil {
+		prepare(f)
+	}
+	f.boot()
+	tester := f.toTesting()
+	tester.finish()
+	tester.awaitIdle("the tester's testing turn to end and its task to retire")
+	tester, check := f.closeRootMerged(tester)
+	return f, tester, check
+}
+
+// busyTurn is the turn match failing for task, a look's task that reached a's connection while
+// the agent was in no turn: the agent begins a turn of its own while that send is in flight and
+// answers the prompt busy, as Oh My Pi answers a prompt while a turn streams. The daemon takes
+// that turn for no task's, and task waits for its end unread and unconfirmed: no prompt of it was
+// acknowledged, so no result of a turn ever names it.
+func (r *lookIDLive) busyTurn(f *lookIDFixture, a *lookIDAgent, task shimwire.Prompt) {
+	f.t.Helper()
+	a.begin("")
+	mark := f.logMark()
+	a.busy(task)
+	f.awaitLogged("the daemon to read the busy answer to the look's send", mark, a.role, "supervise: the agent refused the prompt", map[string]any{"delivery": task.DeliveryID})
+	f.surfaces("after a busy answer to the look's task")
+}
+
+// lookOf reads text as a look's task (workflow's checkTask): the look's number and the opening
+// time of its check, and whether text is a look's task that gives both.
+func lookOf(text string) (int, time.Time, bool) {
+	number, opened := lookIDNumber.FindStringSubmatch(text), lookIDOpenedLine.FindStringSubmatch(text)
+	if !strings.Contains(text, checkTaskLeadText) || number == nil || opened == nil {
+		return 0, time.Time{}, false
+	}
+	n, err := strconv.Atoi(number[1])
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, opened[1])
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	return n, at, true
+}
+
+// isLook says whether text is the task of look n of the check opened at opened.
+func isLook(text string, n int, opened time.Time) bool {
+	got, at, ok := lookOf(text)
+	return ok && got == n && at.Equal(opened)
+}
+
+// silent fails the running part at assertion when the task of any look but look n of the check
+// opened at opened reached the connection of one of agents after since, answered busy or not: the
+// text of a look that had ended, sent again. Look 0 is none, so with it every look's task counts.
+func (r *lookIDLive) silent(assertion string, since time.Time, n int, opened time.Time, agents ...*lookIDAgent) {
+	r.t.Helper()
+	for _, a := range agents {
+		for _, got := range a.since(since) {
+			if strings.Contains(got.prompt.Message, checkTaskLeadText) && !isLook(got.prompt.Message, n, opened) {
+				r.fails(assertion, "the task of an ended look reached the %s's connection %s after it ended (answered busy: %t): %s",
+					a.role, got.at.Sub(since).Round(time.Millisecond), got.busy, firstLine(got.prompt.Message))
+			}
+		}
+	}
+	r.note("no text of an ended look reached the tester's connection after it ended")
+}
+
+// nextLook waits for the task of look n of the check opened at opened to reach a's connection and
+// holds it to what the step passes on (ownLook). A text of another look that reaches the
+// connection first is the text of a look that ended, sent again: with one, the part fails at
+// next-look once the start row of look n names what it waits on (startRowError), and with none
+// once the wait runs out, naming those texts, what the claim holds and that start row's last error
+// — at the base commit `a delivery is already pending`, the ended look's task the claim keeps. A
+// task that is no look's, the daemon's own record of what the last let-go of the process ended
+// (supervise's queueRelaunch, which a resume after a let-go that ended a task delivers), the agent
+// takes and works in a turn of its own, as an agent does, and look n's task follows it.
+func (r *lookIDLive) nextLook(f *lookIDFixture, a *lookIDAgent, n int, opened time.Time, ended ...string) lookRead {
+	r.t.Helper()
+	deadline := time.Now().Add(lookIDWait)
+	var others []string
+	for {
+		if prompt, came := a.next(time.Second); came {
+			switch {
+			case isLook(prompt.Message, n, opened):
+				return r.ownLook(f, a, prompt, n, opened, ended)
+			case strings.Contains(prompt.Message, checkTaskLeadText):
+				others = append(others, firstLine(prompt.Message))
+			default:
+				a.ack(prompt)
+				a.begin(prompt.ID)
+				a.finish()
+				r.note("the %s took and worked a task that is no look's: %s", a.role, firstLine(prompt.Message))
+			}
+		}
+		if waits := f.startRowError(n); (len(others) > 0 && waits != "") || time.Now().After(deadline) {
+			held := f.claimView(a.role)
+			r.fails("next-look", "the task of look %d did not reach the %s's connection; %d texts of other looks did (%s); its claim is %s holding %s; the start row of look %d last met %q",
+				n, a.role, len(others), strings.Join(others, " | "), held.State, describeHeld(held.Pending), n, waits)
+		}
+	}
+}
+
+// ownLook holds prompt, the task of look n of the check opened at opened, to what the step passes
+// on: at the head it gives a look id of its own — none an ended look's task gave (ended), and the
+// one the store holds for look n of that check (storedLookID) — and it is the claim's pending
+// task, whose stored look id is that id. It answers what the agent read of it.
+func (r *lookIDLive) ownLook(f *lookIDFixture, a *lookIDAgent, prompt shimwire.Prompt, n int, opened time.Time, ended []string) lookRead {
+	r.t.Helper()
+	read := a.readLook(prompt)
+	if !r.base {
+		if reused, stored := slices.Contains(ended, read.id), f.storedLookID(n, opened); reused || read.id != stored {
+			r.fails("own-id", "look %d's task gives the look id of an ended look: %t; the id the store holds for look %d: %t, want false and true",
+				n, reused, n, read.id == stored)
+		}
+	}
+	task, lookID := f.pendingTask(a.role)
+	if !isLook(task, n, opened) || (!r.base && lookID != read.id) {
+		r.fails("pending", "the %s's claim holds %q, with the look id of the task that reached it: %t; want the task of look %d",
+			a.role, firstLine(task), lookID == read.id, n)
+	}
+	f.surfaces(fmt.Sprintf("after look %d's task reached the connection", n))
+	r.note("look %d's task reached the %s's connection with its own number and look id, and is the claim's pending task", n, a.role)
+	return read
+}
+
+// storedLookID is the look id the store holds for look n of the check opened at opened
+// (production_checks.look_id for that look and check instance), "" for none. The base has no such
+// column, and the base mode never reads it.
+func (f *lookIDFixture) storedLookID(n int, opened time.Time) string {
+	f.t.Helper()
+	var id string
+	var look int
+	var at *time.Time
+	if err := f.st.Pool().QueryRow(context.Background(),
+		`select coalesce(look_id, ''), coalesce(look_id_look, 0), look_id_opened_at from production_checks where issue = $1`, f.key).Scan(&id, &look, &at); err != nil {
+		f.t.Fatalf("read the look id the store holds for %s: %v", f.key, err)
+	}
+	if look != n || at == nil || !at.Equal(opened) {
+		return ""
+	}
+	return id
+}
+
+// pendingTask is the text of role's pending task as the claim store holds it, and at the head the
+// look id it carries (pending_task_deliveries.look_id, which the base lacks): "" for no task.
+func (f *lookIDFixture) pendingTask(role claim.Role) (string, string) {
+	f.t.Helper()
+	query := `select task, '' from pending_task_deliveries where claim_token = $1`
+	if !f.r.base {
+		query = `select task, coalesce(look_id, '') from pending_task_deliveries where claim_token = $1`
+	}
+	var task, lookID string
+	err := f.st.Pool().QueryRow(context.Background(), query, string(f.token(role))).Scan(&task, &lookID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ""
+	}
+	if err != nil {
+		f.t.Fatalf("read the %s's pending task: %v", role, err)
+	}
+	return task, lookID
+}
+
+// startRowError is the last error the newest start row of look n of the checked issue met, as the
+// outbox keeps it while the row waits to run again: "" for a row that met none or has run.
+func (f *lookIDFixture) startRowError(n int) string {
+	f.t.Helper()
+	var why string
+	err := f.st.Pool().QueryRow(context.Background(), `select last_error from outbox where issue = $1 and kind = $2
+		and payload->>'op' = 'start' and payload->>'checkLook' = $3 order by id desc limit 1`,
+		f.key, string(record.OutboxKindSupervise), strconv.Itoa(n)).Scan(&why)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		f.t.Fatalf("read the start row of look %d of %s: %v", n, f.key, err)
+	}
+	return why
+}
+
+// boundComesDue brings look 1's bound, its check_look row, due now, and waits for it to end the
+// look.
+func (f *lookIDFixture) boundComesDue() {
+	f.t.Helper()
+	f.exec("bring look 1's bound forward", "update outbox set next_at = now() where issue = $1 and kind = $2", f.key, string(record.OutboxKindCheckLook))
+	f.awaitCheck("look 1's bound to end it", func(c record.ProductionCheck) bool { return c.Looks == 1 && !c.LookOpen })
+}
+
+// wakeComesDue brings the check's wake, its check_wake row, due now, where look n is due next, and
+// waits for it to start look n.
+func (f *lookIDFixture) wakeComesDue(n int) {
+	f.t.Helper()
+	f.exec(fmt.Sprintf("bring the wake of look %d forward", n), "update outbox set next_at = now() where issue = $1 and kind = $2", f.key, string(record.OutboxKindCheckWake))
+	f.awaitCheck(fmt.Sprintf("the wake to start look %d", n), func(c record.ProductionCheck) bool { return c.Looks == n && c.LookOpen })
+	f.surfaces(fmt.Sprintf("after look %d starts", n))
+}
+
+// operate is the operator's request of role's claim, suspend or resume (POST
+// /legion/v1/operator/claims/<token>/<request>), as `legion claims` sends it: a suspension of a
+// claim in a turn is held to that turn's end, and a resume is answered once its start is under way.
+func (f *lookIDFixture) operate(role claim.Role, request string) {
+	f.t.Helper()
+	status, body := f.d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(f.token(role))+"/"+request, nil, true)
+	if status != http.StatusOK && status != http.StatusAccepted {
+		f.t.Fatalf("the operator's %s of the %s = %d %s, want 200 or 202", request, role, status, body)
+	}
+}
+
+// awaitSuspensionsRan waits for the outbox to have run every suspension queued for the checked
+// issue — its claims' (supervise rows of op suspend) and its Sandbox's (issue_suspend rows) — so
+// none lands on what the step starts next.
+func (f *lookIDFixture) awaitSuspensionsRan(what string) {
+	f.t.Helper()
+	testwait.WithinPolling(f.t, lookIDWait, 100*time.Millisecond, what, func() bool {
+		var left int
+		if err := f.st.Pool().QueryRow(context.Background(), `select count(*) from outbox where issue = $1
+			and ((kind = $2 and payload->>'op' = 'suspend') or kind = $3)`,
+			f.key, string(record.OutboxKindSupervise), string(record.OutboxKindIssueSuspend)).Scan(&left); err != nil {
+			f.t.Fatalf("count the suspensions queued for %s: %v", f.key, err)
+		}
+		return left == 0
+	})
+}
+
+// nextLookOnTheResumedTester is what follows a look that ended on a tester the end suspended: the
+// suspension stopped the pane tester played (stopAgent), the driver brings the wake of look n
+// forward, look n starts and resumes the tester's session, and look n's task reaches the resumed
+// connection (nextLook). No text of an ended look reaches either connection after ended (silent).
+func (r *lookIDLive) nextLookOnTheResumedTester(f *lookIDFixture, tester *lookIDAgent, n int, opened, ended time.Time, endedIDs ...string) {
+	r.t.Helper()
+	f.awaitSuspended(claim.RoleTester, fmt.Sprintf("the end of look %d to suspend the tester", n-1))
+	f.stopAgent(tester)
+	launched := f.launches(claim.RoleTester)
+	f.wakeComesDue(n)
+	resumed := f.resume(claim.RoleTester, "ses_tester", launched, fmt.Sprintf("look %d's start to resume the tester", n))
+	r.nextLook(f, resumed, n, opened, endedIDs...)
+	r.silent("silent", ended, n, opened, tester, resumed)
+}
+
+// endsByReport is part 1: look 1's task reaches the tester, which answers its send late, so the
+// turn match fails for it (lateSend), and in that late turn the tester reports look 1 pending
+// with its look id, which ends it. Look 2's task reaches the resumed tester.
+func (r *lookIDLive) endsByReport() {
+	f, tester, check := r.firstLook("task ends with its look part 1", nil)
+	task := tester.prompt("the look-1 task", checkTaskLeadText)
+	r.lateSend(f, tester, task)
+	read := tester.readLook(task)
+	wake := time.Now().UTC().Add(30 * time.Minute).Truncate(time.Microsecond)
+	ended := time.Now()
+	status, failure := tester.report(read.opened, read.id, "pending", &wake)
+	r.note("in the late turn the tester reported look 1 pending with check_opened_at and the look id from its task: %d %s %s", status, failure.Code, failure.Error)
+	if status != http.StatusOK {
+		r.fails("report", "the report of look 1 = %d %s %s, want 200", status, failure.Code, failure.Error)
+	}
+	f.surfaces("after the report of look 1")
+	tester.finish()
+	f.awaitCheck("the report to end look 1", func(c record.ProductionCheck) bool { return c.Looks == 1 && !c.LookOpen })
+	r.nextLookOnTheResumedTester(f, tester, 2, check.OpenedAt, ended, read.id)
+}
+
+// endsByBound is part 2: look 1's task reaches the tester, which answers it busy in a turn of its
+// own (busyTurn), and look 1's bound, brought forward, ends the look while that turn runs; the
+// turn then ends. Look 2's task reaches the resumed tester.
+func (r *lookIDLive) endsByBound() {
+	f, tester, check := r.firstLook("task ends with its look part 2", nil)
+	task := tester.prompt("the look-1 task", checkTaskLeadText)
+	r.busyTurn(f, tester, task)
+	read := tester.readLook(task)
+	r.note("look 1's task reached the tester, which began a turn of its own while that send was in flight and answered it busy")
+	ended := time.Now()
+	f.boundComesDue()
+	tester.finish()
+	r.note("look 1's bound, brought forward while that turn ran, ended it; the turn then ended")
+	r.nextLookOnTheResumedTester(f, tester, 2, check.OpenedAt, ended, read.id)
+}
+
+// endsByOperatorHold is part 3: look 1's task reaches the tester, which answers it busy in a turn
+// of its own (busyTurn); the operator suspends the tester, which lands at that turn's end, with
+// look 1's task unread; look 1's bound ends it, and look 2's start meets the operator's hold, which
+// ends look 2 at its start (the daemon's checkLookHeld). The operator resumes the tester, and look
+// 3's task, the next look's, reaches it.
+func (r *lookIDLive) endsByOperatorHold() {
+	f, tester, check := r.firstLook("task ends with its look part 3", nil)
+	task := tester.prompt("the look-1 task", checkTaskLeadText)
+	r.busyTurn(f, tester, task)
+	read := tester.readLook(task)
+	f.operate(claim.RoleTester, "suspend")
+	tester.finish()
+	token := f.token(claim.RoleTester)
+	testwait.WithinPolling(f.t, lookIDWait, 100*time.Millisecond, "the operator's suspension to land at the end of the tester's turn", func() bool {
+		held := f.claimView(claim.RoleTester)
+		return held.State == string(supervise.StateSuspended) && held.SuspendedBy == string(supervise.SuspendedByOperator) &&
+			storedClaimState(f.t, f.st.Pool(), token) == supervise.StateSuspended
+	})
+	f.stopAgent(tester)
+	r.note("the operator suspended the tester in a turn of its own, look 1's task unread; the suspension landed at that turn's end")
+	ended := time.Now()
+	f.boundComesDue()
+	f.exec("bring the wake of look 2 forward", "update outbox set next_at = now() where issue = $1 and kind = $2", f.key, string(record.OutboxKindCheckWake))
+	held := f.awaitCheck("look 2's start to meet the operator's hold, which ends it", func(c record.ProductionCheck) bool { return c.Looks == 2 && !c.LookOpen })
+	r.note("look 1's bound ended it, and look 2's start met the operator's hold, which ended look 2; its next wake is at %v", held.WakeAt)
+	f.awaitSuspensionsRan("the suspensions the ends of looks 1 and 2 queued to run")
+	launched := f.launches(claim.RoleTester)
+	f.operate(claim.RoleTester, "resume")
+	resumed := f.resume(claim.RoleTester, "ses_tester", launched, "the operator's resume to launch the tester again")
+	f.wakeComesDue(3)
+	r.nextLook(f, resumed, 3, check.OpenedAt, read.id)
+	r.silent("silent", ended, 3, check.OpenedAt, tester, resumed)
+}
+
+// endsByFailedClaim is part 4: look 1's task reaches the tester, which answers it busy in a turn of
+// its own (busyTurn); once that turn ends, the agent refuses each send of the task (refuse) — the
+// runtime's sweep sending it again after each — until the prompt failures run out, which retires
+// the process and relaunches its session, and run out again, which spends the last prompt
+// retirement and fails the claim. The failure ends look 1, and look 2's start retries the claim,
+// whose relaunched session takes look 2's task.
+func (r *lookIDLive) endsByFailedClaim() {
+	f, tester, check := r.firstLook("task ends with its look part 4", nil)
+	task := tester.prompt("the look-1 task", checkTaskLeadText)
+	r.busyTurn(f, tester, task)
+	read := tester.readLook(task)
+	tester.finish()
+	r.note("look 1's task reached the tester, which answered it busy in a turn of its own; that turn ended")
+	agents, agent := []*lookIDAgent{tester}, tester
+	for retired := 1; retired <= f.cfg.PromptRetireLimit; retired++ {
+		launched := f.launches(claim.RoleTester)
+		for refused := 1; refused <= f.cfg.PromptFailureLimit; refused++ {
+			again := agent.prompt("look 1's task sent again", checkTaskLeadText)
+			mark := f.logMark()
+			agent.refuse(again)
+			if refused < f.cfg.PromptFailureLimit {
+				f.awaitLogged("the daemon to count the refusal a prompt failure", mark, claim.RoleTester, "supervise: prompt failure", nil)
+				f.sweep(claim.RoleTester)
+			}
+		}
+		if retired < f.cfg.PromptRetireLimit {
+			f.relaunched(claim.RoleTester, launched, "the prompt failures' retirement to launch the tester's session again")
+			f.stopAgent(agent)
+			agent = f.resume(claim.RoleTester, "ses_tester", launched, "the prompt failures' retirement to launch the tester's session again")
+			agents = append(agents, agent)
+		}
+	}
+	ended := time.Now()
+	testwait.WithinPolling(f.t, lookIDWait, 100*time.Millisecond, "the last prompt retirement to fail the tester's claim", func() bool {
+		return f.claimView(claim.RoleTester).State == string(supervise.StateFailed)
+	})
+	f.awaitCheck("the failed claim to end look 1", func(c record.ProductionCheck) bool { return c.Looks == 1 && !c.LookOpen })
+	r.note("the agent refused each send of look 1's task: %d prompt failures retired the process and %d more failed the claim, which ended look 1",
+		f.cfg.PromptFailureLimit, f.cfg.PromptFailureLimit)
+	f.stopAgent(agent)
+	launched := f.launches(claim.RoleTester)
+	f.wakeComesDue(2)
+	resumed := f.resume(claim.RoleTester, "ses_tester", launched, "look 2's start to retry the failed claim")
+	r.nextLook(f, resumed, 2, check.OpenedAt, read.id)
+	r.silent("silent", ended, 2, check.OpenedAt, append(agents, resumed)...)
+}
+
+// endsByALaterMerge is part 5: look 1's task reaches the tester, which answers its send late
+// (lateSend); while that late turn runs a person sets the child back to todo under its live tree,
+// and it re-enters; the turn then ends. The new run's next pull request merges and the person's
+// done closes the child again, which opens the check that replaces look 1's, whose look-1 task
+// reaches the tester.
+func (r *lookIDLive) endsByALaterMerge() {
+	f, tester, check := r.firstLook("task ends with its look part 5", nil)
+	task := tester.prompt("the look-1 task", checkTaskLeadText)
+	r.lateSend(f, tester, task)
+	read := tester.readLook(task)
+	ended := time.Now()
+	f.rerun(f.key)
+	tester.finish()
+	r.note("while the late turn of look 1's task ran, a person set %s back to todo under its live tree, and it re-entered; the turn then ended", f.key)
+	next := f.nextMerge(check)
+	r.nextLook(f, tester, 1, next.OpenedAt, read.id)
+	r.silent("silent", ended, 1, next.OpenedAt, tester)
+}
+
+// nextTaskBehindALateTurn is part 6, row 4 of the plan's state table: the tester acknowledges look
+// 1's prompt and starts no turn of it; the child re-enters, and its next merge's check opens, whose
+// look-1 task, the next look's, takes the place of look 1's and reaches the tester, which answers
+// that send busy; the turn of look 1's prompt then starts late and ends. That turn confirms
+// nothing, and the next look's task is sent again after it.
+func (r *lookIDLive) nextTaskBehindALateTurn() {
+	f, tester, check := r.firstLook("task ends with its look part 6", nil)
+	old := tester.prompt("the look-1 task", checkTaskLeadText)
+	tester.ack(old)
+	testwait.WithinPolling(f.t, lookIDWait, 50*time.Millisecond, "the daemon to record look 1's prompt acknowledged", func() bool {
+		held := f.claimView(claim.RoleTester).Pending
+		return held != nil && held.DeliveredAt != nil
+	})
+	read := tester.readLook(old)
+	reentered := time.Now()
+	f.rerun(f.key)
+	r.note("the tester acknowledged look 1's prompt and started no turn of it; a person then set %s back to todo, and it re-entered", f.key)
+	next := f.nextMerge(check)
+	sent := tester.prompt("look 1's task of the check that replaced it", checkTaskLeadText)
+	if !isLook(sent.Message, 1, next.OpenedAt) {
+		r.fails("next-look", "the tester was sent %q, want the task of look 1 of the check that opened at %s", firstLine(sent.Message), next.OpenedAt.UTC().Format(time.RFC3339Nano))
+	}
+	mark := f.logMark()
+	tester.busy(sent)
+	f.awaitLogged("the daemon to read the busy answer to the next look's send", mark, claim.RoleTester, "supervise: the agent refused the prompt", map[string]any{"delivery": sent.DeliveryID})
+	f.surfaces("after a busy answer to the next look's task")
+	tester.begin(old.ID)
+	r.note("the tester answered the next look's send busy, and the turn of look 1's acknowledged prompt then started late")
+	ended := time.Now()
+	tester.finish()
+	r.nextLook(f, tester, 1, next.OpenedAt, read.id)
+	if !slices.ContainsFunc(tester.since(ended), func(got lookIDPrompt) bool { return !got.busy && isLook(got.prompt.Message, 1, next.OpenedAt) }) {
+		r.fails("sent-again", "the next look's task did not reach the tester's connection after the late turn of look 1's prompt ended")
+	}
+	r.note("the next look's task was sent again after the late turn ended")
+	r.silent("silent", reentered, 1, next.OpenedAt, tester)
+}
+
+// rootRunsAgain is part 7: look 1's task reaches the root's tester, which answers its send late
+// (lateSend); while that turn runs a person sets the root back to todo inside its tree's linger,
+// which re-admits it, and the turn then ends. Nothing of look 1 reaches the connection after the
+// turn; the tester's report from that session, posted only after the driver read the connection
+// for lookIDQuietSends send deadlines (departure 7), is answered 200 and recorded against look 1;
+// and while the root runs, read_record shows the check open, and a wake row made due starts no
+// look.
+func (r *lookIDLive) rootRunsAgain() {
+	f, tester, check := r.rootLook("task ends with its look part 7", nil)
+	read, ended := r.lateTurnAcrossTheRerun(f, tester)
+	wake := r.pendingFromThatSession(f, tester, read, ended, true, false)
+	r.pendingRecorded(f, wake)
+	r.silent("silent", ended, 0, time.Time{}, tester)
+	r.checkOpenWhileItRuns(f, check)
+	f.wakeStartsNoLook("wake-starts-none")
+}
+
+// childRunsAgain is part 8: part 7 for a done child, which a person sets back to todo under its
+// live tree while the late turn runs, so it re-enters (workflow's ReenterChild); read_record after
+// the re-entry and before the report shows the check open at the same look. The new run then
+// reaches its testing phase, whose task reaches the tester in the same session; from that session
+// the tester reports look 1 pass, which closes the check as recorded while testing stays open. The
+// child's next pull request then merges and the person's done closes it, which opens a new check
+// at look 1 with a look id of its own, and a report with look 1's id of the old check is refused
+// and records nothing.
+func (r *lookIDLive) childRunsAgain() {
+	f, tester, check := r.firstLook("task ends with its look part 8", (*lookIDFixture).runsImplementerThenTester)
+	implementer := f.launches(claim.RoleImplementer)
+	read, ended := r.lateTurnAcrossTheRerun(f, tester)
+	before := f.recordCheck("after the re-entry, before the report")
+	wake := r.pendingFromThatSession(f, tester, read, ended, true, false)
+	r.pendingRecorded(f, wake)
+	r.silent("silent", ended, 0, time.Time{}, tester)
+	if before.Check == nil || !before.Check.OpenedAt.Equal(check.OpenedAt) || before.Check.Looks != 1 {
+		r.fails("record-open", "read_record after the re-entry and before the report shows the check %+v, want it open at look 1, opened %s",
+			before.Check, check.OpenedAt.UTC().Format(time.RFC3339Nano))
+	}
+	r.note("read_record after the re-entry and before the report showed the check open at look 1")
+	r.checkOpenWhileItRuns(f, check)
+	f.wakeStartsNoLook("wake-starts-none")
+	r.newRunToTesting(f, tester, implementer)
+	status, failure := tester.report(read.opened, read.id, "pass", nil)
+	r.note("from the testing turn of that session the tester reported look 1 pass with check_opened_at and its look id: %d %s %s", status, failure.Code, failure.Error)
+	if status != http.StatusOK {
+		r.fails("pass-report", "the pass of look 1 from the new run's testing turn = %d %s %s, want 200", status, failure.Code, failure.Error)
+	}
+	f.surfaces("after the pass of look 1, from the new run's testing turn")
+	closed := f.awaitCheck("the pass to close the check", func(c record.ProductionCheck) bool { return !c.Open() })
+	if closed.Outcome != record.CheckRecorded {
+		r.fails("closed-pass", "the check closed as %s, want %s, the pass", closed.Outcome, record.CheckRecorded)
+	}
+	if got := f.issue(f.key).Phase; got != phase.Testing {
+		r.fails("testing-open", "after the pass %s stands in %s, want its testing phase still open", f.key, got)
+	}
+	r.note("the check closed as %s, and %s's testing phase stays open", closed.Outcome, f.key)
+	f.mergeAndDone(f.key, f.number+1, lookIDHead2)
+	next := f.replacedBy(check)
+	if !r.base {
+		if id := f.storedLookID(1, next.OpenedAt); id == "" || id == read.id {
+			r.fails("new-check", "the new check holds a look id of its own for look 1: %t, want true", id != "" && id != read.id)
+		}
+	}
+	unchanged, reports := f.check(), f.reports()
+	status, failure = tester.report(read.opened, read.id, "pass", nil)
+	r.note("a pass with check_opened_at and the look id of the old check's look 1: %d %s %q", status, failure.Code, failure.Error)
+	if after := f.check(); status == http.StatusOK || !reflect.DeepEqual(after, unchanged) || f.reports() != reports {
+		r.fails("old-id-refused", "the pass with the old look's id = %d %s, the check changed: %t, reports processed %d, want a refusal that records nothing (%d)",
+			status, failure.Code, !reflect.DeepEqual(after, unchanged), f.reports(), reports)
+	}
+}
+
+// rootMergesAgain is part 9: the root of part 7, its check open after a pending report, and a twin
+// root reopened inside its linger with no open check (reopenTwinRoot). The next pull request of
+// each new run merges and a person's done closes each again. The daemon's log has the old check's
+// close as not run, naming the new merge, before the new check's open; the issue_close and
+// suspension rows the root's done queues are the rows the twin's queues (departure 3); and look
+// 1's task of the new check reaches the tester.
+func (r *lookIDLive) rootMergesAgain() {
+	var twin string
+	var twinNumber int
+	f, tester, check := r.rootLook("task ends with its look part 9", func(f *lookIDFixture) {
+		twin, twinNumber = f.cfg.Project+"-3", f.number+100
+		f.seedTwinRoot(twin, twinNumber)
+		recordOutboxWrites(f.t, f.st.Pool())
+	})
+	read, ended := r.lateTurnAcrossTheRerun(f, tester)
+	r.pendingFromThatSession(f, tester, read, ended, false, true)
+	f.reopenTwinRoot(twin)
+	mark := f.logMark()
+	launched := f.launches(claim.RoleTester)
+	f.nextPullRequest(f.key, f.number+1, lookIDHead2)
+	moved := f.mergeAndDone(f.key, f.number+1, lookIDHead2)
+	next := f.replacedBy(check)
+	twinMoved := f.mergeAndDone(twin, twinNumber, lookIDHead)
+	merge := "merge-" + lookIDHead2
+	closedAt := f.loggedIndex(mark, func(kept loggedRecord) bool {
+		return kept.Message == "workflow: production check closed" && kept.Attrs["issue"] == f.key &&
+			kept.Attrs["outcome"] == string(record.CheckNotRun) && kept.Attrs["replacedBy"] == merge
+	})
+	openedAt := f.loggedIndex(mark, func(kept loggedRecord) bool {
+		return kept.Message == "workflow: production check opened" && kept.Attrs["issue"] == f.key && kept.Attrs["mergeCommit"] == merge
+	})
+	switch {
+	case closedAt < 0:
+		r.fails("close-line", "the daemon's log has no line `workflow: production check closed` of the old check of %s with the outcome not_run and the merge commit of the new merge (replacedBy %s)", f.key, merge)
+	case openedAt < closedAt:
+		r.fails("close-line", "the daemon's log has the old check's close at its record %d and the new check's open at its record %d, want the close first", closedAt, openedAt)
+	}
+	r.note("the daemon's log closes the old check as not_run, replaced by %s, before it opens the new check", merge)
+	r.sameRowsAsTheTwin(f, "rows", moved, twinMoved, twin)
+	f.relaunched(claim.RoleTester, launched, "the new check's look-1 start to resume the tester the linger suspended")
+	f.stopAgent(tester)
+	resumed := f.resume(claim.RoleTester, "ses_tester", launched, "the new check's look-1 start to resume the tester the linger suspended")
+	r.nextLook(f, resumed, 1, next.OpenedAt, read.id)
+}
+
+// childParked is the first half of part 10: the child of part 8, its check open after a pending
+// report, and a twin child set back to todo the same way with no open check, each moved to
+// backlog before any merge of its new run (parked).
+func (r *lookIDLive) childParked() {
+	var twin string
+	f, tester, _ := r.firstLook("task ends with its look part 10, a child", func(f *lookIDFixture) {
+		twin = f.cfg.Project + "-3"
+		f.seedTwinChild(twin)
+		recordOutboxWrites(f.t, f.st.Pool())
+	})
+	read, ended := r.lateTurnAcrossTheRerun(f, tester)
+	r.pendingFromThatSession(f, tester, read, ended, false, true)
+	f.rerun(twin)
+	r.parked(f, "child", twin)
+}
+
+// rootParked is the second half of part 10: the root of part 7, its check open after a pending
+// report, and a twin root reopened inside its linger with no open check, each moved to backlog
+// before any merge of its new run (parked).
+func (r *lookIDLive) rootParked() {
+	var twin string
+	f, tester, _ := r.rootLook("task ends with its look part 10, a root", func(f *lookIDFixture) {
+		twin = f.cfg.Project + "-3"
+		f.seedTwinRoot(twin, f.number+100)
+		recordOutboxWrites(f.t, f.st.Pool())
+	})
+	read, ended := r.lateTurnAcrossTheRerun(f, tester)
+	r.pendingFromThatSession(f, tester, read, ended, false, true)
+	f.reopenTwinRoot(twin)
+	r.parked(f, "root", twin)
+}
+
+// parked is part 10's move and what each half passes on, for a checked issue that ran again with
+// its check open (who: child or root): a person moves it to backlog before any merge of its new
+// run. The store shows the check closed as not_run at the move; a wake row of the check made due
+// then starts no look; the issue_close and suspension rows the move queues are the rows the same
+// move of twin, with no open check, queues (departure 3); and the close writes no Dispatch status
+// on the issue, whose status stays backlog.
+func (r *lookIDLive) parked(f *lookIDFixture, who, twin string) {
+	r.t.Helper()
+	writes := f.statusWrites(f.key)
+	movedAt := time.Now()
+	moved := f.move(f.key, "backlog")
+	f.awaitMoved(moved)
+	closed := f.check()
+	switch {
+	case closed.Open():
+		r.fails(who+" closed-at-move", "the check is open after the move to backlog at %s, at look %d (look open: %t); want it closed as not_run at the move",
+			movedAt.UTC().Format(time.RFC3339Nano), closed.Looks, closed.LookOpen)
+	case closed.ClosedAt == nil || closed.ClosedAt.Before(movedAt):
+		r.fails(who+" closed-at-move", "the check closed as %s at %v, before the move to backlog at %s; want it open until the move and closed as not_run at it",
+			closed.Outcome, closed.ClosedAt, movedAt.UTC().Format(time.RFC3339Nano))
+	case closed.Outcome != record.CheckNotRun:
+		r.fails(who+" closed-at-move", "the check closed at the move as %s, want %s", closed.Outcome, record.CheckNotRun)
+	}
+	r.note("the person's move of %s to backlog closed its check as %s", f.key, closed.Outcome)
+	f.wakeStartsNoLook(who + " wake-starts-none")
+	twinMoved := f.move(twin, "backlog")
+	f.awaitMoved(twinMoved)
+	r.sameRowsAsTheTwin(f, who+" rows", moved, twinMoved, twin)
+	time.Sleep(liveSettle)
+	if got, status := f.statusWrites(f.key), f.boardStatus(f.key); got != writes || status != "backlog" {
+		r.fails(who+" status", "the daemon wrote %d Dispatch statuses on %s after the move, which stands at %s on the board; want none, and backlog", got-writes, f.key, status)
+	}
+	r.note("the daemon wrote no Dispatch status on %s, which stays backlog", f.key)
+}
+
+// freshSessionReady is the plan's proof that no check names: look 1's task reaches the tester,
+// which answers it busy in a turn of its own (busyTurn); look 1's bound ends it, and the end
+// suspends the tester once that turn ends. Once every suspension the end queued has run, the
+// controller gives the tester's claim a fresh session (freshSession), whose agent comes up ready
+// in a new session: nothing of look 1 reaches its connection at that ready, nor for
+// lookIDQuietSends send deadlines after it, and look 2's task reaches it once look 2 is due.
+func (r *lookIDLive) freshSessionReady() {
+	f, tester, check := r.firstLook("task ends with its look fresh session", nil)
+	task := tester.prompt("the look-1 task", checkTaskLeadText)
+	r.busyTurn(f, tester, task)
+	read := tester.readLook(task)
+	ended := time.Now()
+	f.boundComesDue()
+	tester.finish()
+	f.awaitSuspended(claim.RoleTester, "the end of look 1 to suspend the tester")
+	f.awaitSuspensionsRan("the suspensions the end of look 1 queued to run")
+	f.stopAgent(tester)
+	launched := f.launches(claim.RoleTester)
+	notRestarted := f.freshSession(claim.RoleTester)
+	r.note("look 1 ended by its bound; the controller then gave the tester's claim a fresh session (phaseNotRestarted %q)", notRestarted)
+	fresh := f.comeUp(claim.RoleTester, "ses_tester_fresh", "", launched, "the fresh session's start of the tester")
+	quiet := lookIDQuietSends * f.cfg.WorkerRPCTimeout
+	time.Sleep(quiet)
+	r.silent("ready-silent", ended, 0, time.Time{}, tester, fresh)
+	r.note("nothing of look 1 reached the fresh session's connection at its ready, nor in the %s after it", quiet)
+	f.wakeComesDue(2)
+	r.nextLook(f, fresh, 2, check.OpenedAt, read.id)
+}
+
+// freshSession is the controller's fresh_session of role's claim on the checked issue (POST
+// /legion/v1/claims/fresh-session), with the controller grant the operator mints (POST
+// /legion/v1/grants under the operator's token), each as raw JSON. It answers the sentence the
+// answer gives for a phase it did not restart.
+func (f *lookIDFixture) freshSession(role claim.Role) string {
+	f.t.Helper()
+	status, body := f.d.request(http.MethodPost, "/legion/v1/grants", map[string]any{}, true)
+	if status != http.StatusOK {
+		f.t.Fatalf("the operator's controller grant = %d %s, want 200", status, body)
+	}
+	var granted api.GrantResponse
+	if err := json.Unmarshal(body, &granted); err != nil {
+		f.t.Fatalf("decode the controller grant: %v", err)
+	}
+	status, body = f.d.request(http.MethodPost, "/legion/v1/claims/fresh-session",
+		map[string]any{"grantId": granted.GrantID, "issue": f.key, "role": string(role)}, false)
+	if status != http.StatusOK && status != http.StatusAccepted {
+		f.t.Fatalf("the fresh session of the %s = %d %s, want 200 or 202", role, status, body)
+	}
+	var answered struct {
+		PhaseNotRestarted string `json:"phaseNotRestarted"`
+	}
+	if err := json.Unmarshal(body, &answered); err != nil {
+		f.t.Fatalf("decode the fresh session's answer %s: %v", body, err)
+	}
+	return answered.PhaseNotRestarted
+}
+
+// lateTurnAcrossTheRerun is how parts 7 to 10 go on once look 1 is open: look 1's task reaches the
+// tester, which answers its send late, so the turn match fails for it (lateSend); while that turn
+// runs a person sets the checked issue back to todo — a child under its live tree re-enters, a
+// root inside its tree's linger is re-admitted — and it runs again (rerun); the turn then ends. It
+// answers what the tester read of look 1's task and the moment the turn ended.
+func (r *lookIDLive) lateTurnAcrossTheRerun(f *lookIDFixture, tester *lookIDAgent) (lookRead, time.Time) {
+	r.t.Helper()
+	task := tester.prompt("the look-1 task", checkTaskLeadText)
+	r.lateSend(f, tester, task)
+	read := tester.readLook(task)
+	f.rerun(f.key)
+	r.note("while the late turn of look 1's task ran, a person set %s back to todo, and it runs again at run %d; the turn then ended", f.key, f.issue(f.key).Generation)
+	ended := time.Now()
+	tester.finish()
+	return read, ended
+}
+
+// pendingFromThatSession is the tester's report of look 1 from the session whose turn ran its
+// task, once that turn has ended at ended: pending, with a wake 30 minutes out, check_opened_at and
+// the look id from the task. Where watch is set it is posted only after the driver read the
+// tester's connection for lookIDQuietSends of the daemon's send deadlines past ended (departure 7),
+// so the report's own retirement of the look's task cannot hide a fence that failed. A report that
+// is its part's setup (setup) and is refused at the base commit is noted, and the part goes on to
+// what its negative control names. It answers the wake.
+func (r *lookIDLive) pendingFromThatSession(f *lookIDFixture, tester *lookIDAgent, read lookRead, ended time.Time, watch, setup bool) time.Time {
+	r.t.Helper()
+	if watch {
+		quiet := lookIDQuietSends * f.cfg.WorkerRPCTimeout
+		time.Sleep(time.Until(ended.Add(quiet)))
+		r.note("the driver read the tester's connection for %s past the turn's end before the report", quiet)
+	}
+	wake := time.Now().UTC().Add(30 * time.Minute).Truncate(time.Microsecond)
+	status, failure := tester.report(read.opened, read.id, "pending", &wake)
+	r.note("from that session the tester reported look 1 pending with wake %s, check_opened_at and the look id from its task: %d %s %s",
+		wake.Format(time.RFC3339Nano), status, failure.Code, failure.Error)
+	f.surfaces("after the report of look 1, from the session of its turn")
+	switch {
+	case status == http.StatusOK:
+	case setup && r.base:
+		r.note("at the base commit that report is refused; the part goes on to what its negative control names")
+	default:
+		r.fails("report", "the report of look 1 = %d %s %s, want 200", status, failure.Code, failure.Error)
+	}
+	return wake
+}
+
+// pendingRecorded fails the running part at recorded unless the pending report of look 1 is
+// recorded against that look: the intake took it as look 1's pending, and the check, still open,
+// holds look 1 closed and names the report's wake.
+func (r *lookIDLive) pendingRecorded(f *lookIDFixture, wake time.Time) {
+	r.t.Helper()
+	recorded, reports := f.check(), f.lookReports(1, "pending")
+	if !recorded.Open() || reports != 1 || recorded.Looks != 1 || recorded.LookOpen || recorded.WakeAt == nil || !recorded.WakeAt.Equal(wake) {
+		r.fails("recorded", "after the report the check is open: %t, at look %d (open: %t), with its wake at %v and %d pending reports of look 1; want it open at look 1, closed, with the wake %s and one report",
+			recorded.Open(), recorded.Looks, recorded.LookOpen, recorded.WakeAt, reports, wake.Format(time.RFC3339Nano))
+	}
+	r.note("the report is recorded against look 1, and the open check names its wake")
+}
+
+// checkOpenWhileItRuns fails the running part at record-open unless read_record shows the checked
+// issue running again with the check that opened with check open at look 1.
+func (r *lookIDLive) checkOpenWhileItRuns(f *lookIDFixture, check record.ProductionCheck) {
+	r.t.Helper()
+	seen := f.recordCheck("while the issue runs again, after the report")
+	if seen.Phase == phase.Done || seen.Check == nil || !seen.Check.OpenedAt.Equal(check.OpenedAt) || seen.Check.Looks != 1 {
+		r.fails("record-open", "read_record shows %s in %s with the check %+v; want it running and its check open at look 1, opened %s",
+			f.key, seen.Phase, seen.Check, check.OpenedAt.UTC().Format(time.RFC3339Nano))
+	}
+	r.note("while %s runs again in %s, read_record shows its check open at look 1", f.key, seen.Phase)
+}
+
+// wakeStartsNoLook brings the check's wake row due now and fails the running part at assertion
+// unless the row runs and starts no look: the check waits while its issue runs again
+// (workflow's checkWakeDue defers the wake), and a closed check starts none.
+func (f *lookIDFixture) wakeStartsNoLook(assertion string) {
+	f.t.Helper()
+	before := f.check()
+	mark := f.logMark()
+	tag, err := f.st.Pool().Exec(context.Background(), "update outbox set next_at = now() where issue = $1 and kind = $2", f.key, string(record.OutboxKindCheckWake))
+	if err != nil {
+		f.t.Fatalf("bring the check's wake forward: %v", err)
+	}
+	if tag.RowsAffected() == 0 {
+		f.r.fails(assertion, "the check, open: %t, at look %d, holds no wake row to make due", before.Open(), before.Looks)
+	}
+	var ran *loggedRecord
+	testwait.WithinPolling(f.t, lookIDWait, 100*time.Millisecond, "the wake row made due to run", func() bool {
+		ran = f.logged.firstAfter(mark, func(kept loggedRecord) bool {
+			return kept.Attrs["issue"] == f.key && (kept.Message == "workflow: production check wake deferred while its issue runs again" ||
+				kept.Message == "workflow: production check wake starts no look")
+		})
+		return ran != nil || f.check().Looks != before.Looks
+	})
+	if after := f.check(); after.Looks != before.Looks || after.LookOpen {
+		f.r.fails(assertion, "the wake made due started look %d of the check (look open: %t), want no look", after.Looks, after.LookOpen)
+	}
+	f.r.note("the wake made due now started no look: %s", ran.Message)
+}
+
+// rerun is a person setting key back to todo (move): a child of a live tree re-enters it
+// (workflow's ReenterChild), and a root inside its tree's linger is re-admitted (admit's
+// readmit). It waits for key to run again at its next generation.
+func (f *lookIDFixture) rerun(key string) {
+	f.t.Helper()
+	before := f.issue(key).Generation
+	f.prompts(key)
+	f.awaitMoved(f.move(key, "todo"))
+	testwait.WithinPolling(f.t, lookIDWait, 100*time.Millisecond, key+" to run again at its next generation", func() bool {
+		return f.issue(key).Generation > before
+	})
+}
+
+// reopenTwinRoot takes the twin root, seeded implementing on an open pull request, out of the
+// workflow with no merge — a person's done, which lingers its tree and opens no check — and back in
+// inside that linger, a person's todo, which re-admits it (rerun): a root reopened inside its linger
+// with no open check.
+func (f *lookIDFixture) reopenTwinRoot(twin string) {
+	f.t.Helper()
+	f.awaitMoved(f.move(twin, "done"))
+	f.rerun(twin)
+	f.r.note("the twin root %s left with no merge and was reopened inside its tree's linger, with no check", twin)
+}
+
+// nextPullRequest is the next pull request of key's new run, numbered number at head: GitHub's
+// stand-in serves it from then on (serve), and GitHub's opened event of it, which the daemon
+// records (workflow's pullRequestOpened), arrives.
+func (f *lookIDFixture) nextPullRequest(key string, number int, head string) {
+	f.t.Helper()
+	f.serve(key, number, head)
+	f.waitProcessed(f.publishPullRequest(livePullRequestEvent{action: "opened", number: number, issue: key, head: head,
+		base: lookIDBranch, title: f.issues[key].title, updated: time.Now().UTC()}, fmt.Sprintf("pr-%d-opened", number)))
+}
+
+// mergeAndDone is GitHub's merge of key's pull request number at head, and then a person's done,
+// as closeMerged closes the checked issue the first time (departure 2): a merge short of the
+// merging phase closes nothing, and the done closes the issue on its merged pull request. It
+// answers the done's event id.
+func (f *lookIDFixture) mergeAndDone(key string, number int, head string) string {
+	f.t.Helper()
+	f.waitProcessed(f.publishMergeOf(number, key, head, lookIDBranch))
+	moved := f.move(key, "done")
+	f.awaitMoved(moved)
+	return moved
+}
+
+// nextMerge is the checked issue's next pull request of its new run, numbered one past the first
+// at lookIDHead2, opened and merged, and the person's done (mergeAndDone). It answers the check
+// that merge opens, which replaces old (replacedBy).
+func (f *lookIDFixture) nextMerge(old record.ProductionCheck) record.ProductionCheck {
+	f.t.Helper()
+	f.nextPullRequest(f.key, f.number+1, lookIDHead2)
+	f.mergeAndDone(f.key, f.number+1, lookIDHead2)
+	return f.replacedBy(old)
+}
+
+// replacedBy waits for the close of the checked issue's next merge to open the check that replaces
+// old, at look 1, and answers it.
+func (f *lookIDFixture) replacedBy(old record.ProductionCheck) record.ProductionCheck {
+	f.t.Helper()
+	next := f.awaitCheck("the close of the next merge to open the check that replaces the old one", func(c record.ProductionCheck) bool {
+		return c.Open() && c.OpenedAt.After(old.OpenedAt) && c.Looks == 1
+	})
+	f.r.note("%s: the next pull request merged and the person's done closed %s again; a new check opened at %s, at look 1",
+		f.where, f.key, next.OpenedAt.UTC().Format(time.RFC3339Nano))
+	return next
+}
+
+// newRunToTesting brings the child's run after its re-entry to testing as production does, over
+// the default steps implementer then tester (runsImplementerThenTester): the run's implementing
+// start launches the implementer's session again, kept since the child's close (its launches
+// before the re-entry were implementerLaunches), which takes its task, opens the next pull
+// request at lookIDHead2 and completes. The testing task then reaches tester's claim, alive in the
+// session it worked look 1 in and launched no more since, which takes it and works it.
+func (r *lookIDLive) newRunToTesting(f *lookIDFixture, tester *lookIDAgent, implementerLaunches int) {
+	r.t.Helper()
+	testerLaunches := f.launches(claim.RoleTester)
+	imp := f.resume(claim.RoleImplementer, "ses_implementer", implementerLaunches, "the new run's implementing start to launch the implementer again")
+	task := imp.prompt("the new run's implementing task", "")
+	imp.ack(task)
+	imp.begin(task.ID)
+	f.nextPullRequest(f.key, f.number+1, lookIDHead2)
+	status, body := f.d.request(http.MethodPost, "/legion/v1/handoff/complete", api.HandoffCompleteRequest{
+		GrantID: f.grant(imp.liveSession), Summary: "implemented the next run", Commit: lookIDHead2,
+		HandoffID: imp.handoff("implement"), HandoffVersion: 1,
+	}, false)
+	if status != http.StatusOK {
+		f.t.Fatalf("the new run's implementer completion = %d %s, want 200", status, body)
+	}
+	imp.finish()
+	f.waitFor("the child's new run in testing", func(got api.Issue) bool { return got.Phase == phase.Testing && got.Generation > 1 })
+	testing := tester.prompt("the new run's testing task", "Phase: testing")
+	if launched := f.launches(claim.RoleTester); launched != testerLaunches {
+		f.t.Fatalf("the tester was launched %d times since look 1, want its testing task in the session it worked look 1 in", launched-testerLaunches)
+	}
+	tester.ack(testing)
+	tester.begin(testing.ID)
+	r.note("the new run reached testing; its testing task reached the tester in the session of look 1, which works it")
+}
+
+// sameRowsAsTheTwin fails the running part at assertion unless the issue_close and suspension rows
+// the transaction of the move moved queued for the checked issue are the rows the transaction of
+// the same move of twin, which has no open check, queued (movedRows): departure 3 of the plan. The
+// close's own retire_look row is neither kind, and so is left out.
+func (r *lookIDLive) sameRowsAsTheTwin(f *lookIDFixture, assertion, moved, twinMoved, twin string) {
+	r.t.Helper()
+	mine, theirs := f.movedRows(moved, f.key), f.movedRows(twinMoved, twin)
+	if len(mine) == 0 || !slices.Equal(mine, theirs) {
+		r.fails(assertion, "the move of %s queued the issue_close and suspension rows %q, and the same move of its twin %s, which has no open check, queued %q; want the same rows",
+			f.key, mine, twin, theirs)
+	}
+	r.note("the move queued %d issue_close and suspension rows, the rows the same move of the twin %s, with no open check, queued", len(mine), twin)
+}
+
+// movedRows is every issue_close and suspension row — a supervise row of op issue_close or
+// suspend, and an issue_suspend row — the transaction that applied the Dispatch event moved
+// queued, read from the database's own record of every outbox write (recordOutboxWrites) by that
+// transaction's id, which its processed_events row carries (xmin). Each is its kind and its payload
+// with key, the moved issue, written `<issue>`, sorted.
+func (f *lookIDFixture) movedRows(moved, key string) []string {
+	f.t.Helper()
+	rows, err := f.st.Pool().Query(context.Background(), `select w.kind, w.payload::text from outbox_written w
+		join processed_events p on w.xmin = p.xmin
+		where p.event_id = $1 and ((w.kind = $2 and w.payload->>'op' in ('issue_close', 'suspend')) or w.kind = $3)`,
+		moved, string(record.OutboxKindSupervise), string(record.OutboxKindIssueSuspend))
+	if err != nil {
+		f.t.Fatalf("read the rows the move %s queued: %v", moved, err)
+	}
+	defer rows.Close()
+	var queued []string
+	for rows.Next() {
+		var kind, payload string
+		if err := rows.Scan(&kind, &payload); err != nil {
+			f.t.Fatalf("read a row the move %s queued: %v", moved, err)
+		}
+		queued = append(queued, kind+" "+strings.ReplaceAll(payload, key, "<issue>"))
+	}
+	if err := rows.Err(); err != nil {
+		f.t.Fatalf("read the rows the move %s queued: %v", moved, err)
+	}
+	slices.Sort(queued)
+	return queued
+}
+
+// loggedIndex is the index of the first record the running daemon logged, from the mark from on,
+// that want holds of, and -1 for none.
+func (f *lookIDFixture) loggedIndex(from int, want func(loggedRecord) bool) int {
+	f.logged.mu.Lock()
+	defer f.logged.mu.Unlock()
+	for i := from; i < len(f.logged.records); i++ {
+		if want(f.logged.records[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// statusWrites is how many Dispatch statuses the daemon has written on key.
+func (f *lookIDFixture) statusWrites(key string) int {
+	written := 0
+	for _, write := range f.board.writes() {
+		if write.Issue == key && write.Status != "" {
+			written++
+		}
+	}
+	return written
+}
+
+// boardStatus is key's status as Dispatch's board holds it, the daemon's writes applied.
+func (f *lookIDFixture) boardStatus(key string) string {
+	f.board.mu.Lock()
+	defer f.board.mu.Unlock()
+	return f.board.issues[key].status
 }
 
 // ---- step `id hidden` ----------------------------------------------------------------------------
