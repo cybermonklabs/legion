@@ -1060,6 +1060,48 @@ func TestWorkHoldStartsAnArchitect(t *testing.T) {
 	}
 }
 
+// H48 and decision 27: under `work` the hold's one start fence (startWaitsForTheHold) decides by
+// the role alone, not by the list of roles a claim can be on (claim.Roles). While the gate is
+// closed it holds the start of a role that list does not name, as a kind of step a later change
+// adds would start one, with the same routine wait it gives each role of the list but the
+// architect, and it holds neither the architect's start nor the controller's. Once the gate opens,
+// the start of the role no list names goes. The fence is read directly, as each start row and
+// each wake of a released claim reads it.
+func TestWorkHoldHoldsTheStartOfARoleNoListNames(t *testing.T) {
+	t.Parallel()
+	const unlisted claim.Role = "security-reviewer"
+	if claim.IsRole(unlisted) {
+		t.Fatalf("claim.Roles names the %s, want a role it does not name", unlisted)
+	}
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	r.close(4)
+	r.drain()
+	held := []claim.Role{unlisted}
+	for _, role := range claim.Roles {
+		if role != claim.RoleArchitect {
+			held = append(held, role)
+		}
+	}
+	for _, role := range held {
+		want := fmt.Sprintf("the %s of %s waits for the work hold of its tree to end: version 4 of the spec document (%s) of %s closed the design gate",
+			role, r.tree.key, r.tree.document, r.tree.key)
+		if err := r.runner.startWaitsForTheHold(r.ctx, r.issue(), role, 0); !routineWait(err) || err.Error() != want {
+			t.Fatalf("the fence of a start of the %s with the gate closed = %v, want the work hold's routine wait %q", role, err, want)
+		}
+	}
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleController} {
+		if err := r.runner.startWaitsForTheHold(r.ctx, r.issue(), role, 0); err != nil {
+			t.Fatalf("the fence of a start of the %s with the gate closed = %v, want nil: the hold holds no %s", role, err, role)
+		}
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	if err := r.runner.startWaitsForTheHold(r.ctx, r.issue(), unlisted, 0); err != nil {
+		t.Fatalf("the fence of a start of the %s once the gate opened = %v, want nil: the opening lets it go", unlisted, err)
+	}
+}
+
 // mergingWithAReleasedMerger is a tree in merging under hold whose merger's pod was released
 // while its pull request sat in the merge queue, its architect at work.
 func mergingWithAReleasedMerger(t *testing.T, hold config.Hold) *workHoldRig {

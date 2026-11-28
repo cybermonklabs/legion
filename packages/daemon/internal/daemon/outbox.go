@@ -5530,24 +5530,28 @@ func (r *outbox) mergerNewsWait(ctx context.Context, issue record.Issue) error {
 // while its tree's design gate is closed, because a new version of the spec is with its reviewer
 // and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
 // wait, which leaves the row on its backoff as a check start waits on its look (checkLookHolds),
-// and nil for every start the gate does not hold. Under `work` it holds every phase worker of the
-// tree as well (claim.IsPhaseWorker), from the close: no phase of the tree starts while the gate
-// is closed, so its member's first phase, the next phase of a transition, a retry, an owed entry,
-// a wake and every other start of such a role wait. A production check's look (checkLook) is not
-// held: its issue has left the workflow. That wait is routine (routineWaiting): the gate's opening
-// ends it, and the state says why each held issue waits.
+// and nil for every start the gate does not hold. Under `work` it holds the start of every role of
+// the tree but the architect's and the controller's as well (claim.IsWorkerRole), from the close.
+// It decides by the role alone, not by the list of roles (claim.Roles), so a kind of step that a
+// later change adds, and that starts a worker through the outbox, is held with no new code here.
+// No phase of the tree starts while the gate is closed, so its member's first phase, the next
+// phase of a transition, a retry, an owed entry, a wake and every other start of such a role wait.
+// A production check's look (checkLook) is not held: its issue has left the workflow. That wait is
+// routine (routineWaiting): the gate's opening ends it, and the state says why each held issue
+// waits.
 //
 // Under either hold the merger waits for its news as well, once the gate is open
 // (mergerWaitsForTheDesignGate, mergerNewsWait). So under `work` the opening's start of a merger
 // the hold stopped waits until what changed in the approved design is recorded, and carries that
 // news.
 //
-// An architect is never held, and neither is the merger's one start the closed gate lets through,
-// its wake for the close message, which is no start row (roleMessage, wakeForTheClose). The gate's
-// opening releases the row's next try, within the outbox's backoff (64 seconds at most), and
-// tells every phase worker of the tree and the root's architect as well (workflow's tellGateMoved).
+// An architect is never held, nor is the controller, and neither is the merger's one start the
+// closed gate lets through, its wake for the close message, which is no start row (roleMessage,
+// wakeForTheClose). The gate's opening releases the row's next try, within the outbox's backoff
+// (64 seconds at most), and tells every phase worker of the tree and the root's architect as well
+// (workflow's tellGateMoved).
 func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, role claim.Role, checkLook int) error {
-	if !r.holdIsWork() || checkLook != 0 || !claim.IsPhaseWorker(role) {
+	if !r.holdIsWork() || checkLook != 0 || !claim.IsWorkerRole(role) {
 		return r.mergerWaitsForTheDesignGate(ctx, issue, role)
 	}
 	gate, err := r.treeGate(ctx, issue.Tree)
@@ -5684,13 +5688,13 @@ func (r *outbox) startOfAHeldClaim(ctx context.Context, row record.OutboxRow, pa
 
 // openingMayBeInFlight is whether a start that carries no opening's sentences, of held, a claim the
 // work hold does not hold, reads whether the claim's own start of the opening is in flight
-// (waitForOpeningInFlight): only under `work` (holdIsWork), only for a phase worker, the one role
-// the hold stops (claim.IsPhaseWorker), and only where a start ran against the claim before this
-// row (supervise.Claim.LastStartRow), since the opening's start in flight is the claim's last
-// start. That read is one transaction at each attempt of such a start, and a `merge` deployment
-// makes none.
+// (waitForOpeningInFlight): only under `work` (holdIsWork), only for a role the hold stops, every
+// role but the architect's and the controller's (claim.IsWorkerRole), and only where a start ran
+// against the claim before this row (supervise.Claim.LastStartRow), since the opening's start in
+// flight is the claim's last start. That read is one transaction at each attempt of such a start,
+// and a `merge` deployment makes none.
 func (r *outbox) openingMayBeInFlight(held supervise.Claim, row record.OutboxRow) bool {
-	return r.holdIsWork() && claim.IsPhaseWorker(held.Role) && held.LastStartRow != 0 && held.LastStartRow < row.ID
+	return r.holdIsWork() && claim.IsWorkerRole(held.Role) && held.LastStartRow != 0 && held.LastStartRow < row.ID
 }
 
 // openingGoesFirst is whether a start that carries no opening's sentences, of held, a claim the

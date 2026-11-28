@@ -84,6 +84,16 @@ func IsRole(role Role) bool {
 // reviewer or merger. An architect is none, nor is the controller.
 func IsPhaseWorker(role Role) bool { return role != RoleArchitect && IsRole(role) }
 
+// IsWorkerRole reports whether role is one the work hold (`gates.hold: work`) holds: every
+// non-empty role but the architect's and the controller's. It decides by the role alone, not by
+// Roles, so a role a later change adds, whose worker starts through the outbox, is held with no
+// new code in the hold. Every reader of which roles the hold holds reads it: internal/daemon's
+// start fence (startWaitsForTheHold) and openingMayBeInFlight, internal/workflow's treeClaims,
+// and supervise's workHoldRefuses.
+func IsWorkerRole(role Role) bool {
+	return role != "" && role != RoleArchitect && role != RoleController
+}
+
 // NewToken is the token of the claim on issue's role: `legion-<project>-<issue project,
 // lowercased>-<number>-<role>`, byte for byte the shipped roleToken
 // (packages/contracts/src/legion-roles.ts:48-55). The token is the Envoy role the agent claims, so

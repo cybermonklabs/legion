@@ -243,8 +243,8 @@ func (c treeClaim) live() bool {
 
 // treeClaims reads the claims of every member of root's tree that is in the workflow
 // (record.InWorkflow), members by key: each role of claim.Roles, in that order, the architect
-// first, and then each other claim the store holds of the member whose role is a worker role
-// (claim.IsPhaseWorker), in token order (record.Store.StoredClaims), with the role's queued rows
+// first, and then each other claim the store holds of the member whose role is one the hold holds
+// (claim.IsWorkerRole), in token order (record.Store.StoredClaims), with the role's queued rows
 // and claim at the member's generation, in batches (RoleRuns). A role of claim.Roles is read
 // whether or not the store holds a claim of it, since a start under way or a holder owed news can
 // have none yet (workHoldClose, heldOpeningMessage). A stored claim is read by the token and role
@@ -286,7 +286,7 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 			listed[token] = true
 		}
 		for _, held := range stored[member.Key] {
-			if claim.IsPhaseWorker(held.Role) && !listed[held.Token] {
+			if claim.IsWorkerRole(held.Role) && !listed[held.Token] {
 				claims = append(claims, treeClaim{issue: member, role: held.Role, token: held.Token})
 			}
 		}
@@ -315,10 +315,10 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //   - every live architect, the root's and each member's own, the close and "Your own work goes
 //     on, and a step that you report starts nothing until every gated step stands open again.":
 //     the hold stops no architect;
-//   - every live phase worker that is not a merger (planner, implementer, tester, reviewer), idle
-//     claims of a finished phase among them, the close and "End your turn now.", carrying its stop
-//     (record.RoleMessage.Stop), which the outbox posts once the message reached the claim, with
-//     the deadline HoldStopGrace on;
+//   - every live phase worker that is not a merger, a claim of every role the hold holds but the
+//     merger's (claim.IsWorkerRole, treeClaims), idle claims of a finished phase among them, the
+//     close and "End your turn now.", carrying its stop (record.RoleMessage.Stop), which the outbox
+//     posts once the message reached the claim, with the deadline HoldStopGrace on;
 //   - every merger it reaches the same message, marked to wait for the merger's session
 //     (record.RoleMessage.Wake): a live merger, a released one, which the message wakes, and one
 //     that is neither while a start of it is under way (StartUnderWay), which may launch the
