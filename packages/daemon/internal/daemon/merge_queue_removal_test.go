@@ -49,9 +49,10 @@ const (
 
 // dequeueWait bounds each wait of this test on the daemon's own work: an event through the
 // intake, a read of GitHub, a fact, and an outbox row's tries, the longest of whose waits here is
-// the four seconds before a row's fourth try (the outbox's backoff, record.RetryBackoff). It is
-// the bound a fault is reported at, far above that, so a slow machine is not a failure and a row
-// that never finishes fails its case in seconds rather than at the package's deadline.
+// the four seconds before a row's fourth try, on the outbox's backoff (record.RetryBackoff) or on
+// the capped backoff of a wait (record.RoleWaitBackoff), which start alike. It is the bound a
+// fault is reported at, far above that, so a slow machine is not a failure and a row that never
+// finishes fails its case in seconds rather than at the package's deadline.
 // dequeuePoll is how often a wait asks: each question is a read of the database or of the
 // daemon's whole log, so it is not asked a hundred times a second.
 const (
@@ -208,9 +209,9 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			return rig.listener.refused(issue.topic) >= 1
 		})
 		rig.wokenOnce(t, issue)
-		// The first post-registration publish to this launch was refused while not ready; under
-		// roleWaitGate (P3) the row does not publish a second time to the same launch until the
-		// woken merger says it is ready.
+		// The first post-registration publish to this launch was refused while not ready; the gate
+		// (roleWaitGate) lets the row publish no second time to the same launch until the woken
+		// merger says it is ready.
 		rig.listener.holds(issue.topic)
 		ready()
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
@@ -264,8 +265,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once the fifth read failed", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
-		rig.registerWoken(t, issue)
-		rig.listener.holds(issue.topic)
+		rig.holdsOnceWoken(t, issue)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
@@ -352,8 +352,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once the gate opened", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
-		rig.registerWoken(t, issue)
-		rig.listener.holds(issue.topic)
+		rig.holdsOnceWoken(t, issue)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
@@ -410,8 +409,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once what changed is recorded", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
-		rig.registerWoken(t, issue)
-		rig.listener.holds(issue.topic)
+		rig.holdsOnceWoken(t, issue)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
@@ -450,6 +448,9 @@ type dequeueRig struct {
 // one it registers; the daemon refuses any other (claim.SameAgentRefusal), and refuses a launch
 // that records no process yet (launchRecordsNoProcess), so the registration waits until the
 // launch's process is recorded. The removal still waits for the listener to name a holder (holds).
+// It answers the launch's ready, as the merger's plugin reports it once its agent is up: a call of
+// the ready route under the secret the registration issued, which the gate waits for before it
+// lets the row publish a second time to that launch (roleWaitGate).
 func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) func() {
 	t.Helper()
 	r.await(t, "the runtime's resume of the woken merger", func() bool { return len(resumesOf(r.rt, issue.merger)) >= 1 })
@@ -477,6 +478,19 @@ func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) func() {
 			t.Fatalf("ready %s's woken merger = %d %s, want 204", issue.key, status, body)
 		}
 	}
+}
+
+// holdsOnceWoken is the woken merger's launch of issue coming up whole: its session registers
+// (registerWoken), takes the merger's topic (holds) and says it is ready. The registration makes
+// the waiting message due at once (launchWait), so its run can publish to the registered launch
+// before the session has taken the topic; the listener refuses that publish, and the gate then
+// lets the row publish to that launch only once the launch says it is ready (roleWaitGate), which
+// the ready here does. Whichever comes first, the message reaches the session holding the topic.
+func (r *dequeueRig) holdsOnceWoken(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	ready := r.registerWoken(t, issue)
+	r.listener.holds(issue.topic)
+	ready()
 }
 
 // dequeueIssue is one case's issue: its key, its pull request's number and the head the record

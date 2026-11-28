@@ -51,10 +51,7 @@ func TestRetryOutboxStoresAnInvalidFarSideErrorBoundedTo2048Runes(t *testing.T) 
 		t.Fatalf("RetryOutbox with the far side's error of %d bytes: %v", len(lastErr), err)
 	}
 
-	retried, err := scanOutbox(st.Pool().QueryRow(ctx, "select "+outboxColumns+" from outbox where id = $1", id))
-	if err != nil {
-		t.Fatalf("read outbox row %d: %v", id, err)
-	}
+	retried := storedOutboxRow(t, st, id)
 	if retried.Attempts != leased.Attempts+1 {
 		t.Errorf("outbox row %d has %d attempts after the retry, want the %d it had plus one", id, retried.Attempts, leased.Attempts)
 	}

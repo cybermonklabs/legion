@@ -93,7 +93,8 @@ type Runtime interface {
 	// issue Sandbox of a tree whose lifecycle is open or releasing: those are CleanupTree's alone; and
 	// no controller Sandbox whose claim the store holds unretired when the delete is decided. It
 	// makes, repairs and retires no repository cache: that is RepositoryCacheSweeper's own pass,
-	// which the daemon runs off its boot (dispatch://INFRA-4131/spec#b-r-boot-budget).
+	// which the daemon runs beside its claims and never on its boot
+	// (dispatch://INFRA-4131/spec#b-r-boot-budget).
 	ReconcileOrphans(ctx context.Context, known []Known, grace time.Duration) error
 	// AdoptWorkingCopy hands the agent's working copy the git identity its commits are authored
 	// with, in the place the working copy actually lives (which under a sandbox is not a
@@ -185,12 +186,12 @@ type Runtime interface {
 // repository of the project's cache set. A pass makes the missing cache of each repository of the
 // set, repairs one whose pod drifted or died, and retires one whose repository left the set once
 // its retention has passed. Each launch ensures its own repository's cache, so the pass serves no
-// launch and nothing waits on it: the daemon runs it beside its claims for supervision's life, once
-// as its orphan sweep begins and once after each of that sweep's reconciliations, and never on its
-// boot, whose budget a pass that replaces many cache pods one after another would spend
+// launch and no launch waits on it: the daemon runs it beside its claims for supervision's life,
+// once as its orphan sweep begins and once after each of that sweep's reconciliations, and never on
+// its boot, whose budget a pass that replaces many cache pods one after another would spend
 // (dispatch://INFRA-4131/spec#b-r-boot-budget). A failure of one cache is the runtime's to log; it
-// answers the context's error when the context ended before the pass reached every cache, and nil
-// otherwise. A runtime that keeps no repository cache implements nothing here.
+// answers the context's error when the context ended before the pass finished, and nil otherwise.
+// A runtime that keeps no repository cache implements nothing here.
 type RepositoryCacheSweeper interface {
 	SweepRepositoryCaches(ctx context.Context) error
 }

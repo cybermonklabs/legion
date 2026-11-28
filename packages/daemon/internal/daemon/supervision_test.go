@@ -1455,7 +1455,7 @@ func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testin
 	t.Parallel()
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	held := &heldStepStore{outboxClaimStore: sup.deps.Store.(*outboxClaimStore), entered: make(chan struct{}), release: make(chan struct{})}
+	held := newHeldStepStore(sup.deps.Store)
 	sup.deps.Store = held
 	t.Cleanup(held.open)
 	tester := mustClaimToken(t, "LEGION-208", claim.RoleTester)
@@ -1511,20 +1511,26 @@ func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testin
 	}
 }
 
-// heldStepStore is outboxClaimStore with its write of a claim's step held: the write says it has
-// begun on entered, and waits for open, so the machine deciding it decides nothing else.
+// heldStepStore is a claim store with its write of a claim's step held: the write says it has
+// begun on entered, and waits for open, so the machine deciding it decides nothing else while it
+// holds the machine's lock, and changes nothing of the claim.
 type heldStepStore struct {
-	*outboxClaimStore
+	supervise.Store
 	entered chan struct{}
 	release chan struct{}
 	began   sync.Once
 	opened  sync.Once
 }
 
+// newHeldStepStore is of with its writes of a claim's step held until open (heldStepStore).
+func newHeldStepStore(of supervise.Store) *heldStepStore {
+	return &heldStepStore{Store: of, entered: make(chan struct{}), release: make(chan struct{})}
+}
+
 func (s *heldStepStore) PutClaimStep(ctx context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
 	s.began.Do(func() { close(s.entered) })
 	<-s.release
-	return s.outboxClaimStore.PutClaimStep(ctx, token, step)
+	return s.Store.PutClaimStep(ctx, token, step)
 }
 
 // open lets every held write go on.

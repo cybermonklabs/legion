@@ -1273,7 +1273,7 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 		publisher.err = fmt.Errorf("publish notice to notifications.role.implementer: listener returned 504 Gateway Timeout: %w", notify.ErrNotDelivered{Reason: reason, Holder: "ses_impl"})
 		var notDelivered notify.ErrNotDelivered
 		if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != reason ||
-			!errors.Is(err, wait.ErrWaiting) || !roleWaitRun(row.Kind, err) {
+			!errors.Is(err, wait.ErrWaiting) {
 			t.Fatalf("a role message answered %s = %v, want the answer kept as a wait for the role, retried", reason, err)
 		}
 	}

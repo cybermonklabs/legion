@@ -1468,6 +1468,11 @@ type Deps struct {
 	// Claim included. It is called on the goroutine that made the decision, so it returns at once.
 	// The daemon also tells its own hook of each machine it begins to supervise (internal/daemon's
 	// supervisor.add). nil tells no one.
+	//
+	// The two views are the machine's published views themselves, shared rather than copied, as
+	// Published shares one: publish stores a view built fresh and nothing writes a stored one again.
+	// They are read-only: a callback that would write either copies it first. The daemon's hook
+	// reads the token, the trees, the state and the ready.
 	ClaimChanged func(before, after ClaimView)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
@@ -3133,11 +3138,9 @@ func (m *Machine) tellChanged(before, after *publishedView) {
 	if m.deps.ClaimChanged == nil || !refused && !claimChanged(before.ClaimView, after.ClaimView) {
 		return
 	}
-	// A stored view is never written again (publish), and the callback is handed views of its
-	// own, as View hands every reader that keeps what it reads.
-	was, now := before.ClaimView, after.ClaimView
-	was.Claim, now.Claim = copyClaim(was.Claim), copyClaim(now.Claim)
-	m.deps.ClaimChanged(was, now)
+	// A stored view is never written again (publish), so the callback is handed the two views
+	// themselves, read-only (Deps.ClaimChanged), rather than a copy of each at every change.
+	m.deps.ClaimChanged(before.ClaimView, after.ClaimView)
 }
 
 // claimChanged is whether the claim as after shows it differs from before in what a row of the

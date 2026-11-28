@@ -195,7 +195,7 @@ func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			publisher.err = fmt.Errorf("publish to the implementer's topic: %w", tc.err)
 			err := runner.execute(ctx, row)
-			if err == nil || !errors.Is(err, tc.err) || !errors.Is(err, wait.ErrWaiting) || !roleWaitRun(row.Kind, err) || permanentRefusal(row, err) {
+			if err == nil || !errors.Is(err, tc.err) || !errors.Is(err, wait.ErrWaiting) || permanentRefusal(row, err) {
 				t.Fatalf("the hook prompt answered %v = %v, want the answer kept as a wait for the role, retried", tc.err, err)
 			}
 			t.Logf("%s: %v", tc.name, err)
@@ -629,8 +629,8 @@ func (p *parkedWake) waiting() (tries int, waited string, due time.Time) {
 
 // keptAfterTheParkedWake drives one role-message row for role's released claim on LEGION-208
 // through a resume the wake pacing parks (parkTheWake) and the park's whole wait. The attempt
-// that finds the park makes the row due parkedWakeBound on, not at the wake's turn, and what it
-// waits on is routine (routineWait), so settle logs none of its attempts as a warning. A drain
+// that finds the park makes the row due parkedWakeBound on, not at the wake's turn, and settle logs
+// its wait as a role wait's (logWait), with no attempt inside 30 minutes logged at WARN. A drain
 // before the bound does not run the row; an attempt past the bound, the park still holding,
 // waits to the next bound; and an attempt past the turn while the wake still waits for its timer
 // falls back to the backoff. Once the test fires the wake's turn and the resume launches, the
@@ -645,12 +645,9 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 	}
 	// The drain keeps no error, so the wait is read from the executor run once more on the same
 	// clock: over a claim parked with no process it reads the claim's view and writes nothing.
-	// Every caller of parkedWait is a role-waiting kind (roleWaitRun), so settle logs the wait by
-	// its own wait (logWait: once at start, once at 30 minutes at WARN, Debug between, once at
-	// end) rather than reading routineWait.
 	waited := p.runner.execute(context.Background(), p.row)
-	if at, named := wait.UntilAt(waited); !errors.Is(waited, wait.ErrWaiting) || !roleWaitRun(p.row.Kind, waited) || !named || !at.Equal(p.found.Add(parkedWakeBound)) {
-		t.Fatalf("the parked attempt answers %v, naming %s (%t), want a role wait (roleWaitRun) naming the bound, %s",
+	if at, named := wait.UntilAt(waited); !errors.Is(waited, wait.ErrWaiting) || !named || !at.Equal(p.found.Add(parkedWakeBound)) {
+		t.Fatalf("the parked attempt answers %v, naming %s (%t), want a wait naming the bound, %s",
 			waited, at, named, p.found.Add(parkedWakeBound))
 	}
 	drainAt(p.t, p.runner, parkFound+parkedWakeBound/2, "a drain before the bound")

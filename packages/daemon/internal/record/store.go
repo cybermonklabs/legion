@@ -4378,7 +4378,7 @@ func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string
 	return nil
 }
 
-func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) ([]WaitingRow, error) {
+func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64, _ time.Time) ([]WaitingRow, error) {
 	deleted, err := tx.Query(ctx, "delete from outbox where id = any($1) returning "+waitingRowColumns, rows)
 	if err != nil {
 		return nil, fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
@@ -4521,16 +4521,20 @@ const catchUpPacedAhead = `(outbox.kind = 'notice' and outbox.payload ? 'paced_a
 // waits on the row's lock until this transaction commits, and then reads the mark. The other
 // order would lose the event: the first statement would pass over the row as leased, and the
 // second over it as unleased.
+//
+// Both statements also require a non-empty wait_for, which no key builder's key can fail, so that
+// the planner can read them as implying the predicate of the partial index outbox_wait_for under a
+// generic plan or a long key list, as it cannot from `= any($1)` alone.
 func (s *Postgres) ExpediteWaits(ctx context.Context, tx pgx.Tx, keys []string, now time.Time) ([]WaitingRow, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
 	if _, err := tx.Exec(ctx, `update outbox set wait_woken = true
-		where wait_for = any($1) and not wait_woken and lease_until > $2 and not `+catchUpPacedAhead, keys, now); err != nil {
+		where wait_for = any($1) and wait_for <> '' and not wait_woken and lease_until > $2 and not `+catchUpPacedAhead, keys, now); err != nil {
 		return nil, fmt.Errorf("wake the held outbox rows that wait for %v: %w", keys, err)
 	}
 	rows, err := tx.Query(ctx, `with due as (update outbox set next_at = $2, wait_step = 0, wait_woken = false
-			where wait_for = any($1) and next_at > $2 and (lease_until is null or lease_until <= $2)
+			where wait_for = any($1) and wait_for <> '' and next_at > $2 and (lease_until is null or lease_until <= $2)
 				and not `+catchUpPacedAhead+`
 			returning `+waitingRowColumns+`)
 		select * from due order by id`, keys, now)

@@ -1,8 +1,7 @@
 // The timings of Envoy session registration, declared here once and read by every language that
 // holds one of them: the pi-envoy plugin that refreshes a pane's listener registration, the
-// envoy-client transport that makes the call, the Go listener that judges a session live by its
-// last registration, and the daemon that times the copies of a notice that listener could not
-// forward.
+// envoy-client transport that makes the call, and the Go listener that judges a session live by
+// its last registration.
 //
 // The numbers are one arrangement, not six independent settings: three refresh intervals plus one
 // whole listener call (`THIRD_REFRESH_DONE_MS`, below, computed from them) must fall strictly

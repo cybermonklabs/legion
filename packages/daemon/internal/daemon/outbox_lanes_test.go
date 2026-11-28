@@ -850,7 +850,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))
-	backoff := record.RetryBackoff(0)
+	backoff := record.RoleWaitBackoff(0)
 	testwait.Eventually(t, "the newer notice waited and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -909,7 +909,7 @@ func TestALifecycleLaneRunsOneRowAtATimeInIdOrder(t *testing.T) {
 // registered its session, and waits for it (roleWaitGate) without waiting on the lifecycle lane,
 // publishing nothing. Once the start has run and the launch has registered, the notice's next run,
 // at its wait's first step, publishes it to the architect's role topic.
-func TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime(t *testing.T) {
+func TestAnIssuesNoticeRunsWhileItsLifecycleRowBlocksOnTheRuntime(t *testing.T) {
 	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)

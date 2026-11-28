@@ -182,3 +182,54 @@ func TestClaimChangedIsToldAfterEachDecision(t *testing.T) {
 		t.Fatalf("a second section that changed nothing told %d changes, want none: the refusal was told once", len(step))
 	}
 }
+
+// claimChanged names, on its own, each change of the claim a row waiting for that claim waits on
+// (Deps.ClaimChanged): with the state the same on both sides, a launch (Generation), a ready
+// (LastReady), a turn's start alone (LastTurnStart, as busyTurnBegun moves it), a pending delivery
+// queued, retired or replaced, its confirmation given or taken back, the end of a send in flight,
+// and the end of a suspension that holds; and it names none of a send that begins, a hold that
+// begins, or a turn's tool step, which writes nothing of the view.
+func TestClaimChangedNamesEachChangeOnItsOwn(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	confirmed := &Delivery{ID: "outbox:1", ConfirmedAt: at}
+	unconfirmed := &Delivery{ID: "outbox:1"}
+	working := func(change func(*ClaimView)) ClaimView {
+		v := ClaimView{Claim: Claim{State: StateWorking, Generation: 1, LastReady: at.Add(-time.Minute), LastTurnStart: at,
+			Pending: confirmed}}
+		if change != nil {
+			change(&v)
+		}
+		return v
+	}
+	held := func(v *ClaimView) { v.SuspensionHeld, v.SuspensionHeldBy = true, SuspendedByOperator }
+	for _, tc := range []struct {
+		name          string
+		before, after ClaimView
+		want          bool
+	}{
+		{"a launch", working(nil), working(func(v *ClaimView) { v.Generation = 2 }), true},
+		{"a ready", working(nil), working(func(v *ClaimView) { v.LastReady = at.Add(time.Second) }), true},
+		{"a turn's start alone", working(nil), working(func(v *ClaimView) { v.LastTurnStart = at.Add(time.Second) }), true},
+		{"a delivery queued", working(func(v *ClaimView) { v.Pending = nil }), working(nil), true},
+		{"a delivery retired", working(nil), working(func(v *ClaimView) { v.Pending = nil }), true},
+		{"a delivery replaced", working(nil), working(func(v *ClaimView) { v.Pending = &Delivery{ID: "outbox:2"} }), true},
+		{"a delivery confirmed", working(func(v *ClaimView) { v.Pending = unconfirmed }), working(nil), true},
+		{"a confirmation taken back", working(nil), working(func(v *ClaimView) { v.Pending = unconfirmed }), true},
+		{"a send that ends", working(func(v *ClaimView) { v.SendInFlight = true }), working(nil), true},
+		{"a hold that ends", working(held), working(nil), true},
+		{"a send that begins", working(nil), working(func(v *ClaimView) { v.SendInFlight = true }), false},
+		{"a hold that begins", working(nil), working(held), false},
+		{"a turn's tool step", working(nil), working(nil), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.before.State != tc.after.State {
+				t.Fatalf("the row changes the state, %s to %s, want it the same on both sides", tc.before.State, tc.after.State)
+			}
+			if got := claimChanged(tc.before, tc.after); got != tc.want {
+				t.Fatalf("claimChanged = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}

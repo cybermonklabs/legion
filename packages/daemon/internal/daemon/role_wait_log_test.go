@@ -55,12 +55,6 @@ type roleWaitRig struct {
 	runs int
 }
 
-// roleWaitClock is a clock held at the test's start, to the microsecond the store keeps a moment
-// at, which the outbox and the claims' machines share.
-func roleWaitClock() *heldClock {
-	return &heldClock{at: time.Now().UTC().Truncate(time.Microsecond)}
-}
-
 // debugLogTo is a JSON logger to logs that writes Debug lines too.
 func debugLogTo(logs *syncBuffer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -138,7 +132,7 @@ func (r *roleWaitRig) runTo(n int) {
 	for {
 		attempts, _, queued := r.state()
 		if !queued {
-			r.t.Fatalf("row %d left the outbox after %d attempts, want it waiting through %d", r.id, attempts, n)
+			r.t.Fatalf("row %d left the outbox after %d runs, want it waiting through %d", r.id, r.runs, n)
 		}
 		if attempts >= n {
 			return
@@ -152,7 +146,7 @@ func (r *roleWaitRig) endsAtItsNextRun() {
 	r.t.Helper()
 	r.run()
 	if attempts, _, queued := r.state(); queued {
-		r.t.Fatalf("row %d is still queued after %d attempts, want the run that was taken to end it", r.id, attempts)
+		r.t.Fatalf("row %d is still queued after %d attempts, want its next run to end it", r.id, attempts)
 	}
 }
 
@@ -269,7 +263,7 @@ func TestRoleWaitLoggedOnceAtErrorForAReadyRoleThatTakesNothing(t *testing.T) {
 	t.Parallel()
 	t.Run("a role message refused after a turn since its role's ready", func(t *testing.T) {
 		t.Parallel()
-		clock := roleWaitClock()
+		clock := microClock()
 		start := clock.Now()
 		token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 		publisher := &outboxPublisher{err: confirmedAnswer(notify.ReasonDeliveryFailed, "ses-implementer")}
@@ -289,7 +283,7 @@ func TestRoleWaitLoggedOnceAtErrorForAReadyRoleThatTakesNothing(t *testing.T) {
 	})
 	t.Run("a merge forward refused while its role is ready with no turn, past the bound for its name", func(t *testing.T) {
 		t.Parallel()
-		clock := roleWaitClock()
+		clock := microClock()
 		start := clock.Now()
 		token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 		ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
@@ -322,7 +316,7 @@ func TestRoleWaitLoggedOnceAtErrorForAReadyRoleThatTakesNothing(t *testing.T) {
 	} {
 		t.Run(answer.name, func(t *testing.T) {
 			t.Parallel()
-			clock := roleWaitClock()
+			clock := microClock()
 			start := clock.Now()
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
@@ -361,7 +355,7 @@ func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 	t.Parallel()
 	t.Run("a merge forward to a role whose claim is not ready", func(t *testing.T) {
 		t.Parallel()
-		clock := roleWaitClock()
+		clock := microClock()
 		start := clock.Now()
 		token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 		ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
@@ -393,7 +387,7 @@ func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 	})
 	t.Run("a notice refused inside the ready session's 30 seconds to claim its role's name", func(t *testing.T) {
 		t.Parallel()
-		clock := roleWaitClock()
+		clock := microClock()
 		start := clock.Now()
 		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
@@ -437,13 +431,11 @@ func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 	})
 	t.Run("a controller notice under controller: operator whose publish the listener refuses", func(t *testing.T) {
 		t.Parallel()
-		clock := roleWaitClock()
+		clock := microClock()
 		start := clock.Now()
-		denied := fmt.Errorf("publish notice: listener returned 403 Forbidden: {\"error\":\"envoy: the message bus denied the publish\"}: %w",
-			notify.ErrPublishDenied{Message: "envoy: the message bus denied the publish under this listener's own permissions"})
 		// The registered controller session holds the role live at every read before the publish
 		// (controllerHolds), so each run reaches the publish the listener refuses.
-		publisher := &outboxPublisher{err: denied}
+		publisher := &outboxPublisher{err: refusalError("denied")}
 		runner, _, pool := runnerIn(t, phase.Implementing, "in_progress", publisher, quietLogger())
 		registerProjectControllerAs(t, pool.Config().ConnString(), "LEGION", "ses_controller")
 		publisher.holds(legionController, "ses_controller")
@@ -465,7 +457,7 @@ func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 // taken, and then its one end line.
 func TestRoleWaitLoggedOnceAcrossARestart(t *testing.T) {
 	t.Parallel()
-	clock := roleWaitClock()
+	clock := microClock()
 	start := clock.Now()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -515,9 +507,9 @@ func TestRoleWaitLoggedOnceAcrossARestart(t *testing.T) {
 // so that transaction writes the wait's end line once it commits: a newer catch-up's drop of the
 // issue's catch-ups (DropCatchUps), the clear of a changes request's generation (DropQueuedChanges),
 // and the cancel of a release that deletes a wake's start (store.CancelIssueRelease). The two
-// notices wait through twenty runs refused by the listener before the delete. No executor of a
-// start returns an event wait until the daemon's own events are waited for
-// (dispatch://INFRA-4131/spec#b-r-wait-event), so the wake's start is given its wait in the store.
+// notices wait through twenty runs refused by the listener before the delete. The wake's start is
+// given its wait in the store, 24 attempts over 45 minutes, so the cancel meets a start that has
+// waited long without the test running it that far.
 func TestRoleWaitLoggedEndOfARowAnotherTransactionDeletes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -539,14 +531,14 @@ func TestRoleWaitLoggedEndOfARowAnotherTransactionDeletes(t *testing.T) {
 					Reason: "name the rollback path", Actor: "user:alice", Ref: "dispatch://LEGION-1/spec",
 					Review: record.EventMark{Seq: 8, At: at}, Artifact: "artifact-1"}, at))
 			},
-			drop: func(ctx context.Context, tx pgx.Tx, records projectRecords, id int64, _ time.Time) error {
-				_, err := records.DropQueuedChanges(ctx, tx, []int64{id})
+			drop: func(ctx context.Context, tx pgx.Tx, records projectRecords, id int64, now time.Time) error {
+				_, err := records.DropQueuedChanges(ctx, tx, []int64{id}, now)
 				return err
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			clock := roleWaitClock()
+			clock := microClock()
 			start := clock.Now()
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()

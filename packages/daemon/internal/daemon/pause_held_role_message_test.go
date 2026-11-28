@@ -15,6 +15,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// newHeldRoleMessageRig is newPauseDaemonRig with the outbox reading the same test clock that
+// stamps each claim's LastReady (overrides.outboxNow) and a short outbox sweep, so the held
+// role-message tests move through the 30-second first-turn bound (roleNameBound) on that one clock
+// (passTheNameBound) rather than waiting out 30+ seconds of wall time.
+func newHeldRoleMessageRig(t *testing.T) *pauseDaemonRig {
+	t.Helper()
+	r := newPauseDaemonRig(t, nil)
+	// Keep the shared test clock ahead of Postgres's wall-clock now() so rows inserted with
+	// SQL now() (such as pause_stop) are due immediately on the test clock while LastReady
+	// and outbox.now read the one clock.
+	r.clock.advance(time.Minute)
+	r.o.outboxNow = r.clock.Now
+	r.o.outboxSweep = 100 * time.Millisecond
+	return r
+}
+
 // R4 of dispatch://INFRA-3759: a resume launches each session the pause held something for,
 // once, and what was held for it is delivered to it then. A role message of the daemon's own that
 // the pause held for a role the pause stopped is such held work: the role was live when the pause
@@ -35,22 +51,6 @@ import (
 // The negative control is roleMessage without its wait on notify.ErrNoHolder for such a row: the
 // row ends undelivered at its first attempt, and the test fails where it reads the row after that
 // attempt.
-// newHeldRoleMessageRig is newPauseDaemonRig with the outbox reading the same test clock that
-// stamps each claim's LastReady (overrides.outboxNow) and a short outbox sweep, so the held
-// role-message tests move through P8's 30-second first-turn bound (roleNameBound) on that one clock
-// (passTheNameBound) rather than waiting out 30+ seconds of wall time.
-func newHeldRoleMessageRig(t *testing.T) *pauseDaemonRig {
-	t.Helper()
-	r := newPauseDaemonRig(t, nil)
-	// Keep the shared test clock ahead of Postgres's wall-clock now() so rows inserted with
-	// SQL now() (such as pause_stop) are due immediately on the test clock while LastReady
-	// and outbox.now read the one clock.
-	r.clock.advance(time.Minute)
-	r.o.outboxNow = r.clock.Now
-	r.o.outboxSweep = 100 * time.Millisecond
-	return r
-}
-
 func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(t *testing.T) {
 	t.Parallel()
 	r := newHeldRoleMessageRig(t)

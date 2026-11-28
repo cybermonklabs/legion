@@ -303,11 +303,11 @@ func TestANoticeGoesToTheOwningArchitectsRoleTopicAlone(t *testing.T) {
 // The outbox routes a notice without waiting on its architect's launch: the runner executes one
 // row at a time, and a machine holds its lock through the runtime call its decision makes, so a
 // read of the architect's claim that waited would hold every row behind it for as long as a
-// Sandbox relaunch waits on the cluster (LEGION-650). The architect is launching, so the notice
-// goes to its role topic, as it would once the launch returned. The publish goes through the
-// outbox's hold gate (outbox.publish, supervise.Machine.HoldsItsSession), which must not wait on
-// the launch either (review round 13 of #4220); its control, the gate reading the hold under the
-// machine's lock, fails here with "the notice waited on its architect's launch in the runtime".
+// Sandbox relaunch waits on the cluster (LEGION-650). The architect is launching, its launch not
+// registered, so the notice's run reads the claim's published view (roleWaitGate), which waits on
+// no decision, and comes back at once as a wait for that launch, publishing nothing; a run that
+// read the claim under the machine's lock fails here with "the notice waited on its architect's
+// launch in the runtime".
 func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)

@@ -37,10 +37,6 @@ import (
 // SerializeFacts): an admission reconcile's and a fact's.
 const faultMatch = "legion.apply_fact"
 
-// noticesReleasedMessage is what a ready's release of the outbox rows waiting for its claims logs
-// once its transaction has committed (outbox.releaseReady).
-const noticesReleasedMessage = "outbox rows released: their role is ready"
-
 // faultedPools is one cloned database reached two ways: direct, which seeds and observes, and
 // faulted, through a proxy whose armed fault holds or cuts one transaction's commit. Both are
 // the daemon's guarded pool (store.Pool), closed before the proxy and the clone at the test's end.
@@ -299,7 +295,7 @@ func TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes(t *testi
 	if woken := rig.wakes.sorted(); !slices.Equal(woken, releasedLanes) {
 		t.Errorf("lanes woken after the release = %v, want %v: its commit landed", woken, releasedLanes)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 1 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 1 {
 		t.Errorf("release lines after the release = %q, want one: its commit landed", lines)
 	}
 
@@ -309,7 +305,7 @@ func TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes(t *testi
 	if woken := rig.wakes.sorted(); !slices.Equal(woken, releasedLanes) {
 		t.Errorf("lanes woken after the retry = %v, want still %v: the retry released nothing", woken, releasedLanes)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 1 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 1 {
 		t.Errorf("release lines after the retry = %q, want still the one", lines)
 	}
 }
@@ -331,7 +327,7 @@ func TestANoticeReleaseCutBeforeItsCommitWakesNothingUntilItsRetry(t *testing.T)
 	if woken := rig.wakes.sorted(); len(woken) != 0 {
 		t.Errorf("lanes woken after the cut release = %v, want none: nothing committed", woken)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 0 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 0 {
 		t.Errorf("release lines after the cut release = %q, want none", lines)
 	}
 
@@ -344,7 +340,7 @@ func TestANoticeReleaseCutBeforeItsCommitWakesNothingUntilItsRetry(t *testing.T)
 	if woken := rig.wakes.sorted(); !slices.Equal(woken, releasedLanes) {
 		t.Errorf("lanes woken after the retry = %v, want %v", woken, releasedLanes)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 1 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 1 {
 		t.Errorf("release lines after the retry = %q, want one", lines)
 	}
 }

@@ -234,13 +234,18 @@ type heldMessage struct {
 // the attempt: undelivered, the row is read again at its retry; delivered, it is published again
 // and ends again, so a launch may be told twice and none is told nothing.
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
-	held := r.supervisedClaim(m.token)
-	if supervise.FailedOrRetired(held.State) {
+	// claimEnded ends the row undelivered for a claim that failed or retired, in state, read here
+	// or by the gate just before the publish, and logs m.claimEnded once that end is made.
+	claimEnded := func(state supervise.ClaimState) error {
 		if err := r.endUndelivered(ctx, row, m.end); err != nil {
 			return err
 		}
-		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
+		r.log.Info(m.claimEnded, append(m.attributes, "state", state)...)
 		return nil
+	}
+	held := r.supervisedClaim(m.token)
+	if supervise.FailedOrRetired(held.State) {
+		return claimEnded(held.State)
 	}
 	if held.Released() {
 		if m.role == claim.RoleMerger {
@@ -271,11 +276,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	topic := notify.RoleTopicPrefix + string(m.token)
 	gate := r.roleWaitGate(row, topic)
 	if gate.ended != "" {
-		if err := r.endUndelivered(ctx, row, m.end); err != nil {
-			return err
-		}
-		r.log.Info(m.claimEnded, append(m.attributes, "state", gate.view.State)...)
-		return nil
+		return claimEnded(gate.view.State)
 	}
 	if gate.wait != nil {
 		return gate.wait

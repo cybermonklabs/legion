@@ -152,22 +152,7 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	testwait.Eventually(t, "the hello to reach the architect's machine", func() bool {
 		return d.claim(architect).State == string(supervise.StateShimConnected)
 	})
-	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: "ses-architect", OmpSessionFile: "/sessions/architect.jsonl",
-		AgentID: "ses-architect", PluginContract: api.DaemonAPIVersion(),
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register the architect = %d %s, want 200", status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the architect's registration %s: %v", body, err)
-	}
-	if status, body := d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: architect, SessionID: "ses-architect", Secret: registered.Secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready the architect = %d %s, want 204", status, body)
-	}
+	readyClaim(t, d, rt, architect)
 
 	// The planner's one launch the limit allows fails, and the operator is answered with it; the
 	// claim is failed, and the workflow holds the issue. The next launch, the other tree's

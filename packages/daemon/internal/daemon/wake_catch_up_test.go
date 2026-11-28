@@ -377,9 +377,9 @@ func TestALaterNoticeIsPublishedAfterThePacedCatchUpAndNeverBeforeIt(t *testing.
 }
 
 // The row the fence holds behind a paced catch-up runs once, at the catch-up's own moment, rather
-// than climbing the outbox's backoff to it: a 49-minute hold on the backoff is some twenty-five
-// attempts, and every attempt from the seventh is a warning (waitWarnAttempts), so each architect
-// of a wave would leave a column of warnings that say only that the pacing is working.
+// than climbing the capped backoff of a wait to it (record.RoleWaitBackoff): a 40-minute hold on
+// that backoff is some sixteen runs, each a line of its wait (logWait) and the one at 30 minutes a
+// warning, so each architect of a wave would leave lines that say only that the pacing is working.
 func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -410,7 +410,7 @@ func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
 	}
 	if !fenced.nextAt.Equal(due) {
 		t.Fatalf("the fenced row is due at %s, want the catch-up's own moment %s rather than its backoff at %s",
-			fenced.nextAt, due, now.Add(record.RetryBackoff(0)))
+			fenced.nextAt, due, now.Add(record.RoleWaitBackoff(0)))
 	}
 
 	// Nothing more runs until that moment: the row waited once, not on a climbing backoff.
@@ -744,9 +744,9 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 
 	reserved := now.Add(3 * testWakeInterval)
 	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, reserved)
-	// Two attempts fail, so the row waits three seconds past its moment on a backoff of its own
-	// (record.RetryBackoff of no attempt, then of one) rather than one second, and a ready
-	// between the two moments is a ready the row is waiting through.
+	// Two attempts fail, so the row waits three seconds past its moment on the capped backoff of a
+	// wait (record.RoleWaitBackoff of its first step, then of its second) rather than one second,
+	// and a ready between the two moments is a ready the row is waiting through.
 	for _, at := range []time.Time{reserved, reserved.Add(time.Second)} {
 		now = at
 		if err := runner.RunOnce(ctx); err != nil {

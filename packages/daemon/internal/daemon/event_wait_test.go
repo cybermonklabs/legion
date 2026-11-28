@@ -120,8 +120,9 @@ func (d *eventWaitRow) waitsOn(key string, n int) {
 	}
 }
 
-// waitsOnToTheCap runs the row until its waits have reached the cap and two more runs have waited
-// the cap each, every one on waitsOn's terms.
+// waitsOnToTheCap runs the row, every run on waitsOn's terms, until two of its runs have each left
+// it waiting the cap (record.RoleWaitBackoffMost), the most a wait waits, so at most 12 runs an
+// hour.
 func (d *eventWaitRow) waitsOnToTheCap(key string) {
 	d.t.Helper()
 	for capped := 0; capped < 2; {
@@ -130,9 +131,6 @@ func (d *eventWaitRow) waitsOnToTheCap(key string) {
 		if record.RoleWaitBackoff(step) == record.RoleWaitBackoffMost {
 			capped++
 		}
-	}
-	if gaps := len(d.runs); gaps < 3 || d.runs[gaps-1].Sub(d.runs[gaps-2]) != record.RoleWaitBackoffMost {
-		d.t.Fatalf("the row's last runs came at %v, want the last two a cap's wait apart", d.runs)
 	}
 }
 
@@ -162,7 +160,11 @@ func (d *eventWaitRow) release() {
 // drain after it, at the same moment, ran the row (dispatch://INFRA-4131/spec#b-r-wait-event). An
 // event that a claim's machine tells reaches the outbox through the hook's release, which runs
 // here once event returns. An event written on the wall clock, as the workflow's and admission's
-// are, leaves the row due at that moment, so the clock is moved to it where it is ahead.
+// are, makes due only a row whose moment is after the wall clock (ExpediteWaits moves no row that
+// is due already), so a rig whose event is one keeps its clock, and with it the row's moment,
+// ahead of the wall clock (E12, reservedTreeRig.start), and such an event leaves the row due at
+// the wall clock's moment, behind the rig's clock. A rig's clock still behind the wall clock is
+// moved to it.
 func (d *eventWaitRow) dueAtItsEvent(event func()) {
 	d.t.Helper()
 	d.forget()
@@ -186,8 +188,10 @@ func (d *eventWaitRow) dueAtItsEvent(event func()) {
 
 // keepsTheOutboxBackoff runs the row n times and fails the test unless each run left it on the
 // outbox's own backoff (record.RetryBackoff, by its attempts), waiting for nothing an event of the
-// daemon's makes due: a wait whose end the daemon does not record.
-func (d *eventWaitRow) keepsTheOutboxBackoff(n int) {
+// daemon's makes due: a wait whose end the daemon does not record. A plain failure of the row would
+// store the same backoff, so it also fails the test unless logs, the runner's JSON log, holds no
+// `outbox row failed` line: each run was a wait.
+func (d *eventWaitRow) keepsTheOutboxBackoff(n int, logs *syncBuffer) {
 	d.t.Helper()
 	for range n {
 		attempts := d.state().attempts
@@ -200,6 +204,9 @@ func (d *eventWaitRow) keepsTheOutboxBackoff(n int) {
 			d.t.Fatalf("after its run at %d attempts row %d waits for %q at step %d, due %s after the run; want the outbox's backoff, %s, waiting for nothing",
 				attempts, d.id, after.key, after.step, after.due.Sub(at), record.RetryBackoff(attempts))
 		}
+	}
+	if failed := loggedMessages(d.t, logs.String(), "outbox row failed"); len(failed) != 0 {
+		d.t.Fatalf("row %d logged %d of its runs as failed (%v), want every run a wait", d.id, len(failed), failed)
 	}
 }
 
@@ -222,7 +229,7 @@ type eventWaitHarness struct {
 
 func newEventWaitHarness(t *testing.T, roots ...string) *eventWaitHarness {
 	t.Helper()
-	clock := roleWaitClock()
+	clock := microClock()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	trees := outboxTreeStore(t, pool, roots...)
@@ -331,6 +338,7 @@ func TestEventWaitListed(t *testing.T) {
 		{"E17 a start waits for the operator's hold to lift", eventWaitRuleHold},
 		{"E18 an update ask waits for its claim's machine lock", eventWaitMachineBusy},
 		{"E19 a notice waits behind an earlier notice to its architect", eventWaitEarlierNotice},
+		{"E19b three notices behind a held one drain in three runs once it ends", eventWaitEarlierNotices},
 		{"E20 a suspend waits for the turn its suspension is held for", eventWaitSuspendHeld},
 		{"O1 a write waits for a Dispatch that serves its route", eventWaitNoRoute},
 		{"O2 a claim release waits for Dispatch to apply it", eventWaitClaimRelease},
@@ -355,7 +363,7 @@ func eventWaitStopElsewhere(t *testing.T) {
 	implementer, machine := h.working("LEGION-208", "LEGION-209", claim.RoleImplementer)
 	start := h.queue("LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleArchitect, Generation: 2}, h.clock.Now())
 
-	start.waitsOn(record.WaitForClaim(implementer), 3)
+	start.waitsOnToTheCap(record.WaitForClaim(implementer))
 	start.dueAtItsEvent(func() { endTurn(h.ctx, t, machine, implementer) })
 }
 
@@ -369,7 +377,7 @@ func eventWaitStopInLeftTree(t *testing.T) {
 	stop := h.queue("LEGION-209", record.SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
 		Reason: "the tree of LEGION-208 lingers"}, h.clock.Now())
 
-	stop.waitsOn(record.WaitForClaim(implementer), 3)
+	stop.waitsOnToTheCap(record.WaitForClaim(implementer))
 	stop.dueAtItsEvent(func() { endTurn(h.ctx, t, machine, implementer) })
 }
 
@@ -392,7 +400,7 @@ func eventWaitStopWithoutMachine(t *testing.T) {
 	stop := h.queue("LEGION-208", record.SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1,
 		Reason: "the tester's step was stopped"}, h.clock.Now())
 
-	stop.waitsOn(record.WaitForClaim(tester), 3)
+	stop.waitsOnToTheCap(record.WaitForClaim(tester))
 	stop.dueAtItsEvent(func() {
 		if _, err := h.sup.restore(h.ctx, []supervise.Claim{stored}); err != nil {
 			t.Fatalf("supervise the stored tester: %v", err)
@@ -408,7 +416,7 @@ func eventWaitWorkspaceRemoval(t *testing.T) {
 	architect, machine := h.suspended("LEGION-208", claim.RoleArchitect, supervise.SuspendedByDaemon)
 	removal := h.queue("LEGION-208", record.WorkspaceRemove{Tree: "LEGION-208", Linger: 1}, h.clock.Now())
 
-	removal.waitsOn(record.WaitForClaim(architect), 3)
+	removal.waitsOnToTheCap(record.WaitForClaim(architect))
 	removal.dueAtItsEvent(func() {
 		if err := machine.Handle(h.ctx, supervise.RequestTreeClose{Claim: architect}); err != nil {
 			t.Fatalf("close the tree of %s: %v", architect, err)
@@ -426,7 +434,7 @@ func eventWaitTreeCleanup(t *testing.T) {
 	closing := h.queue("LEGION-208", record.SuperviseRequest{Op: "tree_close", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1, Linger: 1},
 		h.clock.Now())
 
-	closing.waitsOn(record.WaitForTreeClaims("LEGION-208"), 3)
+	closing.waitsOnToTheCap(record.WaitForTreeClaims("LEGION-208"))
 	closing.dueAtItsEvent(func() {
 		if err := machine.Handle(h.ctx, supervise.RequestTreeClose{Claim: implementer}); err != nil {
 			t.Fatalf("close the tree of %s: %v", implementer, err)
@@ -451,7 +459,7 @@ func eventWaitRoleStops(t *testing.T) {
 		Reason: "the tree of LEGION-208 lingers"}, stopAt)
 	closing := h.queue("LEGION-208", record.IssueSuspend{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1}, h.clock.Now())
 
-	closing.waitsOn(record.WaitForRoleStops("LEGION-208"), 3)
+	closing.waitsOnToTheCap(record.WaitForRoleStops("LEGION-208"))
 	closing.dueAtItsEvent(func() {
 		h.clock.advance(stopAt.Sub(h.clock.Now()))
 		closing.drain()
@@ -468,7 +476,7 @@ func eventWaitStoredClaim(t *testing.T) {
 	machine := h.machine(tester)
 	closing := h.queue("LEGION-208", record.IssueSuspend{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1}, h.clock.Now())
 
-	closing.waitsOn(record.WaitForClaim(tester), 3)
+	closing.waitsOnToTheCap(record.WaitForClaim(tester))
 	closing.dueAtItsEvent(func() {
 		if err := machine.Handle(h.ctx, supervise.RequestSuspend{Claim: tester, By: supervise.SuspendedByDaemon, Reason: "the tree lingers"}); err != nil {
 			t.Fatalf("suspend %s: %v", tester, err)
@@ -504,7 +512,7 @@ func eventWaitWorkspaceCheck(t *testing.T) {
 		t.Fatalf("the teardown after its first run waits for %q at step %d, want %q at step 1", got.key, got.step, record.WaitForWorkspaceCheck(rig.issue.Key))
 	}
 
-	row.waitsOn(record.WaitForWorkspaceCheck(rig.issue.Key), 3)
+	row.waitsOnToTheCap(record.WaitForWorkspaceCheck(rig.issue.Key))
 	row.dueAtItsEvent(func() {
 		clock.advance(checkAt.Sub(clock.Now()))
 		row.drain()
@@ -522,11 +530,11 @@ func eventWaitTreeRuns(t *testing.T) {
 		and payload->>'role' = 'architect'`, doorChild).Scan(&id); err != nil {
 		t.Fatalf("read the waiting start of the child's architect: %v", err)
 	}
-	clock := &heldClock{at: time.Now().UTC().Truncate(time.Microsecond)}
+	clock := microClock()
 	rig.runner.now = clock.Now
 	start := &eventWaitRow{t: t, runner: rig.runner, pool: rig.pool, clock: clock, id: id}
 
-	start.waitsOn(record.WaitForTreeRuns(doorRoot), 3)
+	start.waitsOnToTheCap(record.WaitForTreeRuns(doorRoot))
 	start.dueAtItsEvent(func() { reopenTheRoot(rig) })
 }
 
@@ -534,7 +542,7 @@ func eventWaitTreeRuns(t *testing.T) {
 // branch row is still queued (startRoot), for that row; its finish makes the start due.
 func eventWaitBranch(t *testing.T) {
 	rig := newChildArchitectRig(t)
-	clock := &heldClock{at: time.Now().UTC().Truncate(time.Microsecond)}
+	clock := microClock()
 	rig.runner.now = clock.Now
 	rig.put(rig.member(doorChild, doorRoot, phase.Planning, "in_progress", "V"))
 	id := queueRow(t, rig.pool, rig.records, mustOutboxRow(t, doorChild, record.SuperviseRequest{Op: "start", Tree: doorRoot,
@@ -543,7 +551,7 @@ func eventWaitBranch(t *testing.T) {
 	queueRow(t, rig.pool, rig.records, mustOutboxRow(t, doorChild, record.IssueBranch{Generation: 1}, branchAt))
 	start := &eventWaitRow{t: t, runner: rig.runner, pool: rig.pool, clock: clock, id: id}
 
-	start.waitsOn(record.WaitForBranch(doorChild), 3)
+	start.waitsOnToTheCap(record.WaitForBranch(doorChild))
 	start.dueAtItsEvent(func() {
 		clock.advance(branchAt.Sub(clock.Now()))
 		start.drain()
@@ -600,8 +608,14 @@ func newReservedTreeRig(t *testing.T) *reservedTreeRig {
 	return r
 }
 
-// start queues the start of the re-admitted root's architect, at generation 2.
+// start queues the start of the re-admitted root's architect, at generation 2, on the rig's clock
+// moved a minute ahead of the wall clock first: the promotion that makes the start due runs on
+// the wall clock, and moves only a row due after it (dueAtItsEvent), so the start's every moment
+// stays after the wall clock however long the rig took to set up.
 func (r *reservedTreeRig) start() *eventWaitRow {
+	if ahead := time.Now().UTC().Add(time.Minute); ahead.After(r.h.clock.Now()) {
+		r.h.clock.advance(ahead.Sub(r.h.clock.Now()).Truncate(time.Microsecond))
+	}
 	return r.h.queue(r.root.Key, record.SuperviseRequest{Op: "start", Tree: r.root.Key, Role: claim.RoleArchitect, Generation: 2}, r.h.clock.Now())
 }
 
@@ -622,7 +636,7 @@ func eventWaitEpoch(t *testing.T) {
 	r := newReservedTreeRig(t)
 	start := r.start()
 
-	start.waitsOn(record.WaitForEpoch(r.root.Key), 3)
+	start.waitsOnToTheCap(record.WaitForEpoch(r.root.Key))
 	start.dueAtItsEvent(func() {
 		r.confirm()
 		r.promote()
@@ -640,31 +654,9 @@ func eventWaitEpochAfterTheCleanup(t *testing.T) {
 	r.confirm()
 	start := r.start()
 
-	start.waitsOn(record.WaitForEpoch(r.root.Key), 3)
+	start.waitsOnToTheCap(record.WaitForEpoch(r.root.Key))
 	start.dueAtItsEvent(r.promote)
 	r.opened(t)
-}
-
-// heldSendConn is a claim's connection whose prompts are held on their way to the agent while the
-// test holds them: a task whose send is in flight (supervise.ClaimView.SendInFlight).
-type heldSendConn struct {
-	*fake.Conn
-	arrived chan struct{}
-	release chan struct{}
-}
-
-func newHeldSendConn() *heldSendConn {
-	return &heldSendConn{Conn: fake.NewConn(), arrived: make(chan struct{}, 8), release: make(chan struct{})}
-}
-
-func (c *heldSendConn) Prompt(ctx context.Context, deliveryID, message string) error {
-	c.arrived <- struct{}{}
-	select {
-	case <-c.release:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	return c.Conn.Prompt(ctx, deliveryID, message)
 }
 
 // E16: a retirement of a stopped phase's task waits while that task's prompt is on its way to the
@@ -679,7 +671,7 @@ func eventWaitTaskSending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create %s: %v", implementer, err)
 	}
-	conn := newHeldSendConn()
+	conn := newGatedPrompt()
 	h.sup.deps.Conns.(*fake.Conns).Register(implementer, conn)
 	if err := machine.Handle(h.ctx, supervise.RequestSpawn{Claim: implementer}); err != nil {
 		t.Fatalf("spawn %s: %v", implementer, err)
@@ -689,15 +681,11 @@ func eventWaitTaskSending(t *testing.T) {
 		Phase: phase.Implementing, Generation: 1, Entry: 1}); err != nil {
 		t.Fatalf("deliver the implementing task: %v", err)
 	}
-	select {
-	case <-conn.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the implementing task's prompt never left")
-	}
+	testwait.Receive(t, "the implementing task's prompt to leave", conn.entered)
 	retire := h.queue("LEGION-208", record.SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer,
 		Generation: 1, Phase: phase.Implementing, Entry: 1}, h.clock.Now())
 
-	retire.waitsOn(record.WaitForClaim(implementer), 3)
+	retire.waitsOnToTheCap(record.WaitForClaim(implementer))
 	retire.dueAtItsEvent(func() {
 		close(conn.release)
 		testwait.Eventually(t, "the send's end to reach the claim's hook", func() bool { return !machine.View().SendInFlight && h.w.changed.waiting() > 0 })
@@ -716,7 +704,7 @@ func eventWaitRuleHold(t *testing.T) {
 	start := h.queue("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
 		Phase: phase.Implementing, Task: "Implement the plan."}, h.clock.Now())
 
-	start.waitsOn(record.WaitForClaim(implementer), 3)
+	start.waitsOnToTheCap(record.WaitForClaim(implementer))
 	start.dueAtItsEvent(func() {
 		if err := machine.Handle(h.ctx, supervise.RequestResume{Claim: implementer, By: supervise.SuspendedByOperator}); err != nil {
 			t.Fatalf("the operator's resume of %s: %v", implementer, err)
@@ -725,49 +713,71 @@ func eventWaitRuleHold(t *testing.T) {
 }
 
 // E18: an update ask that finds its claim's machine lock held by a decision waits for that
-// claim's change (supervise.ErrMachineBusy): the end of the decision tells the hook of the refusal.
+// claim's change (supervise.ErrMachineBusy): the end of the decision tells the hook of the refusal
+// (supervise.Deps.ClaimChanged) even where the decision changed nothing of the claim. The decision
+// here is a turn's tool step whose write the store holds (heldStepStore), which changes nothing of
+// the view, so what its end tells the hook is the refusal alone: the two views it hands match.
 func eventWaitMachineBusy(t *testing.T) {
 	h := newEventWaitHarness(t, "LEGION-208")
 	h.issue("LEGION-208", phase.Implementing, "in_progress", nil)
-	stalling := newStallingRuntime(t, h.rt, false)
-	h.sup.deps.Runtime = stalling
+	held := newHeldStepStore(h.sup.deps.Store)
+	h.sup.deps.Store = held
+	t.Cleanup(held.open)
+	var mu sync.Mutex
+	var told [][2]supervise.ClaimView
+	h.sup.deps.ClaimChanged = func(before, after supervise.ClaimView) {
+		mu.Lock()
+		told = append(told, [2]supervise.ClaimView{before, after})
+		mu.Unlock()
+		h.w.claimChanged(before, after)
+	}
 	implementer := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
-	machine, _, err := h.sup.Create(h.ctx, supervise.Claim{Token: implementer, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
-		Role: claim.RoleImplementer, State: supervise.StateQueued, UpdateRound: "pod:uid-1"}, "")
-	if err != nil {
-		t.Fatalf("create %s: %v", implementer, err)
-	}
-	stalling.stalling.Store(true)
-	launch, cancel := context.WithCancel(h.ctx)
-	defer cancel()
-	spawned := make(chan error, 1)
-	go func() { spawned <- machine.Handle(launch, supervise.RequestSpawn{Claim: implementer}) }()
-	select {
-	case <-stalling.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the implementer's launch never reached the runtime")
-	}
+	ready := h.clock.Now().Add(-time.Minute)
+	machine := roleWaitClaim(t, h.sup, supervise.Claim{Token: implementer, Tree: "LEGION-208", Issue: "LEGION-208",
+		Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1, State: supervise.StateWorking, Session: "ses-implementer",
+		SessionFile: t.TempDir() + "/session.jsonl", LastReady: ready, LastTurnStart: ready.Add(30 * time.Second), UpdateRound: "pod:uid-1"})
+	stepped := make(chan error, 1)
+	go func() {
+		stepped <- machine.Handle(h.ctx, supervise.StreamToolStep{Claim: implementer, Tool: "bash", CallID: "toolu_1"})
+	}()
+	testwait.Receive(t, "the tool step's write to reach the store", held.entered)
+	mu.Lock()
+	since := len(told)
+	mu.Unlock()
 	ask := h.queue("LEGION-208", record.UpdateAsk{Role: claim.RoleImplementer, Round: "pod:uid-1", Pod: "pod-1", Text: "Finish your turn for the pod update."},
 		h.clock.Now())
 
-	ask.waitsOn(record.WaitForClaim(implementer), 3)
+	ask.waitsOnToTheCap(record.WaitForClaim(implementer))
 	ask.dueAtItsEvent(func() {
-		stalling.stalling.Store(false)
-		cancel()
-		<-spawned
-		machine.Wait()
-		testwait.Eventually(t, "the end of the decision to tell the hook of the refused lock", func() bool { return h.w.changed.waiting() > 0 })
+		held.open()
+		if err := testwait.Receive(t, "the tool step's decision to end", stepped); err != nil {
+			t.Fatalf("the tool step of %s: %v", implementer, err)
+		}
+		change := testwait.Until(t, "the end of the tool step to tell the hook of the refused lock", func() ([2]supervise.ClaimView, bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			if len(told) == since {
+				return [2]supervise.ClaimView{}, false
+			}
+			return told[since], true
+		})
+		if before, after := change[0], change[1]; before.State != after.State || before.Generation != after.Generation ||
+			!before.LastReady.Equal(after.LastReady) || !before.LastTurnStart.Equal(after.LastTurnStart) {
+			t.Fatalf("the end of the tool step told the hook of %s at launch %d becoming %s at launch %d, want views that match: the refusal alone told",
+				before.State, before.Generation, after.State, after.Generation)
+		}
 	})
 }
 
-// E19: a notice to an architect waits behind an earlier notice to the same architect that another
-// lane holds (errNoticeWaits), for that row's end; its finish makes the notice due.
-func eventWaitEarlierNotice(t *testing.T) {
+// heldEarlierNotice is a ready architect of LEGION-208 and a notice to it that another lane holds,
+// as a lane that claimed it and is publishing it does: the harness, the notice's driver, and the
+// row as that lane holds it, whose settle ends it.
+func heldEarlierNotice(t *testing.T) (*eventWaitHarness, *eventWaitRow, record.OutboxRow) {
+	t.Helper()
 	h := newEventWaitHarness(t, "LEGION-208")
 	h.issue("LEGION-208", phase.Implementing, "in_progress", nil)
 	readyOutboxClaim(t, h.sup, "LEGION-208", claim.RoleArchitect)
 	earlier := h.queue("LEGION-208", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, h.clock.Now())
-	// Another lane holds the earlier notice, as a lane that claimed it and is publishing it does.
 	var held record.OutboxRow
 	if err := store.Transact(h.ctx, h.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var claimed bool
@@ -779,10 +789,67 @@ func eventWaitEarlierNotice(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("claim the earlier notice: %v", err)
 	}
+	return h, earlier, held
+}
+
+// E19: a notice to an architect waits behind an earlier notice to the same architect that another
+// lane holds (errNoticeWaits), for that row's end; its finish makes the notice due.
+func eventWaitEarlierNotice(t *testing.T) {
+	h, earlier, held := heldEarlierNotice(t)
 	later := h.queue("LEGION-208", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, h.clock.Now())
 
-	later.waitsOn(record.WaitForRow(earlier.id), 3)
+	later.waitsOnToTheCap(record.WaitForRow(earlier.id))
 	later.dueAtItsEvent(func() { h.runner.settle(h.ctx, held, nil) })
+}
+
+// E19b: notices queued to one architect behind one another lane holds each wait for the end of the
+// newest notice ahead of it (earlierNoticeFor's latest), not of the oldest: once the held one ends,
+// the end of each makes due the one right behind it and no other, so the three drain in three runs,
+// one each and in order, each publishing its notice, rather than every waiting notice running
+// again at each end.
+func eventWaitEarlierNotices(t *testing.T) {
+	h, first, held := heldEarlierNotice(t)
+	var behind []*eventWaitRow
+	for _, reason := range []string{"max_fix_attempts", "checks_failing", "merge_conflict"} {
+		behind = append(behind, h.queue("LEGION-208", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: reason}, h.clock.Now()))
+	}
+	// The three are due at the same moments, so each drain that runs the first runs them all.
+	behind[0].waitsOnToTheCap(record.WaitForRow(first.id))
+	waited := behind[0].state()
+	for i, row := range behind[1:] {
+		if got := row.state(); got.key != record.WaitForRow(behind[i].id) || got.step != waited.step || got.attempts != waited.attempts {
+			t.Fatalf("notice row %d waits for %q at step %d after %d attempts, want the end of the notice right ahead of it, %q, at step %d after %d",
+				row.id, got.key, got.step, got.attempts, record.WaitForRow(behind[i].id), waited.step, waited.attempts)
+		}
+	}
+
+	publisher := h.runner.notices.(*outboxPublisher)
+	for i, row := range behind {
+		if i == 0 {
+			row.dueAtItsEvent(func() { h.runner.settle(h.ctx, held, nil) })
+		} else {
+			if got := row.state(); !got.queued || got.due.After(h.clock.Now()) || got.step != 0 || got.attempts != waited.attempts {
+				t.Fatalf("after the end of the notice ahead of it, notice row %d is due %s from now at step %d after %d attempts, want due at once at step 0 after its %d waiting runs",
+					row.id, got.due.Sub(h.clock.Now()), got.step, got.attempts, waited.attempts)
+			}
+			row.drain()
+		}
+		if got := row.state(); got.queued {
+			t.Fatalf("notice row %d still waits for %q after its run, want it published and ended", row.id, got.key)
+		}
+		if keys := publisher.keys(); len(keys) != i+1 || keys[i] != record.OutboxKey(row.id) {
+			t.Fatalf("after the run of notice row %d the listener was handed %v, want the three published one at a run, in order", row.id, keys)
+		}
+		for j, later := range behind[i+1:] {
+			got := later.state()
+			if got.attempts != waited.attempts {
+				t.Fatalf("notice row %d ran again at the end of row %d, want it run only at the end of the notice right ahead of it", later.id, row.id)
+			}
+			if j > 0 && !got.due.After(h.clock.Now()) {
+				t.Fatalf("the end of notice row %d made row %d due too, want only the notice right behind it due", row.id, later.id)
+			}
+		}
+	}
 }
 
 // E20: a suspend of a claim in a turn waits while the suspension is held for that turn
@@ -794,7 +861,7 @@ func eventWaitSuspendHeld(t *testing.T) {
 	stop := h.queue("LEGION-208", record.SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
 		Reason: "the issue was parked"}, h.clock.Now())
 
-	stop.waitsOn(record.WaitForClaim(implementer), 3)
+	stop.waitsOnToTheCap(record.WaitForClaim(implementer))
 	stop.dueAtItsEvent(func() { endTurn(h.ctx, t, machine, implementer) })
 	if got := machine.Claim().State; got != supervise.StateSuspended {
 		t.Fatalf("%s after the suspend ran again is %s, want suspended", implementer, got)
@@ -816,7 +883,7 @@ func eventWaitNoRoute(t *testing.T) {
 	}
 	rig := newStepRecordRigOf(t, planRecordOf(), answersInTurn(answers...))
 	row := &eventWaitRow{t: t, runner: rig.runner, pool: rig.pool, clock: rig.clock, id: onlyRowOf(t, rig.pool, stepIssue)}
-	row.keepsTheOutboxBackoff(eventWaitBackoffRuns)
+	row.keepsTheOutboxBackoff(eventWaitBackoffRuns, rig.logs)
 }
 
 // O2: a claim release Dispatch answers contended waits for Dispatch to apply it, Dispatch's state
@@ -827,7 +894,7 @@ func eventWaitClaimRelease(t *testing.T) {
 	rig.records(parkedIssue())
 	rig.due(0)
 	row := &eventWaitRow{t: t, runner: rig.runner, pool: rig.pool, clock: rig.clock, id: rig.row}
-	row.keepsTheOutboxBackoff(eventWaitBackoffRuns)
+	row.keepsTheOutboxBackoff(eventWaitBackoffRuns, rig.logs)
 }
 
 // O3: a start that asks for a fresh session while the Envoy listener names the recorded session
@@ -850,12 +917,13 @@ func eventWaitForgetsForRole(t *testing.T) {
 		Role: claim.RoleTester, Generation: 1, State: supervise.StateFailed, Session: taken, SessionFile: "/tmp/tester.jsonl"}, ""); err != nil {
 		t.Fatalf("create the failed tester: %v", err)
 	}
-	clock := roleWaitClock()
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: clock.Now}
+	clock := microClock()
+	logs := &syncBuffer{}
+	runner := &outbox{log: debugLogTo(logs), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: clock.Now}
 	id := queueRow(t, pool, records, mustOutboxRow(t, "LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester,
 		Generation: 1, Phase: phase.Testing, Task: "Test it.", FreshSession: true}, clock.Now()))
 	row := &eventWaitRow{t: t, runner: runner, pool: pool, clock: clock, id: id}
-	row.keepsTheOutboxBackoff(eventWaitBackoffRuns)
+	row.keepsTheOutboxBackoff(eventWaitBackoffRuns, logs)
 }
 
 // O4: a notice behind an earlier notice to its architect that is due at a moment still ahead runs
@@ -1026,7 +1094,7 @@ func designGateOpening(t *testing.T, pool *store.Pool, records record.Store, gat
 func TestEventWaitDesignGateRunsTheMergerStartWhenItOpens(t *testing.T) {
 	t.Parallel()
 	r := newNewsReconcileRig(t)
-	clock := roleWaitClock()
+	clock := microClock()
 	r.runner.now = clock.Now
 	r.member(reconcileRoot, "", phase.Merging)
 	r.told(reconcileRoot, record.AudienceHolder, 5)
@@ -1089,7 +1157,7 @@ func TestEventWaitDesignGateRunsAHeldMessageWhenItOpens(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			clock := roleWaitClock()
+			clock := microClock()
 			runner, sup, pool := runnerIn(t, tc.at, tc.status, &outboxPublisher{}, quietLogger())
 			runner.now, runner.gatedSteps = clock.Now, config.DesignGateRootIssues.Steps()
 			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {

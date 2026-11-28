@@ -22,7 +22,7 @@ import (
 // roleWaitCase is one of the nine outbox kinds that waits for a role (record.OutboxKind.WaitsForRole),
 // with the role it targets on LEGION-208, its payload, and how a role wait treats it:
 //   - endsNoClaim: the kind ends undelivered with no publish when its role has no claim at all
-//     (dispatch://INFRA-4131/spec#b-r-wait-ready, P4).
+//     (dispatch://INFRA-4131/spec#b-r-wait-ready).
 //   - wakesReleased: the kind wakes a released claim of a wakeable issue itself (wakeForDelivery /
 //     deliveryWake) rather than publishing on the capped waits.
 //   - endsOnClaimEnd: the kind ends undelivered when its role's claim fails or retires (false for
@@ -71,16 +71,16 @@ type roleWaitPublisher struct {
 	publishes []roleWaitPublish
 }
 
+// roleWaitPublish is one publish the listener was handed: the clock moment it arrived at, its
+// topic and the dedupe key it went under.
 type roleWaitPublish struct {
-	at      time.Time
-	topic   string
-	message string
-	key     string
-	keep    bool
+	at    time.Time
+	topic string
+	key   string
 }
 
-func (p *roleWaitPublisher) Publish(_ context.Context, topic, message string, _ any, key string) (string, error) {
-	p.publishes = append(p.publishes, roleWaitPublish{at: p.clock.Now(), topic: topic, message: message, key: key})
+func (p *roleWaitPublisher) Publish(_ context.Context, topic, _ string, _ any, key string) (string, error) {
+	p.publishes = append(p.publishes, roleWaitPublish{at: p.clock.Now(), topic: topic, key: key})
 	if p.during != nil {
 		p.during()
 	}
@@ -93,8 +93,8 @@ func (p *roleWaitPublisher) Publish(_ context.Context, topic, message string, _ 
 	return "", nil
 }
 
-func (p *roleWaitPublisher) PublishKept(_ context.Context, topic, message string, _ any, key string) (bool, error) {
-	p.publishes = append(p.publishes, roleWaitPublish{at: p.clock.Now(), topic: topic, message: message, key: key, keep: true})
+func (p *roleWaitPublisher) PublishKept(_ context.Context, topic, _ string, _ any, key string) (bool, error) {
+	p.publishes = append(p.publishes, roleWaitPublish{at: p.clock.Now(), topic: topic, key: key})
 	if p.during != nil {
 		p.during()
 	}
@@ -126,7 +126,7 @@ type roleWaitHarness struct {
 
 func newRoleWaitHarness(t *testing.T, tc roleWaitCase, refusal error) *roleWaitHarness {
 	t.Helper()
-	clock := roleWaitClock()
+	clock := microClock()
 	start := clock.Now()
 	publisher := &roleWaitPublisher{clock: clock, err: refusal}
 	runner, sup, pool := runnerIn(t, phase.Merging, "retro", publisher, quietLogger())
@@ -458,10 +458,8 @@ func TestRoleWaitReleasedRoleIsWokenOrKeepsTheCappedWaits(t *testing.T) {
 		})
 		// Record a project pause that stopped this claim, and mark the row held by that pause,
 		// so heldMessageOwed answers that pause and the row publishes on R2's capped waits.
-		pauseID := seedPauseStop(t, h.pool, "LEGION", "LEGION-208", h.token, h.start.Add(-time.Minute))
-		row := mustOutboxRow(t, "LEGION-208", h.payload(), h.clock.Now())
-		row.HeldByPause = pauseID
-		id := queueRow(t, h.pool, h.records, row)
+		pauseID := seedPauseStop(t, h.pool, "LEGION-208", h.token, h.start.Add(-time.Minute))
+		id := queueRow(t, h.pool, h.records, mustOutboxRow(t, "LEGION-208", h.payload(), h.clock.Now()))
 		if _, err := h.pool.Exec(context.Background(), `update outbox set held_by_pause = $1 where id = $2`, pauseID, id); err != nil {
 			t.Fatalf("mark row %d held by pause %d: %v", id, pauseID, err)
 		}
@@ -478,20 +476,16 @@ func TestRoleWaitReleasedRoleIsWokenOrKeepsTheCappedWaits(t *testing.T) {
 	})
 }
 
-// seedPauseStop inserts a completed project pause and a stopped pause-stop row for token so
-// store.Store.StoppedByAPause returns the pause id.
-func seedPauseStop(t *testing.T, pool *store.Pool, project, issue string, token claim.Token, at time.Time) int64 {
+// seedPauseStop records a pause of LEGION that ended at at (openLegionPause, endLegionPause) and a
+// stopped pause-stop row of it for token on issue, so store.Store.StoppedByAPause answers the
+// pause's id.
+func seedPauseStop(t *testing.T, pool *store.Pool, issue string, token claim.Token, at time.Time) int64 {
 	t.Helper()
-	ctx := context.Background()
-	var pauseID int64
-	if err := pool.QueryRow(ctx, `insert into project_pauses (project, began_at, by_kind, reason, ended_at, ended_by_kind, ended_by_session)
-		values ($1, $2, 'operator', 'test', $3, 'operator', '') returning id`,
-		project, at.Add(-time.Minute), at).Scan(&pauseID); err != nil {
-		t.Fatalf("insert project_pauses: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
-		values ($1, $2, $3, $4, $5, $6, $6, $7)`,
-		pauseID, project, string(token), issue, string(claim.RoleImplementer), at, string(store.PauseStopStopped)); err != nil {
+	pauseID := openLegionPause(t, pool, at.Add(-time.Minute))
+	endLegionPause(t, pool, pauseID, at)
+	if _, err := pool.Exec(context.Background(), `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
+		values ($1, 'LEGION', $2, $3, $4, $5, $5, $6)`,
+		pauseID, string(token), issue, string(claim.RoleImplementer), at, string(store.PauseStopStopped)); err != nil {
 		t.Fatalf("insert project_pause_stops: %v", err)
 	}
 	return pauseID
@@ -506,22 +500,30 @@ func publishOffsets(publishes []roleWaitPublish, start time.Time) []time.Duratio
 	return out
 }
 
+// roleWaitFirstTen is the moments, from a row's first run, of its first ten runs on the capped
+// backoff of a role wait (record.RoleWaitBackoff) when each is refused: doubling from 1 s, the
+// tenth at 511 s, after which each waits the cap (record.RoleWaitBackoffMost).
+var roleWaitFirstTen = []time.Duration{
+	0, 1 * time.Second, 3 * time.Second, 7 * time.Second, 15 * time.Second,
+	31 * time.Second, 63 * time.Second, 127 * time.Second, 255 * time.Second, 511 * time.Second,
+}
+
 // S9 (R2): a ready claim (with a turn started since its ready) whose every publish is refused on
 // every refusal that keeps its kind's row doubles from 1 s to 5 minutes: publish times 0, 1, 3, 7,
 // 15, 31, 63, 127, 255, 511 s then every 300 s (at most 12 in an hour once at the cap); never
-// ended while the claim stands (except hook_prompt and phase_ended, which end at their hour, as
-// today); and ended once the claim is retired (except controller_notice under `controller: daemon`,
-// whose failed/retired controller is retried by controllerKeeper). A notice its architect's session
-// does not confirm (receipt_timeout) is one of these: its row is kept, never copied and never given
-// up (dispatch://INFRA-4131/spec#b-r-never-given-up).
+// ended while the claim stands, except hook_prompt and phase_ended, which end at their hour, as
+// today, and so are not driven to the claim's retirement; and every other kind ended once the
+// claim is retired, except controller_notice under `controller: daemon`, whose failed/retired
+// controller is retried by controllerKeeper. A notice its architect's session does not confirm
+// (receipt_timeout) is one of these: its row is kept, never copied and never given up
+// (dispatch://INFRA-4131/spec#b-r-never-given-up).
 func TestRoleWaitCapDoublesToFiveMinutesForEveryRefusal(t *testing.T) {
 	t.Parallel()
 	type capSubtest struct {
 		tc       roleWaitCase
 		refusals []string
 	}
-	// Every refusal that keeps a row of each kind, per plan ## Readings and, for a notice's
-	// receipt_timeout, P9.
+	// Every refusal that keeps a row of each kind, a notice's receipt_timeout among them.
 	cases := []capSubtest{
 		{tc: roleWaitCases[0], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "receipt_timeout", "delivery_failed"}},
 		{tc: roleWaitCases[1], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "receipt_timeout", "delivery_failed", "capability", "denied"}},
@@ -532,10 +534,6 @@ func TestRoleWaitCapDoublesToFiveMinutesForEveryRefusal(t *testing.T) {
 		{tc: roleWaitCases[6], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "receipt_timeout", "delivery_failed", "capability", "denied"}},
 		{tc: roleWaitCases[7], refusals: []string{"unresponsive", "receipt_timeout", "delivery_failed"}},
 		{tc: roleWaitCases[8], refusals: []string{"unresponsive", "receipt_timeout", "delivery_failed", "capability", "denied"}},
-	}
-	wantFirstTen := []time.Duration{
-		0, 1 * time.Second, 3 * time.Second, 7 * time.Second, 15 * time.Second,
-		31 * time.Second, 63 * time.Second, 127 * time.Second, 255 * time.Second, 511 * time.Second,
 	}
 	for _, group := range cases {
 		t.Run(string(group.tc.kind), func(t *testing.T) {
@@ -552,7 +550,7 @@ func TestRoleWaitCapDoublesToFiveMinutesForEveryRefusal(t *testing.T) {
 						// doubling publishes by 511 s, then 10 at the 300 s cap (811..3511 s),
 						// and end at the 21st run at 3811 s (>= 3600 s).
 						rig.runTo(20)
-						want := append(slices.Clone(wantFirstTen),
+						want := append(slices.Clone(roleWaitFirstTen),
 							811*time.Second, 1111*time.Second, 1411*time.Second, 1711*time.Second, 2011*time.Second,
 							2311*time.Second, 2611*time.Second, 2911*time.Second, 3211*time.Second, 3511*time.Second)
 						if got := publishOffsets(h.publisher.publishes, h.start); !slices.Equal(got, want) {
@@ -572,25 +570,13 @@ func TestRoleWaitCapDoublesToFiveMinutesForEveryRefusal(t *testing.T) {
 					if len(got) != 25 {
 						t.Fatalf("publishes = %d, want 25", len(got))
 					}
-					if !slices.Equal(got[:10], wantFirstTen) {
-						t.Fatalf("first 10 publish offsets = %v, want %v", got[:10], wantFirstTen)
+					if !slices.Equal(got[:10], roleWaitFirstTen) {
+						t.Fatalf("first 10 publish offsets = %v, want %v", got[:10], roleWaitFirstTen)
 					}
 					for i := 10; i < len(got); i++ {
 						if gap := got[i] - got[i-1]; gap != record.RoleWaitBackoffMost {
 							t.Fatalf("gap between publish %d and %d = %s, want %s", i-1, i, gap, record.RoleWaitBackoffMost)
 						}
-					}
-					// In any 60-minute window starting at the cap (from publish 10 onward),
-					// at most 12 publishes occur (every 300 s).
-					capStart := got[10]
-					inHour := 0
-					for _, at := range got[10:] {
-						if at < capStart+time.Hour {
-							inHour++
-						}
-					}
-					if inHour > 12 {
-						t.Fatalf("publishes in an hour at the cap = %d, want <= 12", inHour)
 					}
 
 					// Once the claim retires, every kind with a claim-end rule ends undelivered
@@ -688,12 +674,11 @@ func TestRoleWaitUnheldControllerTopicKeepsTheCappedWaits(t *testing.T) {
 
 	rig.runTo(15)
 	got := publishOffsets(h.publisher.publishes, h.start)
-	wantFirstTen := []time.Duration{
-		0, 1 * time.Second, 3 * time.Second, 7 * time.Second, 15 * time.Second,
-		31 * time.Second, 63 * time.Second, 127 * time.Second, 255 * time.Second, 511 * time.Second,
+	if len(got) != 15 {
+		t.Fatalf("publishes = %d, want 15: one at each run", len(got))
 	}
-	if !slices.Equal(got[:10], wantFirstTen) {
-		t.Fatalf("first 10 publish offsets = %v, want %v", got[:10], wantFirstTen)
+	if !slices.Equal(got[:10], roleWaitFirstTen) {
+		t.Fatalf("first 10 publish offsets = %v, want %v", got[:10], roleWaitFirstTen)
 	}
 	for i := 10; i < len(got); i++ {
 		if gap := got[i] - got[i-1]; gap != record.RoleWaitBackoffMost {

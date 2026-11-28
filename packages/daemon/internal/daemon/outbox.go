@@ -506,7 +506,7 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 			case row.Attempts >= waitWarnAttempts && !routineWait(err):
 				level = slog.LevelWarn
 			}
-			r.log.Log(ctx, level, "outbox row waits", "row", row.ID, "kind", row.Kind, "issue", row.Issue,
+			r.log.Log(ctx, level, waitsLine, "row", row.ID, "kind", row.Kind, "issue", row.Issue,
 				"attempts", row.Attempts, "error", kept)
 		case !permanent:
 			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", kept)
@@ -2269,7 +2269,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	} else if waits {
 		return launchWait(architect, fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID))
 	}
-	if earlier, due, held := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+	if earlier, latest, due, held := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
 		// A catch-up the wake pacing still holds in its queue has no moment of its own
 		// (earlierNoticeFor's held, record.CatchUpIsHeld), so this row waits for the pacer's
 		// estimate of its place (catchUpPacing.estimate), or parkedWakeBound where that comes
@@ -2295,15 +2295,17 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			return wait.Until(due, fmt.Sprintf("%s's notice row %d waits behind its row %d, due at %s",
 				architect, row.ID, earlier, due.Format(time.RFC3339)))
 		}
-		// Otherwise the row waits for the earlier row's end (record.WaitForRow,
-		// dispatch://INFRA-4131/spec#b-r-wait-event): its finish, or a delete of it
-		// (projectRecords' DropCatchUps and DropQueuedChanges), makes this row due at once.
-		return eventWait(record.WaitForRow(earlier), fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier))
+		// Otherwise the row waits for the end of the newest earlier row to its architect
+		// (earlierNoticeFor's latest, record.WaitForRow, dispatch://INFRA-4131/spec#b-r-wait-event),
+		// which itself waits behind the rows ahead of it: its finish, or a delete of it
+		// (projectRecords' DropCatchUps and DropQueuedChanges), makes this row due at once, and the
+		// end of a row ahead of it runs only the row right behind that one.
+		return eventWait(record.WaitForRow(latest), fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, latest))
 	}
 	topic := notify.RoleTopicPrefix + string(architect)
 	gate := r.roleWaitGate(row, topic)
 	if gate.ended != "" {
-		return r.noticeArchitectEnded(ctx, row, payload, tree, architect, gate.view.State)
+		return r.noticeArchitectEnded(ctx, row, payload, tree, architect, architectEnded(tree, gate.view.State))
 	}
 	if gate.wait != nil {
 		return gate.wait
@@ -2331,8 +2333,8 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // A role whose claim is released ends the row before the publish, with no wake (record.RoleMessage
 // says why). The claim is read from its machine's View, as wakeForDelivery reads it. One window is
 // left: a release between this read and the publish, which the listener refuses (holder_lapsed)
-// and wakes the role on. An outbox with no supervisor (a test's), or a role no machine of this
-// daemon holds, publishes as before.
+// and wakes the role on. An outbox with no supervisor (a test's) publishes; a role no machine of
+// this daemon holds ends the row with no publish (roleWaitGate: its role has no claim).
 //
 // A row a project's pause held (record.OutboxRow.HeldByPause) is ended neither for its released
 // claim nor for its role having no live holder while it is owed to its role (R4 of
@@ -2364,9 +2366,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	// stopped is the pause of the stop under which the row is owed to its role, and 0 for a row
 	// not owed.
 	var stopped int64
-	var held supervise.ClaimView
 	if r.supervisor != nil {
-		held = r.supervisedClaim(claim.Token(payload.Role))
+		held := r.supervisedClaim(claim.Token(payload.Role))
 		var err error
 		if stopped, err = r.heldMessageOwed(ctx, row, held); err != nil {
 			return err
@@ -3216,7 +3217,8 @@ func startRetry(token claim.Token, payload record.SuperviseRequest) supervise.Re
 func (r *outbox) retryRefused(ctx context.Context, row record.OutboxRow, issue record.Issue, payload record.SuperviseRequest,
 	machine *supervise.Machine, err error, asked string) error {
 	if !errors.Is(err, supervise.ErrHeldForCyberPolicy) {
-		return claimWait(machine.Claim().Token, issue.Tree, fmt.Errorf("%s %s: %w", asked, machine.Claim().Token, err))
+		token := machine.Claim().Token
+		return claimWait(token, issue.Tree, fmt.Errorf("%s %s: %w", asked, token, err))
 	}
 	return r.heldStartRefused(ctx, row, issue, payload, machine.Claim(), err)
 }
@@ -3414,12 +3416,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// it holds a claim, so that start finished here is one nothing queues again, and the
 			// child would run to its close with no architect of its own.
 			first := !found && childArchitectFirstStart(issue, payload)
-			root, waitsFor, key, err := r.startRoot(ctx, issue, first)
+			root, waits, err := r.startRoot(ctx, issue, first)
 			if err != nil {
 				return err
 			}
-			if waitsFor != "" {
-				return eventWait(key, wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, waitsFor))
+			if waits != nil {
+				return waits
 			}
 			if root != nil && root.Lingers() {
 				r.log.Info("outbox start of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,
@@ -4230,37 +4232,40 @@ func (r *outbox) root(ctx context.Context, issue record.Issue) (*record.Issue, e
 	return root, nil
 }
 
-// startRoot is root for a start and, when first asks, what the first start of a child's own
-// architect that found no claim (childArchitectFirstStart) still waits for, "" for nothing, with
-// the key of the event that ends that wait (dispatch://INFRA-4131/spec#b-r-wait-event): the tree
-// of root to run again, while root lingers or waits in the line for its tree to be opened
-// (record.QueuedRoot, under the design-gate steps the project gates), which admission's
-// re-admission and promotion of the root end (record.WaitForTreeRuns); then the branch of issue,
-// while a branch row of it is still in the outbox (record.Store.BranchQueued), which that row's
-// finish ends (record.WaitForBranch). The ordering rule holds a start behind an older branch row
-// of its issue alone (record's outboxInOrder), and a re-admission queues the child's branch row
-// again, newer than this start, which may have waited out the whole linger: so the wait on the row
-// keeps the order the child's first phase start queued the two in (workflow's gateOpened), and no
-// role of the issue starts before its branch exists. It is all read in one read-only
-// repeatable-read transaction, so the rule judges one state of the root, its gate and the outbox,
-// once per try and for that start alone: the gate is not read of a root that lingers, nor the
-// branch row of a tree that does not run.
-func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) (root *record.Issue, waitsFor, key string, err error) {
+// startRoot is root for a start and, when first asks, the event wait (eventWait) the first start
+// of a child's own architect that found no claim (childArchitectFirstStart) still waits in, nil for
+// none (dispatch://INFRA-4131/spec#b-r-wait-event): for the tree of root to run again, while root
+// lingers or waits in the line for its tree to be opened (record.QueuedRoot, under the design-gate
+// steps the project gates), which admission's re-admission and promotion of the root end
+// (record.WaitForTreeRuns); then for the branch of issue, while a branch row of it is still in the
+// outbox (record.Store.BranchQueued), which that row's finish ends (record.WaitForBranch). The
+// ordering rule holds a start behind an older branch row of its issue alone (record's
+// outboxInOrder), and a re-admission queues the child's branch row again, newer than this start,
+// which may have waited out the whole linger: so the wait on the row keeps the order the child's
+// first phase start queued the two in (workflow's gateOpened), and no role of the issue starts
+// before its branch exists. It is all read in one read-only repeatable-read transaction, so the
+// rule judges one state of the root, its gate and the outbox, once per try and for that start
+// alone: the gate is not read of a root that lingers, nor the branch row of a tree that does not
+// run.
+func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) (root *record.Issue, waits, err error) {
+	firstStartWaits := func(key, what string) error {
+		return eventWait(key, wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, what))
+	}
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if root, err = r.records.Issue(ctx, tx, issue.Tree); err != nil || root == nil || !first {
 			return err
 		}
-		waits := root.Lingers()
-		if !waits {
+		queued := root.Lingers()
+		if !queued {
 			lifecycle, gate, err := record.RootFacts(ctx, r.records, tx, *root, r.gatedSteps)
 			if err != nil {
 				return err
 			}
-			waits = record.QueuedRoot(*root, lifecycle, gate)
+			queued = record.QueuedRoot(*root, lifecycle, gate)
 		}
-		if waits {
-			waitsFor, key = fmt.Sprintf("the tree of %s to run again", root.Key), record.WaitForTreeRuns(root.Key)
+		if queued {
+			waits = firstStartWaits(record.WaitForTreeRuns(root.Key), fmt.Sprintf("the tree of %s to run again", root.Key))
 			return nil
 		}
 		branch, err := r.records.BranchQueued(ctx, tx, issue.Key)
@@ -4268,14 +4273,14 @@ func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) 
 			return err
 		}
 		if branch {
-			waitsFor = fmt.Sprintf("the branch of %s, which a row of the outbox has still to create", issue.Key)
-			key = record.WaitForBranch(issue.Key)
+			waits = firstStartWaits(record.WaitForBranch(issue.Key),
+				fmt.Sprintf("the branch of %s, which a row of the outbox has still to create", issue.Key))
 		}
 		return nil
 	}); err != nil {
-		return nil, "", "", fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
+		return nil, nil, fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
 	}
-	return root, waitsFor, key, nil
+	return root, waits, nil
 }
 
 // stopWithoutMachine is a stop row — a suspend or an issue close — that finds no machine for its

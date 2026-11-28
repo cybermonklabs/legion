@@ -3452,8 +3452,9 @@ type Store interface {
 	// QueuedChanges), whose gates the clear then deletes. A runner mid-attempt reads its lease in
 	// the snapshot it asks the gates in (OutboxLeased), so it finishes such a row unpublished, and
 	// its finish then finds nothing to delete. It answers the rows it deleted (WaitingRow), so the
-	// end of the wait of a row it deleted can be told.
-	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) ([]WaitingRow, error)
+	// end of the wait of a row it deleted can be told; now is the caller's clock, the moment of the
+	// delete, as DropCatchUps takes it.
+	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64, now time.Time) ([]WaitingRow, error)
 	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
 	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
 	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it

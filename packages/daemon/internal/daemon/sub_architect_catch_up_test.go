@@ -165,7 +165,7 @@ func TestASubArchitectsCatchUpGoesToItAlone(t *testing.T) {
 					supervisor: sup, project: "legion", now: func() time.Time { return clock }}
 
 				// Eight ticks, each past the row's backoff: a row held for a suspended claim would
-				// run on every one and warn from the seventh attempt (settle's waitWarnAttempts).
+				// run on every one and log its wait (logWait), which the test reads for.
 				for tick := range 8 {
 					if err := runner.RunOnce(context.Background()); err != nil {
 						t.Fatalf("tick %d: %v", tick, err)

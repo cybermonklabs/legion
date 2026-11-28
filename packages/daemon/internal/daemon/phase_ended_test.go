@@ -105,7 +105,7 @@ func TestAPhaseEndedMessageRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			publisher.err = fmt.Errorf("publish notice to the tester's topic: %w", tc.err)
 			err := runner.execute(ctx, row)
-			if err == nil || !errors.Is(err, tc.err) || !errors.Is(err, wait.ErrWaiting) || !roleWaitRun(row.Kind, err) {
+			if err == nil || !errors.Is(err, tc.err) || !errors.Is(err, wait.ErrWaiting) {
 				t.Fatalf("the phase-ended message answered %v = %v, want the answer kept as a wait for the role, retried", tc.err, err)
 			}
 		})

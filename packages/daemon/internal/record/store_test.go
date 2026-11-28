@@ -2226,14 +2226,15 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	}
 }
 
-// An earlier listener's role-lane exception queues a copy of a catch-up (the daemon's
-// reholdNotice), naming what the row it copies named, while a drop of the root's catch-ups runs,
-// and a lane then claims that copy. The drop's lease check reads the outbox in a subquery, which
-// its delete does not recheck against a lease committed after the statement began, so a claim of a
-// copy made after the drop's own reads would leave the copy deleted and its lane publishing it from
-// memory, beside the fresh catch-up naming the decisions the deletion released: told twice. The
-// claim takes the drop's advisory lock, so it waits for the drop and claims nothing of a row the
-// drop took.
+// A copy of a catch-up (Notice.ResendOf), naming what the row it copies named, is queued while a
+// drop of the root's catch-ups runs, and a lane then claims that copy. The daemon's reholdNotice
+// queues a copy only once the row it copies has left the outbox (NoticeQueued); here that row
+// stays, with its claims, which the store allows and the drop must handle all the same. The drop's
+// lease check reads the outbox in a subquery, which its delete does not recheck against a lease
+// committed after the statement began, so a claim of a copy made after the drop's own reads would
+// leave the copy deleted and its lane publishing it from memory, beside the fresh catch-up naming
+// the decisions the deletion released: told twice. The claim takes the drop's advisory lock, so it
+// waits for the drop and claims nothing of a row the drop took.
 func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2255,8 +2256,8 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
 	})
 
-	// The re-hold's copy, queued in a transaction of its own: it names what the row it copies names,
-	// whose claims stay with that row.
+	// The copy, queued in a transaction of its own: it names what the row it copies names, whose
+	// claims stay with that row, still in the outbox.
 	var copyID int64
 	inTx(t, st, func(tx pgx.Tx) {
 		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
@@ -2722,6 +2723,12 @@ func TestAnEventWhileTheRowRunsMakesItDueAtItsRetry(t *testing.T) {
 	key := WaitForClaim("legion-legion-legion-208-implementer")
 	id := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-208", now, key))
 	leased := claimOutboxRow(t, st, records, id, now)
+	// The run asked for its next run an hour out, as a run that will retry does, so only the lease
+	// keeps the event from moving the row.
+	held := now.Add(time.Hour)
+	if _, err := st.Pool().Exec(ctx, "update outbox set next_at = $2 where id = $1", id, held); err != nil {
+		t.Fatalf("put the held row's next run at %s: %v", held, err)
+	}
 
 	inTx(t, st, func(tx pgx.Tx) {
 		moved, err := records.ExpediteWaits(ctx, tx, []string{key}, now.Add(time.Second))
@@ -2730,8 +2737,8 @@ func TestAnEventWhileTheRowRunsMakesItDueAtItsRetry(t *testing.T) {
 			t.Fatalf("ExpediteWaits of the key of a row a lane holds moved %+v, want nothing moved", moved)
 		}
 	})
-	if woken := storedOutboxRow(t, st, id); !woken.Wait.WaitWoken || !woken.NextAt.Equal(now) {
-		t.Fatalf("the held row after the event = woken %t, next run %s; want it woken, its next run left at %s", woken.Wait.WaitWoken, woken.NextAt, now)
+	if woken := storedOutboxRow(t, st, id); !woken.Wait.WaitWoken || !woken.NextAt.Equal(held) {
+		t.Fatalf("the held row after the event = woken %t, next run %s; want it woken, its next run left at %s", woken.Wait.WaitWoken, woken.NextAt, held)
 	}
 
 	asked := OutboxWait{WaitSince: now, WaitStep: 4, WaitFor: key}
@@ -2784,6 +2791,11 @@ func TestExpediteWaitsMakesDueTheRowsThatWaitForTheKey(t *testing.T) {
 	other := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-210", later, otherKey))
 	running := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-211", queued, claimKey))
 	claimOutboxRow(t, st, records, running, now.Add(-10*time.Second))
+	// The run of the held row asked for its next run later, as a run that will retry does, so only
+	// its lease keeps the event from moving it.
+	if _, err := st.Pool().Exec(ctx, "update outbox set next_at = $2 where id = $1", running, later); err != nil {
+		t.Fatalf("put the held row's next run at %s: %v", later, err)
+	}
 	catchUp := func(issue string, paced, nextAt time.Time) int64 {
 		t.Helper()
 		row, err := NewOutboxRow(issue, Notice{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: queued,
@@ -2820,7 +2832,7 @@ func TestExpediteWaitsMakesDueTheRowsThatWaitForTheKey(t *testing.T) {
 		{"the row waiting at step 5 for the claim's change", waiting, now, OutboxWait{WaitSince: queued, WaitFor: claimKey}},
 		{"the row waiting for the claim's ready", ready, now, OutboxWait{WaitFor: readyKey}},
 		{"the row waiting for another claim", other, later, OutboxWait{WaitFor: otherKey}},
-		{"the row a lane holds", running, queued, OutboxWait{WaitFor: claimKey, WaitWoken: true}},
+		{"the row a lane holds", running, later, OutboxWait{WaitFor: claimKey, WaitWoken: true}},
 		{"the catch-up the pacing holds to a moment ahead", paced, now.Add(10 * time.Minute), OutboxWait{WaitFor: claimKey}},
 		{"the catch-up whose paced moment has passed", pacedEarlier, now, OutboxWait{WaitFor: claimKey}},
 	} {
@@ -2874,6 +2886,9 @@ func TestAnEnqueuedRowKeepsItsWaitFor(t *testing.T) {
 		ids, err = pgx.CollectRows(rows, pgx.RowTo[int64])
 		must(t, err)
 	})
+	if len(ids) != 2 {
+		t.Fatalf("the outbox holds %d rows of LEGION-208 and LEGION-209, want the two Enqueue wrote", len(ids))
+	}
 	for i, id := range append(ids, enqueuedID) {
 		if got := storedOutboxRow(t, st, id).Wait; !sameWait(got, OutboxWait{WaitFor: key}) {
 			t.Errorf("the wait of queued row %d of 3 = %+v, want only what it waits for, %q", i+1, got, key)

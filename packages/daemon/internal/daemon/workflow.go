@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -3021,10 +3022,12 @@ func (w *workflowRuntime) claimReady(c supervise.Claim) {
 // at once the outbox rows that wait for them (supervise's Deps.ClaimChanged, which says which
 // changes it tells, and a machine this daemon begins to supervise, supervisor.add): the claim's
 // own key (record.WaitForClaim), the key of each tree the claim is of before and after the change
-// (record.WaitForTreeClaims), and, where the change moved the claim's LastReady, its ready's key
-// (record.WaitForReady), which no other change makes happen
-// (dispatch://INFRA-4131/spec#b-r-wait-event). The machine calls it once its decision has ended,
-// on the goroutine that made it, so it only records the keys and wakes the release.
+// (record.WaitForTreeClaims), and, where the change moved the claim's LastReady and left it in a
+// state that said it is ready (supervise.SaidReady), its ready's key (record.WaitForReady), which
+// no other change makes happen (dispatch://INFRA-4131/spec#b-r-wait-event). A ready that landed
+// in a suspension held until it is not one, as claimReady does not record it: the rows that wait
+// for that ready wait for the claim's next launch. The machine calls it once its decision has
+// ended, on the goroutine that made it, so it only records the keys and wakes the release.
 func (w *workflowRuntime) claimChanged(before, after supervise.ClaimView) {
 	w.changed.add(record.WaitForClaim(after.Token))
 	for _, tree := range []string{before.Tree, after.Tree} {
@@ -3032,7 +3035,7 @@ func (w *workflowRuntime) claimChanged(before, after supervise.ClaimView) {
 			w.changed.add(record.WaitForTreeClaims(tree))
 		}
 	}
-	if !after.LastReady.Equal(before.LastReady) {
+	if !after.LastReady.Equal(before.LastReady) && supervise.SaidReady(after.State) {
 		w.changed.add(record.WaitForReady(after.Token))
 	}
 }
@@ -3170,39 +3173,38 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 // releaseReadied releases, until ctx ends, the outbox rows waiting for the claims claimReady
 // recorded: each wake takes every claim recorded since the last one, in one release.
 func (w *workflowRuntime) releaseReadied(ctx context.Context) {
-	for {
-		tokens, ok := w.readied.take(ctx)
-		if !ok {
-			return
-		}
-		if len(tokens) == 0 {
-			continue
-		}
-		release, cancel := context.WithTimeout(ctx, readyReleaseTimeout)
-		err := w.outbox.releaseReady(release, tokens...)
-		cancel()
-		if err != nil && ctx.Err() == nil {
-			w.log.Error("release the outbox rows waiting for ready claims", "claims", tokens, "error", err)
-		}
-	}
+	releaseRecorded(ctx, w.log, w.readied, func(ctx context.Context, tokens []claim.Token) error {
+		return w.outbox.releaseReady(ctx, tokens...)
+	}, "release the outbox rows waiting for ready claims", "claims")
 }
 
 // releaseChanged releases, until ctx ends, the outbox rows waiting for the changes of claims
 // claimChanged recorded: each wake takes every key recorded since the last one, in one release.
 func (w *workflowRuntime) releaseChanged(ctx context.Context) {
+	releaseRecorded(ctx, w.log, w.changed, func(ctx context.Context, keys []string) error {
+		return w.outbox.releaseChanged(ctx, keys)
+	}, "release the outbox rows waiting for changes of their claims", "waits")
+}
+
+// releaseRecorded is the one loop of releaseReadied and releaseChanged: until ctx ends, each wake
+// of set takes every key recorded since the last one and hands them to release in one call,
+// bounded by readyReleaseTimeout (an empty take, a wake an earlier take already carried, releases
+// nothing). A release that fails while ctx stands is logged at Error as failed, with the keys
+// under field.
+func releaseRecorded[K cmp.Ordered](ctx context.Context, log *slog.Logger, set *wakeSet[K], release func(context.Context, []K) error, failed, field string) {
 	for {
-		keys, ok := w.changed.take(ctx)
+		keys, ok := set.take(ctx)
 		if !ok {
 			return
 		}
 		if len(keys) == 0 {
 			continue
 		}
-		release, cancel := context.WithTimeout(ctx, readyReleaseTimeout)
-		err := w.outbox.releaseChanged(release, keys)
+		bounded, cancel := context.WithTimeout(ctx, readyReleaseTimeout)
+		err := release(bounded, keys)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			w.log.Error("release the outbox rows waiting for changes of their claims", "waits", keys, "error", err)
+			log.Error(failed, field, keys, "error", err)
 		}
 	}
 }

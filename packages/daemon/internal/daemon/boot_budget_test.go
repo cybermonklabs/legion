@@ -99,8 +99,8 @@ func (r *timedBootReconcile) ReconcileOrphans(ctx context.Context, known []runti
 // settle, and the boot starts only because the restore of the catch-ups the previous daemon left
 // held runs on a budget of its own (catchUpPacing.restore): the row the previous daemon held is
 // joined to the pacing again — here, with no pacer, made due at once (join) — and the daemon
-// starts. Before, the restore ran on what the shared budget had left, and the boot exited with
-// `read held catch-ups: context deadline exceeded` (dispatch://INFRA-4131/spec#b-r-boot-budget).
+// starts. A restore that ran on what the shared budget had left would end the boot with `read held
+// catch-ups: context deadline exceeded` (dispatch://INFRA-4131/spec#b-r-boot-budget).
 //
 // The shared budget begins as the boot is recorded (bootBudget, just before store.RecordBoot), so
 // the test reads when it ran out off the boot's recorded start, not off how long the reconciliation
@@ -202,7 +202,7 @@ func (r *outboxLockedAtBootReconcile) ReconcileOrphans(ctx context.Context, know
 }
 
 // A boot whose read of the catch-ups the previous daemon left held fails still fails: the restore
-// has a budget of its own now, but its failure is the boot's, as before. Postgres cancels the read
+// has a budget of its own, and its failure is the boot's. Postgres cancels the read
 // (record.Store.WaitingNotices) while it waits on a lock the test holds on the outbox, and the
 // daemon exits with the read's error, never saying it started
 // (dispatch://INFRA-4131/spec#b-r-boot-budget).
@@ -310,6 +310,9 @@ func TestTheOrphanSweepPassesOverTheRepositoryCachesBesideTheClaims(t *testing.T
 		for i := 2; i < len(calls); i++ {
 			if calls[i] == cachePass && calls[i-1] != sweep {
 				t.Fatalf("call %d of %q is a cache pass after %q, want every pass after the first right after a reconciliation of the sweep's", i, calls, calls[i-1])
+			}
+			if calls[i-1] == sweep && calls[i] != cachePass {
+				t.Fatalf("call %d of %q is %q after a reconciliation of the sweep's, want a cache pass after each of them", i, calls, calls[i])
 			}
 		}
 	})

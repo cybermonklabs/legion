@@ -3980,23 +3980,22 @@ func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue strin
 }
 
 // DropQueuedChanges logs the end of the wait of each changes request it deleted while it waited
-// (waitsEndedOnCommit), once the transaction commits. It takes no key of an issue, so it refuses
-// none: its rows are the ones the clear of a generation of the daemon's own project read. A
-// notice behind one it deleted is due at once (droppedNotices).
-func (s projectRecords) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) ([]record.WaitingRow, error) {
-	dropped, err := s.Store.DropQueuedChanges(ctx, tx, rows)
+// (waitsEndedOnCommit), once the transaction commits, at now, the caller's clock. It takes no key
+// of an issue, so it refuses none: its rows are the ones the clear of a generation of the daemon's
+// own project read. A notice behind one it deleted is due at once (droppedNotices).
+func (s projectRecords) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64, now time.Time) ([]record.WaitingRow, error) {
+	dropped, err := s.Store.DropQueuedChanges(ctx, tx, rows, now)
 	if err != nil {
 		return dropped, err
 	}
-	now := time.Now()
 	waitsEndedOnCommit(ctx, s.logger(), dropped, "the clear of its generation deleted it", now)
 	return dropped, s.droppedNotices(ctx, tx, dropped, now)
 }
 
 // droppedNotices makes due, in the delete's own transaction, every notice that waits behind a
 // notice of dropped (record.WaitForRow, dispatch://INFRA-4131/spec#b-r-wait-event): a notice to an
-// architect waits for every earlier one to that architect to end, and a delete ends it as its
-// finish would (the outbox's finish, finishedWaits).
+// architect waits for the end of the newest earlier one to that architect (the outbox's
+// earlierNoticeFor), and a delete ends it as its finish would (the outbox's finish, finishedWaits).
 func (s projectRecords) droppedNotices(ctx context.Context, tx pgx.Tx, dropped []record.WaitingRow, now time.Time) error {
 	var keys []string
 	for _, row := range dropped {

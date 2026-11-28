@@ -229,7 +229,7 @@
   - TestAnIssueMovedWhileBootListsIsStillAdmitted  # 2.7 s
   - TestAnIssueOnARepositoryNoRecordNamesIsRecordedWithGitHubsSpellingAndAdmitted  # 0.2 s
   - TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen  # 0.4 s
-  - TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime  # 0.2 s
+  - TestAnIssuesNoticeRunsWhileItsLifecycleRowBlocksOnTheRuntime  # 0.2 s
   - TestAnOlderDispatchWithoutTheWebhookAppRouteIsNamed  # 0.2 s
   - TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence  # 0.2 s
   - TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNothing  # 0.9 s

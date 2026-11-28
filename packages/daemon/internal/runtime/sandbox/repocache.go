@@ -923,16 +923,14 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 // missing is made — at the daemon's first pass, and after a launch's own ensure failed — and a
 // drifted or dead cache pod is replaced, one after another, all on the pass's schedule. Each runs
 // under the cache's launch turn, fenced to the Sandbox as the store held it. Every failure is
-// logged, as a warning naming the cache, and tried at the next pass; none is the pass's error:
-// each launch ensures its own repository's cache and fails, naming why, when it cannot be made, so
-// one repository's cache never stops another's launches.
+// logged, as a warning naming the cache, and tried at the next pass; none is the pass's error, a
+// failure of one cache being the runtime's to log (runtime.RepositoryCacheSweeper).
 //
 // A pass whose context ends stops there and answers the context's error, so the caller can say
 // which pass was cut short: the caches it did not reach wait for the next pass. The daemon runs it
-// beside its claims and never on its boot: replacing every cache pod whose image a release moved,
-// one at a time, each waiting out its pod's stop (awaitPodGone), spent the 30 s budget INFRA's boot
-// of 2026-11-27 ran its steps on while it was a part of ReconcileOrphans
-// (dispatch://INFRA-4131/spec#b-r-boot-budget).
+// beside its claims and never on its boot, since replacing cache pods one at a time, each waiting
+// out its pod's stop (awaitPodGone), can spend a boot step's whole budget
+// (runtime.RepositoryCacheSweeper, dispatch://INFRA-4131/spec#b-r-boot-budget).
 func (r *Runtime) SweepRepositoryCaches(ctx context.Context) error {
 	cached := r.cacheRepositories()
 	for _, u := range r.storedCaches() {

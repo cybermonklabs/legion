@@ -227,11 +227,11 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 
 // earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
 // run now — its id, the moment it is due, and whether it is a catch-up the wake pacing still
-// holds in its queue — or 0, the zero moment and false when there is none. Each earlier notice's
-// architect is resolved again rather than recorded when it was held, since a sub-architect can
-// start or end while it waits, and by the rule its own publish follows (noticeArchitect). An
-// earlier row whose architect cannot be resolved is no architect's, so it holds back no later
-// notice; it finishes on its own attempt (notice).
+// holds in its queue — with latest, the id of the newest of them, or 0, 0, the zero moment and
+// false when there is none. Each earlier notice's architect is resolved again rather than recorded
+// when it was held, since a sub-architect can start or end while it waits, and by the rule its own
+// publish follows (noticeArchitect). An earlier row whose architect cannot be resolved is no
+// architect's, so it holds back no later notice; it finishes on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
@@ -242,7 +242,12 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 // queue is due at no moment until the pacer lets its place out (record.CatchUpIsHeld): held is
 // true for it and the moment is the zero time, and the row behind it waits for the pacer's
 // estimate of that place instead (deliverNotice).
-func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (earlier int64, due time.Time, held bool) {
+//
+// latest is the row whose end the row behind them waits for otherwise (record.WaitForRow): that
+// row cannot publish before the newest of them has ended, and each of them waits for the newest
+// one before it, so N notices queued to one architect drain in N runs, each made due by the end of
+// the one before it, rather than every waiting notice running again at each end of the oldest.
+func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (earlier, latest int64, due time.Time, held bool) {
 	for _, other := range tree.earlier {
 		payload, err := record.DecodeOutboxPayload(other)
 		if err != nil {
@@ -256,14 +261,18 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 		if !ok {
 			continue
 		}
-		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {
-			if record.CatchUpIsHeld(other.NextAt) {
-				return other.ID, time.Time{}, true
-			}
-			return other.ID, other.NextAt, false
+		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err != nil || owner != architect {
+			continue
 		}
+		if earlier == 0 {
+			earlier, held = other.ID, record.CatchUpIsHeld(other.NextAt)
+			if !held {
+				due = other.NextAt
+			}
+		}
+		latest = other.ID
 	}
-	return 0, time.Time{}, false
+	return earlier, latest, due, held
 }
 
 // noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the

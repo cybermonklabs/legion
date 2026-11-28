@@ -106,7 +106,7 @@ func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree stri
 	if len(spent) == 0 {
 		return nil
 	}
-	_, err = e.store.DropQueuedChanges(ctx, tx, spent)
+	_, err = e.store.DropQueuedChanges(ctx, tx, spent, e.now())
 	return err
 }
 

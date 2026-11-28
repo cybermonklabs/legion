@@ -537,7 +537,6 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/dispatch/refs/rebuild.go#refs.OwedQueue.settleOwedStatement: delete from queue.table": {},
 	// The daemon's kept decisions and approvals, parked_decisions and readmitted_approvals, in a
 	// database of its own.
-	"packages/daemon/internal/record/store.go#record.*Postgres.MoveKeptClaims: update table":      {},
 	"packages/daemon/internal/store/kept_decisions.go#store.tellKeptDecisions: delete from table": {},
 	"packages/daemon/internal/store/kept_decisions.go#store.releaseKeptDecisions: update table":   {},
 	// The repository rename pass (store.RewriteRenamedRepositories): it writes a renamed repository's

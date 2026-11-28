@@ -16,18 +16,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// wantGivenUpLine is the line the daemon wrote when it gave a notice up after its last re-hold,
-// which no count writes any more (dispatch://INFRA-4131/spec#b-r-never-given-up).
-const wantGivenUpLine = "outbox notice not re-held again"
-
 // wantArchitectEndedLine is the one line a notice row writes when it finishes undelivered because
 // its architect will not hold its role again (noticeArchitectEnded).
 const wantArchitectEndedLine = "outbox notice finished undelivered: its architect will not hold its role again"
 
 // exceptionReport is an earlier listener's report (rehold) that its forward of h's notice to the
-// architect's session was not confirmed (`receipt_timeout`) after it answered the publish 200:
-// the publish went out under the key of row, with resends copies before it, and was forwarded to
-// the architect's own session.
+// architect's session failed for reason after it answered the publish 200: not confirmed
+// (`receipt_timeout`), not made (`delivery_failed`), or no holder to forward to (`no_holder`). The
+// publish went out under the key of row, with resends copies before it, and was forwarded to the
+// architect's own session.
 func (h *roleWaitHarness) exceptionReport(reason string, row int64, resends int) []byte {
 	h.t.Helper()
 	sent, ok := h.payload().(record.Notice)
@@ -108,8 +105,8 @@ func (h *roleWaitHarness) retireArchitect(machine *supervise.Machine) {
 // is not given up. Its row is kept and published again on the capped backoff of a row whose role
 // said it was ready (dispatch://INFRA-4131/spec#b-r-capped), under its own id and its own key, past
 // the fourth publish at which the daemon once gave a notice up: twelve publishes here, at 0, 1, 3,
-// 7, 15, 31, 63, 127, 255 and 511 s and then every 300 s. No copy of it is queued, and no line says
-// it was given up. Once its architect's session takes a publish, the row ends at that publish.
+// 7, 15, 31, 63, 127, 255 and 511 s and then every 300 s. No copy of it is queued. Once its
+// architect's session takes a publish, the row ends at that publish.
 func TestNoticeReceiptTimeoutKeepsItsRowOnTheCappedWaits(t *testing.T) {
 	t.Parallel()
 	h := newRoleWaitHarness(t, roleWaitCases[0], refusalError("receipt_timeout"))
@@ -138,8 +135,8 @@ func TestNoticeReceiptTimeoutKeepsItsRowOnTheCappedWaits(t *testing.T) {
 		t.Fatalf("the notice published %d times in all, want %d: every one nobody confirmed and the one taken", got, len(want)+1)
 	}
 	logs := rig.logs.String()
-	if strings.Contains(logs, wantGivenUpLine) || strings.Contains(logs, "outbox notice re-held") {
-		t.Fatalf("the notice nobody confirmed was given up or copied:\n%s", logs)
+	if strings.Contains(logs, "outbox notice re-held") {
+		t.Fatalf("the notice nobody confirmed was copied:\n%s", logs)
 	}
 	if lines := loggedMessages(t, logs, "outbox notice published"); len(lines) != 1 || lines[0]["row"] != float64(rig.id) {
 		t.Fatalf("the lines of the publish taken are %v, want one naming row %d", lines, rig.id)
@@ -199,13 +196,13 @@ func TestNoticeReceiptTimeoutEndsWhenTheArchitectRetires(t *testing.T) {
 // whose report names the architect's own ready session, waits the capped backoff of the copies
 // sent before it (record.RoleWaitBackoff of Resends), 1 s doubling to 5 minutes, and waits for its
 // architect's ready (record.WaitForReady). Fourteen copies go, past the three a notice was once
-// held to and on to the cap, and no line says the notice was given up.
+// held to and on to the cap, and none of them writes a line above Info.
 func TestNoticeReceiptTimeoutExceptionCopiesHaveNoLimit(t *testing.T) {
 	t.Parallel()
 	h := newRoleWaitHarness(t, roleWaitCases[0], nil)
 	h.claim(supervise.StateWorking, nil)
 	logs := &syncBuffer{}
-	h.runner.now, h.runner.log = h.clock.Now, debugLogTo(logs)
+	h.runner.log = debugLogTo(logs)
 	// The row the copies copy: its publish was answered 200, so it finished before the report.
 	const original = 7
 
@@ -241,8 +238,8 @@ func TestNoticeReceiptTimeoutExceptionCopiesHaveNoLimit(t *testing.T) {
 		t.Fatalf("after the report of copy %d the outbox holds %+v, want copy %d due at the cap, %s on", copies, held, copies+1, record.RoleWaitBackoffMost)
 	}
 	for _, line := range loggedLines(t, logs.String(), `"msg"`) {
-		if line["level"] == slog.LevelWarn.String() || line["level"] == slog.LevelError.String() || line["msg"] == wantGivenUpLine {
-			t.Fatalf("the copies wrote %v, want no line above Info and none giving the notice up:\n%s", line, logs.String())
+		if line["level"] == slog.LevelWarn.String() || line["level"] == slog.LevelError.String() {
+			t.Fatalf("the copies wrote %v, want no line above Info:\n%s", line, logs.String())
 		}
 	}
 }
@@ -255,7 +252,7 @@ func TestNoticeReceiptTimeoutExceptionCopyEndsWhenTheArchitectRetires(t *testing
 	h := newRoleWaitHarness(t, roleWaitCases[0], nil)
 	machine := h.claim(supervise.StateWorking, nil)
 	logs := &syncBuffer{}
-	h.runner.now, h.runner.log = h.clock.Now, debugLogTo(logs)
+	h.runner.log = debugLogTo(logs)
 	const original = 7
 
 	h.rehold(h.exceptionReport("receipt_timeout", original, 0))
@@ -292,7 +289,6 @@ func TestNoticeReceiptTimeoutExceptionCopyIsDueAtTheArchitectsReady(t *testing.T
 	w := h.readyHooks(true)
 	machine := h.claim(supervise.StateIdle, nil)
 	h.release(w)
-	h.runner.now = h.clock.Now
 	const original = 7
 
 	// The report of the sixth copy, which failed on the architect's own ready session: the
@@ -379,7 +375,7 @@ func TestNoticeReceiptTimeoutExceptionForAKeptRowQueuesNoCopy(t *testing.T) {
 func TestNoticeReceiptTimeoutCatchUpKeepsItsClaimsAndTellsThemOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	clock := roleWaitClock()
+	clock := microClock()
 	start := clock.Now()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

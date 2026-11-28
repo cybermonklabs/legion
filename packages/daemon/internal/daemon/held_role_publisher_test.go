@@ -27,6 +27,7 @@ import (
 // never called. A message to a claim holding its own session is published as before (R9), while a
 // role message to a token with no supervising machine ends without publishing (roleWaitGate,
 // dispatch://INFRA-4131/spec#b-r-wait-ready).
+//
 // The controls (the pull request records the runs): publish handing every topic to the publisher
 // as it came publishes to both claims that do not hold their sessions.
 func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *testing.T) {

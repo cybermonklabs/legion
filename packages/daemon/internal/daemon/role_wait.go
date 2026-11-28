@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,10 +39,13 @@ const roleNameBound = 30 * time.Second
 const waitLoggedAfter = 30 * time.Minute
 
 // The lines of a wait (settle's logWait, and the ends of a wait: waitEnded, waitsEndedOnCommit):
-// the 30-minute line of a role that said it was ready and took nothing, a fault nothing else
-// shows, at Error; the 30-minute line of every other wait, at WARN; and the end of the wait, at
-// Info, whether the row's run or a delete of the row ended it.
+// each run of a waiting row, at Info for the run that starts the wait and at Debug after it, the
+// line settle writes for each run of a wait whose end the daemon does not record too, at its own
+// levels; the 30-minute line of a role that said it was ready and took nothing, a fault nothing
+// else shows, at Error; the 30-minute line of every other wait, at WARN; and the end of the wait,
+// at Info, whether the row's run or a delete of the row ended it.
 const (
+	waitsLine           = "outbox row waits"
 	roleTookNothingLine = "outbox row's role is ready and took nothing for 30 minutes"
 	waitedLongLine      = "outbox row has waited 30 minutes"
 	waitEndedLine       = "outbox row's wait ended"
@@ -106,7 +110,7 @@ type roleGate struct {
 }
 
 // endsWithoutClaim is whether kind ends undelivered (without publishing) when this daemon holds
-// no supervising machine for its role's claim (dispatch://INFRA-4131/spec#b-r-wait-ready, P4):
+// no supervising machine for its role's claim (dispatch://INFRA-4131/spec#b-r-wait-ready):
 // notice (routed to a root architect with no machine), role_message (no pause holds a claim with
 // no machine), and update_ask. Every other role-waiting kind waits for the owed start.
 func endsWithoutClaim(kind record.OutboxKind) bool {
@@ -193,14 +197,10 @@ func (r *outbox) roleWaitGate(row record.OutboxRow, topic string) roleGate {
 // view.Generation so roleWaitNext stores it into record.OutboxWait.WaitLaunch (the gate allows
 // no such publish at Generation 0, so launch is never 0 for one).
 func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waiting error) error {
-	token, held := r.heldTopic(topic)
-	w := roleWaiting{topic: topic, token: token, held: held, view: view, err: waiting}
+	w := r.newRoleWaiting(topic, view, waiting)
 	var unheld unheldSession
 	if answer != nil && !errors.As(answer, &unheld) {
-		w.published, w.answer = true, answer
-		if held && publishesOncePerLaunch(view) {
-			w.launch = view.Generation
-		}
+		w.markPublished(answer)
 	}
 	return w
 }
@@ -211,12 +211,27 @@ func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waitin
 // view.Generation when view is a once-per-launch state so a later run of the same launch does not
 // publish again.
 func (r *outbox) roleWaitPublished(topic string, view supervise.ClaimView, waiting error) error {
-	token, held := r.heldTopic(topic)
-	w := roleWaiting{topic: topic, token: token, held: held, view: view, published: true, err: waiting}
-	if held && publishesOncePerLaunch(view) {
-		w.launch = view.Generation
-	}
+	w := r.newRoleWaiting(topic, view, waiting)
+	w.markPublished(nil)
 	return w
+}
+
+// newRoleWaiting is the role wait of a run that publishes to topic, held to the claim heldTopic
+// names, whose role's claim the run read as view, and whose wait is waiting: a run that published
+// nothing, until markPublished marks its publish.
+func (r *outbox) newRoleWaiting(topic string, view supervise.ClaimView, waiting error) roleWaiting {
+	token, held := r.heldTopic(topic)
+	return roleWaiting{topic: topic, token: token, held: held, view: view, err: waiting}
+}
+
+// markPublished marks w's run as one whose publish reached the listener, answer being the
+// listener's refusal of it or nil, and records the claim's Generation as the launch published to
+// where the claim is held to this daemon in a once-per-launch state (publishesOncePerLaunch).
+func (w *roleWaiting) markPublished(answer error) {
+	w.published, w.answer = true, answer
+	if w.held && publishesOncePerLaunch(w.view) {
+		w.launch = w.view.Generation
+	}
 }
 
 // refusedReady is whether this run's publish was refused while the role's claim said it was ready
@@ -359,8 +374,9 @@ func issueStopWait(issue string, err error) error {
 // release), which a close or a release of its pod waits for (record.WaitForRoleStops); the issue's
 // workspace check, its issue_bundle row, which a release's teardown waits for
 // (record.WaitForWorkspaceCheck); its branch, the issue_branch row, which the first start of a
-// child's own architect waits for (record.WaitForBranch); and a notice, which every later notice
-// to the same architect waits behind (record.WaitForRow). Every other row ends no wait.
+// child's own architect waits for (record.WaitForBranch); and a notice, which the next notice to
+// the same architect waits behind (record.WaitForRow, earlierNoticeFor's latest). Every other row
+// ends no wait.
 func finishedWaits(row record.OutboxRow) []string {
 	switch row.Kind {
 	case record.OutboxKindNotice:
@@ -379,10 +395,10 @@ func finishedWaits(row record.OutboxRow) []string {
 }
 
 // roleStop is whether op is one of the role stops a close and a release of an issue's pod wait for
-// (store's issueStopFences): a suspend, a step stop, an issue close and a role stop of an idle
-// release.
+// (store.RoleStopOps, the one list store's issueStopFences reads too): a suspend, a step stop, an
+// issue close and a role stop of an idle release.
 func roleStop(op record.SuperviseOp) bool {
-	return op == "suspend" || op == "step_stop" || op == "issue_close" || op == "release"
+	return slices.Contains(store.RoleStopOps, string(op))
 }
 
 // readyReleasedLine is the one line a ready's release writes once its transaction commits
@@ -541,7 +557,7 @@ func (r *outbox) logWait(ctx context.Context, row record.OutboxRow, err error, k
 	switch {
 	case next.WaitSince.IsZero():
 		next.WaitSince = now
-		r.log.Log(ctx, slog.LevelInfo, "outbox row waits", fields...)
+		r.log.Log(ctx, slog.LevelInfo, waitsLine, fields...)
 	case !next.WaitLogged && !now.Before(next.WaitSince.Add(waitLoggedAfter)):
 		next.WaitLogged = true
 		fields = append(fields, "waited", now.Sub(next.WaitSince).String())
@@ -551,7 +567,7 @@ func (r *outbox) logWait(ctx context.Context, row record.OutboxRow, err error, k
 			r.log.Log(ctx, slog.LevelWarn, waitedLongLine, fields...)
 		}
 	default:
-		r.log.Log(ctx, slog.LevelDebug, "outbox row waits", fields...)
+		r.log.Log(ctx, slog.LevelDebug, waitsLine, fields...)
 	}
 	return next
 }

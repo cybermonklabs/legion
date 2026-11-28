@@ -445,7 +445,7 @@ func TestANoticeTheListenerCouldNotForwardAtAllIsRetriedWithoutACap(t *testing.T
 	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 	var notDelivered notify.ErrNotDelivered
 	if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != notify.ReasonDeliveryFailed ||
-		errors.Is(err, errNoticeWaits) || !errors.Is(err, wait.ErrWaiting) || !roleWaitRun(row.Kind, err) {
+		errors.Is(err, errNoticeWaits) || !errors.Is(err, wait.ErrWaiting) {
 		t.Fatalf("execute = %v, want the listener's delivery_failed answer kept as a wait for the architect", err)
 	}
 	if _, err := pool.Exec(context.Background(), "update outbox set lease_token = '', lease_until = null where id = $1", row.ID); err != nil {
@@ -681,11 +681,14 @@ func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
 }
 
 // A relaunch can take minutes to take the Envoy role back. Until then the listener still forwards
-// to the stopped session's registration and reports each copy as a late receipt from it, and once
-// that registration lapses (here 5 minutes after the session stopped) it refuses the publish, and
-// the executor holds the row. The copies have no limit and go on the capped backoff of the copies
-// sent before them (record.RoleWaitBackoff), so an architect that takes the role back after four
-// minutes, or after seven, still receives the notice once, and nothing is dropped.
+// to the stopped session's registration and reports each copy as a late receipt from it. The
+// copies have no limit and go on the capped backoff of the copies sent before them
+// (record.RoleWaitBackoff), at 0, 5, 10, 15, 25, 45, 80, 145, 275 and 535 s, so an architect that
+// takes the role back after four minutes, or after seven, still receives the notice once, and
+// nothing is dropped. The stopped session's registration lapses 5 minutes after it stopped, and
+// the listener refuses a publish from then until the relaunch; no copy falls in that window at
+// either relaunch, so no refused publish is exercised here (a refused notice's wait is the role
+// wait tests', TestRoleWaitCapDoublesToFiveMinutesForEveryRefusal among them).
 func TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch(t *testing.T) {
 	t.Parallel()
 	for _, relaunch := range []time.Duration{4 * time.Minute, 7 * time.Minute} {
@@ -737,11 +740,13 @@ func TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch(t *testing.T) {
 	}
 }
 
-// Once the architect's claim is ready again, the copy waiting out its re-send delay is due at once.
-// So a notice written after the relaunch is not held behind that copy by the per-architect fence for
-// minutes: it arrives within seconds, after the waiting copy, and the waiting copy arrives once. A Go
-// relaunch resumes the claim's session file, so the relaunched agent registers the same session id
-// the stopped one had; a relaunch onto a new session is released the same way.
+// Once the architect's claim is ready again, the copy waiting out its re-send delay is due at once:
+// the ready's release makes it due, and it arrives at the relaunch itself rather than at its
+// delay's end. So a notice written after the relaunch is not held behind that copy by the
+// per-architect fence for minutes: it arrives within seconds, after the waiting copy, and the
+// waiting copy arrives once. A Go relaunch resumes the claim's session file, so the relaunched
+// agent registers the same session id the stopped one had; a relaunch onto a new session is
+// released the same way.
 func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, stopped, relaunched string }{
@@ -765,7 +770,7 @@ func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T)
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, start))
 
 			taken, received, readyDone, writtenDone := 0, []string{}, false, false
-			var arrivedB time.Time
+			var arrivedA, arrivedB time.Time
 			for clock.Before(start.Add(15*time.Minute)) && arrivedB.IsZero() {
 				if !readyDone && !clock.Before(relaunched) {
 					// The relaunched agent takes the role back and says it is ready.
@@ -797,15 +802,19 @@ func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T)
 					}
 					kind := copy.payload.(record.Notice).Kind
 					received = append(received, string(kind))
-					if kind == "design-approved" {
+					switch kind {
+					case "pr-blocked":
+						arrivedA = clock
+					case "design-approved":
 						arrivedB = clock
 					}
 				}
 				taken = len(delivered)
 				clock = clock.Add(5 * time.Second)
 			}
-			if fmt.Sprint(received) != "[pr-blocked design-approved]" || arrivedB.IsZero() || arrivedB.Sub(written) > 10*time.Second {
-				t.Fatalf("received %v, the later notice %s after it was written; want the waiting copy then the later notice, within seconds", received, arrivedB.Sub(written))
+			if fmt.Sprint(received) != "[pr-blocked design-approved]" || !arrivedA.Equal(relaunched) || arrivedB.IsZero() || arrivedB.Sub(written) > 10*time.Second {
+				t.Fatalf("received %v, the waiting copy %s after the start (the relaunch at %s), the later notice %s after it was written; want the waiting copy at the relaunch, then the later notice within seconds",
+					received, arrivedA.Sub(start), relaunched.Sub(start), arrivedB.Sub(written))
 			}
 		})
 	}
@@ -1099,8 +1108,9 @@ func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
 
 // A listener that says the architect's session is only unresponsive — past its live window,
 // inside its gone horizon, still holding the role — has refused nothing permanent: the row is
-// kept and tried again on the outbox's backoff, so the notice reaches that session once its
-// heartbeats land, and no copy of it is queued. The answer is a wait
+// kept and waits for its architect (roleWait), tried again on the capped backoff of a role wait
+// (record.RoleWaitBackoff), so the notice reaches that session once its heartbeats land, and no
+// copy of it is queued. The answer is a wait
 // (wait.ErrWaiting), not a failure of the row's, and it names the holder and the state the
 // listener reported it in, so the outbox logs it as waiting rather than as a failed row
 // (TestAnUnresponsiveArchitectsNoticeIsLoggedAsAWaitNotAFailedRow). It is no notice held for an

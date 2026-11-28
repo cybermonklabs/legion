@@ -1263,11 +1263,9 @@ func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) 
 // otherwise (probe.go). A repository cache's Sandbox (labelled legion.dev/cache) is no claim's
 // either: the claim path passes over it, and this sweeps no cache at all. SweepRepositoryCaches
 // keeps, repairs or retires the caches, on a pass the daemon runs beside its claims and never on
-// its boot: inside this call, a pass that replaced every cache pod a release had drifted spent the
-// budget INFRA's boot of 2026-11-27 ran its reconciliation on, and the boot step after it failed
-// (dispatch://INFRA-4131/spec#b-r-boot-budget). known's located claims join the watch, unless it
-// already holds a newer incarnation of the claim, and are evaluated at once. Nothing here lists
-// Secrets: each goes with its Sandbox.
+// its boot (runtime.RepositoryCacheSweeper, dispatch://INFRA-4131/spec#b-r-boot-budget). known's
+// located claims join the watch, unless it already holds a newer incarnation of the claim, and are
+// evaluated at once. Nothing here lists Secrets: each goes with its Sandbox.
 // Each Sandbox whose pod runs an image other than the runtime's (imageDrift), or as a
 // ServiceAccount other than the configured one (accountDrift), is warned of, named with both
 // images or both accounts, at the boot reconciliation and at every sweep until the pod is

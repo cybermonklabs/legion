@@ -205,8 +205,11 @@ func TestRoleWaitSuspendedPublishesAtMostOnceUntilTheNextReady(t *testing.T) {
 					w := h.readyHooks(false)
 					h.loops(w)
 					machine := h.claim(supervise.StateSuspended, func(c *supervise.Claim) { c.SuspendedBy = by })
+					// The round passes over a claim suspended by any source but the operator and the
+					// controller.
+					passedOver := by != supervise.SuspendedByOperator && by != supervise.SuspendedByController
 
-					if tc.kind == record.OutboxKindUpdateAsk && machine.Claim().PassedOverByRound() {
+					if tc.kind == record.OutboxKindUpdateAsk && passedOver {
 						rig.endsAtItsNextRun()
 						if got := h.publisher.count(); got != 0 {
 							t.Fatalf("update_ask to a claim suspended by %s published %d times, want 0", by, got)
@@ -248,6 +251,10 @@ func TestRoleWaitReadyMakesEveryWaitingRowDue(t *testing.T) {
 			h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
 			rig := h.queue()
 			held := h.queueWaiting(record.WaitForClaim(h.token), h.start.Add(time.Hour))
+			// The held row is on a later step of its wait, so the ready's step back to 0 is read.
+			if _, err := h.pool.Exec(context.Background(), "update outbox set wait_step = 4 where id = $1", held); err != nil {
+				t.Fatalf("put the held row at step 4 of its wait: %v", err)
+			}
 			w := h.readyHooks(false)
 			h.loops(w)
 			machine := h.claim(supervise.StateIdle, nil)
@@ -331,10 +338,10 @@ func firstTurnRig(t *testing.T, tc roleWaitCase) (*roleWaitHarness, *roleWaitRig
 	rig := h.queue()
 	w := h.readyHooks(true)
 	machine := h.claim(supervise.StateRegistered, nil)
-	readyAt := h.ready(w, machine)
+	h.ready(w, machine)
 	h.release(w)
-	if !readyAt.Equal(h.start) {
-		t.Fatalf("the ready came at %s, want the row's own moment %s", readyAt, h.start)
+	if ready := machine.View().LastReady; !ready.Equal(h.start) {
+		t.Fatalf("the claim's ready is dated %s, want the row's own moment %s", ready, h.start)
 	}
 	rig.run()
 	due, step, key, _ := rowWait(t, h.pool, rig.id)
@@ -345,7 +352,7 @@ func firstTurnRig(t *testing.T, tc roleWaitCase) (*roleWaitHarness, *roleWaitRig
 	return h, rig, w, machine
 }
 
-// S8 (R1, P8): a row refused because no session holds its role, at its claim's ready with no turn
+// S8 (R1): a row refused because no session holds its role, at its claim's ready with no turn
 // since, waits for the role's name: its claim's first turn, which starts 5 s after the ready here,
 // makes it due at once, its step not raised in the wait, and from the run at the turn on it waits
 // on the backoff from its first step.
@@ -377,7 +384,7 @@ func TestRoleWaitFirstTurnRunsTheRowAtTheTurnStart(t *testing.T) {
 	}
 }
 
-// S8 (R1, P8): a row refused because no session holds its role, at its claim's ready with no turn
+// S8 (R1): a row refused because no session holds its role, at its claim's ready with no turn
 // since, runs again at the end of the pane's first-turn bound (roleNameBound, 30 s) when no turn
 // comes, its step not raised in the wait; refused then, it is on the backoff from its first step,
 // at 31 s and 33 s, and never loops at the bound.
@@ -399,7 +406,7 @@ func TestRoleWaitFirstTurnBoundRunsTheRowAt30Seconds(t *testing.T) {
 	}
 }
 
-// S10 (R1, P7): a row on the capped waits of a refusal while its claim said it was ready waits for
+// S10 (R1): a row on the capped waits of a refusal while its claim said it was ready waits for
 // the claim's next ready alone (record.WaitForReady): a turn start of the ready claim makes it no
 // sooner due, and the ready of the claim's next launch, which moves its LastReady, makes it due at
 // once with its step back at 0, so its first refusal after that ready waits the backoff's first
@@ -409,7 +416,8 @@ func TestRoleWaitReadyRestartsTheBackoff(t *testing.T) {
 	t.Parallel()
 	tc := roleWaitCase{kind: record.OutboxKindMergeForward, role: claim.RoleMerger, wakesReleased: true, endsOnClaimEnd: true}
 	// refusedReady is a merge forward to an idle merger, ready since before the row was written,
-	// whose every publish is refused, run until its next run is 64 s ahead.
+	// whose every publish is refused, run six times, so that its next run is 32 s ahead, 63 s
+	// after its first.
 	refusedReady := func(t *testing.T) (*roleWaitHarness, *roleWaitRig, *workflowRuntime, *supervise.Machine) {
 		t.Helper()
 		h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))

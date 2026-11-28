@@ -189,9 +189,8 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		// The row stays as it is, its claims and its reserved moments with it, and runs again until
 		// a publish is taken; a claim that ended while the listener waited for the receipt ends it
 		// here, as a role nobody holds does.
-		state := r.claimState(architect)
-		if architectEnded(tree, state) != "" {
-			return r.noticeArchitectEnded(ctx, row, payload, tree, architect, state)
+		if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
+			return r.noticeArchitectEnded(ctx, row, payload, tree, architect, ended)
 		}
 		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
 			wait.Errorf("the notice for %s waits for its architect %s, whose session did not confirm it: %w",
@@ -220,23 +219,23 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
 	}
 	if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
-		return r.noticeArchitectEnded(ctx, row, payload, tree, architect, r.claimState(architect))
+		return r.noticeArchitectEnded(ctx, row, payload, tree, architect, ended)
 	}
 	return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
 		fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published))
 }
 
 // noticeArchitectEnded ends a notice row undelivered because its owning architect will not hold
-// its role again (architectEnded): before the publish when roleWaitGate finds no machine or a
-// failed or retired claim (dispatch://INFRA-4131/spec#b-r-wait-ready, P4), or after a publish
-// refused notify.ErrNoHolder when the claim ended in between or the tree lingers. It relays any
-// person's spec decision to the controller (parkDecision) and any kept-pod disk notice
-// (tellControllerOfKeptPod), then logs the one Info line.
+// its role again, ended being why (architectEnded, read once by the caller so the reason it judged
+// by is the one relayed and logged): before the publish when roleWaitGate finds no machine or a
+// failed or retired claim (dispatch://INFRA-4131/spec#b-r-wait-ready), or after a publish refused
+// notify.ErrNoHolder or not confirmed (notify.ReasonReceiptTimeout) when the claim ended in between
+// or the tree lingers. It relays any person's spec decision to the controller (parkDecision) and
+// any kept-pod disk notice (tellControllerOfKeptPod), then logs the one Info line.
 func (r *outbox) noticeArchitectEnded(ctx context.Context, row record.OutboxRow, payload record.Notice,
-	tree treeSnapshot, architect claim.Token, state supervise.ClaimState,
+	tree treeSnapshot, architect claim.Token, ended string,
 ) error {
 	notice, key := payload.Published(row.ID)
-	ended := architectEnded(tree, state)
 	if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 		return err
 	}
