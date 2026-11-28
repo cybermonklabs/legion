@@ -1911,6 +1911,7 @@ Each read runs in a read-only transaction of its own, under three bounds:
 
 - A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included.
   At that deadline pgx closes the connection and asks the server to cancel the statement.
+  `DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT` replaces those 10 s for an end-to-end test, and a deployment never sets it.
 
 The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
 The read takes ACCESS SHARE on its table and holds it until its transaction rolls back or its connection ends, normally milliseconds after the read; no statement timeout bounds how long it holds it.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -174,10 +175,17 @@ func signInRule(boot bootConfig) identity.SignInRule {
 // (oidc.CodeFlow.Run, which main starts at boot, or the first request), so a sign-in issuer that
 // is down at boot delays sign-ins and nothing else.
 func signInFlow(boot bootConfig) *oidc.CodeFlow {
+	return signInFlowOn(boot, clock.Real())
+}
+
+// signInFlowOn is signInFlow with each revocation's bound, oidc.TokenTimeout, armed on c
+// (oidc.NewCodeFlowOn): clock.Real from signInFlow, and a test's clocktest.Fake, which ends a
+// revocation the pool holds only where the test moves it.
+func signInFlowOn(boot bootConfig, c clock.Clock) *oidc.CodeFlow {
 	if boot.SignInIssuer == "" {
 		return nil
 	}
-	return oidc.NewCodeFlow(boot.SignInIssuer, boot.SignInClientID, boot.SignInClientSecret, boot.SignInDomain)
+	return oidc.NewCodeFlowOn(boot.SignInIssuer, boot.SignInClientID, boot.SignInClientSecret, boot.SignInDomain, c)
 }
 
 // openPeople is the people store main serves boot with over pool, and the keys session cookies are

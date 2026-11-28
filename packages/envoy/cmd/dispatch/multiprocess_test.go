@@ -46,6 +46,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -3834,9 +3835,10 @@ func storedHead(t *testing.T, pair *dispatchPair, artifactID string) int64 {
 // The tab opens on the test goroutine; a sync that changes nothing stores nothing, so the lock
 // does not hold it. The marker's wait runs on a goroutine of its own and answers an error rather
 // than failing the test, and the row keeps the order the promise needs: the append queued on the
-// lock, then the wait still holding while the gate stays shut, then the gate let go, then the
-// wait's end. A wait that ended on the room's own acknowledgement of the marker, before the
-// append that stores it committed, ends while the gate is shut, and fails the row by name.
+// lock, then a read of the marker's own, begun after that, finding its update unstored while the
+// gate stays shut and the wait going on, then the gate let go, then the wait's end. A wait that
+// ended on the room's own acknowledgement of the marker, before the append that stores it
+// committed, ends while the gate is shut, and fails the row by name.
 func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 	t.Parallel()
 	dispatchSlots.reserve(t, 2)
@@ -3854,7 +3856,8 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 	}
 	editor := pair.openSyncedEditor(t, pair.a, dispatchTestLogin, artifactID, "before\n")
 	marked := make(chan error, 1)
-	go func() { marked <- pair.markEditor(t.Name(), pair.a, dispatchTestLogin, artifactID, editor) }()
+	var began atomic.Int64
+	go func() { marked <- pair.markEditor(t.Name(), pair.a, dispatchTestLogin, artifactID, editor, &began) }()
 	// The tab's append is stored on the room-appends pool, whose connections name themselves
 	// dispatch-room-appends in pg_stat_activity (store's roomAppendsApplicationName). Every other
 	// insert into doc_updates - a settlement's, a server write's (docs' append_writes.go and
@@ -3876,11 +3879,26 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 		}
 		return fmt.Sprintf("%d browser appends and %d other inserts wait on doc_updates' lock", appends, others), appends > 0
 	})
-	testwait.Quiet(t, "the marker's wait while its append is still held", marked, 100*time.Millisecond,
-		"what must not happen is a wait that answers before its own append committed: the append is parked in "+
-			"PostgreSQL holding no state of the product's to read, the tab runs in this process over a real socket "+
-			"so synctest does not reach it, and the only later action there is - committing the gate - is the thing "+
-			"that releases it")
+	// The marker's wait reads whether its update is stored one read at a time, and begins the next
+	// read only once a read found it unstored (markEditor). So once it has begun two reads since
+	// the append was seen parked, the first of them began with the append parked on the lock, found
+	// the update unstored, and the wait went on: a wait that answers before its own append
+	// committed answers on that read.
+	parked := began.Load()
+	testwait.Until(t, "the marker to begin its second read since its append was parked", func() (string, bool) {
+		select {
+		case err := <-marked:
+			t.Fatalf("the marker's wait returned (%v) while its append was held", err)
+		default:
+		}
+		since := began.Load() - parked
+		return fmt.Sprintf("%d reads begun since the append was parked", since), since >= 2
+	})
+	select {
+	case err := <-marked:
+		t.Fatalf("the marker's wait returned (%v) while its append was held", err)
+	default:
+	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatalf("let the gate on doc_updates go: %v", err)
 	}
@@ -3898,8 +3916,10 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 // writing is durable, so only a later write somewhere else can leave the tab's room behind the
 // durable head. The marker changes no text, so what the tab renders is what it opened. It takes
 // no t, so a goroutine of a test's can run it: its wait is the shared wait's form for a caller
-// with no t (testwait.InHelper, naming test), and it answers what went wrong as an error.
-func (p *dispatchPair) markEditor(test string, process *dispatchProcess, login, artifactID string, editor *docstest.Peer) error {
+// with no t (testwait.InHelper, naming test), and it answers what went wrong as an error. It reads
+// whether the update is stored one read at a time, adding one to began as it begins each, and
+// begins the next only once a read found the update unstored.
+func (p *dispatchPair) markEditor(test string, process *dispatchProcess, login, artifactID string, editor *docstest.Peer, began *atomic.Int64) error {
 	markers := editor.Doc.GetMap("test-sync")
 	marker := strconv.FormatUint(uint64(editor.Doc.ClientID()), 10)
 	update, err := editor.Send(func(txn *crdt.Transaction) { markers.Set(txn, marker, true) })
@@ -3908,6 +3928,7 @@ func (p *dispatchPair) markEditor(test string, process *dispatchProcess, login, 
 	}
 	var failed error
 	if err := testwait.InHelper(test, login+"'s sync marker to be stored", func() bool {
+		began.Add(1)
 		var stored bool
 		if err := p.database.Pool.QueryRow(context.Background(),
 			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, artifactID, update).Scan(&stored); err != nil {
@@ -4648,7 +4669,11 @@ func TestAProcessThatResumesBesideAPeerWhoseKeySetItDoesNotShareDoesNotServeBesi
 // lapse, and exit 1 after it (processes.Register): that wait is the product's, for a process
 // restarted beside its own dead row, and the refusal the row is about is in its line already, so
 // the row stops the process rather than wait the product's wait out. The waits are the shared
-// wait's, and each failure prints the process's output.
+// wait's, and each failure prints the process's output. The program's own record decides the
+// case: no `dispatch: listening` line in its output, which it logs just before it serves. The
+// /healthz asks, each on main's 1 s client, add a second check (answered), which a read that the
+// second ends passes whatever the process would have answered: the clock can pass that check, and
+// never the line's.
 func requireRefusedToStart(t *testing.T, p *dispatchProcess, name string) {
 	t.Helper()
 	client := &http.Client{Timeout: time.Second}

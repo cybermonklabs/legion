@@ -197,6 +197,12 @@ type bootConfig struct {
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
+	// SearchFillReadTimeout is the client's own deadline on each read of the keyword fill's
+	// deferral line (searchFillTableHoldsRow), zero for searchFillTableReadTimeout's ten seconds;
+	// only DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT, under the test hooks, sets it, so an end-to-end
+	// test can stage it past its run and leave each read to Postgres's own timeouts, however slowly
+	// a loaded machine dials.
+	SearchFillReadTimeout time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -1354,8 +1360,12 @@ func main() {
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
+		readTimeout := searchFillTableReadTimeout
+		if boot.SearchFillReadTimeout > 0 {
+			readTimeout = boot.SearchFillReadTimeout
+		}
 		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
-			searchFillTableRows(ctx, database.Pool)...)...)
+			searchFillTableRows(ctx, database.Pool, clock.Real(), readTimeout)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1768,6 +1778,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -2251,8 +2262,9 @@ func bootTask(ctx context.Context, clk bootClock, timeout time.Duration, failed,
 	slog.Info(done, counts...)
 }
 
-// bootClock is the clock a boot task's bound runs on, a narrowing of clock.Clock: clock.Real in
-// main, and a clocktest.Fake in the test that moves a bound.
+// bootClock is the clock a boot task's bound runs on, and each read of the keyword fill's deferral
+// line (searchFillTableHoldsRow), a narrowing of clock.Clock: clock.Real in main, and a
+// clocktest.Fake in a test, which moves a bound or never moves it.
 type bootClock interface {
 	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
@@ -2343,7 +2355,8 @@ var searchFillTables = [...]string{"search_text_versions", "search_text_versions
 // included, so it sits 4 s past the statement timeout: a slow dial still leaves the server's own
 // errors to end the read. The two reads run one after the other before the server listens, so
 // they delay the boot by at most twice searchFillTableReadTimeout in all; a lock on a table alone
-// delays it by about searchFillTableLockTimeout for that table.
+// delays it by about searchFillTableLockTimeout for that table. A test process stages the
+// client's deadline past its run instead (bootConfig.SearchFillReadTimeout).
 const (
 	searchFillTableLockTimeout      = 5 * time.Second
 	searchFillTableStatementTimeout = 6 * time.Second
@@ -2351,16 +2364,16 @@ const (
 )
 
 // searchFillTableRows answers the deferral line's fields that say whether each of
-// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow. A read
-// that fails, a timeout included, gives <table>_rows=unknown and the error in <table>_rows_error,
-// and the boot goes on: the line reports the tables and never decides whether the process starts.
-// The line is how a deployment learns, from the boot log alone, that a process booted with the
-// fill off found both tables empty.
-func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
+// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow under
+// the client's deadline timeout on clk. A read that fails, a timeout included, gives
+// <table>_rows=unknown and the error in <table>_rows_error, and the boot goes on: the line reports
+// the tables and never decides whether the process starts. The line is how a deployment learns,
+// from the boot log alone, that a process booted with the fill off found both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool, clk bootClock, timeout time.Duration) []any {
 	fields := make([]any, 0, 4*len(searchFillTables))
 	for _, table := range searchFillTables {
 		key := table + "_rows"
-		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table)
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, clk, timeout, table)
 		switch {
 		case err != nil:
 			fields = append(fields, key, "unknown", key+"_error", err.Error())
@@ -2377,12 +2390,14 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
 // `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
 // visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
 // It reads in a read-only transaction of its own that first sets the bounds above, local to that
-// transaction. The read takes ACCESS SHARE on the table and holds it until that transaction rolls
-// back (the deferred Rollback) or its connection ends, normally milliseconds after the read; no
-// statement timeout bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or
-// another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
-func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
+// transaction, under the client's deadline timeout armed on clk: searchFillTableReadTimeout on
+// clock.Real in main, and a test's clocktest.Fake that the test never moves, so only Postgres's
+// own timeouts end the read. The read takes ACCESS SHARE on the table and holds it until that
+// transaction rolls back (the deferred Rollback) or its connection ends, normally milliseconds
+// after the read; no statement timeout bounds how long it holds it. Row writes go on beside it,
+// but a TRUNCATE or another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, clk bootClock, timeout time.Duration, table string) (bool, error) {
+	ctx, cancel := clk.WithTimeout(ctx, timeout)
 	defer cancel()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {

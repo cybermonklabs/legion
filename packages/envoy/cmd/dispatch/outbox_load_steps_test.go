@@ -60,9 +60,11 @@ var loadStepRates = []int{4, 40}
 //
 // Per step it reports the rate written, the publish rate (distinct events first received while the
 // step was writing, per second), the latency from the event's commit (the envelope's IssuedAt) to
-// its first arrival, p50 and p99, and how many written events had not reached every destination a
-// minute after the step's last write, which fails the test. Per burst it reports the drain time:
-// from the first write to the last arrival.
+// its first arrival, p50 and p99, and how many written events had not reached every destination.
+// Each step and each burst waits, through the shared wait, until every written event has reached
+// every destination it is addressed to, and fails the test naming how many had when that wait
+// gives up (waitForDelivery), so the undelivered count of every step and burst it reports is 0.
+// Per burst it reports the drain time: from the first write to the last arrival.
 func TestTheOutboxLoadSteps(t *testing.T) {
 	// Not parallel: it measures the outbox's publish rates and latencies, which other tests' processes
 	// on the same cores would move.

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,27 +15,31 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The boot's retirement of the refresh tokens stored in plain text is bounded: a sign-in pool that
 // accepts the connection and never answers delays the start by the bound, not by each token's own
 // timeout, and the start goes on, every token left in its row for the next boot and the counts
-// logged without a token. The bound runs on a fake clock, which the test moves to it once the
-// pool holds the first revocation, so the retirement can end on nothing but its bound.
+// logged without a token. The retirement's bound (plainRefreshTokenRetireTimeout, 30 s) and each
+// revocation's own (oidc.TokenTimeout, 10 s) run on one fake clock, which the test moves to each
+// bound once it is armed, as production's clock reaches them: each revocation the pool holds ends
+// at its own bound and the next token goes, so the pool gets the second token at 10 s and the third
+// at 20 s, and at 30 s the retirement's bound ends the retirement with the third held, so the
+// fourth is never sent.
 func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
-	// to a wall-clock bound load could break (oidc.TokenTimeout, 10 s, the client's own bound on the
-	// held revocation, which must not end it before the test moves the fake clock to the bound).
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := context.Background()
 	pool := signInPool(t, "dispatch-client", "client-secret")
 	pool.DelayRevocation(stagedPastTheRun)
 	boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": pool.URL()})
-	signIn := signInFlow(boot)
+	fake := clocktest.New(time.Now())
+	signIn := signInFlowOn(boot, fake)
 	database := storetest.Open(t)
-	tokens := []string{"plain-token-1", "plain-token-2", "plain-token-3"}
+	tokens := []string{"plain-token-1", "plain-token-2", "plain-token-3", "plain-token-4"}
 	for i, token := range tokens {
-		if _, err := database.Pool.Exec(ctx, `insert into people (email, refresh_token, confirmed_at) values ($1, $2, now())`, []string{"a@d.example", "b@d.example", "c@d.example"}[i], token); err != nil {
+		if _, err := database.Pool.Exec(ctx, `insert into people (email, refresh_token, confirmed_at) values ($1, $2, now())`, []string{"a@d.example", "b@d.example", "c@d.example", "d@d.example"}[i], token); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -45,38 +50,48 @@ func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
-	fake := clocktest.New(time.Now())
 	bound := fake.Now().Add(plainRefreshTokenRetireTimeout)
 	retired := make(chan struct{})
 	go func() {
 		defer close(retired)
 		retirePlainRefreshTokens(ctx, people, fake, plainRefreshTokenRetireTimeout)
 	}()
-	if armed := fake.AwaitArmed(t, "the retirement's bound", 1); !armed[0].Equal(bound) {
-		t.Fatalf("the retirement armed %v, want its one bound at %v, %v from its start", armed, bound, plainRefreshTokenRetireTimeout)
-	}
+	fake.AwaitArmedAt(t, "the retirement's bound, plainRefreshTokenRetireTimeout from its start", bound)
 	// The store main builds revokes through the pool's code flow, which discovers the pool on the
 	// first revocation: without it every token would fail at once with no request made, and the
-	// bound would end a retirement that waited on nothing.
-	testwait.Eventually(t, "the first revocation to reach the pool that never answers", func() bool {
-		return len(pool.RevocationRequests()) > 0
-	})
-	select {
-	case <-retired:
-		t.Fatal("the retirement returned while the pool held its first revocation, before its bound")
-	default:
+	// bounds would end a retirement that waited on nothing. Each revocation arms its own bound on
+	// the fake before it is sent, and the test moves the fake to that bound only once the pool holds
+	// it; the third's bound falls at the retirement's.
+	for held := 1; held <= 3; held++ {
+		testwait.Until(t, fmt.Sprintf("revocation %d to reach the pool that never answers", held), func() (int, bool) {
+			sent := len(pool.RevocationRequests())
+			return sent, sent >= held
+		})
+		ends, armedThere := fake.Now().Add(oidc.TokenTimeout), 1
+		if ends.Equal(bound) {
+			armedThere = 2
+		}
+		fake.AwaitArmedCountAt(t, fmt.Sprintf("the bound of revocation %d, oidc.TokenTimeout on the code flow's clock", held), ends, armedThere)
+		if sent := len(pool.RevocationRequests()); sent != held {
+			t.Fatalf("the pool received %d revocations while it held revocation %d, before its bound; want %d", sent, held, held)
+		}
+		select {
+		case <-retired:
+			t.Fatalf("the retirement returned while the pool held revocation %d, before its bound", held)
+		default:
+		}
+		fake.Advance(oidc.TokenTimeout)
 	}
-	fake.Advance(plainRefreshTokenRetireTimeout)
 	testwait.Receive(t, "the retirement to return at its bound", retired)
-	// The bound ends the retirement on the context the revocations run on, so the tokens after the
-	// held one fail on that context without reaching the pool. A retirement that ignored it would
-	// send each later token to the pool and wait out each one's own timeout.
-	if sent := len(pool.RevocationRequests()); sent != 1 {
-		t.Errorf("the pool received %d revocations, want 1: the bound must end the tokens after the held one before they are sent", sent)
+	// The bound ends the retirement on the context the revocations run on, so the token after the
+	// held one fails on that context without reaching the pool. A retirement that ignored it would
+	// send the fourth token once the third revocation's own bound passed, and wait out its bound too.
+	if sent := len(pool.RevocationRequests()); sent != 3 {
+		t.Errorf("the pool received %d revocations, want 3: the retirement's bound must end the token after the held one before it is sent", sent)
 	}
 	out := logs.String()
-	if !strings.Contains(out, "retired the refresh tokens stored in plain text") || !strings.Contains(out, "retired=0 failed=3") {
-		t.Errorf("logged, want the counts retired=0 failed=3:\n%s", out)
+	if !strings.Contains(out, "retired the refresh tokens stored in plain text") || !strings.Contains(out, "retired=0 failed=4") {
+		t.Errorf("logged, want the counts retired=0 failed=4:\n%s", out)
 	}
 	for _, token := range tokens {
 		if strings.Contains(out, token) {

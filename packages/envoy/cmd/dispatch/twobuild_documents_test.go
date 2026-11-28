@@ -35,7 +35,9 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
+	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
@@ -276,8 +278,10 @@ func withParagraph(render, paragraph string) string {
 	}
 }
 
-// The Hocuspocus frames a document socket's admission is read from (ygo provider/websocket).
+// The Hocuspocus frames a document socket's admission is read from (ygo provider/websocket), and
+// the sync frame that carries a y-protocols sync message.
 const (
+	hocuspocusSync          = 0
 	hocuspocusAuth          = 2
 	hocuspocusAuthToken     = 0
 	hocuspocusAuthDenied    = 1
@@ -350,10 +354,13 @@ func admittedScope(writer, reader documentSide, fleet fleetNumbers) string {
 }
 
 // documentSocket is a document socket as a page's provider holds it: authenticated with the
-// page's token, reading every frame the room sends until the connection ends.
+// page's token, reading every frame the room sends until the connection ends. answered closes once
+// the room has sent its first sync step 2, its answer to a sync step 1 (awaitRoomAnswer).
 type documentSocket struct {
 	artifactID string
 	scope      string
+	connection *gws.Conn
+	answered   chan struct{}
 	ended      chan struct{}
 	endErr     error
 }
@@ -373,7 +380,7 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 		}
 		t.Fatalf("open the document socket %s: status %d %s: %v", address, status, body, err)
 	}
-	socket := &documentSocket{artifactID: artifactID, ended: make(chan struct{})}
+	socket := &documentSocket{artifactID: artifactID, connection: connection, answered: make(chan struct{}), ended: make(chan struct{})}
 	t.Cleanup(func() {
 		_ = connection.Close()
 		<-socket.ended
@@ -392,6 +399,7 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 	// gives up: none, or messages of other kinds than the answer.
 	var read atomic.Int64
 	go func() {
+		roomAnswered := false
 		defer close(socket.ended)
 		for {
 			_, message, err := connection.ReadMessage()
@@ -404,7 +412,18 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 			if _, err := decoder.ReadVarString(); err != nil {
 				continue
 			}
-			if kind, err := decoder.ReadVarUint(); err != nil || kind != hocuspocusAuth {
+			kind, err := decoder.ReadVarUint()
+			if err != nil {
+				continue
+			}
+			if kind == hocuspocusSync {
+				if step, _, err := ygsync.ReadSyncMessage(decoder.RemainingBytes()); err == nil && step == ygsync.MsgSyncStep2 && !roomAnswered {
+					roomAnswered = true
+					close(socket.answered)
+				}
+				continue
+			}
+			if kind != hocuspocusAuth {
 				continue
 			}
 			answer, err := decoder.ReadVarUint()
@@ -438,6 +457,34 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 	})
 	socket.scope = strings.TrimPrefix(answer, "scope ")
 	return socket
+}
+
+// awaitRoomAnswer sends the socket's room a sync step 1 naming no state, as a page's provider does
+// once its socket is authenticated, and waits for the room's sync step 2 in answer: the room has
+// then loaded the document and serves the socket, so a close the server makes as it loads the room
+// or takes the socket's first frames has come before it. It fails the test when the socket closes
+// before the answer.
+func (s *documentSocket) awaitRoomAnswer(t *testing.T) {
+	t.Helper()
+	ask := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString(s.artifactID)
+		encoder.WriteVarUint(hocuspocusSync)
+		encoder.WriteRaw(ygsync.EncodeSyncStep1(crdt.New()))
+	})
+	if err := s.connection.WriteMessage(gws.BinaryMessage, ask); err != nil {
+		t.Fatalf("send the room of document %s a sync step 1: %v", s.artifactID, err)
+	}
+	testwait.Until(t, "the room of document "+s.artifactID+" to answer the socket's sync step 1", func() (string, bool) {
+		select {
+		case <-s.answered:
+			return "answered", true
+		default:
+		}
+		if s.closed() {
+			t.Fatalf("the socket for document %s closed before its room answered its sync step 1: %v", s.artifactID, s.endErr)
+		}
+		return "no sync step 2 from the room yet, and the socket is open", false
+	})
 }
 
 func (s *documentSocket) closed() bool {
@@ -506,18 +553,20 @@ func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 	}
 }
 
-// socketOpenFor is how long every socket the corpus row opened must stay open after the last one
-// was admitted: long enough for a server that closes a socket it admitted to have done so. It is
-// a span of the row's own (socketsStayOpenWhy).
+// socketOpenFor is how long every socket the corpus row opened must stay open once each one's room
+// has answered it (documentSocket.awaitRoomAnswer): a span of the row's own, for a close the
+// server makes on a timer of its own after that answer (socketsStayOpenWhy).
 const socketOpenFor = 3 * time.Second
 
-// socketsStayOpenWhy is why the corpus row holds socketOpenFor as a span: a server closes a
-// socket it admitted on a decision of its own that it records nowhere the row can read, both
-// builds are child processes so synctest does not reach them, and a message the row sent on a
-// socket would be answered by the document's room, which says nothing of a close still to come.
-const socketsStayOpenWhy = "a server closes a socket it admitted on a decision it records nowhere the row can read, " +
-	"both builds are child processes so synctest does not reach them, and a message sent on the socket is answered " +
-	"by the document's room, which says nothing of a close still to come"
+// socketsStayOpenWhy is why the corpus row holds socketOpenFor as a span once every room has
+// answered its socket: what is left is a close the server makes on a timer of its own after that
+// answer - its re-check of each writable socket against the live fleet (docs'
+// Service.RunSchemaAdmission, every processes.LiveWindow) or its heartbeat's re-check of the
+// socket's credential - which it records nowhere the row can read before it closes, in a child
+// process synctest does not reach.
+const socketsStayOpenWhy = "a close the server makes on a timer of its own after the room answered - its re-check of " +
+	"the writable sockets against the live fleet, or its heartbeat's re-check of the credential - is recorded nowhere " +
+	"the row can read before it closes, and both builds are child processes synctest does not reach"
 
 // corpusSkipped are the corpus files this row leaves out, each with why. A corpus file is
 // markdown for the parsers' fixtures, which a server does not have to be able to store.
@@ -569,6 +618,11 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 				file, reader.name, writer.name, writer.page, socket.scope, want)
 		}
 		sockets = append(sockets, socket)
+	}
+	// A close the server makes as it loads a socket's room, or as it takes the socket's first
+	// frames, comes before the room's answer to the socket's sync step 1.
+	for _, socket := range sockets {
+		socket.awaitRoomAnswer(t)
 	}
 	testwait.Span(t, socketOpenFor, socketsStayOpenWhy)
 	for _, socket := range sockets {
@@ -1061,11 +1115,12 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	// A version alone: the reader creates the same text the writer indexed in twin.
 	_, readerWrote := createDocument(t, reader.process, project, "Forms only the writer reads, written by the reader", formsOnlyMarkdown(key))
 	versionOwed := documentEdgesWritten{id: readerWrote, refs: onlyForms.refs, blocks: onlyForms.blocks}
-	// The waits on a build's block index here (this one, the reader's below and the writer's last)
-	// wait with Until, which has no minute: a block index drains every
-	// docs.BlockIndexReconcileInterval (30 s), and after rebuild-refs its first passes take every
-	// text that rebuild re-indexed and every document it marked owed a block index, which can take
-	// longer than Eventually's minute.
+	// The waits on a build's block index here (this one, the wait for the writer's documents to owe
+	// nothing, the reader's below and the writer's last) wait with Until, which has no minute: a
+	// block index drains every docs.BlockIndexReconcileInterval (30 s), a document owed stays owed
+	// until the writer's pass on that interval indexes it (RunRefsFormsReconciliation), and after
+	// rebuild-refs its first passes take every text that rebuild re-indexed and every document it
+	// marked owed a block index, which can take longer than Eventually's minute.
 	testwait.Until(t, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
 		func() (bool, bool) {
 			back := versionOwed.back(t, builds)
@@ -1076,8 +1131,11 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	// documents have written their versions, and the reader holds no room of them.
 	waitForSettled(t, builds, twin)
 	waitForSettled(t, builds, issueTwice)
-	testwait.Eventually(t, "the "+writer.name+"'s documents to owe nothing",
-		func() bool { return !formsOwed(t, builds, twin) && !formsOwed(t, builds, issueTwice) })
+	testwait.Until(t, "the "+writer.name+"'s documents to owe nothing", func() (string, bool) {
+		twinOwed, twiceOwed := formsOwed(t, builds, twin), formsOwed(t, builds, issueTwice)
+		return fmt.Sprintf("the document holding forms only it reads owed: %t; the document naming its issue twice owed: %t", twinOwed, twiceOwed),
+			!twinOwed && !twiceOwed
+	})
 	stop(t, reader.process)
 	stop(t, writer.process)
 	if formsOwed(t, builds, twin) || formsOwed(t, builds, issueTwice) {

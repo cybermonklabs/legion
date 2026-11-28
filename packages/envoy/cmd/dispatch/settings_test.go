@@ -2197,6 +2197,23 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.SearchFillReadTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT unset: SearchFillReadTimeout = %v, want 0 (searchFillTableReadTimeout's ten seconds)", boot.SearchFillReadTimeout)
+			}
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                    "1",
+				"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": stagedPastTheRun.String(),
+			})
+			if boot.SearchFillReadTimeout != stagedPastTheRun {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT: SearchFillReadTimeout = %v, want %v", boot.SearchFillReadTimeout, stagedPastTheRun)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")
