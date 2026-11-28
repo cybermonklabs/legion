@@ -24,6 +24,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	target := "role:" + role
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	claimant := rig.receiver(t, holder)
 

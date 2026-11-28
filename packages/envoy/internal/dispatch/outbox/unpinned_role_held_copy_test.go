@@ -39,6 +39,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	lapsed, live := "role:"+lapsedRole, "role:"+liveRole
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.silent(t, contracts.RoleTopicPrefix+lapsedRole)
 	rig.silent(t, contracts.RoleTopicPrefix+liveRole)
 	claimant := rig.receiver(t, holder)

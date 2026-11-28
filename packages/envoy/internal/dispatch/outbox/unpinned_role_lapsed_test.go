@@ -51,6 +51,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 	target := "role:" + mentioned
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, mentioned, holder, session.SessionEntry{SelfSubscribed: true})
 	claimant := rig.receiver(t, holder)
 	wrote := rig.receiver(t, author)

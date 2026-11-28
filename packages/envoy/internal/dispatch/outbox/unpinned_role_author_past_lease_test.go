@@ -41,6 +41,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	target := "role:" + role
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	// No claim stands for the role when the outbox reads it, so this read can name no holder for
 	// the role the comment mentions; the listener names one to the mention's sender, and the
 	// sweep's resend pins it on the attempt row - this very author among the sessions it may
