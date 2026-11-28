@@ -231,6 +231,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     askId,
     commentId,
     conversationFocusItemId,
+    conversationHandoffId,
     isPrimaryArtifactRoute,
     highlightTerm,
     issue,
@@ -563,6 +564,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           <ConversationTab
             issueArtifacts={issueArtifacts}
             focusItemId={conversationFocusItemId}
+            {...(conversationHandoffId === undefined ? {} : { focusItemId: conversationHandoffId })}
             isClosed={isClosed}
             issueKey={issueKey}
             onFirstPlacement={forgetConversationScroll}

@@ -511,6 +511,10 @@ function HandoffTurn({
   register?: DwellRef;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
+  // The card a handoff's page address names opens its fields for the reader who followed it.
+  useEffect(() => {
+    if (current) setExpanded(true);
+  }, [current]);
   const fieldsId = useId();
   const { author, phase, version } = item.handoff;
   return (

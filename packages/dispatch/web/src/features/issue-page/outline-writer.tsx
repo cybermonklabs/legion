@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
+import type { Actor, Comment, IssueDetails, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
@@ -21,11 +21,16 @@ import {
   sameStatement,
 } from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
+import { isViewer } from "../refs/actor";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
+import { PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
+import { agentsOnlyIds, historyHoldsReply, issueAsks } from "./agents-only";
+import { FOOT_BOX } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
+import { useMarginDrawer } from "./margin-slot";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
@@ -54,13 +59,17 @@ export interface OutlineWriter {
   readonly changeAnswer: (node: TreeNode) => void;
   /** Sets the line back to a new comment on the issue. */
   readonly clear: () => void;
-  /** Asks the outline to take the reader to what a write from the line just landed
-   *  (`Landing`), once its read has drawn it. */
+  /** Asks the page to take the reader to what a write from the line just landed (`Landing`),
+   *  once its read has drawn it: the outline, or the panel's history where the write answered a
+   *  turn of a thread the history holds (`HeldLanding.in`), with Details opened for it on a
+   *  phone where it is shut (`HeldLanding.opensDetails`). */
   readonly land: (landing: Landing) => void;
-  /** Says the outline has taken the reader there, which ends the ask. */
+  /** Says the part of the page that takes the landing has taken the reader there, or given the
+   *  landing up, which ends the ask. */
   readonly landed: () => void;
-  /** Where the outline is asked to take the reader after a write; undefined once it has. */
-  readonly landing: Landing | undefined;
+  /** Where the page is asked to take the reader after a write, and which part of it takes them
+   *  there; undefined once it has. */
+  readonly landing: HeldLanding | undefined;
   /** Puts the caret in the line, once it is drawn. */
   readonly focus: () => void;
   /** What the line writes with no reply set: a comment, or a question. */
@@ -134,6 +143,90 @@ export interface Landing {
     | undefined;
 }
 
+/**
+ * A landing as the writer holds it (`OutlineWriter.landing`): what the line asked for, and which
+ * part of the page takes the reader there. `history` where the panel's history draws what the
+ * landing goes to (`agents-only.ts`), of which the outline draws no row: the reader's new turn
+ * under `under`, in a thread the history holds whoever writes in it (`historyHoldsReply`), or,
+ * for a `self` landing, `under` itself, a turn of a thread the history holds. The history takes
+ * the reader to that new turn, or back to that turn (`IssueHistory.tsx`), in Details, which the
+ * writer opens for it on a phone where it is shut (`opensDetails`). `outline` for every
+ * other landing, which the outline takes (`IssueTree.tsx`): among them a reply that takes its
+ * thread out of the history, which the outline draws whole, the reply under the turn it answers,
+ * once the read that brings the reply answers. It is told once, as the line asks (`land`), by the
+ * one rule of which turns the history draws, from the reads the outline and the history draw the
+ * conversation from with the reader's new turn among them, so no landing is taken by both of
+ * them and none is left by both.
+ */
+export interface HeldLanding extends Landing {
+  readonly in: "history" | "outline";
+  /** Whether the reader's new turn takes `under` out of the history: a `newest` landing whose
+   *  reads put `under` in the history, which the reply takes out of it (`historyHoldsReply`), as a
+   *  person's reply to an agents' comment thread tied to no text does. The outline draws no row
+   *  of `under` until the read that brings the reply answers, so it waits for that row; it ends
+   *  at once every other landing under a node it draws no row of, such as one a filter's view
+   *  holds no row of (`IssueTree.tsx`). */
+  readonly leavesHistory: boolean;
+  /** Whether the writer opened Details for it (decision 581): a landing in the history asked for
+   *  on a phone while Details, a sheet over the page there, was shut, as a turn's Reply shuts it
+   *  so that the line at the foot can take the focus (`history-entries.tsx`). The history is then
+   *  drawn from the commit that holds the landing, down to the thread the landing answers however
+   *  far under its first entries that stands, and takes it as one asked for while it is drawn, not
+   *  as one it finds held as it mounts (`IssueHistory.tsx`'s `useHistoryLanding`). */
+  readonly opensDetails: boolean;
+}
+
+/** How long a write's landing waits for the read that draws it, in milliseconds: the line's send
+ *  has landed and its read is a request away, so a read that has not drawn the write by then is
+ *  not going to. The outline then takes the reader to their newest node where it looked
+ *  (`IssueTree.tsx`), and the history gives the landing up (`IssueHistory.tsx`). */
+export const LANDING_WAIT_MS = 10_000;
+
+/** What a `newest` landing found under what its write was made under as it first looked
+ *  (`newOwnNode`): each node there, by its id, and the landing it looked for, so that the next
+ *  landing looks afresh. The outline and the history each hold one. */
+export interface LandingSight {
+  readonly before: ReadonlySet<string>;
+  readonly landing: Landing;
+}
+
+/**
+ * The one rule by which the outline and the history find the reader's new node for a `newest`
+ * landing (`IssueTree.tsx`, `IssueHistory.tsx`), among `candidates`: the nodes drawn now under
+ * what the write was made under, in their order - a row's children, a thread's turns. The send
+ * has landed when the line asks, but the read that draws the write is still out, so at the first
+ * look for `landing` - `sight` is of another landing, or none - the answer is the sight to hold:
+ * every candidate, whoever wrote it, so that a reader whose login is read only after that look
+ * takes none of their earlier nodes there for the new one. At each look after it the answer is
+ * the first candidate the reader wrote (`readerWrote`) that the sight does not hold, or none until
+ * a read draws one; a new node another author wrote is never it.
+ */
+export function newOwnNode<T extends { readonly author?: Actor | undefined; readonly id: string }>(
+  landing: Landing,
+  sight: LandingSight | undefined,
+  candidates: readonly T[],
+  reader: string | undefined
+): { readonly sight: LandingSight } | { readonly made: T | undefined } {
+  if (sight?.landing !== landing) {
+    return { sight: { before: new Set(candidates.map((candidate) => candidate.id)), landing } };
+  }
+  return {
+    made: candidates.find(
+      (candidate) => !sight.before.has(candidate.id) && readerWrote(candidate, reader)
+    ),
+  };
+}
+
+/** Whether the reader wrote `node`: a person signed in as `reader`, in any casing, as the
+ *  server matches a login (`isViewer`), whether they wrote it themselves or a session acting
+ *  for them did - a write from the line at the foot is theirs either way. */
+export function readerWrote(
+  node: { readonly author?: Actor | undefined },
+  reader: string | undefined
+): boolean {
+  return node.author !== undefined && isViewer(node.author, reader);
+}
+
 /** The answer the writer holds (`OutlineWriter.answer`, which says what reads it). */
 export interface AnswerTarget {
   /** The ask's own id, which the answer is written to. */
@@ -179,15 +272,19 @@ export function useOutlineWriter(): OutlineWriter | undefined {
 const DRAWING_FRAMES = 10;
 
 /** The line's field, wherever the page draws it (`IssueComposer.tsx`). */
-const COMPOSER_FIELD = '[data-testid="issue-composer"] textarea';
+const COMPOSER_FIELD = `${FOOT_BOX} textarea`;
 
 /** Holds the writer for one issue's body. */
 export function OutlineWriterProvider({
   children,
   issueKey,
+  openAsks,
 }: {
   children: ReactNode;
   issueKey: string;
+  /** The asks the issue read holds open (`IssueDetails.open_asks`), which `land` reads beside
+   *  the asks read, as the outline and the history do (`issueAsks`). */
+  openAsks: IssueDetails["open_asks"];
 }): ReactNode {
   const sendKey = useMemo<MutationKey>(() => ["issue-composer", issueKey], [issueKey]);
   const store = useHeldSends();
@@ -196,7 +293,7 @@ export function OutlineWriterProvider({
     store.get(sendKey)?.request.kind === "ask" ? "ask" : "comment"
   );
   const [answer, setAnswer] = useState<AnswerTarget | undefined>(undefined);
-  const [landing, setLanding] = useState<Landing | undefined>(undefined);
+  const [landing, setLanding] = useState<HeldLanding | undefined>(undefined);
   const landed = useCallback(() => setLanding(undefined), []);
   // The reader's own comment the line is editing, if it is: its id and its words as they stand.
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
@@ -209,12 +306,51 @@ export function OutlineWriterProvider({
     () => store.get(sendKey)?.request.statement
   );
   const agentText = useAgentText();
+  const drawer = useMarginDrawer();
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
   // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
+  // Which part of the page takes a landing (`HeldLanding.in`): the history where it draws what
+  // the landing goes to, by the rule the outline leaves those threads out by and the history
+  // draws them by (`agents-only.ts`), over the same reads under the same keys and the same asks
+  // (`issueAsks`), so while the asks read is out or has failed the writer takes the same asks for
+  // questions as they do, and lands no turn where neither draws it. A `newest` landing goes to the
+  // reader's new turn under `under`, which these reads do not hold yet: it is drawn where the rule
+  // puts it once they do (`historyHoldsReply`), so a reply that takes an agents' comment thread
+  // out of the history goes to the outline, which draws it under the comment it answers, and says
+  // so (`HeldLanding.leavesHistory`), since the outline draws that comment only from the read that
+  // brings the reply. A `self` landing goes to `under` itself, where the reads put it now. A
+  // landing in the history needs Details drawn, and on a phone Details is a sheet over the page
+  // that a turn's Reply shuts so that the line at the foot can take the focus
+  // (`history-entries.tsx`): a landing there asked for while Details is shut opens it, by the
+  // drawer's own `setOpen`, as `t v` opens it (`details-more.tsx`), and Details draws the history
+  // whenever it is open (`DetailsHistory`). Wider than a phone a turn's Reply leaves Details open,
+  // and a reader who shut it keeps it shut (decision 581).
+  const land = useCallback(
+    (asked: Landing) => {
+      const { under } = asked;
+      const everyAsk = issueAsks(openAsks, asks.data);
+      const heldNow =
+        under !== undefined && agentsOnlyIds(comments.data, messages.data, everyAsk).has(under.id);
+      const history =
+        under !== undefined && asked.to === "newest"
+          ? historyHoldsReply(under, comments.data, messages.data, everyAsk)
+          : heldNow;
+      const opensDetails =
+        history && drawer?.open === false && window.matchMedia(PHONE_VIEWPORT_QUERY).matches;
+      setLanding({
+        ...asked,
+        in: history ? "history" : "outline",
+        leavesHistory: heldNow && !history,
+        opensDetails,
+      });
+      if (opensDetails) drawer.setOpen(true);
+    },
+    [asks.data, comments.data, drawer, messages.data, openAsks]
+  );
   // The animation frame `focus()` is waiting on, if any: a new `focus()` cancels the earlier one
   // before scheduling its own, and unmounting the provider cancels it so no frame of an unmounted
   // writer moves the focus.
@@ -391,7 +527,7 @@ export function OutlineWriterProvider({
       editing,
       focus,
       kind,
-      land: setLanding,
+      land,
       landed,
       landing,
       pick,
@@ -412,6 +548,7 @@ export function OutlineWriterProvider({
       editing,
       focus,
       kind,
+      land,
       landed,
       landing,
       pick,

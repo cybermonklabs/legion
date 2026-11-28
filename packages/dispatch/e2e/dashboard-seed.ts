@@ -44,10 +44,9 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { awaitBlockAsk, pause } from "./issue-layout-seed-support";
-import { LEGION_PROJECT, seedLegionDaemon } from "./legion-seed";
+import { LEGION_PROJECT } from "./legion-seed";
+import { seedLegionState as writeLegionState } from "./legion-state-seed";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
-import { sql } from "./psql";
-import { sqlLiteral } from "./seed";
 
 /** The person every Dashboard row signs in as: the assignee of each seeded issue, so every open
  *  question of it waits on her unless it is handed on. */
@@ -62,10 +61,6 @@ export const QUIET_PROJECT = "QUIET";
 /** The session the Legion daemon of the Dashboard project writes as (`legionDaemonSessionOf` in
  *  `packages/envoy/internal/dispatch/api/issue_role_holders.go`). */
 export const DAEMON_SESSION = `legion-daemon:${DASHBOARD_PROJECT}`;
-
-/** The daemon's state address: a port nothing listens on, so the sampler's own reads fail at
- *  once, write no observation, and leave the rows `seedLegionState` writes standing. */
-const NOTHING_ANSWERS = "http://127.0.0.1:9";
 
 /** The agent that plans the issue, asks its questions, writes its decisions and replies. */
 const PLANNER: Actor = {
@@ -182,55 +177,22 @@ export const EVERY_CLAIM_STATE: readonly SeededRole[] = [
 ];
 
 /**
- * Writes `key`'s Legion state as the sampler writes a read of its project's daemon that answered
- * (`legion.RecordRead`, `packages/envoy/internal/dispatch/legion/store.go`): the project's daemon
- * setting, named with an address nothing answers (`e2e/legion-seed.ts`) and left out where
- * `configured` is false; one `legion_observations` row for each field that moved - `phase` with
- * the JSON string of the phase and `claim.<role>` with the JSON string of each role's claim state
- * (`legion.State.Observations`) - and a `null` row for each field of the issue whose newest row
- * holds a value and that this state does not carry (`recordObservations`), the trigger
- * `legion_observations_current` keeping `legion_current`; a `legion_reads` row that says the read
- * succeeded, in the same statement, so the two commit together as `RecordRead`'s transaction
- * makes them; and the notification an open page's live view of the issue moves on
- * (`legion.NotifyRead`).
+ * Writes `key`'s Legion state through `e2e/legion-state-seed.ts`, the one function that writes
+ * an issue's Legion state as the sampler writes a read of its project's daemon that answered
+ * (`legion.RecordRead`): the project's daemon setting, left out where `configured` is false; the
+ * phase, and each role of `roles` as that role's claim in its state; and a good read. Where
+ * `configured` is true the issue is of `LEGION_PROJECT`, the project `e2e/legion-seed.ts` names.
  */
 export async function seedLegionState(key: string, legion: LegionStateSeed): Promise<void> {
   const project = key.slice(0, key.indexOf("-"));
-  if (legion.configured) {
-    if (project !== LEGION_PROJECT) {
-      throw new Error(`${key} is not of ${LEGION_PROJECT}, the project e2e/legion-seed.ts names`);
-    }
-    // Each row starts from an emptied database (`e2e/test.ts`'s `freshDatabase`), and seeds one
-    // issue's Legion state, so the project names no daemon yet.
-    await seedLegionDaemon(NOTHING_ANSWERS);
+  if (legion.configured && project !== LEGION_PROJECT) {
+    throw new Error(`${key} is not of ${LEGION_PROJECT}, the project e2e/legion-seed.ts names`);
   }
-  const observed = [
-    ...(legion.phase === null ? [] : [{ field: "phase", value: legion.phase }]),
-    ...legion.roles.map(({ role, state }) => ({ field: `claim.${role}`, value: state })),
-  ];
-  const fields = observed.map(({ field }) => sqlLiteral(field)).join(", ");
-  const values = observed.map(({ value }) => sqlLiteral(JSON.stringify(value))).join(", ");
-  const sent = Buffer.byteLength(JSON.stringify(observed));
-  await sql(
-    `WITH found AS (
-       SELECT observed.field, observed.value::jsonb AS value
-         FROM unnest(ARRAY[${fields}]::text[], ARRAY[${values}]::text[]) AS observed(field, value)
-     ), newest AS (
-       SELECT field, value FROM legion_current
-        WHERE project = ${sqlLiteral(project)} AND issue_key = ${sqlLiteral(key)}
-          AND value <> 'null'::jsonb
-     ), written AS (
-       INSERT INTO legion_observations (project, issue_key, field, value, observed_at)
-       SELECT ${sqlLiteral(project)}, ${sqlLiteral(key)}, coalesce(found.field, newest.field),
-              coalesce(found.value, 'null'::jsonb), now()
-         FROM found FULL JOIN newest ON newest.field = found.field
-        WHERE coalesce(newest.value, 'null'::jsonb) IS DISTINCT FROM coalesce(found.value, 'null'::jsonb)
-       RETURNING 1
-     )
-     INSERT INTO legion_reads (project, read_at, ok, error, bytes)
-     VALUES (${sqlLiteral(project)}, now(), true, NULL, ${sent})`,
-    `SELECT pg_notify('dispatch_legion_state', ${sqlLiteral(project)})`
-  );
+  await writeLegionState(key, {
+    claims: Object.fromEntries(legion.roles.map(({ role, state }) => [role, state])),
+    configured: legion.configured,
+    phase: legion.phase,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------

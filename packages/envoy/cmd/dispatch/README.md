@@ -5407,7 +5407,8 @@ Each item below names a path with its method and identity, then its purpose.
   `slot` is the index of the slot that the issue holds, or `null`.
   `waiting_line` is `{place, length}`, where `place` counts from 1 in the daemon's waiting line, or `null` when that line does not name the issue.
   `blocked_by` lists the issues that block the issue, in the order the daemon stored them, and is `[]` when no issue blocks it; for a parent in `awaiting_children` it names the open children that the daemon lists it as blocked on, not blocker links.
-  `waiting_on` is the daemon's object exactly as stored, or `null`.
+  `waiting_on` is what the issue waits on from a person, `{kind, ask, artifact_id, gate_version, since, answered_at, answered_by}`: the daemon's `waitingOn` under these names, each member but `kind` absent where the daemon wrote none, and no member of another name.
+  It is `null` when the issue waits on nothing, and when the daemon's stored object does not decode or names no `kind`, which Dispatch logs with the issue's key.
   `read` is the newest read of the daemon, `{at, ok, error}`, or `null` when no read was recorded.
   `runs_revision` counts the tuples of the issue's runs: it is `0` for an issue with no run.
   Each write of a run that stores something new makes it larger, and a write sent again leaves it.
@@ -6429,6 +6430,17 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/handoffs` (GET; cookie, trusted header, or bearer)
 
   List the issue's handoffs, newest first, without their bodies; a closed issue's read too.
+
+- `/api/v1/issues/{key}/handoffs/bodies` (GET; cookie, trusted header, or bearer)
+
+  The bodies of up to `contracts.HandoffBodiesMaxIDs` handoffs of the issue in one answer, each named by its whole uuid in `?ids=<id>,<id>`: `{bodies: [{id, body}], left: [<id>]}`.
+  `bodies` holds one entry for each id answered, in the order asked: `body` is the text as stored, or `null` for an id that is no handoff of this issue, another issue's handoff included.
+  The route adds each entry's size as it is sent to a count: its body as a JSON string, each `<`, `>` and `&` six bytes as the encoder writes them, and its `field_trees` where the answer carries them.
+  It stops before the first entry that would take the count past `contracts.HandoffBodiesMaxBytes`, and `left` names that id and each id after it, in the order asked, for a later request.
+  The first id asked is always answered, so one body made mostly of escaped characters can pass the limit alone.
+  With `Dispatch-Trees: 1` each entry also carries `field_trees`, as `GET /api/v1/handoffs/{id}` does, and they count in the limit; a first entry whose body and trees together pass it is sent with its body and no trees, and the page reads that one text itself.
+  The refusals, in this order: `ids` absent, empty or given twice, an empty id, or an id asked twice, `400 INVALID_QUERY`; more than `contracts.HandoffBodiesMaxIDs` ids, `400 INVALID_QUERY`; an id that is not a uuid, `400 HANDOFF_ID_INPUT`; a key that names no issue, `404 NOT_FOUND`, as `GET /api/v1/issues/{key}` answers it.
+  The route writes nothing, reads the issue and the bodies in one read-only transaction, and reads a closed issue's handoffs too.
 
 - `/api/v1/issues/{key}/handoffs/{phase}/latest` (GET; cookie, trusted header, or bearer)
 

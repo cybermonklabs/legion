@@ -119,6 +119,10 @@ export type DispatchReadingSurface =
   | "node-row-chip"
   | "outline-crumb"
   | "issue-pin"
+  | "issue-page-history-turn"
+  | "issue-page-history-handoff-body"
+  | "issue-page-history-handoff-data"
+  | "issue-page-history-block"
   | "plan-task-line"
   | "spec-decision-line"
   | "document-page-title"
@@ -681,6 +685,48 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "issue-pin",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    reach: "/issues/<ISSUE>/activity with the new issue page on, a turn in Details' History",
+    record: true,
+    rendered: true,
+    surface: "issue-page-history-turn",
+  },
+  {
+    cannotCarry: NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's opened fields in Details' History, in its own entry or in the entry of the run that reports it",
+    reason:
+      "A handoff is no record of the reference graph (`textSourceKind`): the renderer draws the words its session wrote - each string field at the top of its body, each proof entry, a body that is no JSON object - from the reading the server sends for each (`field_trees`), and is given no `source`, so a `#id` in them names nothing.",
+    record: false,
+    rendered: true,
+    surface: "issue-page-history-handoff-body",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's field of data in Details' History, in its own entry or in the entry of the run that reports it",
+    reason:
+      "A handoff field that holds a list, an object, a number, a boolean or null is the data its session wrote, not words: a list is drawn as one numbered entry for each item and an object as each key with its value, each value inside them by the same rule, to 8 levels of lists and objects, past which the rest of the value is its JSON text in a box, and a string inside them, a number, a boolean or null as its plain text.",
+    record: false,
+    rendered: false,
+    surface: "issue-page-history-handoff-data",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueHistory.test.tsx",
+      test: "a block's line in the history reads a reference as its target's name",
+    },
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, the line of a repaired or refused block in Details' History",
+    reason: `A line of the history names a block by the one line of the node that carries it, its first line cut by the page's first-line rule. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-page-history-block",
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,

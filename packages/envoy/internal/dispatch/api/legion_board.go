@@ -678,8 +678,9 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 
 // legionBoardWaitOf is the card's reading of the wait an issue's state holds, the daemon's object
 // as stored: its kind, when it began and when a person answered it, and nil where the wait names
-// no kind or one of the three is not the shape it is read as. An issue's own read carries the
-// whole object; a card shows these three.
+// no kind or one of the three is not the shape it is read as. An issue's own read
+// (legionIssueWaitOf) sends seven named members of the object and drops the rest; a card shows
+// these three.
 func legionBoardWaitOf(raw json.RawMessage) *legionBoardWait {
 	if raw == nil {
 		return nil

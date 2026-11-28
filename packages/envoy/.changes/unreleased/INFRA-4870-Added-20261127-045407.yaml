@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  Dispatch serves the bodies of up to 20 handoffs of one issue in one answer:
+  `GET /api/v1/issues/{key}/handoffs/bodies?ids=<id>,<id>` answers `{bodies: [{id, body}], left: [id]}`,
+  each body as stored, in the order asked, and `null` for an id that is no handoff of the issue. It
+  stops before the entry that would take the answer past 1 MiB (`HandoffBodiesMaxBytes`), names that
+  id and every later one in `left`, and always answers the first id. With `Dispatch-Trees: 1` each
+  entry also carries its `field_trees`, counted in the limit. More than 20 ids, an empty id or an id
+  named twice is `400 INVALID_QUERY`, an id that is no UUID `400 HANDOFF_ID_INPUT`, and a key that
+  no issue has `404 NOT_FOUND`.
+time: 2026-11-27T04:54:07Z
+custom:
+    Issue: INFRA-4870

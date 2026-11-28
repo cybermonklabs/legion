@@ -33,6 +33,8 @@ export function useIssueDetail(route: IssueRoute) {
     route.kind === "ask" || route.kind === "comment" || route.kind === "message"
       ? route.id
       : undefined;
+  // The handoff a handoff's page address names: the Conversation tab opens at its card.
+  const conversationHandoffId = route.kind === "handoff" ? route.handoffId : undefined;
 
   return {
     activeTab,
@@ -40,6 +42,7 @@ export function useIssueDetail(route: IssueRoute) {
     askId,
     commentId,
     conversationFocusItemId,
+    conversationHandoffId,
     isPrimaryArtifactRoute,
     highlightTerm,
     issue,

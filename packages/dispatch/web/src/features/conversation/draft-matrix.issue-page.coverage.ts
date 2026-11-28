@@ -13,6 +13,7 @@ const REASONS = {
   4: "4. `state`, which `IssueDetail` hands the Conversation, is the reader's read mark and pins for the issue (`stateForIssue`), which only the unread boundary, the read mark's dwell and each card's pin read, so it moves no composer's address and draws or ends no composer.",
   5: "5. An address under `/issues/` that parses as no issue draws the not-found page in place of `IssueDetail` (`route === undefined`), so no composer is drawn there, and going there from an issue is leaving the issue, the issue-left row.",
   6: "6. Threads' addresses (`/threads`, `/threads/<id>`) are the new issue page's alone (dispatch://INFRA-5704 R18), so today's page draws its not-found page there in place of `IssueDetail`: no composer is drawn there, and going there from an issue is leaving the issue, the issue-left row.",
+  7: "7. The spread hands the Conversation `focusItemId` alone, the handoff a handoff's page address names (`conversationHandoffId`), which picks the card the tab opens and brings into view as the prop `focusItemId={conversationFocusItemId}` beside it does, and which is no address prop: it moves no composer's address and draws or ends no composer.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -60,6 +61,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("IssueDetail | ConversationTab | address prop | state={state.data}", {
     reason: REASONS[4],
   }),
+  ...answers(
+    "IssueDetail | ConversationTab | address prop | <ConversationTab {...(conversationHandoffId === undefined ? {} : { focusItemId: conversationHandoffId })}>",
+    { reason: REASONS[7] }
+  ),
   ...answers(
     "IssuePage | IssueDetail | key | <IssueDetail key={route.key}>",
     cells("docked composer · issue left, then back"),

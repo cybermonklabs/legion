@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Dispatch API schema names the members of an issue's Legion `waiting_on` (`LegionIssueWaitingOn`:
+  `kind`, `ask`, `artifact_id`, `gate_version`, `since`, `answered_at`, `answered_by`) in place of the
+  daemon's camelCase members.
+time: 2026-11-27T04:54:07Z
+custom:
+    Issue: INFRA-4870

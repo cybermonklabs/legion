@@ -36,6 +36,7 @@ export type IssueRoute =
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
+  | { key: string; kind: "handoff"; handoffId: string }
   | { key: string; kind: "dashboard" }
   | { key: string; kind: "threads"; record?: string }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
@@ -510,6 +511,20 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "decisions") {
     return { key, kind: "decisions" };
   }
+  // A handoff's page address. It opens that handoff's entry in the history on the new page and
+  // its card on today's Conversation tab, and names nothing in text (`pageRoutes`), as the
+  // server's `text` reads no handoff. Its id is any one decoded segment, as an ask's, a comment's
+  // and a message's address takes: an id that is no handoff of the issue opens the issue's page
+  // too, whose history says that no such handoff exists. A segment that does not decode, decodes
+  // empty or holds a control character (`decodedSegment`) gives no route, and the page drawn
+  // there is the not-found page. The id is lower-cased, as the server writes a handoff's id, so a
+  // UUID in upper case names its handoff. The id is `handoffId`, not `id`, so no reader of an
+  // item's route takes it in.
+  const handoff = target.match(/^handoffs\/([^/?#\s]+)$/);
+  if (handoff !== null) {
+    const handoffId = decodedSegment(handoff[1] ?? "")?.toLowerCase();
+    return handoffId === undefined ? undefined : { handoffId, key, kind: "handoff" };
+  }
   // Dashboard's tab is a page of the web alone, out of `PLAIN_ISSUE_TABS`: its path opens the tab,
   // and no reader of text reads `dispatch://<KEY>/dashboard` or this path as a reference
   // (`pageRoutes`), as the server's `text` reads neither.
@@ -722,6 +737,10 @@ function pageRoutes(
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
   }
+  // A handoff's page names nothing in text, as the server's `text` reads it (`parseIssuePath`).
+  if (route.kind === "handoff") {
+    return undefined;
+  }
   // Dashboard's path names nothing in text, as the server's `text` reads it (`parseIssuePath`).
   if (route.kind === "dashboard") {
     return undefined;
@@ -806,6 +825,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   // verification, plan, steps, activity, children, artifacts, collaborators and the
   // conversation's `log` - were references the server refused to read.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
+    return issue;
+  }
+  // A handoff's page is the issue, as every tab is, though no reference names the handoff.
+  if (route.kind === "handoff") {
     return issue;
   }
   // Dashboard's tab is the issue, as every other tab is, though no reference names the tab.
@@ -1052,6 +1075,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} spec${block}`;
     case "conversation":
       return `${route.key} log`;
+    case "handoff":
+      return `${route.key} handoff`;
     case "decisions":
       return `${route.key} decisions`;
     case "dashboard":
@@ -1201,6 +1226,9 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "conversation") {
     return `${issue}/conversation`;
+  }
+  if (route.kind === "handoff") {
+    return `${issue}/handoffs/${encodeURIComponent(route.handoffId)}`;
   }
   if (route.kind === "decisions") {
     return `${issue}/decisions`;

@@ -1,0 +1,5599 @@
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { type ComponentProps, type ReactNode, useState } from "react";
+import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
+
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { displayTree } from "../../__tests__/display-trees";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import {
+  type IntersectionControl,
+  installIntersectionObserver,
+} from "../../__tests__/intersection-observer";
+import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { installResizeObserver } from "../../__tests__/scroll-box";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api } from "../../api/client";
+import type { EventPages } from "../../api/event-feed";
+import { eventRefreshTargets } from "../../api/event-refresh";
+import { liveSocketFor } from "../../api/live-socket";
+import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
+import { refreshQueries } from "../../api/query-refresh";
+import type {
+  Artifact,
+  Comment,
+  DispatchEvent,
+  DisplayTree,
+  Handoff,
+  HandoffBodies,
+  HandoffSummary,
+  IssueAskRow,
+  IssueDetails,
+  IssueSteps,
+  MessageRead,
+  StepRecord,
+} from "../../api/types";
+import { linkText, pageInkText } from "../../theme/classes";
+import { dateKey, dayLabel } from "../activity/activity-model";
+import { pinnedItemMarker } from "../issue/pins";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
+import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { defaultRuns, stepRecord } from "../steps/step-record-fixture";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { measureNearWords } from "./clamp-fixtures";
+import { DetailsHistory } from "./details-more";
+import { useHandoffFold } from "./HistoryHandoff";
+import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT } from "./history-landing";
+import { historyLogKey } from "./history-log";
+import { arriveInHistoryLog } from "./history-log-fixture";
+import { HISTORY_EXCLUDED_TYPES } from "./history-model";
+import { IssueHistory } from "./IssueHistory";
+import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
+import { presetPath } from "./issue-address";
+import { type MarginDrawer, MarginSlotProvider, useMarginDrawer } from "./margin-slot";
+import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
+import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
+import { failRefreshOverHeld } from "./refresh-over-held-fixture";
+import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
+
+const KEY = "CORE-1";
+
+// The history heads each day it reads with a line, and these cases date what it reads some
+// seconds, minutes or days before now. Each case runs at one fixed midday, so none reads the
+// wall clock: one started just after midnight would put its entries on yesterday.
+// `setSystemTime` holds `Date` alone; the timers the cases wait on (React Query's, `waitFor`'s,
+// the animation frames) run on the real clock as before.
+const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+beforeEach(() => setSystemTime(NOON));
+afterEach(() => setSystemTime());
+
+// The history reads the issue's runs, each an entry, through the Steps tab's catch-up while
+// Details is open (here, with no drawer, always), and the list of its handoffs. Each case answers
+// both with none unless it answers them itself, through the spies `stepsRead` and `handoffsRead`
+// give, so no read reaches the network.
+let timelineReads: { mockRestore(): void }[] = [];
+beforeEach(() => {
+  timelineReads = [
+    spyOn(api, "listSteps").mockResolvedValue({ issue: KEY, tasks: [] }),
+    spyOn(api, "listHandoffs").mockResolvedValue([]),
+  ];
+});
+afterEach(() => {
+  for (const read of timelineReads) read.mockRestore();
+});
+
+/** The history's read of the issue's runs (`api.listSteps`), which `beforeEach` answers with none. */
+function stepsRead(): Mock<typeof api.listSteps> {
+  return api.listSteps as unknown as Mock<typeof api.listSteps>;
+}
+
+/** The history's read of the issue's handoffs (`api.listHandoffs`), which `beforeEach` answers with
+ *  none. */
+function handoffsRead(): Mock<typeof api.listHandoffs> {
+  return api.listHandoffs as unknown as Mock<typeof api.listHandoffs>;
+}
+
+/** The history with the fold the page holds for its issue (`useHandoffFold`), as
+ *  `DetailsHistory` draws it, at an address that names no handoff and is no `/steps`, and with
+ *  Details open, as it is with no drawer. */
+function HeldHistory(
+  props: Omit<ComponentProps<typeof IssueHistory>, "addressed" | "fold" | "open">
+): ReactNode {
+  return (
+    <IssueHistory {...props} addressed={undefined} fold={useHandoffFold(props.issue.key)} open />
+  );
+}
+
+/** The entries of the history as it draws them, newest first: a line of an event, a run of
+ *  uploads or a thread, and never the line that says what is new. */
+function drawnEntries(): HTMLElement[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>("[data-history-day] > ol > [data-history-entry]"),
+  ];
+}
+
+/** A claim of the issue, which the history draws as one line (`history-model.ts`), made
+ *  `20 - seq` seconds ago, so a higher sequence is newer and every one is today's. */
+function claim(seq: number): DispatchEvent {
+  const at = new Date(Date.now() - (20 - seq) * 1000).toISOString();
+  return {
+    actor: { id: "planner", kind: "session" },
+    created_at: at,
+    id: seq,
+    issue_key: KEY,
+    notify: false,
+    payload: {},
+    seq,
+    type: "issue.claimed",
+  } as DispatchEvent;
+}
+
+/** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events`, the
+ *  issue's messages read `messages` and its comments read `comments`, none unless given, with no
+ *  ask; the read of the first event past the reader's read mark answers `boundary`, none unless
+ *  given. Returns what restores them. */
+function stubHistoryReads(
+  events: readonly DispatchEvent[],
+  {
+    boundary = [],
+    comments = [],
+    messages = [],
+  }: {
+    boundary?: readonly DispatchEvent[];
+    comments?: readonly Comment[];
+    messages?: readonly MessageRead[];
+  } = {}
+): () => void {
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.after === undefined ? [...events] : [...boundary]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([...comments]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([...messages]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  return () => {
+    for (const read of reads) read.mockRestore();
+  };
+}
+
+const ROW_HEIGHT = 40;
+const LIST_TOP = 100;
+
+function setScrollY(value: number): void {
+  Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
+}
+
+/** The geometry `ViewportAnchor` reads, faked as `ViewportAnchor.test.tsx` fakes it: every entry
+ *  is `ROW_HEIGHT` tall, stacked from `LIST_TOP` in DOM order, and the page scrolls through them
+ *  with `window.scrollY`. Anything that is not an entry measures as the list's own box. */
+function installRowLayout(): { restore: () => void } {
+  const rows = () => [...document.querySelectorAll<HTMLElement>("[data-event-seq]")];
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const all = rows();
+    const index = all.indexOf(this as HTMLElement);
+    const top = LIST_TOP + (index < 0 ? 0 : index * ROW_HEIGHT) - window.scrollY;
+    const height = index < 0 ? all.length * ROW_HEIGHT : ROW_HEIGHT;
+    return {
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 100,
+      toJSON: () => ({}),
+      top,
+      width: 100,
+      x: 0,
+      y: top,
+    } as DOMRect;
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation(
+    (_x, y) => rows()[Math.floor((window.scrollY + y - LIST_TOP) / ROW_HEIGHT)] ?? null
+  );
+  const originalScrollBy = window.scrollBy;
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    const top = typeof x === "number" ? y : x.top;
+    if (top !== undefined) setScrollY(window.scrollY + top);
+  }) as typeof window.scrollBy;
+  return {
+    restore: () => {
+      rect.mockRestore();
+      point.mockRestore();
+      window.scrollBy = originalScrollBy;
+    },
+  };
+}
+
+const HISTORY_LOG = historyLogKey(KEY);
+
+// The history reads `["events", <key>, "history"]` and draws it newest first: each arrival
+// pushes a reader who is down in the history one entry further down unless something holds
+// their place, as the old Activity tab's `ViewportAnchor` did. Each entry carries
+// `data-history-entry`, its own id, the identity the anchor follows.
+test("an event arriving while the reader is in the history leaves their entry where it was", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 12 }, (_, index) => claim(12 - index))
+  );
+  const layout = installRowLayout();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <HeldHistory
+            activityFollowing={undefined}
+            issue={issue}
+            item={undefined}
+            state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+            visitMark={99}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    ).unmount;
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(12));
+    setScrollY(300);
+    const reading = document.querySelectorAll<HTMLElement>("[data-event-seq]")[8];
+    const seq = reading?.getAttribute("data-event-seq");
+    const before = reading?.getBoundingClientRect().top;
+
+    act(() => {
+      arriveInHistoryLog(queryClient, KEY, claim(13));
+    });
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(13));
+
+    expect(document.querySelector(`[data-event-seq="${seq}"]`)?.getBoundingClientRect().top).toBe(
+      before
+    );
+    // The entry it held onto moved down one place in the list, so the page scrolled by one entry.
+    expect(window.scrollY).toBe(300 + ROW_HEIGHT);
+  } finally {
+    unmount?.();
+    layout.restore();
+    restoreReads();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
+// A reader reading today's entries as midnight passes is still on them: an event that arrives
+// after midnight heads a new day at the head of the history, and the entry the reader reads
+// stays drawn where it was, as it does for any other arrival. Found by the tester when the day
+// before today was drawn folded: the day the reader was in folded to one line under them once the
+// first render after midnight read the new date.
+test("an event arriving just after midnight leaves the entry the reader reads where it was", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  setSystemTime(new Date(2026, 10, 19, 23, 59, 50, 0));
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 12 }, (_, index) => claim(12 - index))
+  );
+  const layout = installRowLayout();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <HeldHistory
+            activityFollowing={undefined}
+            issue={issue}
+            item={undefined}
+            state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+            visitMark={99}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    ).unmount;
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(12));
+    setScrollY(300);
+    const reading = document.querySelectorAll<HTMLElement>("[data-event-seq]")[8];
+    const seq = reading?.getAttribute("data-event-seq");
+    const before = reading?.getBoundingClientRect().top;
+
+    // Midnight passes; the first event of the new day arrives.
+    setSystemTime(new Date(2026, 10, 20, 0, 0, 30, 0));
+    act(() => {
+      arriveInHistoryLog(queryClient, KEY, claim(13));
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-event-seq="13"]'),
+        "the new day's event is not drawn"
+      ).not.toBeNull()
+    );
+
+    const still = document.querySelector<HTMLElement>(`[data-event-seq="${seq}"]`);
+    expect(
+      still,
+      "the entry the reader read went from the history as midnight passed"
+    ).not.toBeNull();
+    expect(still?.getBoundingClientRect().top).toBe(before);
+  } finally {
+    unmount?.();
+    layout.restore();
+    restoreReads();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
+/** A message the Legion daemon wrote, `ago` seconds ago: a thread of the history whose first
+ *  turn's event no page of the log read here holds. */
+function agentMessage(id: string, ago: number): MessageRead {
+  return {
+    message: {
+      author: { id: "legion-daemon:CORE", kind: "session" },
+      body: `Daemon message ${id}.`,
+      broadcast_id: null,
+      created_at: new Date(Date.now() - ago * 1000).toISOString(),
+      deliveries: [],
+      ...messageCorrectionFields(),
+      id,
+      in_reply_to: null,
+      issue_key: KEY,
+      reply_block: null,
+      target: null,
+    },
+    replies: [],
+  };
+}
+
+// Every thread carries seq 0, since the filtered log leaves out the events that write a post, so
+// two threads share one `data-event-seq`: the anchor follows each entry's own id instead, or it
+// holds the first of them while the reader is on the second.
+test("a reader on one of two threads whose events are unread keeps their entry when an event arrives", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 6 }, (_, index) => claim(6 - index)),
+    { messages: [agentMessage("m-older", 200), agentMessage("m-newer", 100)] }
+  );
+  const layout = installRowLayout();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <HeldHistory
+            activityFollowing={undefined}
+            issue={issue}
+            item={undefined}
+            state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+            visitMark={99}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    ).unmount;
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(8));
+    const entries = [...document.querySelectorAll<HTMLElement>("[data-event-seq]")];
+    expect(entries.slice(6).map((entry) => entry.getAttribute("data-event-seq"))).toEqual([
+      "0",
+      "0",
+    ]);
+    // The reader is on the last entry, the older of the two threads: 360 px down puts it at the
+    // centre of what the list shows of itself, where the anchor probes.
+    setScrollY(360);
+    const reading = entries[7];
+    const before = reading?.getBoundingClientRect().top;
+
+    act(() => {
+      arriveInHistoryLog(queryClient, KEY, claim(7));
+    });
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(9));
+
+    expect(reading?.getBoundingClientRect().top).toBe(before);
+  } finally {
+    unmount?.();
+    layout.restore();
+    restoreReads();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
+// A turn's Reply is drawn only under the page's writer, and sets it to reply to that turn; the
+// page draws no box at the foot of the outline that sends it yet.
+test("a turn's Reply sets the writer to reply to that turn", async () => {
+  const restoreReads = stubHistoryReads([], { messages: [agentMessage("m-turn", 60)] });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  let writer: OutlineWriter | undefined;
+  function Probe(): ReactNode {
+    writer = useOutlineWriter();
+    return null;
+  }
+  const history = (
+    <HeldHistory
+      activityFollowing={undefined}
+      issue={issue}
+      item={undefined}
+      state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+      visitMark={99}
+    />
+  );
+  let unmount: (() => void) | undefined;
+
+  try {
+    // With no writer above it, a turn draws no Reply.
+    const alone = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>{history}</QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() =>
+        expect(document.querySelector('[data-history-item="m-turn"]')).not.toBeNull()
+      );
+      expect(document.querySelectorAll("[data-history-reply]")).toHaveLength(0);
+    } finally {
+      alone.unmount();
+    }
+
+    unmount = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+            <Probe />
+            {history}
+          </OutlineWriterProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    ).unmount;
+    const reply = await screen.findByRole("button", { name: CONTROL_LABELS.reply });
+    expect(reply.getAttribute("data-history-reply")).toBe("m-turn");
+    expect(writer?.reply, "the writer replied to something before Reply").toBeNull();
+
+    await userEvent.click(reply);
+
+    await waitFor(() =>
+      expect(writer?.reply).toMatchObject({ id: "m-turn", parentKind: "message" })
+    );
+    expect(writer?.editing).toBeUndefined();
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// Threads mounts no box at the foot (`slots/foot.tsx`), so under Threads a turn's Reply would aim
+// nothing, and on a phone would only shut Details: Details draws none there, at 1440 px and on a
+// phone alike, and Threads' own record carries the reply of a thread it lists (`threads-open.ts`).
+// Under Conversation the same turn draws its Reply.
+test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
+  "under Threads a turn of the history draws no Reply, and under Conversation it does (width %i)",
+  async (width) => {
+    await warmMarkdownRenderer();
+    const restoreViewport = stubViewport(width);
+    const restoreReads = stubHistoryReads([], { messages: [agentMessage("m-turn", 60)] });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    queryClient.setQueryData(["agents"], []);
+    const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+    const history = (
+      <HeldHistory
+        activityFollowing={undefined}
+        issue={issue}
+        item={undefined}
+        state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+        visitMark={99}
+      />
+    );
+
+    try {
+      for (const [preset, replies] of [
+        ["threads", false],
+        ["conversation", true],
+      ] as const) {
+        const view = render(
+          <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+            <QueryClientProvider client={queryClient}>
+              <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+                {history}
+              </OutlineWriterProvider>
+            </QueryClientProvider>
+          </MemoryRouter>
+        );
+        try {
+          const turn = await waitFor(() => {
+            const drawn = document.querySelector<HTMLElement>('[data-history-item="m-turn"]');
+            if (drawn === null) throw new Error(`the history draws no turn under ${preset}`);
+            return drawn;
+          });
+          expect(
+            turn.querySelector("[data-history-reply]") !== null,
+            `the turn of the history ${replies ? "draws no" : "draws"} Reply under ${preset} at ${width} px`
+          ).toBe(replies);
+        } finally {
+          view.unmount();
+        }
+      }
+    } finally {
+      restoreReads();
+      restoreViewport();
+    }
+  }
+);
+
+// Every day is drawn open: a line that names the day heads its entries, and that line is no
+// control, says no count and folds nothing, so a turn two days old is drawn with no press, as
+// every entry of today is.
+test("every day is drawn open, and its line is no control", async () => {
+  const earlier = agentMessage("m-earlier", 2 * 24 * 60 * 60);
+  // Today's lines beside it: a document added, then renamed, each a link to the document.
+  const plan: Artifact = {
+    created_at: new Date().toISOString(),
+    created_by: { id: "planner", kind: "session" },
+    id: "plan",
+    issue_key: KEY,
+    kind: "doc",
+    name: "plan.md",
+    primary: false,
+    project: "CORE",
+    ref_key: "artifact:plan",
+    session_id: null,
+    slug: "plan-md",
+    versions: [],
+  };
+  const restoreReads = stubHistoryReads(
+    [
+      {
+        ...claim(3),
+        payload: { artifact: plan, previous_name: "draft.md" },
+        type: "artifact.renamed",
+      } as DispatchEvent,
+      {
+        ...claim(2),
+        payload: { artifact: { ...plan, name: "draft.md" } },
+        type: "artifact.created",
+      } as DispatchEvent,
+      claim(1),
+    ],
+    { messages: [earlier] }
+  );
+  const today = dateKey(new Date().toISOString());
+  const earlierDay = dateKey(earlier.message.created_at);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-history-item="m-earlier"]'),
+        "the turn of a day before today is not drawn"
+      ).not.toBeNull()
+    );
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const days = [...list.querySelectorAll<HTMLElement>("[data-history-day]")];
+    expect(days.map((day) => day.getAttribute("data-history-day"))).toEqual([today, earlierDay]);
+    expect(days.map((day) => day.firstElementChild?.textContent)).toEqual([
+      CONTROL_LABELS.history_today,
+      dayLabel(earlierDay, today),
+    ]);
+    for (const day of days) {
+      const line = day.firstElementChild;
+      expect(line?.tagName, "a day's line is a control").toBe("P");
+      expect(line?.querySelector("button, a"), "a day's line holds a control").toBeNull();
+    }
+    expect(list.querySelectorAll("[aria-expanded]"), "a day's line folds the day").toHaveLength(0);
+    expect(drawnEntries()).toHaveLength(4);
+    // A document's lines link to it in the page's ink, as an upload's do, never in the
+    // application's link blue.
+    for (const name of ["draft.md", "plan.md"]) {
+      const link = screen.getByRole("link", { name });
+      expect(link.getAttribute("href")).toBe(`/issues/${KEY}/artifacts/plan-md`);
+      expect(link, `${name}'s link is not in the page's ink`).toHaveClass(pageInkText);
+      for (const token of linkText.split(" ")) {
+        expect(link, `${name}'s link is in the application's link blue`).not.toHaveClass(token);
+      }
+    }
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// A block's line names the block by its id, and a UUID is no name a reader reads: the history
+// names a question's block by the question's first words, a link to the question's own address,
+// which puts the focus on its row in the outline.
+test("a repaired block's words are a link to its question's address, and its id is not drawn", async () => {
+  const block = "01f349b4-2a84-4ebb-81be-91fa2f4e2300";
+  const repaired = {
+    ...claim(1),
+    payload: { block_id: block, disturbed_by: { id: "alice", kind: "user" }, version: 3 },
+    type: "block.repaired",
+  } as DispatchEvent;
+  const question = {
+    block_id: block,
+    id: "q1",
+    kind: "question",
+    question: "Which layout reads best on a phone?",
+  };
+  // The log holds no refused check, so the history reads no check.
+  const reads = [
+    spyOn(api, "getIssueEvents").mockResolvedValue([repaired]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([question] as never),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const link = await screen.findByRole("link", { name: question.question });
+    expect(link).toHaveAttribute("href", buildIssuePath({ id: "q1", key: KEY, kind: "ask" }));
+    expect(
+      screen.getByRole("list", { name: CONTROL_LABELS.history_list }),
+      "the repaired block's line draws its id"
+    ).not.toHaveTextContent(block);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** The following of the address that names the turn a case draws the history at
+ *  (`AddressedTurn`). */
+const FOLLOWING = "default /issues/CORE-1/messages";
+
+/** The history of `KEY` with nothing above it but a query client that never retries, at the
+ *  address of the turn `item` where one is given, and as its options say: drawn in `container`
+ *  where one is given, under the names a page published of its batched read (`published`) where
+ *  those are given, with the read mark `visitMark` of the visit (99,999 unless a case gives one),
+ *  under the page's writer where `writer` is given, which holds that writer for the case, and in
+ *  Details as the shell holds it where `details` is given, which holds whether Details is open:
+ *  Details is open as the case starts, it wraps the writer, and the history is drawn only while
+ *  it is open, as `details-more.tsx`'s `DetailsHistory` draws it, so a case that shuts Details
+ *  takes the history off the page. The issue's newest event is past the read mark, so the
+ *  history reads the first event past it, which `stubHistoryReads` answers with its `boundary`. */
+function drawHistory(
+  item: string | undefined,
+  {
+    container,
+    details,
+    published,
+    visitMark = 99999,
+    writer,
+  }: {
+    container?: HTMLElement;
+    details?: HeldDetails;
+    published?: PublishedReferences;
+    visitMark?: number;
+    writer?: HeldWriter;
+  } = {}
+): {
+  queryClient: QueryClient;
+  unmount: () => void;
+} {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const issue = { artifacts: [], key: KEY, last_seq: 100000 } as unknown as IssueDetails;
+  const history = (
+    <HeldHistory
+      activityFollowing={undefined}
+      issue={issue}
+      item={item === undefined ? undefined : { following: FOLLOWING, id: item }}
+      state={{ [KEY]: { dismissed: [], last_read_seq: visitMark, pinned: false, seq: 0 } }}
+      visitMark={visitMark}
+    />
+  );
+  const named =
+    published === undefined ? (
+      history
+    ) : (
+      <ReferenceNamesProvider>
+        <Publisher published={published} />
+        {history}
+      </ReferenceNamesProvider>
+    );
+  const drawn = details === undefined ? named : <WhileDetailsOpen>{named}</WhileDetailsOpen>;
+  const written =
+    writer === undefined ? (
+      drawn
+    ) : (
+      <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+        <WriterProbe held={writer} />
+        {drawn}
+      </OutlineWriterProvider>
+    );
+  const { unmount } = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        {details === undefined ? written : <ShellDetails held={details}>{written}</ShellDetails>}
+      </QueryClientProvider>
+    </MemoryRouter>,
+    container === undefined ? {} : { container }
+  );
+  return { queryClient, unmount };
+}
+
+/** Where a case that draws the history under the page's writer (`drawHistory`) holds it. */
+interface HeldWriter {
+  writer?: OutlineWriter;
+}
+
+/** Holds the writer it is drawn under in `held`. */
+function WriterProbe({ held }: { readonly held: HeldWriter }): null {
+  held.writer = useOutlineWriter();
+  return null;
+}
+
+/** Whether the shell holds Details open (`ShellDetails`), as its last render read it, and the
+ *  drawer's own `setOpen`, which opens and shuts it as the reader's controls do. */
+interface HeldDetails {
+  open?: boolean;
+  setOpen?: (open: boolean) => void;
+}
+
+/** Details as the shell holds it (`MarginDrawer`) around `children`: open as a case starts, and
+ *  open or shut by its own `setOpen` from then on, which `held` reads and holds. */
+function ShellDetails({ children, held }: { children: ReactNode; held: HeldDetails }): ReactNode {
+  const [open, setOpen] = useState(true);
+  held.open = open;
+  held.setOpen = setOpen;
+  const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
+  return <MarginSlotProvider drawer={drawer}>{children}</MarginSlotProvider>;
+}
+
+/** `children`, drawn only while Details is open (`ShellDetails`). */
+function WhileDetailsOpen({ children }: { children: ReactNode }): ReactNode {
+  return useMarginDrawer()?.open === true ? children : null;
+}
+
+/** Refetches the log, whose reads the case has made fail, over the `entries` entries the history
+ *  draws, and then takes it back to holding no page, whose first read fails too
+ *  (`failRefreshOverHeld`). `message` says what went wrong where the entries did not stay drawn. */
+function failLogRefetchThenFirstRead(
+  queryClient: QueryClient,
+  entries: number,
+  message?: string
+): Promise<void> {
+  const key = HISTORY_LOG;
+  return failRefreshOverHeld({
+    client: queryClient,
+    held: "the log",
+    queryKey: key,
+    refresh: () => queryClient.refetchQueries({ queryKey: key }),
+    stillDrawn: () =>
+      expect(document.querySelectorAll("[data-event-seq]"), message).toHaveLength(entries),
+  });
+}
+
+/** A claim of the issue at sequence `seq`, made `ago` seconds ago. */
+function claimAgo(seq: number, ago: number): DispatchEvent {
+  return { ...claim(seq), created_at: new Date(Date.now() - ago * 1000).toISOString(), id: seq };
+}
+
+/** A move of a child issue's status at sequence `seq`, made `ago` seconds ago: an event of a row
+ *  the outline draws, which the history leaves out. */
+function outlineEventAgo(seq: number, ago: number): DispatchEvent {
+  return { ...claimAgo(seq, ago), payload: {}, type: "child.status" } as DispatchEvent;
+}
+
+/** A full page of the log, 200 events one second apart from sequence `top` down, the newest
+ *  made `ago` seconds ago: its newest `entries` are claims, each an entry of the history, and the
+ *  rest are events it leaves out (`outlineEventAgo`). Where the history holds no more entries
+ *  than it draws at once and an older page is unread, it reads that page before it draws; with
+ *  `PAGE_SIZE + 1` entries it draws 20, and Show more, which says "1+", reads the next page
+ *  before it draws the rest. */
+function pageOf(entries: number, top: number, ago = 1): DispatchEvent[] {
+  return Array.from({ length: 200 }, (_, index) =>
+    index < entries ? claimAgo(top - index, ago + index) : outlineEventAgo(top - index, ago + index)
+  );
+}
+
+// The address of a turn of an agents' thread opens Details at the
+// history with that turn marked and on screen, whatever page of the log the thread's first turn
+// is on, the history drawn down to that thread however far past its first 20 entries it stands.
+// Here the log's first page is full, 200 claims of the last few minutes, and the agents'
+// thread began half an hour ago, before every event of that page: the history draws a thread
+// only once the page that reaches back to it is read (`HistoryInput.loadedFrom`), so the turn
+// the address names must still be reached and marked. Found by the tester on a running build of
+// b0082656 with a copy of a large real issue, whose log holds 769 events: the address of a
+// comment of an agents' thread older than the first page opened Details and marked nothing.
+test("the address of an agents' turn older than the log's first page marks that turn", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  const olderPage = [claimAgo(10, 3600), claimAgo(9, 3601)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([agentMessage("m-old", 1800)]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory("m-old").unmount;
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+    await waitFor(
+      () =>
+        expect(
+          document.querySelector('[data-history-item="m-old"]')?.getAttribute("aria-current"),
+          "the address of a turn older than the log's first page marks nothing"
+        ).toBe("true"),
+      { timeout: 5000 }
+    );
+    expect(
+      drawnEntries(),
+      "the history is not drawn down to the thread of the turn the address names"
+    ).toHaveLength(201);
+    expect(document.querySelector("[data-history-left]")?.textContent).toBe("2");
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// The history is the issue's log as last read, and a read
+// that fails says so with Retry. A read that fails once the history holds the log - a refetch
+// after an event, or on a later open of Details past the query's stale time - leaves the entries
+// it holds drawn, and says no failure over them. Found by the tester on a running build of
+// b0082656: with a large real issue's 79 entries drawn, Details closed and opened again 31 s
+// later with the log answering 500 drew "Could not load the activity." and no entry at all.
+test("a failed read of the log once the history holds it keeps every entry it holds, and says no failure", async () => {
+  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(3));
+
+    const failing = spyOn(api, "getIssueEvents").mockRejectedValue(new Error("the log is down"));
+    try {
+      await act(async () => {
+        await drawn.queryClient.refetchQueries({ queryKey: HISTORY_LOG });
+      });
+      expect(failing).toHaveBeenCalled();
+      expect(
+        document.querySelectorAll("[data-event-seq]"),
+        "a failed read of the log erased the history it held"
+      ).toHaveLength(3);
+      expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.status, "the refetch did not fail").toBe(
+        "error"
+      );
+      expect(
+        screen.queryByRole("alert"),
+        "a failed refetch said a failure over the entries it held"
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+        "a failed refetch offered a Retry over the entries it held"
+      ).toBeNull();
+    } finally {
+      failing.mockRestore();
+    }
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+/** An upload of a file that is no document, by `planner`, `ago` seconds ago. */
+function upload(seq: number, ago: number, name: string): DispatchEvent {
+  const artifact: Artifact = {
+    created_at: new Date(Date.now() - ago * 1000).toISOString(),
+    created_by: { id: "planner", kind: "session" },
+    id: `file-${seq}`,
+    issue_key: KEY,
+    kind: "file",
+    name,
+    primary: false,
+    project: "CORE",
+    ref_key: `artifact:file-${seq}`,
+    session_id: null,
+    slug: name.replace(".", "-"),
+    versions: [],
+  };
+  return {
+    ...claimAgo(seq, ago),
+    payload: { artifact },
+    type: "artifact.created",
+  } as DispatchEvent;
+}
+
+// Each event's line has Pin and Unpin, and a reload keeps the pin. One author's uploads in one
+// minute are one entry, and that entry is the line of each of its events. Found by the tester on
+// a running build of b0082656: every line of a large real issue's history drew Pin but the entry
+// of thirteen uploads, which drew none.
+test("the entry of one author's uploads has Pin, as every other line of the history does", async () => {
+  const restoreReads = stubHistoryReads([
+    upload(3, 10, "a.png"),
+    upload(2, 20, "b.png"),
+    claimAgo(1, 120),
+  ]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const uploads = await waitFor(() => {
+      const entry = document.querySelector<HTMLElement>('[data-history-uploads="2"]');
+      if (entry === null) throw new Error("the two uploads are not one entry");
+      return entry;
+    });
+    // The claim's line draws its Pin: the history's own rule for a line.
+    expect(screen.getAllByRole("button", { name: CONTROL_LABELS.pin }).length).toBeGreaterThan(0);
+    expect(
+      [...uploads.querySelectorAll("button")].filter(
+        (button) => button.getAttribute("aria-label") === CONTROL_LABELS.pin
+      ),
+      "the uploads' entry draws no Pin"
+    ).not.toHaveLength(0);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// The model names a run of uploads by its newest upload, so a newer upload by the same author
+// within the minute renames the run it joins. Drawn under that name, the run was unmounted and
+// mounted anew, and a focus on one of its files' Pins fell to the page; the panel draws the run
+// on under the key it first drew it with.
+test("a newer upload that joins a run drawn keeps the run's Pin and the focus on it", async () => {
+  const restoreReads = stubHistoryReads([
+    upload(3, 10, "a.png"),
+    upload(2, 20, "b.png"),
+    claimAgo(1, 120),
+  ]);
+  const pinOfOlderFile = () =>
+    document.querySelector<HTMLElement>('[data-history-entry="file:2"] button');
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() =>
+      expect(document.querySelector('[data-history-uploads="2"]')).not.toBeNull()
+    );
+    const pin = pinOfOlderFile();
+    if (pin === null) throw new Error("the run's older file draws no Pin");
+    pin.focus();
+    expect(document.activeElement).toBe(pin);
+
+    act(() => {
+      arriveInHistoryLog(drawn.queryClient, KEY, upload(4, 5, "c.png"));
+    });
+    await waitFor(() =>
+      expect(document.querySelector('[data-history-uploads="3"]')).not.toBeNull()
+    );
+
+    expect(pin.isConnected, "the run the newer upload joined was drawn anew").toBe(true);
+    expect(pinOfOlderFile()).toBe(pin);
+    expect(document.activeElement, "the focus on the run's Pin fell to the page").toBe(pin);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// The history draws its first 20 entries, and under the last one drawn a control that draws the
+// next 20 and says how many entries are left. A keyboard press moves the focus to the first
+// entry it added, as Show more under every other list of Details does, whether the control
+// stays or goes; once every entry is drawn the control goes. The entries are all read on the
+// log's first page, so no press reads the log again.
+test("the history draws 20 entries at a time, and Show more says how many are left, moves the focus to the first entry it drew, and goes at the end", async () => {
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))
+  );
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    expect(drawnEntries(), "the history drew every entry at once").toHaveLength(PAGE_SIZE);
+    expect(more.textContent).toBe(showMoreName(25));
+    expect(more.querySelector("[data-history-left]")?.textContent).toBe("25");
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
+    expect(more.querySelector("[data-history-left]")?.textContent).toBe("5");
+    expect(
+      drawnEntries()[PAGE_SIZE]?.contains(document.activeElement),
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnEntries()).toHaveLength(45);
+    expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
+    expect(
+      drawnEntries()[2 * PAGE_SIZE]?.contains(document.activeElement),
+      "Show more went with the last entries and did not move the focus to the first it drew"
+    ).toBe(true);
+    expect(
+      (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mock.calls.filter(
+        ([, options]) => options?.after === undefined
+      ),
+      "a press that drew entries already read read the log"
+    ).toHaveLength(1);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// While an older page of the log is unread, the count of entries left among those read says
+// "+" after the number, as it cannot say how many the unread pages hold. A press that would leave
+// no entry read and not drawn reads the older page first, reading busy meanwhile, and then draws
+// the next 20, so the control goes on saying how many are left. A press that draws entries
+// already read reads nothing. Found by a row on copies of real issues: a press drew the 5 entries
+// left and Show more then said no number.
+test("Show more says + while an older page is unread, and a press that would leave 20 or fewer entries read reads that page before it draws the next 20", async () => {
+  const firstPage = pageOf(25, 400);
+  const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
+  // The older page is held out until the case lets it land.
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : older.promise
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  const left = () => document.querySelector("[data-history-left]")?.textContent;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    expect(left(), "the count of entries left says no + with an older page unread").toBe("5+");
+    expect(olderReads(), "a history holding more than 20 entries read an older page").toBe(0);
+
+    await userEvent.click(more);
+    expect(
+      drawnEntries(),
+      "the press drew the entries it held before it read the older page"
+    ).toHaveLength(PAGE_SIZE);
+    await waitFor(() => expect(olderReads()).toBe(1));
+    expect(more.getAttribute("aria-busy")).toBe("true");
+    expect(more.textContent).toBe(ANSWER_LINES.loading_older);
+
+    await act(async () => older.resolve([...olderPage]));
+    await waitFor(() =>
+      expect(
+        drawnEntries(),
+        "the press did not draw the next 20 once the older page landed"
+      ).toHaveLength(2 * PAGE_SIZE)
+    );
+    expect(
+      drawnEntries()[25]?.getAttribute("data-event-seq"),
+      "the first entry drawn from the page read is not its newest"
+    ).toBe("100");
+    // The page read was the log's last, so the count says no +.
+    expect(left()).toBe("15");
+    expect(olderReads()).toBe(1);
+
+    await userEvent.click(more);
+    expect(drawnEntries()).toHaveLength(55);
+    expect(more.isConnected, "Show more stayed with no entry and no page left").toBe(false);
+    expect(olderReads()).toBe(1);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** The history of `KEY` drawn over a log of `pages`, newest first, each read once in turn: the
+ *  first with no `before`, each next one with `before` the last sequence of the page above it.
+ *  Returns the reads of older pages, what each page's read found drawn as it was sent (its
+ *  entries and whether the loading line stood), and what puts everything back. */
+function drawOverPages(pages: readonly (readonly DispatchEvent[])[]): {
+  atRead: { entries: number; loading: boolean }[];
+  olderReads: () => number;
+  restore: () => void;
+} {
+  const atRead: { entries: number; loading: boolean }[] = [];
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+    const before = options?.before;
+    const at =
+      before === undefined ? 0 : pages.findIndex((page) => page.at(-1)?.seq === before) + 1;
+    if (before !== undefined) {
+      atRead.push({
+        entries: drawnEntries().length,
+        loading: screen.queryByText(ANSWER_LINES.loading_history) !== null,
+      });
+    }
+    return [...(pages[at] ?? [])];
+  });
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const { unmount } = drawHistory(undefined);
+  return {
+    atRead,
+    olderReads: () =>
+      getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length,
+    restore: () => {
+      unmount();
+      for (const read of reads) read.mockRestore();
+    },
+  };
+}
+
+// The log's first page is its newest 200 events, and on a real issue most of them are comments,
+// which the history leaves out. Found by a row on copies of real issues: the first page held 0,
+// 12 or 17 entries of the history, which drew those and a Show more that said no number, the
+// older pages unread. The history reads older pages before it draws, one at a time, until it
+// holds more entries than it draws at once or the log has ended, and draws the loading line
+// meanwhile: it draws 20 entries and says how many are left.
+test("the history reads older pages before it draws until it holds more than 20 entries, and draws the loading line meanwhile", async () => {
+  const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(300 - index, 300 + index));
+  const { atRead, olderReads, restore } = drawOverPages([pageOf(7, 600), olderPage]);
+
+  try {
+    await waitFor(() =>
+      expect(
+        drawnEntries(),
+        "the history drew the entries of the log's first page alone"
+      ).toHaveLength(PAGE_SIZE)
+    );
+    // The older page was the log's last, so the count says no +.
+    expect(screen.getByRole("button", { name: SHOW_MORE }).textContent).toBe(showMoreName(17));
+    expect(olderReads(), "the history read the older page more than once").toBe(1);
+    expect(
+      atRead,
+      "the history drew entries, or no loading line, while it read the older page"
+    ).toEqual([{ entries: 0, loading: true }]);
+  } finally {
+    restore();
+  }
+});
+
+// A history holding exactly 20 entries with an older page unread would draw them all and leave
+// none read and not drawn, so Show more would say no number: it reads on until it holds more.
+test("a history whose first page holds exactly 20 entries reads the older page before it draws, and Show more says how many are left", async () => {
+  const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(300 - index, 300 + index));
+  const { olderReads, restore } = drawOverPages([pageOf(PAGE_SIZE, 600), olderPage]);
+
+  try {
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    expect(
+      more.textContent,
+      "the history holding exactly 20 entries drew them and said no count"
+    ).toBe(showMoreName(30));
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    expect(olderReads()).toBe(1);
+  } finally {
+    restore();
+  }
+});
+
+// The first entries are drawn from the log's first page as soon as it holds more than 20, before
+// the comments, messages and asks the threads are drawn from have answered. A press of Show more
+// made then, with 20 or fewer entries left to draw, reads the older page and keeps the entries on
+// screen, the control reading busy, rather than taking them away for the loading line the first
+// view draws: the reader's focus is on that control and the place under it.
+test("a press of Show more made before the threads' reads answer keeps the entries drawn while it reads the older page", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
+  const threads = Promise.withResolvers<never[]>();
+  // The older page is held out until the case lets it land.
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : older.promise
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockImplementation(() => threads.promise),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(getIssueEvents.mock.calls.some(([, options]) => options?.before !== undefined)).toBe(
+        true
+      )
+    );
+    expect(
+      drawnEntries(),
+      "the press took the entries away for the loading line while it read the older page"
+    ).toHaveLength(PAGE_SIZE);
+    expect(screen.queryByText(ANSWER_LINES.loading_history)).toBeNull();
+    await act(async () => {
+      threads.resolve([]);
+      older.resolve([...olderPage]);
+    });
+    await waitFor(() =>
+      expect(drawnEntries(), "the press drew no more entries once the page landed").toHaveLength(
+        2 * PAGE_SIZE
+      )
+    );
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// Where the whole log holds fewer than 20 entries, the history reads every page, one at a time,
+// and draws each entry with no control under them.
+test("a history whose log ends with fewer than 20 entries reads each older page and draws every entry with no Show more", async () => {
+  const lastPage = [claimAgo(10, 3000), claimAgo(9, 3001), claimAgo(8, 3002)];
+  const { atRead, olderReads, restore } = drawOverPages([
+    pageOf(5, 900),
+    pageOf(4, 700, 300),
+    lastPage,
+  ]);
+
+  try {
+    await waitFor(() =>
+      expect(drawnEntries(), "the history did not draw every entry of the log").toHaveLength(12)
+    );
+    expect(olderReads(), "the history did not read each older page once").toBe(2);
+    expect(atRead).toEqual([
+      { entries: 0, loading: true },
+      { entries: 0, loading: true },
+    ]);
+    expect(
+      screen.queryByRole("button", { name: SHOW_MORE }),
+      "Show more is offered with the whole log drawn"
+    ).toBeNull();
+    expect(screen.queryByText(ANSWER_LINES.loading_history)).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+// Details is reached by Tab, so a control of the history that goes away under the focus leaves
+// the focus in the history rather than on the page, as Details' Unpin does (IssueMargin.test.tsx):
+// Show more, gone once the log has ended, hands it to the first entry it drew, where Show more
+// stood, here once the press has read the older page; the Retry of a failed read, gone once the
+// read lands, to the history's heading. Neither move scrolls Details: the reader keeps their
+// place. A refetch that fails over the pages held draws no line, so the Retry is a read's that
+// failed holding no page.
+test("a control of the history that goes away under the focus leaves the focus in the history", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  let down = false;
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+      if (down) throw new Error("the log is down");
+      return options?.before === undefined ? [...firstPage] : [...olderPage];
+    }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    const focus = spyOn(HTMLElement.prototype, "focus");
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(more.isConnected).toBe(false));
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "Show more went away with the log's end and the focus did not go to the first entry the press drew"
+    ).toBe(true);
+    expect(
+      drawnEntries()[PAGE_SIZE]?.contains(active),
+      "the focus is not on the first entry the press drew"
+    ).toBe(true);
+    expect(focus.mock.calls.at(-1), "handing the focus on scrolled Details").toEqual([
+      { preventScroll: true },
+    ]);
+    focus.mockRestore();
+
+    down = true;
+    const entries = document.querySelectorAll("[data-event-seq]").length;
+    await failLogRefetchThenFirstRead(drawn.queryClient, entries);
+    (await screen.findByRole("button", { name: CONTROL_LABELS.retry })).focus();
+    down = false;
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the Retry of the failed read went away once it landed and the focus fell to the page"
+    ).toBe(screen.getByRole("heading", { name: CONTROL_LABELS.history }));
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// The reader keeps their place in the history. A failed next page
+// is said where Show more stood, and its Retry reads that page: it does Show more's work in
+// Show more's place, at the foot of the list, so once the page lands the focus goes where Show
+// more hands it - to the first entry it drew - and never to the history's heading at the
+// top, from which the reader's next Tab scrolls Details back to the head of the list. Found by
+// the tester on a running build of 3bd86200 with a copy of a large real issue: with 81 entries
+// drawn, the next page answered 500 once, and its Retry pressed by keyboard put the focus on
+// the heading "History" once the page landed.
+test("the Retry of a failed next page hands the focus to the first entry it draws, as Show more does", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  let down = true;
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+      if (options?.before === undefined) return [...firstPage];
+      if (down) throw new Error("the next page is down");
+      return [...olderPage];
+    }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    retry.focus();
+    down = false;
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    await waitFor(() => expect(more.isConnected).toBe(false));
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "the Retry of the next page went away once it landed and the focus did not go to the first entry the press drew"
+    ).toBe(true);
+    expect(
+      drawnEntries()[PAGE_SIZE]?.contains(active),
+      "the focus is not on the first entry the press drew"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A read of the next page that fails once the history holds the log keeps its line and its
+// Retry drawn where Show more stood while that Retry reads again, and so does a first read of
+// the log that failed, under the heading; a refetch that fails over the pages held draws no line.
+// Neither Retry is disabled while it reads: Chromium would drop its focus to the page
+// (`chromium-focus-fixup.ts`). A keyboard reader stays on the Retry while it reads, and when its
+// read fails again.
+test("a history Retry pressed by keyboard keeps the focus while it reads and when its read fails again", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
+  let readOlder = async (): Promise<DispatchEvent[]> => {
+    throw new Error("the next page is down");
+  };
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation((_key, options) =>
+      options?.before === undefined ? readLog() : readOlder()
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
+    (await screen.findByRole("button", { name: SHOW_MORE })).focus();
+    await userEvent.keyboard("{Enter}");
+    const older = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    restoreFocus = emulateChromiumFocusFixup();
+    // The read each Retry sends is held out until the case fails it.
+    const olderAgain = Promise.withResolvers<DispatchEvent[]>();
+    readOlder = () => olderAgain.promise;
+    older.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+    expect(
+      document.activeElement,
+      "the next page's Retry left the focus on the page while it read"
+    ).toBe(older);
+    olderAgain.reject(new Error("the next page is down again"));
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBe(older);
+    expect(
+      document.activeElement,
+      "the next page's Retry whose read failed again did not keep the focus"
+    ).toBe(older);
+
+    readLog = async () => {
+      throw new Error("the log is down");
+    };
+    const entries = document.querySelectorAll("[data-event-seq]").length;
+    await failLogRefetchThenFirstRead(drawn.queryClient, entries);
+    const log = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    const logAgain = Promise.withResolvers<DispatchEvent[]>();
+    readLog = () => logAgain.promise;
+    log.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+    expect(document.activeElement, "the log's Retry left the focus on the page while it read").toBe(
+      log
+    );
+    logAgain.reject(new Error("the log is down again"));
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBe(log);
+    expect(
+      document.activeElement,
+      "the log's Retry whose read failed again did not keep the focus"
+    ).toBe(log);
+  } finally {
+    restoreFocus?.();
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// The log's Retry showed nothing while the read it sent was out, and a read that failed again
+// was said on the same node in the same words, so a screen reader said nothing of it and the
+// reader could not tell the press did anything. Retry reads busy while its read is out, enabled
+// and holding the focus, and each failure is drawn afresh while Retry stays the same button. A
+// refetch that fails over the pages held draws no line, so the Retry is a read's that failed
+// holding no page.
+test("the log's Retry reads busy while its read is out, and a read that fails again is said again", async () => {
+  let readLog = async (): Promise<DispatchEvent[]> => [claim(3), claim(2), claim(1)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(() => readLog()),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(3));
+    readLog = async () => {
+      throw new Error("the log is down");
+    };
+    await failLogRefetchThenFirstRead(
+      drawn.queryClient,
+      3,
+      "a failed read of the log erased the history it held"
+    );
+    const failed = await screen.findByRole("alert");
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    restoreFocus = emulateChromiumFocusFixup();
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<DispatchEvent[]>();
+    readLog = () => again.promise;
+
+    act(() => retry.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
+
+    await act(async () => again.reject(new Error("the log is down")));
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    const failedAgain = screen.getByRole("alert");
+    expect(failedAgain).toHaveTextContent(ANSWER_LINES.history_unreadable);
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+  } finally {
+    restoreFocus?.();
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A first read of the log that failed holds no page, and a fetch of such a read clears its
+// failure as it starts, so the press of its Retry took the line, and the Retry with it, away
+// while the read it sent was out, and the history said it was loading in its place: the focus of
+// a reader who pressed Retry by keyboard went with the Retry. The line stays, its Retry busy and
+// holding the focus, through a read that fails again, and once a read answers the focus goes to
+// the history's heading.
+test("a first read of the log that failed keeps its line and its Retry, with the focus, while Retry reads again", async () => {
+  let readLog = async (): Promise<DispatchEvent[]> => {
+    throw new Error("the log is down");
+  };
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(() => readLog()),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const failed = await screen.findByRole("alert");
+    expect(failed).toHaveTextContent(ANSWER_LINES.history_unreadable);
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    restoreFocus = emulateChromiumFocusFixup();
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<DispatchEvent[]>();
+    readLog = () => again.promise;
+
+    act(() => retry.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(
+        retry,
+        "the line and its Retry went while the read Retry sent again is out"
+      ).toBeInTheDocument();
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      );
+    });
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      retry
+    );
+    expect(
+      screen.queryByText(ANSWER_LINES.loading_history),
+      "the history says it is loading beside the failure its Retry reads again"
+    ).toBeNull();
+
+    await act(async () => again.reject(new Error("the log is down")));
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    const failedAgain = screen.getByRole("alert");
+    expect(failedAgain).toHaveTextContent(ANSWER_LINES.history_unreadable);
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+
+    readLog = async () => [claim(3), claim(2), claim(1)];
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(3));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      document.activeElement,
+      "the log answered, and the focus fell to the page rather than to the history's heading"
+    ).toBe(screen.getByRole("heading", { name: CONTROL_LABELS.history }));
+  } finally {
+    restoreFocus?.();
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// Show more is not disabled while its page is read either: Chromium would drop its focus to
+// the page (`chromium-focus-fixup.ts`). A keyboard reader stays on it while the page is out, and
+// once the page lands with older pages still left, Show more draws the next 20 entries, the one
+// left of the first page and the page's newest, and hands the focus on to the first of them, as
+// it does when the log's end takes it away; it says how many entries read are left, with "+" as
+// the log holds pages older than it.
+test("Show more pressed by keyboard keeps the focus while its page is read, then hands it to the first entry it draws", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 600);
+  const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
+  // The next page is held out until the case lets it land.
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : older.promise
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    restoreFocus = emulateChromiumFocusFixup();
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+    expect(
+      document.activeElement,
+      "Show more left the focus on the page while its page was read"
+    ).toBe(more);
+    expect(more.getAttribute("aria-busy")).toBe("true");
+
+    older.resolve([...secondPage]);
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    await waitFor(() =>
+      expect(more.querySelector("[data-history-left]")?.textContent).toBe("181+")
+    );
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
+    expect(
+      screen.getByRole("button", { name: SHOW_MORE }),
+      "the log has older pages after the second, so Show more stays"
+    ).toBe(more);
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "Show more kept the focus once its page landed, rather than handing it to a control the press drew"
+    ).toBe(true);
+  } finally {
+    restoreFocus?.();
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A second press of a history Retry or of Show more made before React draws the read the first
+// one sent finds the render's `isFetching` still false, so it read again: a read of the next page
+// of a log that holds pages ends the request that is out and sends another. A press while the
+// read is out joins it, and keeps the hold the first press took, so the focus goes where one
+// press hands it. A refetch that fails over the pages held draws no line, so the log's Retry is a
+// read's that failed holding no page.
+test("two presses of the log's Retry before a render send one read, and the focus still goes to the heading", async () => {
+  let readLog = async (): Promise<DispatchEvent[]> => [claim(3), claim(2), claim(1)];
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(() => readLog());
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(3));
+    readLog = async () => {
+      throw new Error("the log is down");
+    };
+    await failLogRefetchThenFirstRead(drawn.queryClient, 3);
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    // Every read sent from here is held out until the case lets it land.
+    const again = Promise.withResolvers<DispatchEvent[]>();
+    readLog = () => again.promise;
+    const sent = getIssueEvents.mock.calls.length;
+    act(() => retry.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      getIssueEvents,
+      "the second press ended the read the first one sent and sent another"
+    ).toHaveBeenCalledTimes(sent + 1);
+
+    await act(async () => again.resolve([claim(4), claim(3), claim(2), claim(1)]));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    expect(getIssueEvents).toHaveBeenCalledTimes(sent + 1);
+    expect(
+      document.activeElement,
+      "the Retry went once its read landed, and the focus did not go to the history's heading"
+    ).toBe(screen.getByRole("heading", { name: CONTROL_LABELS.history }));
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+test("two presses of Show more before a render read its page once, and the focus still goes to the first entry it drew", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 600);
+  const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
+  // The next page is held out until the case lets it land.
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : older.promise
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    act(() => more.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      more.click();
+      more.click();
+    });
+    expect(
+      olderReads(),
+      "the second press ended the read of the page the first one sent and sent another"
+    ).toBe(1);
+
+    await act(async () => older.resolve([...secondPage]));
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    await waitFor(() =>
+      expect(more.querySelector("[data-history-left]")?.textContent).toBe("181+")
+    );
+    expect(olderReads()).toBe(1);
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "Show more pressed twice kept the focus once its page landed, rather than handing it to a control the press drew"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+test("two presses of the next page's Retry before a render read that page once, and the focus still goes to the first entry it drew", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  let readOlder = async (): Promise<DispatchEvent[]> => {
+    throw new Error("the next page is down");
+  };
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : readOlder()
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    // Every read of the next page sent from here is held out until the case lets it land.
+    const again = Promise.withResolvers<DispatchEvent[]>();
+    readOlder = () => again.promise;
+    const sent = olderReads();
+    act(() => retry.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      olderReads(),
+      "the second press ended the read of the page the first one sent and sent another"
+    ).toBe(sent + 1);
+
+    await act(async () => again.resolve([...olderPage]));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    await waitFor(() => expect(more.isConnected).toBe(false));
+    expect(olderReads()).toBe(sent + 1);
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "the next page's Retry pressed twice went once its page landed, and the focus did not go to the first entry the press drew"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A live event refetches the log, often on a busy issue. A press of Show more made while that
+// refetch was out joined it, since `cancelRefetch: false` joins whatever read of the log is out,
+// and read no page. Only the reader's own read of the next page takes a press made meanwhile, so
+// a press while a refetch is out reads the next page.
+test("Show more pressed while a refetch of the log is out reads the next page", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 600);
+  const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
+  let readFirst = async (): Promise<DispatchEvent[]> => [...firstPage];
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? readFirst() : [...secondPage]
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  // The refetch is held out until the case ends.
+  const refetched = Promise.withResolvers<DispatchEvent[]>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    readFirst = () => refetched.promise;
+    act(() => {
+      void drawn.queryClient.invalidateQueries({ queryKey: ["events", KEY] });
+    });
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+
+    await userEvent.click(more);
+    expect(olderReads(), "Show more pressed while a refetch of the log was out read no page").toBe(
+      1
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-event-seq="400"]'),
+        "the page Show more read did not land"
+      ).not.toBeNull()
+    );
+  } finally {
+    refetched.resolve([...firstPage]);
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// The last page holds only events the history leaves out, so it adds no entry and no control,
+// and the log's end takes the control that read it away: the focus goes to the last control
+// drawn before the press, which stood just above that control, rather than to the history's
+// heading above the whole list, off screen for a reader at its foot. A press of Show more draws
+// an entry, as it reads older pages until it can; the control that reads a page and can draw
+// none is the Retry of a failed next page where every entry read is drawn, which stands in Show
+// more's place then and hands the focus on as Show more does.
+test("the next page's Retry whose last page adds no entry hands the focus to the control above where it stood", async () => {
+  const firstPage = pageOf(PAGE_SIZE, 400);
+  const lastPage = [outlineEventAgo(10, 300), outlineEventAgo(9, 301)];
+  let down = true;
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+      if (options?.before === undefined) return [...firstPage];
+      if (down) throw new Error("the next page is down");
+      return [...lastPage];
+    }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    // The history read the older page before it drew, and that read failed: it draws the 20
+    // entries it holds, with the Retry in Show more's place.
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    expect(
+      screen.queryByRole("button", { name: SHOW_MORE }),
+      "Show more stands beside the next page's Retry with every entry read drawn, and says no number"
+    ).toBeNull();
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const before = [...list.querySelectorAll("a[href], button")];
+    const above = before.at(-1) ?? null;
+    expect(
+      drawnEntries().at(-1)?.contains(above),
+      "the last entry's Pin is not the last control above the Retry"
+    ).toBe(true);
+    restoreFocus = emulateChromiumFocusFixup();
+    down = false;
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(retry.isConnected).toBe(false));
+    expect(drawnEntries(), "the last page added an entry, so the row proves nothing").toHaveLength(
+      PAGE_SIZE
+    );
+    expect(
+      list.querySelectorAll("a[href], button"),
+      "the last page added a control, so the row proves nothing"
+    ).toHaveLength(before.length);
+    expect(screen.queryByRole("button", { name: SHOW_MORE })).toBeNull();
+
+    const active = document.activeElement;
+    expect(
+      active,
+      `the log's end took the Retry away and the focus left the foot of the list (focus: ${active?.tagName} ${active?.textContent})`
+    ).toBe(above);
+  } finally {
+    restoreFocus?.();
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** How tall the box the history scrolls in is: Details' view. */
+const VIEW_HEIGHT = 600;
+
+/** Lays out the history drawn in `box`, Details' own box, for the geometry `ViewportAnchor` and
+ *  the landing read: `box` is Details' view, `VIEW_HEIGHT` tall at the top of the window, and
+ *  every entry stacks from `LIST_TOP` in DOM order, `heightOf` tall, moved up by the box's
+ *  scroll. Where the case gives `turnHeight`, a thread's turns stack inside its entry, each
+ *  `turnHeight` tall, and anything inside a turn measures as the turn. Anything else inside an
+ *  entry, a control among them, measures as the entry, and anything else as the whole list. The
+ *  point the anchor probes at hits the entry drawn there. Returns what restores the measures. */
+function installDetailsLayout(
+  box: HTMLElement,
+  heightOf: (row: Element) => number,
+  turnHeight?: (turn: Element) => number
+): () => void {
+  const rows = () => [...box.querySelectorAll<HTMLElement>("[data-event-seq]")];
+  const rectOf = (top: number, height: number) =>
+    ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 100,
+      toJSON: () => ({}),
+      top,
+      width: 100,
+      x: 0,
+      y: top,
+    }) as DOMRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === box) return rectOf(0, VIEW_HEIGHT);
+    const row = this.closest("[data-event-seq]");
+    const turn = this.closest("[data-history-item]");
+    const start = LIST_TOP - box.scrollTop;
+    let top = start;
+    for (const one of rows()) {
+      if (one === row) {
+        if (turn === null || turnHeight === undefined) return rectOf(top, heightOf(one));
+        for (const other of one.querySelectorAll("[data-history-item]")) {
+          if (other === turn) return rectOf(top, turnHeight(other));
+          top += turnHeight(other);
+        }
+      }
+      top += heightOf(one);
+    }
+    return rectOf(start, top - start);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    let top = LIST_TOP - box.scrollTop;
+    for (const one of rows()) {
+      if (y >= top && y < top + heightOf(one)) return one;
+      top += heightOf(one);
+    }
+    return null;
+  });
+  return () => {
+    rect.mockRestore();
+    point.mockRestore();
+  };
+}
+
+// Show more hands the focus on with no scroll, and `ViewportAnchor` took the reader's place
+// only from what the reader did - the pointer over the rows, or a scroll they made - so it held
+// no entry then: tall entries just above Show more that change height once the page has landed,
+// by commits of their own - a handoff whose fields are read, words whose pictures load - took the
+// control the focus was handed to up with them out of Details' view. The anchor records the
+// reader's place at each focus that moves into it, so it holds the entry the hand-on put the
+// focus in and keeps it in place as the entries above it change height.
+test("the entry Show more hands the focus to keeps its place in Details' view as the entries above it change height", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  // The two entries drawn last, just above Show more, are a thousand pixels tall, until they
+  // change height.
+  const heights = new Map([
+    ["event:382", 1000],
+    ["event:381", 1000],
+  ]);
+  const rows = () => [...box.querySelectorAll<HTMLElement>("[data-event-seq]")];
+  const heightOf = (row: Element) =>
+    heights.get(row.getAttribute("data-history-entry") ?? "") ?? ROW_HEIGHT;
+  const restoreLayout = installDetailsLayout(box, heightOf);
+  // The anchor hears a change of height outside its commits from a resize observer of its root,
+  // which happy-dom never calls back: the case calls it back once the entries change height.
+  const sizes = installResizeObserver();
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined, { container: box }).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
+    // Details scrolled down to Show more: the first entry the press draws, the first page's
+    // last, lands in the middle of the view once the older page is read.
+    box.scrollTop = LIST_TOP + (PAGE_SIZE - 2) * ROW_HEIGHT + 2 * 1000 - VIEW_HEIGHT / 2;
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(more.isConnected).toBe(false));
+    const entry = document.activeElement?.closest<HTMLElement>("[data-history-entry]");
+    if (entry === null || entry === undefined) {
+      throw new Error("Show more handed the focus to no entry of the history");
+    }
+    expect(
+      entry.getAttribute("data-history-entry"),
+      "Show more handed the focus to an entry other than the first the press drew"
+    ).toBe("event:380");
+    const handed = entry.getBoundingClientRect().top;
+    expect(handed, "the entry Show more handed the focus to is not in Details' view").toBe(
+      VIEW_HEIGHT / 2
+    );
+
+    // Each tall entry changes height by a commit of its own, which the anchor sees only as its
+    // root resized.
+    heights.set("event:382", 120);
+    heights.set("event:381", 120);
+    sizes.resize();
+
+    expect(
+      entry.getBoundingClientRect().top,
+      "the entries above the focus changed height and moved the entry Show more handed it to out of Details' view"
+    ).toBe(handed);
+  } finally {
+    unmount?.();
+    sizes.restore();
+    restoreLayout();
+    box.remove();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// Show more pressed with the focus on it: the focus stays on Show more, outside the entries,
+// while the page is read, so no act of the reader's names a place in the history. Here the commit
+// the page lands in also changes the height of the tall entry just above the list's last entry,
+// which takes every entry under it, the page's new ones with them, up by the change. The anchor
+// held the entry nearest the middle of Details' view, the tall entry itself, whose top the change
+// leaves where it was: the page's entries went up out of the view, and the hand-on gave the focus
+// to one above it (seen at -639 px in the browser, where a long turn was cut). The history keeps
+// the place of the entry next to Show more from the press until the page's read has settled.
+test("Show more keeps the place of the entry above it from the press, as its page lands with a change of height of the entry above that entry", async () => {
+  const firstPage = pageOf(PAGE_SIZE + 1, 400);
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const rows = () => [...box.querySelectorAll<HTMLElement>("[data-event-seq]")];
+  // The entry above the last one drawn is a thousand pixels tall, which the commit that draws the
+  // older page's first entry changes to 120 px.
+  const heightOf = (row: Element) => {
+    if (row.getAttribute("data-history-entry") !== "event:382") return ROW_HEIGHT;
+    return box.querySelector('[data-history-entry="event:10"]') === null ? 1000 : 120;
+  };
+  const restoreLayout = installDetailsLayout(box, heightOf);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined, { container: box }).unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
+    const last = box.querySelector<HTMLElement>('[data-history-entry="event:381"]');
+    if (last === null) throw new Error("the last entry drawn is not drawn");
+    // Details scrolled down to Show more: the last entry drawn stands 400 px down the view,
+    // under the tall entry, which holds the middle of the view.
+    box.scrollTop = LIST_TOP + (PAGE_SIZE - 2) * ROW_HEIGHT + 1000 - 400;
+    const stood = last.getBoundingClientRect().top;
+    expect(stood).toBe(400);
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(more.isConnected).toBe(false));
+
+    expect(
+      last.getBoundingClientRect().top,
+      "the page landed with a change of height of the entry above the entry next to Show more, and that entry moved in Details' view"
+    ).toBe(stood);
+    const focused = document.activeElement;
+    const entry = focused?.closest<HTMLElement>("[data-history-entry]");
+    if (focused === null || entry === null || entry === undefined) {
+      throw new Error("Show more handed the focus to no entry of the history");
+    }
+    expect(
+      entry.getAttribute("data-history-entry"),
+      "Show more handed the focus to an entry other than the first the press drew"
+    ).toBe("event:380");
+    const at = focused.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `Show more handed the focus to a control out of Details' view (${at.top} px, the view 0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(
+      at.top >= last.getBoundingClientRect().bottom,
+      "Show more handed the focus to a control above the entry next to it"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    restoreLayout();
+    box.remove();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** The history of 45 claims (`claimAgo`), every one on the log's first page, drawn in a box of
+ *  Details' own laid out by `heightOf` (`installDetailsLayout`), and scrolled to `scrollTop`:
+ *  Show more under its first 20 draws the next 20 with no read. Returns the box, Show more, and
+ *  what puts everything back. */
+async function drawFortyFiveIn(
+  heightOf: (row: Element) => number,
+  scrollTop: number
+): Promise<{ box: HTMLElement; more: HTMLElement; restore: () => void }> {
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))
+  );
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const restoreLayout = installDetailsLayout(box, heightOf);
+  const { unmount } = drawHistory(undefined, { container: box });
+  const restore = () => {
+    unmount();
+    restoreLayout();
+    box.remove();
+    restoreReads();
+  };
+  try {
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    box.scrollTop = scrollTop;
+    return { box, more, restore };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+/** The entry of `drawFortyFiveIn` drawn last before a press, `TALL_HEIGHT` px tall in the cases
+ *  below, so the first entry a press draws stands wholly below Details' view. */
+const TALL_ENTRY = "event:26";
+
+/** How tall `TALL_ENTRY` is drawn: it fills Details' view to its foot. */
+const TALL_HEIGHT = 560;
+
+// The last press of Show more on a real issue drew its entries under a new day's line, and the
+// first of them stood below Details' view. The press moved the focus to that entry's control with
+// no scroll, so the focus stood where a keyboard reader could not see it. The press brings the
+// control it focuses into Details' view by the least scroll, by its foot from below, writing
+// Details' box alone: the page under it does not scroll, and no element is scrolled into view.
+// Here the 20th entry is 560 px tall and fills Details' view to its foot, so the first entry the
+// press draws stands wholly below the view.
+test("a keyboard press of Show more whose first entry stands below Details' view moves the focus to that entry's control, wholly in Details' view, and scrolls no page", async () => {
+  const { box, more, restore } = await drawFortyFiveIn(
+    (row) => (row.getAttribute("data-history-entry") === TALL_ENTRY ? TALL_HEIGHT : ROW_HEIGHT),
+    LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 40
+  );
+  const intoView = spyOn(Element.prototype, "scrollIntoView");
+  const focus = spyOn(HTMLElement.prototype, "focus");
+
+  try {
+    const first = () => drawnEntries()[PAGE_SIZE];
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
+    const focused = document.activeElement;
+    expect(
+      focused !== null && first()?.contains(focused) === true,
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+    expect(focused, "the focus is not on the first entry's control").toBe(
+      first()?.querySelector("a[href], button:not(:disabled)") ?? null
+    );
+    const at = focused?.getBoundingClientRect();
+    expect(
+      at !== undefined && at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `Show more moved the focus to a control out of Details' view (${at?.top} to ${at?.bottom} px, the view 0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(at?.bottom, "Details scrolled more than the least that shows the control").toBe(
+      VIEW_HEIGHT
+    );
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+    expect(
+      intoView,
+      "an element was scrolled into view, which scrolls the page too"
+    ).not.toHaveBeenCalled();
+    expect(focus.mock.calls.at(-1), "the focus moved with a scroll of its own").toEqual([
+      { preventScroll: true },
+    ]);
+    expect(box.scrollTop).toBe(LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT);
+  } finally {
+    intoView.mockRestore();
+    focus.mockRestore();
+    restore();
+  }
+});
+
+// The first entry a press of Show more draws stands in Details' view: the press moves the focus
+// to its control and moves Details by nothing.
+test("a keyboard press of Show more whose first entry stands in Details' view moves Details by nothing", async () => {
+  const scrollTop = LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 300;
+  const { box, more, restore } = await drawFortyFiveIn(() => ROW_HEIGHT, scrollTop);
+
+  try {
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE);
+    const focused = document.activeElement;
+    expect(
+      focused !== null && drawnEntries()[PAGE_SIZE]?.contains(focused) === true,
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+    expect(focused?.getBoundingClientRect().top).toBe(340);
+    expect(box.scrollTop, "a focus already in Details' view moved Details").toBe(scrollTop);
+  } finally {
+    restore();
+  }
+});
+
+/** A keyboard press of Show more over the 45 claims of `drawFortyFiveIn`, made as the case
+ *  above whose first entry stands below Details' view makes it: the press hands the focus to that
+ *  entry's control and brings it into Details' view by its foot. The resize observers are
+ *  stubbed, as happy-dom never calls them back, and `resize` sets how tall an entry is, a control
+ *  in it measuring as the entry, and calls them back as the frame after a change does. Returns
+ *  the box, the focused control and its entry's id, `resize`, and what puts everything back. */
+async function pressedToFoot(): Promise<{
+  box: HTMLElement;
+  entry: string;
+  focused: HTMLElement;
+  resize: (entry: string, height: number) => void;
+  restore: () => void;
+}> {
+  const sizes = installResizeObserver();
+  const heights = new Map([[TALL_ENTRY, TALL_HEIGHT]]);
+  let undraw: (() => void) | undefined;
+  const restore = () => {
+    undraw?.();
+    sizes.restore();
+  };
+  try {
+    const drawn = await drawFortyFiveIn(
+      (row) => heights.get(row.getAttribute("data-history-entry") ?? "") ?? ROW_HEIGHT,
+      LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 40
+    );
+    undraw = drawn.restore;
+    const { box, more } = drawn;
+    // The box holds far more than its view, so no scroll leaves it at its end, which happy-dom,
+    // laying nothing out, would read as the box pulled back to an end it shrank to.
+    Object.defineProperties(box, {
+      clientHeight: { configurable: true, value: VIEW_HEIGHT },
+      scrollHeight: { configurable: true, value: 100_000 },
+    });
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    const focused = document.activeElement;
+    const entry = drawnEntries()[PAGE_SIZE];
+    if (!(focused instanceof HTMLElement) || entry?.contains(focused) !== true) {
+      throw new Error("Show more did not move the focus to the first entry it drew");
+    }
+    expect(
+      focused.getBoundingClientRect().bottom,
+      "the press did not bring the focused control into Details' view by its foot, so the case proves nothing"
+    ).toBe(VIEW_HEIGHT);
+    return {
+      box,
+      entry: entry.getAttribute("data-history-entry") ?? "",
+      focused,
+      resize: (id, height) => {
+        heights.set(id, height);
+        sizes.resize();
+      },
+      restore,
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// Show more hands the focus to the first entry it drew, brought into Details' view by the least
+// scroll, and that entry's control can grow after the hand-on: a reference in the entry's line is
+// drawn by its address until the names of the references are read, then by its target's name,
+// which can wrap over several lines. Found by the tester on a running build with a copy of a
+// large real issue at 1440 px: about 120 ms after a press, the focused link grew from 15 px to
+// 51 px, and its foot stood 35 px below Details' view. The hand-on keeps the control wholly in
+// that view through its own growth, by the least scroll, which the history's anchor makes
+// (`keepFocusedInView`), and the anchor then keeps the control where that scroll left it.
+test("a keyboard press of Show more keeps the control it focused wholly in Details' view as the control grows below the view's foot and holds it there as an entry above it shrinks", async () => {
+  const { box, entry, focused, resize, restore } = await pressedToFoot();
+
+  try {
+    const before = box.scrollTop;
+    resize(entry, ROW_HEIGHT + 36);
+    expect(
+      box.scrollTop - before,
+      "the focused control grew 36 px below Details' view, and Details did not follow it"
+    ).toBe(36);
+    const at = focused.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the focused control stands at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+
+    // The next frame raises that scroll's own event, which the anchor takes for its own; then the
+    // tall entry above the control's shrinks, and the anchor keeps the control where it stood.
+    act(() => {
+      box.dispatchEvent(new Event("scroll"));
+    });
+    resize(TALL_ENTRY, 500);
+    expect(
+      focused.getBoundingClientRect().top,
+      "the entry above the focused control shrank once Details followed the control, and the control moved"
+    ).toBe(at.top);
+  } finally {
+    restore();
+  }
+});
+
+// As the tester measured it: the link's first line moved up into the line above it as its
+// target's name landed, so the link grew 18 px above its top and 18 px below its foot, and its
+// entry 18 px. The anchor puts the link's top back where it stood, then the hand-on brings the
+// link's foot into the view: the anchor's resize observer, made as the list mounts, is called
+// back before the hand-on's, made at the press, as a browser calls observers in the order they
+// were made.
+test("a keyboard press of Show more keeps the link it focused wholly in Details' view as the link grows above its top and below its foot", async () => {
+  const { entry, focused, resize, restore } = await pressedToFoot();
+
+  try {
+    const row = focused.closest<HTMLElement>("[data-history-entry]");
+    if (row === null) throw new Error("the focused control stands in no entry");
+    // The link reaches 18 px above its entry's top, and down to its entry's foot.
+    focused.getBoundingClientRect = () => {
+      const at = row.getBoundingClientRect();
+      return new DOMRect(at.left, at.top - 18, at.width, at.height + 18);
+    };
+    resize(entry, ROW_HEIGHT + 18);
+    const at = focused.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the focused link stands at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(at.bottom, "Details scrolled more than the least that shows the whole link").toBe(
+      VIEW_HEIGHT
+    );
+  } finally {
+    restore();
+  }
+});
+
+// The keeping of the focused control ends at the reader's first act that scrolls Details: from
+// then on the reader's own place is what Details keeps.
+test("after a wheel of the reader's over Details, the control a keyboard press of Show more focused grows below the view's foot and Details does not follow it", async () => {
+  const { box, entry, resize, restore } = await pressedToFoot();
+
+  try {
+    const before = box.scrollTop;
+    // The act itself ends the keeping, whatever it scrolls; happy-dom scrolls nothing for it.
+    act(() => {
+      box.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 40 }));
+    });
+    resize(entry, ROW_HEIGHT + 36);
+    expect(
+      box.scrollTop,
+      "the focused control grew after the reader's wheel, and Details followed it"
+    ).toBe(before);
+  } finally {
+    restore();
+  }
+});
+
+// A focused control wholly outside Details' view is no place the reader sees: its growth there
+// brings it back into the view by no scroll.
+test("the control a keyboard press of Show more focused grows wholly below Details' view and Details does not follow it", async () => {
+  const { box, entry, focused, resize, restore } = await pressedToFoot();
+
+  try {
+    // A scroll no act of the reader's made, as another script's, takes the control wholly below
+    // the view, and the frame raises its event.
+    box.scrollTop -= VIEW_HEIGHT;
+    act(() => {
+      box.dispatchEvent(new Event("scroll"));
+    });
+    expect(
+      focused.getBoundingClientRect().top >= VIEW_HEIGHT,
+      "the focused control is not wholly below Details' view, so the case proves nothing"
+    ).toBe(true);
+    const before = box.scrollTop;
+    resize(entry, ROW_HEIGHT + 36);
+    expect(
+      box.scrollTop,
+      "the focused control grew wholly below Details' view, and Details followed it"
+    ).toBe(before);
+  } finally {
+    restore();
+  }
+});
+
+// The control a press of Show more focuses can stop being a control before the reader acts: a
+// reference link in the entry's line whose target answers that it is missing loses its `href` to
+// its renderer (`RefLink`), its words left as plain text, and Chromium then moves the focus off it
+// to the page's body, with a `focusout` that names no next element, a moment after the change. The
+// entry and its other controls stand. The focus goes on to the entry's first control left, and
+// that control is kept in Details' view as the focused one was. Here the first control of the
+// entry the press drew, its author's link, stands for that reference. happy-dom leaves the focus
+// on an element that loses its `href`, so the case's `blur()` stands for Chromium's move: the
+// same `focusout`, after the change. A removed link is handed on the same way: Chromium sends it
+// a `focusout` as it goes, and happy-dom, as a browser may, sends none and puts the focus on the
+// body, so that case proves the path of a removal heard only by the mutation observer. The browser
+// row of `e2e/issue-page-m.e2e.ts` proves Chromium's own.
+for (const [change, take] of [
+  [
+    "turns into plain words",
+    (link: HTMLElement) => {
+      link.removeAttribute("href");
+      link.blur();
+    },
+  ],
+  ["leaves the entry", (link: HTMLElement) => link.remove()],
+] as const) {
+  test(`a keyboard press of Show more whose focused link then ${change} moves the focus to the entry's next control and keeps it in Details' view`, async () => {
+    const { box, entry, focused, resize, restore } = await pressedToFoot();
+
+    try {
+      const row = focused.closest<HTMLElement>("[data-history-entry]");
+      const next = row?.querySelectorAll<HTMLElement>("a[href], button:not(:disabled)")[1];
+      if (!(focused instanceof HTMLAnchorElement) || next === undefined) {
+        throw new Error("the press did not focus a link of an entry with a control after it");
+      }
+      await act(async () => {
+        take(focused);
+      });
+      expect(
+        document.activeElement,
+        "the focus fell to the page's body when the focused link left the entry"
+      ).toBe(next);
+      const before = box.scrollTop;
+      resize(entry, ROW_HEIGHT + 36);
+      expect(
+        box.scrollTop - before,
+        "the control the focus went on to grew 36 px below Details' view, and Details did not follow it"
+      ).toBe(36);
+    } finally {
+      restore();
+    }
+  });
+}
+
+// The press reads the log's next page, which adds ten files to the run of uploads drawn last, in
+// view above Show more, and draws the next entries under that run. The run grows to 440 px, so
+// the files it gained stand in Details' view and the first entry drawn under them does not, by
+// 20 px. The focus went to a file the page added, which was in view, and not to the first entry
+// the press drew. It goes to that entry, and Details is brought to it by those 20 px.
+test("a press of Show more moves the focus to the first entry it drew though a control the page added to a run above stands in view and that entry does not", async () => {
+  const firstPage = [
+    ...Array.from({ length: PAGE_SIZE - 1 }, (_, index) => claimAgo(400 - index, index + 1)),
+    upload(381, 20, "shot-00.png"),
+    claimAgo(380, 20),
+    ...Array.from({ length: 179 }, (_, index) => outlineEventAgo(379 - index, 20)),
+  ];
+  const olderPage = [
+    ...Array.from({ length: 10 }, (_, index) =>
+      upload(200 - index, 21 + index, `shot-${index}.png`)
+    ),
+    ...Array.from({ length: 25 }, (_, index) => claimAgo(190 - index, 100 + index)),
+  ];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  // A run of uploads is a line for each of its files; every other entry is one line.
+  const restoreLayout = installDetailsLayout(
+    box,
+    (row) => ROW_HEIGHT * Number(row.getAttribute("data-history-uploads") ?? 1)
+  );
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined, { container: box });
+    unmount = drawn.unmount;
+    const more = await screen.findByRole("button", { name: SHOW_MORE });
+    await waitFor(() => expect(drawnEntries()).toHaveLength(PAGE_SIZE));
+    // Details scrolled down to the run of one upload, 140 px down its view, Show more under it.
+    box.scrollTop = LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 140;
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus).toBe("idle")
+    );
+    await waitFor(() => expect(drawnEntries()).toHaveLength(2 * PAGE_SIZE));
+    const added = box.querySelector<HTMLElement>('[data-history-entry="file:200"] a[href]');
+    const addedAt = added?.getBoundingClientRect();
+    expect(
+      addedAt !== undefined && addedAt.top >= 0 && addedAt.bottom <= VIEW_HEIGHT,
+      "no control the page added to the run stands in Details' view, so the row proves nothing"
+    ).toBe(true);
+
+    const focused = document.activeElement;
+    expect(
+      focused?.closest("[data-history-entry]")?.getAttribute("data-history-entry"),
+      "Show more moved the focus to a control other than the first entry it drew"
+    ).toBe("event:380");
+    const at = focused?.getBoundingClientRect();
+    expect(
+      at !== undefined && at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `Show more moved the focus to a control out of Details' view (${at?.top} to ${at?.bottom} px, the view 0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    restoreLayout();
+    box.remove();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// The address of a short reply under a long root turn lands the reply in the middle of Details'
+// view, its root turn drawn whole above it. The root turn then changes height in the frame after
+// the landing's scroll - its words finish drawing, a picture in them loads - which moves the reply
+// by as much and leaves the top of the thread's entry where it was. The history's anchor kept
+// that entry's top, so the reply went out of Details' view. Found by the tester on a running build
+// at 1440 px, where the root turn was cut from 1,980 px to 190 px after the landing and took the
+// reply 1,790 px up. The anchor keeps the landed turn's own place inside its entry (`keepRow`'s
+// `element`).
+test("the address of a short reply under a long root turn keeps the reply where it landed as the root turn changes height", async () => {
+  // Ten claims newer than the thread and ten older, so Details scrolls on both sides of it.
+  const log = [
+    ...Array.from({ length: 10 }, (_, index) => claimAgo(20 - index, index + 1)),
+    ...Array.from({ length: 10 }, (_, index) => claimAgo(10 - index, 300 + index)),
+  ];
+  const root = agentMessage("m-root", 120);
+  const reply = { ...agentMessage("m-reply", 60).message, in_reply_to: "m-root" };
+  const restoreReads = stubHistoryReads(log, { messages: [{ ...root, replies: [reply] }] });
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  Object.defineProperty(box, "clientHeight", { configurable: true, value: VIEW_HEIGHT });
+  // The root turn is 2,000 px tall until the case changes its height; the reply is 100 px.
+  const turnHeights = new Map([
+    ["m-root", 2000],
+    ["m-reply", 100],
+  ]);
+  const turnHeight = (turn: Element) =>
+    turnHeights.get(turn.getAttribute("data-history-item") ?? "") ?? ROW_HEIGHT;
+  const heightOf = (row: Element) => {
+    const turns = [...row.querySelectorAll("[data-history-item]")];
+    return turns.length === 0 ? ROW_HEIGHT : turns.reduce((sum, turn) => sum + turnHeight(turn), 0);
+  };
+  // A thread's turns stack inside its entry.
+  const restoreLayout = installDetailsLayout(box, heightOf, turnHeight);
+  // The landing scrolls Details as the browser does.
+  const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    how?: boolean | ScrollIntoViewOptions
+  ) {
+    const at = this.getBoundingClientRect();
+    const block = typeof how === "object" ? how.block : "start";
+    box.scrollTop += block === "center" ? at.top + at.height / 2 - VIEW_HEIGHT / 2 : at.top;
+  });
+  // The anchor hears a change of height outside its commits from resize observers, which
+  // happy-dom never calls back: the case calls them back as the frame after the change does.
+  const sizes = installResizeObserver();
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory("m-reply", { container: box }).unmount;
+    const marked = await waitFor(() => {
+      const turn = box.querySelector<HTMLElement>('[data-history-item="m-reply"]');
+      expect(turn?.getAttribute("aria-current"), "the reply's address marked no turn").toBe("true");
+      return turn as HTMLElement;
+    });
+    // The reply is no taller than Details' view, so it lands in the middle of it.
+    const landed = (VIEW_HEIGHT - 100) / 2;
+    await waitFor(() =>
+      expect(marked.getBoundingClientRect().top, "the address did not land the reply").toBe(landed)
+    );
+
+    // The root turn changes to 200 px after the landing's scroll, which the anchor sees only as
+    // content resized. The next frame raises the landing scroll's own event, then observes the
+    // change.
+    turnHeights.set("m-root", 200);
+    act(() => {
+      box.dispatchEvent(new Event("scroll"));
+      sizes.resize();
+    });
+
+    const at = marked.getBoundingClientRect();
+    expect(at.top, "the root turn above the landed reply changed height and moved the reply").toBe(
+      landed
+    );
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reply stood at ${at.top} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    sizes.restore();
+    restoreLayout();
+    intoView.mockRestore();
+    box.remove();
+    restoreReads();
+  }
+});
+
+// The address of a turn draws the history down to that turn's thread, however far past the
+// first 20 entries it stands, marks the turn and brings it into view; and each following of the
+// address does so again, the same address followed a second time among them, however far the
+// reader has read since. The landing once happened once for each turn the list drew.
+test("a turn past the first 20 entries is drawn by its address, also when the address is followed again", async () => {
+  // Twenty-five claims newer than the daemon's thread of a minute ago, whose entry is the 26th.
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 25 }, (_, index) => claimAgo(25 - index, index + 1)),
+    { messages: [agentMessage("m-past", 60)] }
+  );
+  // Each element the history brings into view.
+  const landed: Element[] = [];
+  const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    landed.push(this);
+  });
+  const landings = () =>
+    landed.filter((element) => element.getAttribute("data-history-item") === "m-past").length;
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  const at = (item: AddressedTurn) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <HeldHistory
+          activityFollowing={undefined}
+          issue={issue}
+          item={item}
+          state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
+          visitMark={99999}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  let view: RenderResult | undefined;
+
+  try {
+    view = render(at({ following: FOLLOWING, id: "m-past" }));
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-history-item="m-past"]')?.getAttribute("aria-current"),
+        "the address of a turn past the first 20 entries marks no turn"
+      ).toBe("true")
+    );
+    expect(drawnEntries()).toHaveLength(26);
+    await waitFor(() => expect(landings(), "the address did not bring its turn into view").toBe(1));
+
+    view.rerender(at({ following: `${FOLLOWING} again`, id: "m-past" }));
+    await waitFor(() =>
+      expect(
+        landings(),
+        "the same address followed again did not bring its turn into view again"
+      ).toBe(2)
+    );
+    expect(drawnEntries()).toHaveLength(26);
+  } finally {
+    view?.unmount();
+    intoView.mockRestore();
+    restoreReads();
+  }
+});
+
+/** alice, whom the landing cases sign in as: the reader whose new turn a landing goes to. */
+const ALICE = { id: "alice", kind: "user" } as const;
+
+/** The daemon's thread of the landing cases: its root `m-root`, two minutes old, then alice's
+ *  earlier reply `m-earlier`, then `later`. */
+function daemonThread(later: readonly MessageRead["message"][] = []): MessageRead {
+  const earlier = {
+    ...agentMessage("m-earlier", 90).message,
+    author: ALICE,
+    in_reply_to: "m-root",
+  };
+  return { ...agentMessage("m-root", 120), replies: [earlier, ...later] };
+}
+
+/** alice's new reply in `daemonThread`, which the read after her send brings. */
+const MINE = {
+  ...agentMessage("m-mine", 1).message,
+  author: ALICE,
+  body: "My reply from the line at the foot.",
+  in_reply_to: "m-root",
+};
+
+/** How tall each turn of `daemonThread` is drawn: the root and alice's earlier reply 50 px each,
+ *  so the thread's foot stands at the foot of Details' view under the ten claims above it, and
+ *  her new reply 100 px, so it is drawn wholly below that view. */
+const TURN_HEIGHTS: Record<string, number> = { "m-earlier": 50, "m-mine": 100, "m-root": 50 };
+
+/**
+ * The landing cases' history - `newer` claims, ten unless given, and `daemonThread` under them,
+ * with `comments` where given - drawn in Details' own box under the page's writer with alice
+ * signed in, and the line at the foot (`FOOT_BOX`) outside Details. With 20 claims or more the
+ * thread stands under the history's first entries, and the reader draws it with Show more. On a
+ * phone (`phone`) the page is 390 px wide, a phone's width, and Details is as the shell holds it,
+ * open, with the history drawn in it only while it is (`drawHistory`'s `details`); a Reply puts
+ * the caret in the line's field. Elsewhere the focus is in that field, which she sent from.
+ * Returns the box, that field, whether Details is open, what opens or shuts it as the reader does,
+ * the query client, the writer, and what puts everything back.
+ */
+async function drawLandingHistory({
+  comments = [],
+  newer = 10,
+  phone = false,
+}: {
+  comments?: readonly Comment[];
+  newer?: number;
+  phone?: boolean;
+} = {}): Promise<{
+  box: HTMLElement;
+  detailsOpen: () => boolean | undefined;
+  field: HTMLElement;
+  queryClient: QueryClient;
+  restore: () => void;
+  setDetailsOpen: (open: boolean) => Promise<void>;
+  writer: () => OutlineWriter | undefined;
+}> {
+  await warmMarkdownRenderer();
+  const restoreViewport = phone ? stubViewport(PHONE_WIDTH) : undefined;
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: newer }, (_, index) => claimAgo(newer + 10 - index, index + 1)),
+    { comments, messages: [daemonThread()] }
+  );
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const turnHeight = (turn: Element) =>
+    TURN_HEIGHTS[turn.getAttribute("data-history-item") ?? ""] ?? ROW_HEIGHT;
+  const restoreLayout = installDetailsLayout(
+    box,
+    (row) => {
+      const turns = [...row.querySelectorAll("[data-history-item]")];
+      return turns.length === 0
+        ? ROW_HEIGHT
+        : turns.reduce((sum, turn) => sum + turnHeight(turn), 0);
+    },
+    turnHeight
+  );
+  const foot = document.body.appendChild(document.createElement("section"));
+  foot.setAttribute(FOOT_BOX_ATTRIBUTE, "");
+  foot.setAttribute("data-testid", FOOT_BOX_TEST_ID);
+  const field = foot.appendChild(document.createElement("textarea"));
+  const details: HeldDetails = {};
+  const held: HeldWriter = {};
+  const { queryClient, unmount } = drawHistory(undefined, {
+    container: box,
+    ...(phone ? { details } : {}),
+    writer: held,
+  });
+  // alice signs in before any landing waits on her, which the history's read of who is signed
+  // in (`IssueHistory.tsx`'s `signedIn`) draws again.
+  act(() => {
+    queryClient.setQueryData(["whoami"], { kind: "user", login: ALICE.id });
+  });
+  const restore = () => {
+    unmount();
+    restoreLayout();
+    foot.remove();
+    box.remove();
+    restoreReads();
+    restoreViewport?.();
+  };
+  try {
+    if (newer >= PAGE_SIZE) {
+      // Show more counts the thread among the entries left once the messages' read has
+      // answered, and its press draws the next 20 entries, the thread among them.
+      const more = await waitFor(() => {
+        const control = screen.getByRole("button", { name: SHOW_MORE });
+        expect(
+          control.textContent,
+          "Show more does not count the thread among the entries left"
+        ).toBe(showMoreName(newer + 1 - PAGE_SIZE));
+        return control;
+      });
+      await userEvent.click(more);
+    }
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "the thread is not drawn"
+      ).not.toBeNull()
+    );
+    if (!phone) act(() => field.focus());
+    return {
+      box,
+      detailsOpen: () => details.open,
+      field,
+      queryClient,
+      restore,
+      setDetailsOpen: (open) =>
+        act(async () => {
+          details.setOpen?.(open);
+        }),
+      writer: () => held.writer,
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// A reply the line at the foot sends to a turn of a thread the history holds is the history's to
+// land (`HeldLanding.in`), not the outline's, which draws no row of it. The send has landed when
+// the line asks, and the read that brings the reader's new turn is still out: the history waits
+// for it and moves nothing, and alice's earlier reply in the thread is no new turn. Once that read
+// has brought the new turn and the list has drawn it, the focus goes to the turn's first control,
+// and Details brings the turn wholly into view by the least scroll of its own box: the page under
+// it does not scroll, and no element is scrolled into view. Here the thread's foot stands at the
+// foot of Details' view, so the new turn drawn under it stands wholly below the view.
+test("a reply sent to a turn of the history takes the focus to the reader's new turn there once it is drawn, wholly in Details' view", async () => {
+  const { box, field, queryClient, restore, writer } = await drawLandingHistory();
+  const intoView = spyOn(Element.prototype, "scrollIntoView");
+  const focus = spyOn(HTMLElement.prototype, "focus");
+
+  try {
+    act(() => writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } }));
+    expect(
+      writer()?.landing,
+      "a landing under a turn of the history is not the history's"
+    ).toMatchObject({ in: "history" });
+    expect(
+      document.activeElement,
+      "the history moved the focus before the reader's new turn was drawn"
+    ).toBe(field);
+
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    const turn = await waitFor(() => {
+      const drawn = box.querySelector<HTMLElement>('[data-history-item="m-mine"]');
+      expect(
+        drawn?.contains(document.activeElement) === true,
+        "the landing did not move the focus to the reader's new turn in the history"
+      ).toBe(true);
+      return drawn as HTMLElement;
+    });
+    expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
+      turn.querySelector("a[href], button:not(:disabled)")
+    );
+    expect(
+      writer()?.landing,
+      "the landing did not end once it took the reader there"
+    ).toBeUndefined();
+    const at = turn.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reader's new turn stood at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(at.bottom, "Details scrolled more than the least that shows the new turn").toBe(
+      VIEW_HEIGHT
+    );
+    expect(box.scrollTop).toBe(100);
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+    expect(
+      intoView,
+      "an element was scrolled into view, which scrolls the page too"
+    ).not.toHaveBeenCalled();
+    expect(focus.mock.calls.at(-1), "the focus moved with a scroll of its own").toEqual([
+      { preventScroll: true },
+    ]);
+  } finally {
+    intoView.mockRestore();
+    focus.mockRestore();
+    restore();
+  }
+});
+
+// A landing under a row of the outline is the outline's (`HeldLanding.in`): the history ends
+// nothing of it and moves no focus for it, even as a read brings a new turn of the reader's into
+// a thread it holds.
+test("a landing under a row of the outline is left to the outline, and the history moves no focus for it", async () => {
+  const { field, queryClient, restore, writer } = await drawLandingHistory();
+
+  try {
+    act(() => writer()?.land({ to: "newest", under: { id: "c-outline", kind: "comment" } }));
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    expect(
+      writer()?.landing,
+      "the history ended a landing under a row of the outline"
+    ).toMatchObject({ in: "outline", under: { id: "c-outline" } });
+    expect(
+      document.activeElement,
+      "the history moved the focus for a landing under a row of the outline"
+    ).toBe(field);
+  } finally {
+    restore();
+  }
+});
+
+/** Presses the Reply of the history's turn `id`, which on a phone shuts Details for the line at
+ *  the foot (`history-entries.tsx`), and waits for that line's field to take the caret. */
+async function replyOnPhone(
+  box: HTMLElement,
+  id: string,
+  field: HTMLElement,
+  detailsOpen: () => boolean | undefined
+): Promise<void> {
+  const reply = await waitFor(() => {
+    const drawn = box.querySelector<HTMLElement>(`[data-history-reply="${id}"]`);
+    if (drawn === null) throw new Error(`the history's turn ${id} draws no Reply`);
+    return drawn;
+  });
+  await userEvent.click(reply);
+  expect(detailsOpen(), "Reply on a phone left Details open over the line at the foot").toBe(false);
+  expect(
+    box.querySelector('[data-testid="issue-history"]'),
+    "the history is drawn with Details shut"
+  ).toBeNull();
+  await waitFor(() =>
+    expect(document.activeElement, "the line at the foot did not take the caret").toBe(field)
+  );
+}
+
+/**
+ * Draws the history of `newer` claims on a phone (`drawLandingHistory`), sends a reply from its
+ * turn `m-root` and holds its landing to decision 581: Reply shuts Details, `whileShut` changes
+ * what the case gives while it is shut, the line at the foot sends, the writer opens Details again
+ * for a landing in the history that it marks as opening Details, with the history drawn -
+ * `historyDrawn` being the failure where it is not - and once the reader's new turn is drawn,
+ * under the turn it answers, the history focuses it, wholly in Details' view, and ends the
+ * landing.
+ */
+async function landPhoneReply({
+  historyDrawn,
+  newer,
+  whileShut,
+}: {
+  historyDrawn: string;
+  newer?: number;
+  whileShut?: (queryClient: QueryClient) => void;
+}): Promise<void> {
+  const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
+    newer,
+    phone: true,
+  });
+
+  try {
+    await replyOnPhone(box, "m-root", field, detailsOpen);
+    if (whileShut !== undefined) act(() => whileShut(queryClient));
+
+    // The line sends, and asks the page to land its reply (`IssueComposer.tsx`'s `finish`).
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
+      writer()?.clear();
+    });
+    expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
+      true
+    );
+    expect(
+      writer()?.landing,
+      "the reply's landing is not the history's, or is not marked as opening Details"
+    ).toMatchObject({ in: "history", opensDetails: true });
+    await waitFor(() =>
+      expect(box.querySelector('[data-history-item="m-earlier"]'), historyDrawn).not.toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the history moved the focus before the reader's new turn was drawn"
+    ).toBe(field);
+
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    const turn = await waitFor(() => {
+      const drawn = box.querySelector<HTMLElement>('[data-history-item="m-mine"]');
+      expect(
+        drawn?.contains(document.activeElement) === true,
+        "the landing did not move the focus to the reader's new turn in the history"
+      ).toBe(true);
+      return drawn as HTMLElement;
+    });
+    expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
+      turn.querySelector("a[href], button:not(:disabled)")
+    );
+    expect(
+      turn.closest('[data-history-entry="thread:m-root"]'),
+      "the reader's new turn is not drawn under the turn it answers"
+    ).not.toBeNull();
+    expect(
+      writer()?.landing,
+      "the landing did not end once it took the reader there"
+    ).toBeUndefined();
+    const at = turn.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reader's new turn stood at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+  } finally {
+    restore();
+  }
+}
+
+// Decision 581: on a phone Details is a sheet over the page, and a turn's Reply shuts it so that
+// the line at the foot can take the focus (`history-entries.tsx`). The reply the line then sent
+// was the history's to land, but the history was no longer drawn, so the landing ended at once:
+// the reader neither saw where their reply went nor had the focus on it. The writer opens Details
+// for that landing as it is asked for it, Details draws the history again, and the history takes
+// the reader to their new turn under the turn it answers, focused and wholly in Details' view, as
+// it does where Details stays open.
+test("on a phone, a reply sent from a turn of the history with Details shut opens Details on the history and focuses the reader's new turn, wholly in Details' view", async () => {
+  await landPhoneReply({ historyDrawn: "Details opened without the history" });
+});
+
+// Decision 581, for a thread under the history's first entries. A turn's Reply shuts Details on a
+// phone, which takes the history off the page and how far Show more had drawn it with it, so when
+// the writer opened Details again for the reply's landing, the history mounted drawn down to its
+// first 20 entries alone. The thread the reader had drawn under them with Show more was not
+// drawn: the landing found no turn to go to, waited out its 10 s and ended with Details open at
+// its top and the focus not on the reply. The history is drawn down to the thread the landing
+// answers, as it is to the thread of a turn an address names.
+test("on a phone, a reply sent from a turn of a thread under the history's first 20 entries opens Details drawn down to that thread and focuses the reader's new turn there, wholly in Details' view", async () => {
+  await landPhoneReply({
+    historyDrawn:
+      "Details opened again without the history drawn down to the thread the reply answers",
+    newer: 25,
+  });
+});
+
+// Decision 581, for a thread older than the log's first page. Nothing reads the history's log
+// while Details is shut, so its pages leave the cache after five minutes, and a reader who takes
+// that long to write the reply comes back to a log read anew, one page of it. The history leaves
+// out a thread whose first turn is older than every event read while older pages are left
+// (`HistoryInput.loadedFrom`), so the landing found no thread to go to and ended at once, as it
+// ends one whose thread the history no longer holds: Details opened over the history's first
+// entries, and the focus stayed in the line. The history reads the log on for the thread the
+// landing answers, a page at a time, as it does for the thread of a turn an address names, and
+// lands the reply there once that thread is in.
+test("on a phone, a reply sent from a turn of a thread older than the first page of a log read anew opens Details, reads on to that thread and focuses the reader's new turn there, wholly in Details' view", async () => {
+  // The ten claims the history drew before Reply (`drawLandingHistory`).
+  const drawnBefore = Array.from({ length: 10 }, (_, index) => claimAgo(20 - index, index + 1));
+  // The log's first page as it is read anew: a full page of events made while the reader wrote,
+  // all of the last second, so every one is newer than the thread's first turn, two minutes old;
+  // its newest 30 are claims, so its first entries leave entries to draw under them, and the rest
+  // are events the history leaves out. The claims drawn before are on the page under it.
+  const readAnew = Array.from({ length: 200 }, (_, index) =>
+    (index < 30 ? claimAgo : outlineEventAgo)(220 - index, (index + 1) / 200)
+  );
+  await landPhoneReply({
+    historyDrawn: "Details opened again without reading the log on to the thread the reply answers",
+    whileShut: (queryClient) => {
+      (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mockImplementation(
+        async (_key, options) =>
+          options?.after !== undefined
+            ? []
+            : [...(options?.before === undefined ? readAnew : drawnBefore)]
+      );
+      queryClient.removeQueries({ queryKey: HISTORY_LOG });
+    },
+  });
+});
+
+// Decision 581, for a reader who shuts Details again before the reply lands. The writer opened
+// Details for the reply's landing in the history, and the reader shut it before a read drew their
+// new turn: the history went with Details, its wait for the read with it, and nothing ended the
+// landing, which the writer kept. The reader's next open of Details, by any control, took it up
+// as one the writer opened Details for: the history was drawn down to that thread and, for 10 s,
+// took a new turn of the reader's there as the landing's. A landing still waiting as its history
+// goes ends there.
+test("on a phone, a reply's landing ends as the reader shuts the Details it opened before the new turn is drawn, and a later open of Details neither draws down to its thread nor takes a turn there", async () => {
+  const { box, detailsOpen, field, queryClient, restore, setDetailsOpen, writer } =
+    await drawLandingHistory({ newer: 25, phone: true });
+
+  try {
+    await replyOnPhone(box, "m-root", field, detailsOpen);
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
+      writer()?.clear();
+    });
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "Details opened again without the history drawn down to the thread the reply answers"
+      ).not.toBeNull()
+    );
+
+    await setDetailsOpen(false);
+    expect(
+      writer()?.landing,
+      "the landing outlived the history it waited in, which Details took off the page"
+    ).toBeUndefined();
+
+    await setDetailsOpen(true);
+    await waitFor(() =>
+      expect(
+        drawnEntries(),
+        "Details opened again without the history's first entries"
+      ).toHaveLength(PAGE_SIZE)
+    );
+    expect(
+      box.querySelector('[data-history-item="m-earlier"]'),
+      "a later open of Details drew the history down to the thread of a landing that had ended"
+    ).toBeNull();
+    // The reader draws the thread with Show more, which hands the focus to the first entry it
+    // draws, and a read then brings their new turn into that thread.
+    await userEvent.click(screen.getByRole("button", { name: SHOW_MORE }));
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "Show more did not draw the thread"
+      ).not.toBeNull()
+    );
+    const focused = document.activeElement;
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-mine"]'),
+        "the read did not draw the reader's new turn"
+      ).not.toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "a later open of Details took a new turn of the reader's for a landing that had ended"
+    ).toBe(focused);
+  } finally {
+    restore();
+  }
+});
+
+// Decision 573, which decision 581 leaves as it is: a person's reply to an agents' comment tied
+// to no text takes its thread out of the history, so the outline lands it, under the comment it
+// answers. On a phone a turn's Reply shuts Details, and such a reply leaves it shut: the outline
+// under the sheet is where the reader is taken.
+test("on a phone, a reply sent from a turn of the history that lands in the outline leaves Details shut", async () => {
+  // An agents' post, the planner's comment tied to no text, which the history holds until a
+  // person writes in it (`agents-only.ts`).
+  const agent: Comment = {
+    ...commentDeliveryFields(),
+    anchor: null,
+    ask_id: null,
+    author: { id: "planner", kind: "session" },
+    body: "The plan is drafted and waits on its review.",
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    edited_at: null,
+    id: "c-agent",
+    issue_key: KEY,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+  const { box, detailsOpen, field, restore, writer } = await drawLandingHistory({
+    comments: [agent],
+    phone: true,
+  });
+
+  try {
+    await replyOnPhone(box, "c-agent", field, detailsOpen);
+
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: agent.id, kind: "comment" } });
+      writer()?.clear();
+    });
+    expect(
+      writer()?.landing,
+      "the reply to the agents' comment is not the outline's, or is marked as opening Details"
+    ).toMatchObject({ in: "outline", leavesHistory: true, opensDetails: false });
+    expect(detailsOpen(), "a reply that lands in the outline opened Details on a phone").toBe(
+      false
+    );
+    expect(document.activeElement, "the reply that lands in the outline moved the focus").toBe(
+      field
+    );
+  } finally {
+    restore();
+  }
+});
+
+// A turn carries the marks `main` draws on a post its author corrected: one its author edited
+// reads " · edited" after its author, and one its author deleted is drawn as its deleted line,
+// who deleted it and when, in place of its words, with no Reply, as Dispatch takes no reply to a
+// deleted post.
+test("a turn its author edited reads edited after its author, and a turn its author deleted is drawn as its deleted line", async () => {
+  const root = agentMessage("m-edited", 120).message;
+  const person = { id: "alice", kind: "user" } as const;
+  const restoreReads = stubHistoryReads([], {
+    messages: [
+      {
+        message: { ...root, edited_at: new Date(Date.now() - 60_000).toISOString() },
+        replies: [
+          {
+            ...agentMessage("m-deleted", 90).message,
+            author: person,
+            body: "",
+            deleted_at: new Date(Date.now() - 30_000).toISOString(),
+            deleted_by: person,
+            in_reply_to: "m-edited",
+          },
+        ],
+      },
+    ],
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+            <HeldHistory
+              activityFollowing={undefined}
+              issue={issue}
+              item={undefined}
+              state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+              visitMark={99}
+            />
+          </OutlineWriterProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    ).unmount;
+    const edited = await waitFor(() => {
+      const turn = document.querySelector<HTMLElement>('[data-history-item="m-edited"]');
+      if (turn === null) throw new Error("the edited turn is not drawn");
+      return turn;
+    });
+    expect(
+      edited.querySelector("p")?.textContent?.endsWith(` · ${CONTROL_LABELS.post_edited}`),
+      "the turn its author edited does not read edited after its author"
+    ).toBe(true);
+    expect(edited.querySelector("[data-history-reply]")).not.toBeNull();
+
+    const deleted = document.querySelector<HTMLElement>('[data-history-item="m-deleted"]');
+    const line = deleted?.querySelector("[data-post-deleted]");
+    expect(line?.textContent, "the turn its author deleted draws no deleted line").toStartWith(
+      `${CONTROL_LABELS.post_deleted_by} `
+    );
+    expect(deleted?.querySelector("[data-history-reply]"), "a deleted turn draws Reply").toBeNull();
+    expect(deleted?.textContent, "a deleted turn reads edited").not.toContain(
+      CONTROL_LABELS.post_edited
+    );
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// A turn's words are drawn whole, at any length, with no cut and no "more" control, whether or
+// not an address names the turn: here 3,000 words over 400 lines, laid out as the browser would
+// lay them out, which the outline cuts to six lines with "more · N words" under them.
+test("a long turn is drawn whole, with no more control", async () => {
+  const words = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const long = agentMessage("m-long", 60);
+  const restoreReads = stubHistoryReads([], {
+    messages: [{ ...long, message: { ...long.message, body: words } }],
+  });
+  await warmMarkdownRenderer();
+  // Every element lays out 9,600 px tall: no DOM of a unit test lays anything out, and a cut
+  // reads the words' own boxes (`clamp-measurer.ts`).
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => 9600,
+  });
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 600, 9600)
+  );
+  const near = installIntersectionObserver();
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const turn = await waitFor(() => {
+      const drawn = document.querySelector<HTMLElement>('[data-history-item="m-long"]');
+      expect(drawn?.textContent, "the long turn's last word is not drawn").toContain("word3000");
+      return drawn as HTMLElement;
+    });
+    // The words are brought near the viewport, where a cut would measure them.
+    await measureNearWords(near);
+
+    expect(turn.querySelector("[data-node-more]"), "the long turn draws a more control").toBeNull();
+    expect(
+      [...turn.querySelectorAll<HTMLElement>("*")].filter(
+        (element) => element.style.maxHeight !== ""
+      ),
+      "the long turn's words are cut"
+    ).toEqual([]);
+    expect(turn.textContent).toContain("word3000");
+  } finally {
+    unmount?.();
+    near.restore();
+    boxes.mockRestore();
+    if (scrollHeight === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    else Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    restoreReads();
+  }
+});
+
+/** Version 1 of a handoff of `KEY`, whose body's summary is `summary`. */
+function handoffRecord(summary: string): Handoff {
+  return {
+    author: { id: "fedcba9876543210", kind: "session", origin: { session_title: "Implementer" } },
+    body: JSON.stringify({ schemaVersion: 1, summary }),
+    created_at: new Date().toISOString(),
+    id: "handoff-1",
+    issue_key: KEY,
+    phase: "implement",
+    version: 1,
+  };
+}
+
+/** A handoff of `KEY` as its list gives it, with no body: `handoffRecord`'s, under the id `id`. */
+function listedRecord(id = "handoff-1"): HandoffSummary {
+  const { body: _body, ...listed } = handoffRecord("");
+  return { ...listed, id };
+}
+
+/** The bodies answer that holds the body of each of `ids`, whose summary is `summary`. */
+function bodiesOf(summary: string, ids: readonly string[] = ["handoff-1"]): HandoffBodies {
+  return { bodies: ids.map((id) => ({ body: handoffRecord(summary).body, id })), left: [] };
+}
+
+/** Brings the place of every handoff the history watches within one screen of Details' view, as
+ *  the browser's observer reports it, which sends their bodies' read, and lets an answer given at
+ *  once land. */
+async function showHandoffs(near: IntersectionControl): Promise<void> {
+  await act(async () => {
+    for (const element of near.observed()) near.show(element);
+  });
+}
+
+/** The history of `KEY`, with no event, holding the handoffs `ids` its list gives, each drawn
+ *  open, under the observer `near` the case installed: once their fold controls are drawn, their
+ *  places are brought within one screen of Details' view, which sends their bodies' read.
+ *  `prepare` is handed the history's query client before that. */
+async function drawHandoffs(
+  near: IntersectionControl,
+  ids: readonly string[] = ["handoff-1"],
+  prepare?: (queryClient: QueryClient) => void
+): Promise<{ queryClient: QueryClient; unmount: () => void }> {
+  handoffsRead().mockResolvedValue(ids.map((id) => listedRecord(id)));
+  const restoreReads = stubHistoryReads([]);
+  const drawn = drawHistory(undefined);
+  const unmount = () => {
+    drawn.unmount();
+    drawn.queryClient.clear();
+    restoreReads();
+  };
+  try {
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveLength(
+        ids.length
+      )
+    );
+    prepare?.(drawn.queryClient);
+    await showHandoffs(near);
+    return { queryClient: drawn.queryClient, unmount };
+  } catch (error) {
+    unmount();
+    throw error;
+  }
+}
+
+/** The entry of handoff `id`, which the history draws. */
+function handoffEntryOf(id: string): HTMLElement {
+  const found = document.querySelector<HTMLElement>(`[data-history-entry="handoff:${id}"]`);
+  if (found === null) throw new Error(`the history draws no entry of handoff ${id}`);
+  return found;
+}
+
+// Each handoff of the history is drawn open as the history draws its entry, from the list of the
+// issue's handoffs, its fields and each proof entry read with no press once the entry is within
+// one screen of the view. Only the reader folds it, by its Hide fields, and Show fields opens it
+// again from the body read once, though its entry is in view again.
+test("a handoff is drawn open with its fields and each proof entry, and a press on its line folds it", async () => {
+  const restoreReads = stubHistoryReads([
+    {
+      ...claim(1),
+      payload: { handoff_id: "handoff-1", phase: "implement", version: 1 },
+      type: "handoff.recorded",
+    } as DispatchEvent,
+  ]);
+  handoffsRead().mockResolvedValue([listedRecord()]);
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue({
+    bodies: [
+      {
+        body: JSON.stringify({
+          proof: ["The unit cases pass.", "The type check passes."],
+          schemaVersion: 1,
+          summary: "Second pass",
+        }),
+        id: "handoff-1",
+      },
+    ],
+    left: [],
+  });
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    await screen.findByRole("button", { name: CONTROL_LABELS.hide_fields });
+    await showHandoffs(near);
+    await screen.findByText("Second pass");
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    expect(
+      list.querySelectorAll('[data-handoff-field="proof"]'),
+      "the handoff's proof entries are not drawn open"
+    ).toHaveLength(2);
+    const toggle = within(list).getByRole("button", { name: CONTROL_LABELS.hide_fields });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    await userEvent.click(toggle);
+    expect(screen.queryByText("Second pass"), "the press did not fold the handoff").toBeNull();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent(CONTROL_LABELS.show_fields);
+
+    await userEvent.click(toggle);
+    await screen.findByText("Second pass");
+    await showHandoffs(near);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(bodies, "opening the handoff again read its body again").toHaveBeenCalledTimes(1);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+    restoreReads();
+  }
+});
+
+// A handoff's opened fields hold its body for the page's life, as a version never changes once
+// written: an invalidation of every read after a write reads the body no more, and a failure of
+// the bodies' read meanwhile says no failure over the fields held.
+test("a handoff's opened fields are not read again when every read of the page is, and stay drawn", async () => {
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue(bodiesOf("Second pass"));
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = await drawHandoffs(near);
+    unmount = drawn.unmount;
+    await screen.findByText("Second pass");
+
+    bodies.mockRejectedValue(new Error("the bodies are down"));
+    await act(async () => {
+      await drawn.queryClient.invalidateQueries();
+    });
+    await showHandoffs(near);
+    expect(
+      bodies,
+      "an invalidation of every read read the handoff's body again"
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("alert"),
+      "the handoff said a failure over the fields it held"
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the handoff offered a Retry over the fields it held"
+    ).toBeNull();
+    expect(
+      screen.queryByText("Second pass"),
+      "an invalidation of every read erased the fields the handoff held"
+    ).not.toBeNull();
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// With no body held, the line that said the read failed stays, Retry and all, while the read its
+// Retry sends is out. The focus of a keyboard reader on that Retry goes with its line, once the
+// read lands, to the fields it read, rather than falling to the page with the Retry.
+test("a handoff's Retry pressed by keyboard hands the focus on as its line goes, to the fields it read", async () => {
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockResolvedValue(bodiesOf("Second pass"));
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (await drawHandoffs(near)).unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    await screen.findByText("Second pass");
+
+    expect(bodies).toHaveBeenCalledTimes(2);
+    const active = document.activeElement;
+    const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(
+      active,
+      `the handoff's Retry went with its line and the focus did not go to the fields it read (retry connected: ${retry.isConnected} focus: ${active?.tagName})`
+    ).toBe(fields);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// A handoff's Retry hands the focus on only after the reader's press of it. Another entry's
+// Retry, pressed for the same failed read, asks for this body again with its own and takes this
+// line away with no press of the reader's on it, so the focus its Retry held stays on the page's
+// body, as on every page of Dispatch.
+test("a handoff's Retry taken away by a read the reader did not press for leaves the focus on the page's body", async () => {
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(async (_key, ids) => bodiesOf("Second pass", ids));
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (await drawHandoffs(near, ["handoff-1", "handoff-2"])).unmount;
+    const retry = await within(handoffEntryOf("handoff-1")).findByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+    const other = await within(handoffEntryOf("handoff-2")).findByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+    act(() => retry.focus());
+
+    // The other entry's Retry, pressed with no move of the focus.
+    await act(async () => {
+      other.click();
+    });
+    await waitFor(() => expect(screen.getAllByText("Second pass")).toHaveLength(2));
+    expect(bodies).toHaveBeenCalledTimes(2);
+    expect(
+      [...(bodies.mock.calls.at(-1)?.[1] ?? [])].sort(),
+      "the other entry's Retry did not ask for this body again with its own"
+    ).toEqual(["handoff-1", "handoff-2"]);
+    expect(retry.isConnected, "the handoff's Retry stayed once the read answered").toBe(false);
+    expect(
+      document.activeElement,
+      "a read the reader did not press for took the handoff's Retry away, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// With no body held, the line that says a read of it failed stays, its Retry busy, while the read
+// that Retry sent is out. A press of the busy Retry sends no other read. A press moves no focus: a
+// reader who presses the busy Retry, or comes back to it and presses it again, keeps the focus
+// there.
+test("a handoff's busy Retry sends no read while the one it sent is out, and keeps the focus", async () => {
+  const near = installIntersectionObserver();
+  // The read the Retry sends is held out until the case lets it land.
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(() => again.promise);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (await drawHandoffs(near)).unmount;
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(bodies).toHaveBeenCalledTimes(1);
+
+    for (let press = 0; press < 3; press += 1) await userEvent.click(retry);
+
+    expect(
+      bodies,
+      "each press of the busy Retry sent another read while one was out"
+    ).toHaveBeenCalledTimes(2);
+    expect(retry, "the Retry went while the read it sent is out").toBeInTheDocument();
+    expect(retry, "Retry does not read busy while the read it sent is out").toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+    expect(
+      document.activeElement,
+      "a press of the busy Retry moved the focus off it to the toggle"
+    ).toBe(retry);
+
+    await act(async () => again.resolve(bodiesOf("Third pass")));
+    await screen.findByText("Third pass");
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// A second press of a handoff's Retry made before React draws the read the first one sent finds
+// the render's state still that of no read out. A press while the read is out sends no other
+// read, and moves no focus.
+test("two presses of a handoff's Retry before a render send one read", async () => {
+  const near = installIntersectionObserver();
+  // Every read sent from here is held out until the case lets it land.
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(() => again.promise);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (await drawHandoffs(near)).unmount;
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(bodies).toHaveBeenCalledTimes(1);
+    act(() => retry.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      bodies,
+      "the second press of Retry sent another read while the first one's was out"
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      document.activeElement,
+      "the press that sent the read moved the focus off the Retry, whose line stays while the read is out"
+    ).toBe(retry);
+
+    await act(async () => again.resolve(bodiesOf("Third pass")));
+    await screen.findByText("Third pass");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(bodies).toHaveBeenCalledTimes(2);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// A reader who presses a handoff's Retry twice by keyboard - the first press seemed to do
+// nothing, or the key repeated - asked for the fields once. The first press hands the focus to
+// the toggle above the line, so the second lands on that toggle and shuts the fields the reader
+// pressed Retry to read. Found by the tester on a running build of 7c09739d: on a seeded issue,
+// Show fields with the handoff's read failing, then Enter twice on Retry, left the toggle
+// reading "Show fields" and the fields shut once the read landed.
+test("a handoff's Retry pressed twice by keyboard leaves its fields open once the read lands", async () => {
+  const near = installIntersectionObserver();
+  // The read the Retry sends is held out until the case lets it land.
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies").mockRejectedValueOnce(
+    new Error("the bodies are down")
+  );
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (await drawHandoffs(near)).unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    bodies.mockImplementation(() => again.promise);
+    retry.focus();
+    await userEvent.keyboard("{Enter}{Enter}");
+    await act(async () => again.resolve(bodiesOf("Second pass")));
+
+    expect(
+      toggle,
+      "the second press of Retry landed on the toggle and shut the fields it asked for"
+    ).toHaveAttribute("aria-expanded", "true");
+    await screen.findByText("Second pass");
+    expect(bodies, "the two presses read the handoff more than once").toHaveBeenCalledTimes(2);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// With no body held, the line that said the read failed stays, its Retry busy and holding the
+// focus while the read it sent is out, where a second Enter sends nothing more and the fields
+// stay open; it stays, with the same Retry and the focus, where the read fails again, and goes
+// once a read lands, handing the focus to the fields it drew. The loading line never takes the
+// place of the failure its Retry reads again.
+test("a handoff's Retry with no body held keeps its line and the focus while its read is out, then hands it to what the read drew", async () => {
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockRejectedValueOnce(
+    new Error("the bodies are down")
+  );
+  // Each read a Retry sends is held out until the case lets it land.
+  let again = Promise.withResolvers<HandoffBodies>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (await drawHandoffs(near)).unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    bodies.mockImplementation(() => again.promise);
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(
+        retry,
+        "the line and its Retry went while the read Retry sent again is out"
+      ).toBeInTheDocument();
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      );
+    });
+    expect(
+      screen.queryByText(ANSWER_LINES.loading_handoff),
+      "the loading line took the place of the failure its Retry reads again"
+    ).toBeNull();
+    expect(
+      document.activeElement,
+      `the press of Retry moved the focus off it while its line stays (focus: ${document.activeElement?.tagName} ${document.activeElement?.textContent})`
+    ).toBe(retry);
+    await userEvent.keyboard("{Enter}");
+    expect(toggle, "the second press of Retry shut the fields it asked for").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(document.activeElement, "the second press of the busy Retry moved the focus").toBe(
+      retry
+    );
+    expect(bodies, "the second press sent another read").toHaveBeenCalledTimes(2);
+
+    await act(async () => again.reject(new Error("the bodies are still down")));
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+
+    again = Promise.withResolvers<HandoffBodies>();
+    await userEvent.keyboard("{Enter}");
+    await act(async () => again.resolve(bodiesOf("Second pass")));
+    await screen.findByText("Second pass");
+    const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(fields?.tagName).toBe("DL");
+    expect(
+      document.activeElement,
+      "the failure line went with the focus on its Retry and did not hand it to the fields the read drew"
+    ).toBe(fields);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(bodies).toHaveBeenCalledTimes(3);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// With no body held, the line that says a read of it failed stays while the read its Retry sent
+// is out, so the focus of a keyboard reader stays on the busy Retry, where a second Enter sends
+// nothing more and the fields stay open; once the read lands, the line goes and hands the focus
+// to the fields it drew.
+test("a handoff's Retry keeps the focus through a second Enter while its read is out, then hands it to the fields", async () => {
+  const near = installIntersectionObserver();
+  // The read the Retry sends is held out until the case lets it land.
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(() => again.promise);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (await drawHandoffs(near)).unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    retry.focus();
+
+    await userEvent.keyboard("{Enter}");
+    expect(
+      document.activeElement,
+      `the press of Retry moved the focus off it while its line stays (focus: ${document.activeElement?.tagName} ${document.activeElement?.textContent})`
+    ).toBe(retry);
+    await userEvent.keyboard("{Enter}");
+    expect(toggle, "the second press of Retry shut the fields it asked for").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(document.activeElement, "the second press of the busy Retry moved the focus").toBe(
+      retry
+    );
+    expect(bodies, "the second press sent another read").toHaveBeenCalledTimes(2);
+
+    await act(async () => again.resolve(bodiesOf("Third pass")));
+    await screen.findByText("Third pass");
+    expect(screen.queryByRole("alert")).toBeNull();
+    const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(fields?.tagName).toBe("DL");
+    expect(
+      document.activeElement,
+      "the failure line went with the focus on its Retry and did not hand it to the fields"
+    ).toBe(fields);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// A handoff's prose field draws through the shared renderer from the server's reading in the
+// bodies answer (`field_trees`), so a `dispatch://` reference in it reads as its target's name
+// and links to it, never as the raw address.
+test("a handoff's prose field draws a reference as its target's name, not its address", async () => {
+  await warmMarkdownRenderer();
+  const reference = "dispatch://CORE-2";
+  const summary = `Follows ${reference} and **keeps** the tests green.`;
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue({
+    bodies: [
+      {
+        body: JSON.stringify({
+          files: ["a.ts"],
+          proof: [`See ${reference}`],
+          schemaVersion: 1,
+          summary,
+        }),
+        field_trees: {
+          "/proof/0": displayTree(`See ${reference}`) as DisplayTree,
+          "/summary": displayTree(summary) as DisplayTree,
+        },
+        id: "handoff-1",
+      },
+    ],
+    left: [],
+  });
+  const summaryField = () => document.querySelector('[data-handoff-field="summary"]');
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = (
+      await drawHandoffs(near, ["handoff-1"], (queryClient) =>
+        queryClient.setQueryData(["issue-summary", "CORE-2"], {
+          documents: [],
+          key: "CORE-2",
+          project: "CORE",
+          status: "in_progress",
+          title: "Warm the cache",
+        })
+      )
+    ).unmount;
+    const link = await waitFor(() => {
+      const found = summaryField()?.querySelector<HTMLAnchorElement>(
+        `a[data-dispatch-ref="${reference}"]`
+      );
+      if (found == null || found.textContent !== "CORE-2 Warm the cache") {
+        throw new Error(
+          `summary did not draw the reference's target name (text: ${summaryField()?.textContent})`
+        );
+      }
+      return found;
+    });
+    expect(link).toHaveAttribute("href", "/issues/CORE-2");
+    expect(summaryField()?.textContent).not.toContain(reference);
+    expect(summaryField()?.querySelector("strong")?.textContent).toBe("keeps");
+    expect(
+      document.querySelector(`[data-handoff-field="proof"] a[data-dispatch-ref="${reference}"]`)
+        ?.textContent
+    ).toBe("CORE-2 Warm the cache");
+    // A list is one numbered entry for each item, its words plain text (the plan's D11).
+    expect(
+      [...document.querySelectorAll('[data-handoff-field="files"] ol > li')].map(
+        (item) => item.textContent
+      )
+    ).toEqual(["a.ts"]);
+  } finally {
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
+  }
+});
+
+// A line of the history that names a block by a UUID names it by the one line of the node that
+// carries it, as the outline draws a node's line: a `dispatch://` address in the question reads as
+// its target's name, from the names the page published, and never as the address its author typed.
+test("a block's line in the history reads a reference as its target's name", async () => {
+  await warmMarkdownRenderer();
+  const block = "01f349b4-2a84-4ebb-81be-91fa2f4e2300";
+  const askId = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
+  const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
+  const question = `Wait on ${address} first. Then ship.`;
+  const restoreReads = stubHistoryReads([
+    {
+      ...claim(1),
+      payload: { block_id: block, disturbed_by: { id: "alice", kind: "user" }, version: 3 },
+      type: "block.repaired",
+    } as DispatchEvent,
+  ]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+    {
+      block_id: block,
+      id: askId,
+      kind: "question",
+      question,
+      question_tree: displayTree(question),
+    } as unknown as IssueAskRow,
+  ]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined, {
+      published: publishedNames(new Map([[address, "Ship the release"]])),
+    }).unmount;
+    const path = buildIssuePath({ id: askId, key: KEY, kind: "ask" });
+    const line = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>("[data-event-seq]");
+      if (found?.querySelector(`a[href="${path}"]`) == null) {
+        throw new Error(`the block's line is not drawn (text: ${found?.textContent})`);
+      }
+      return found;
+    });
+    await waitFor(() =>
+      expect(
+        line.querySelector(`a[href="${path}"]`)?.textContent,
+        "the block's line does not read its reference as its target's name"
+      ).toBe("Wait on CORE-2 Ship the release first.")
+    );
+    expect(line.textContent).toContain("repaired server-owned state on block “Wait on CORE-2");
+    expect(line.textContent, "the block's line draws the address as typed").not.toContain(
+      "dispatch://"
+    );
+  } finally {
+    unmount?.();
+    listIssueAsks.mockRestore();
+    restoreReads();
+  }
+});
+
+// The history leaves the nine kinds of event that write a post out of its read of the log
+// (`HISTORY_EXCLUDED_TYPES`), so a log of thousands of comments is read in one request, and holds
+// the filtered pages under its own key: Activity's key holds every event, and never a filtered page.
+test("the history reads the log without the events that write a post, under its own key", async () => {
+  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() => expect(drawnEntries()).toHaveLength(3));
+
+    expect(
+      drawn.queryClient.getQueryData(["events", KEY]),
+      "the history's filtered pages are held under Activity's key"
+    ).toBeUndefined();
+    expect(
+      drawn.queryClient.getQueryData<EventPages>(HISTORY_LOG)?.pages.flat(),
+      "the history's own key holds no filtered page"
+    ).toHaveLength(3);
+    expect(
+      api.getIssueEvents,
+      "the history's first read did not leave out the events that write a post"
+    ).toHaveBeenCalledWith(KEY, {
+      exclude_types: HISTORY_EXCLUDED_TYPES,
+      limit: 200,
+      order: "desc",
+    });
+    expect(HISTORY_EXCLUDED_TYPES.split(",")).toEqual([
+      "comment.answered",
+      "comment.created",
+      "comment.deleted",
+      "comment.edited",
+      "message.accepted",
+      "message.answered",
+      "message.created",
+      "message.deleted",
+      "message.edited",
+    ]);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// A thread carries no place in the log, since the filtered log leaves out the event of its first
+// turn, so whether it is new is told from when it began against the first event past the read
+// mark, which one read of the log's own answers, as the Conversation tab tells it. The thread that
+// began after the mark is new and the one before it is not, with the line that says what is new
+// between them.
+test("a thread is new where it began after the read mark, with the line that says what is new between the threads", async () => {
+  // The first event past the read mark, a comment, which the history's read leaves out.
+  const boundary = {
+    ...claimAgo(6, 120),
+    payload: { id: "boundary" },
+    type: "comment.created",
+  } as unknown as DispatchEvent;
+  const restoreReads = stubHistoryReads([claimAgo(3, 600)], {
+    boundary: [boundary],
+    messages: [agentMessage("m-before", 300), agentMessage("m-after", 50)],
+  });
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined, { visitMark: 5 }).unmount;
+    await waitFor(() => expect(drawnEntries()).toHaveLength(3));
+
+    expect(api.getIssueEvents).toHaveBeenCalledWith(KEY, { after: 5, limit: 1 });
+    const order = [...document.querySelectorAll("[data-history-day] > ol > li")].map(
+      (item) => item.getAttribute("data-history-entry") ?? item.getAttribute("aria-label")
+    );
+    expect(
+      order,
+      "the thread after the read mark is not new, or the line that says what is new does not stand between the threads"
+    ).toEqual(["thread:m-after", CONTROL_LABELS.history_unread, "thread:m-before", "event:3"]);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The one timeline (the plan's T1 to T6, T8 and D7): each run of the issue's steps is an entry
+// of the history, which holds the handoff it reports, and the Steps section is gone.
+// ---------------------------------------------------------------------------------------------
+
+/** The instant `seconds` seconds before now, as the server writes one. */
+function secondsAgo(seconds: number): string {
+  return new Date(Date.now() - seconds * 1000).toISOString();
+}
+
+/** What the history draws of the instant `iso`, as the Steps tab draws it: the date and the time
+ *  of day in the reader's locale. */
+function drawnAt(iso: string): string {
+  const date = new Date(iso);
+  const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+  const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${day.format(date)} ${time.format(date)}`;
+}
+
+/** The runs `records` of the issue, one task of each list given, in the server's order. */
+function stepsOf(...tasks: (readonly StepRecord[])[]): IssueSteps {
+  return {
+    issue: KEY,
+    tasks: tasks.map((records) => ({
+      needs: null,
+      steps: [...records],
+      task: records[0]?.task ?? "default",
+    })),
+  };
+}
+
+/** A handoff of the issue as its list gives it, written `ago` seconds ago by the implementer. */
+function listedHandoff(id: string, ago: number, version = 1): HandoffSummary {
+  return {
+    author: { id: "fedcba9876543210", kind: "session", origin: { session_title: "Implementer" } },
+    created_at: new Date(Date.now() - ago * 1000).toISOString(),
+    id,
+    issue_key: KEY,
+    phase: "implement",
+    version,
+  };
+}
+
+/** The entry of run `id`. */
+function runEntry(id: string): HTMLElement {
+  const found = document.querySelector<HTMLElement>(
+    `[data-testid="issue-history"] [data-step-run="${id}"]`
+  );
+  if (found === null) throw new Error(`the history draws no entry of run ${id}`);
+  return found;
+}
+
+/** Each field run `id`'s entry draws, by its field, with the value the reader reads; a field it
+ *  does not draw is not there. */
+function runFields(id: string): Record<string, string> {
+  return Object.fromEntries(
+    [...runEntry(id).querySelectorAll("[data-step-field]")].map((field) => [
+      field.getAttribute("data-step-field"),
+      field.querySelector("dd")?.textContent ?? "",
+    ])
+  );
+}
+
+/** The ids of the runs the history draws, newest first. */
+function drawnRuns(): string[] {
+  return [...document.querySelectorAll('[data-testid="issue-history"] [data-step-run]')].map(
+    (run) => run.getAttribute("data-step-run") ?? ""
+  );
+}
+
+/** The ids the history's entries are drawn under, newest first. */
+function drawnIds(): (string | null)[] {
+  return drawnEntries().map((entry) => entry.getAttribute("data-history-entry"));
+}
+
+describe("the history is the issue's one timeline", () => {
+  // I3: the eleven fields of a run over four runs - a passed step, a failed step that sent the
+  // task back to step 2, a running step with no model and no end, and a merge with no start, no
+  // type and no agent - each the value the Steps section drew for it, None where the record holds
+  // none, and "Returned to" only where a run sent its task back.
+  test("T1: each run's entry draws its task and every field of its Steps row", async () => {
+    const { implement1, implement2, merge1, review1 } = defaultRuns;
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(stepsOf([implement1, review1, implement2, merge1]));
+    const none = CONTROL_LABELS.none;
+    const results = CONTROL_LABELS.step_results;
+    const table: Record<string, Record<string, string | undefined>> = {
+      [implement1.id]: {
+        agent: "legion-core-core-1-implementer",
+        attempt: "1",
+        ended: drawnAt("2026-11-16T09:40:00Z"),
+        model: "anthropic/claude-opus-5",
+        result: results.passed,
+        returned_to: undefined,
+        role: "implementer",
+        started: drawnAt("2026-11-16T09:00:00Z"),
+        step: "2",
+        task: "default",
+        type: "implementation",
+      },
+      [review1.id]: {
+        agent: "legion-core-core-1-reviewer",
+        attempt: "1",
+        ended: drawnAt("2026-11-16T10:30:00Z"),
+        model: "openai/gpt-6.1-sol",
+        result: results.failed,
+        returned_to: "step 2",
+        role: "reviewer",
+        started: drawnAt("2026-11-16T10:00:00Z"),
+        step: "4",
+        task: "default",
+        type: "review",
+      },
+      [implement2.id]: {
+        agent: "legion-core-core-1-implementer",
+        attempt: "2",
+        ended: none,
+        model: none,
+        result: results.running,
+        returned_to: undefined,
+        role: "implementer",
+        started: drawnAt("2026-11-16T10:31:00Z"),
+        step: "2",
+        task: "default",
+        type: "implementation",
+      },
+      [merge1.id]: {
+        agent: none,
+        attempt: "1",
+        ended: drawnAt("2026-11-16T09:40:00Z"),
+        model: none,
+        result: results.passed,
+        returned_to: undefined,
+        role: "merger",
+        started: none,
+        step: "Merge",
+        task: "default",
+        type: none,
+      },
+    };
+    let unmount: (() => void) | undefined;
+    try {
+      unmount = drawHistory(undefined).unmount;
+      await waitFor(() => expect(drawnRuns()).toHaveLength(4));
+      // Newest first, each at its start; the merge, which has none, at its end.
+      expect(drawnRuns()).toEqual([implement2.id, review1.id, merge1.id, implement1.id]);
+      expect(screen.queryByRole("table"), "the runs are drawn as a table").toBeNull();
+      const labels = CONTROL_LABELS.step_fields;
+      expect(
+        [...runEntry(review1.id).querySelectorAll("dt")].map((label) => label.textContent),
+        "the failed review's fields are not labelled in the page's words"
+      ).toEqual([
+        CONTROL_LABELS.steps_task,
+        labels.step,
+        labels.role,
+        labels.type,
+        labels.agent,
+        labels.model,
+        labels.attempt,
+        labels.started,
+        labels.ended,
+        labels.result,
+        labels.returned_to,
+      ]);
+      for (const [id, fields] of Object.entries(table)) {
+        const drawn: Record<string, string | undefined> = runFields(id);
+        for (const [field, value] of Object.entries(fields)) {
+          expect(drawn[field], `the ${field} of run ${id}`).toBe(value);
+        }
+      }
+      // Each time is the record's own instant, in a `<time>` that names it.
+      expect(
+        [...runEntry(review1.id).querySelectorAll("time")].map((time) =>
+          time.getAttribute("datetime")
+        )
+      ).toEqual(["2026-11-16T10:00:00Z", "2026-11-16T10:30:00Z"]);
+      // The step a run went back to wraps: no part of its value keeps it on one line.
+      expect(
+        runEntry(review1.id).querySelector('[data-step-field="returned_to"] .whitespace-nowrap')
+      ).toBeNull();
+    } finally {
+      unmount?.();
+      restoreReads();
+    }
+  });
+
+  // The handoff a run reports is drawn in that run's entry, open, from the list of handoffs, and
+  // nowhere else in the history; its body, and the body of the handoff no run reports, come from
+  // one bodies read once their entries are within one screen of the view.
+  test("T2: the handoff a run reports is drawn open in its entry", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(
+      stepsOf([stepRecord({ id: "implement-1", report: "handoff-1", started_at: secondsAgo(5) })])
+    );
+    handoffsRead().mockResolvedValue([
+      listedHandoff("handoff-1", 60),
+      listedHandoff("alone", 30, 2),
+    ]);
+    const near = installIntersectionObserver();
+    const bodies = spyOn(api, "getHandoffBodies").mockImplementation(async (_key, ids) => ({
+      bodies: ids.map((id) => ({
+        body: handoffRecord(id === "handoff-1" ? "First pass" : "Second pass").body,
+        id,
+      })),
+      left: [],
+    }));
+    let unmount: (() => void) | undefined;
+    try {
+      unmount = drawHistory(undefined).unmount;
+      await waitFor(() =>
+        expect(screen.getAllByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveLength(2)
+      );
+      await showHandoffs(near);
+      await waitFor(() =>
+        expect(
+          runEntry("implement-1").querySelector('[data-handoff-field="summary"] dd')?.textContent
+        ).toBe("First pass")
+      );
+      const run = runEntry("implement-1");
+      expect(run.textContent).toContain("recorded the implement handoff, version 1");
+      expect(within(run).getByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+      expect(
+        document.querySelectorAll('[data-handoff-line="handoff-1"]'),
+        "the handoff the run reports is drawn in more than one place"
+      ).toHaveLength(1);
+      // The handoff no run reports is an entry of its own, open too.
+      const alone = document.querySelector<HTMLElement>('[data-history-entry="handoff:alone"]');
+      expect(alone?.querySelector("[data-step-run]")).toBeNull();
+      await waitFor(() =>
+        expect(alone?.querySelector('[data-handoff-field="summary"] dd')?.textContent).toBe(
+          "Second pass"
+        )
+      );
+      expect(bodies).toHaveBeenCalledTimes(1);
+    } finally {
+      unmount?.();
+      near.restore();
+      bodies.mockRestore();
+      restoreReads();
+    }
+  });
+
+  // A read of the runs Dispatch refused says so at once under the heading, with its Retry, and
+  // every other entry stays drawn. The read has no retry policy of its own, so nothing asks again
+  // before Retry or the catch-up's next read, though the client's policy would ask twice within
+  // the second. Retry reads again and draws the runs, and the focus it held goes to the heading
+  // once its line goes, never to the page. The catch-up's next read, 2 s after the first, is
+  // refused too, and the runs the read before it drew stay drawn with no failure said over them.
+  test("T3: runs that did not read: the failure line with Retry, and every other entry stays", async () => {
+    await onFakeClock(async () => {
+      setSystemTime(NOON);
+      const user = userOnFakeClock();
+      const restoreReads = stubHistoryReads([claim(2), claim(1)]);
+      let refusing = true;
+      // Four runs newer than the log's entries, so the history draws them above the place it
+      // holds once they read.
+      const recent = ["first", "second", "third", "fourth"].map((id, index) =>
+        stepRecord({ id, started_at: secondsAgo(4 - index) })
+      );
+      stepsRead().mockImplementation(async () => {
+        if (refusing) throw new ApiError(500, { code: "INTERNAL", error: "refused" });
+        return stepsOf(recent);
+      });
+      const queryClient = new DispatchQueryClient({
+        defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+      });
+      queryClient.setQueryData(["agents"], []);
+      const { unmount } = render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <HeldHistory
+              activityFollowing={undefined}
+              issue={{ artifacts: [], key: KEY } as unknown as IssueDetails}
+              item={undefined}
+              state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+              visitMark={99}
+            />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      const history = () => screen.getByTestId("issue-history");
+      const heading = () => within(history()).getByRole("heading", { level: 2 });
+      try {
+        await tick(0);
+        expect(within(history()).getByRole("alert").textContent).toBe(
+          ANSWER_LINES.steps_unreadable
+        );
+        expect(drawnEntries().map((entry) => entry.getAttribute("data-event-seq"))).toEqual([
+          "2",
+          "1",
+        ]);
+        await tick(1_000, 100);
+        expect(
+          stepsRead(),
+          "the refused read was asked again before Retry or the catch-up's next read"
+        ).toHaveBeenCalledTimes(1);
+
+        refusing = false;
+        const retry = within(history()).getByRole("button", { name: CONTROL_LABELS.retry });
+        act(() => retry.focus());
+        await user.keyboard("{Enter}");
+        await tick(0);
+        expect(drawnRuns()).toHaveLength(4);
+        expect(stepsRead()).toHaveBeenCalledTimes(2);
+        expect(within(history()).queryByRole("alert")).toBeNull();
+        expect(document.activeElement, "the Retry that went left the focus on the page").toBe(
+          heading()
+        );
+
+        refusing = true;
+        await tick(1_000, 100);
+        expect(stepsRead()).toHaveBeenCalledTimes(3);
+        expect(
+          within(history()).queryByRole("alert"),
+          "a later failure said a failure over the runs the read holds"
+        ).toBeNull();
+        expect(drawnRuns(), "a later failure took away the runs the read holds").toHaveLength(4);
+      } finally {
+        act(() => unmount());
+        queryClient.clear();
+        restoreReads();
+      }
+    });
+  });
+
+  // The Pin and Unpin of a recorded handoff's event are on the entry that holds the handoff: the
+  // run's that reports it, or the handoff's own, never on a line of the event.
+  test("T4: the pin of a recorded handoff is on the entry that holds it", async () => {
+    const recorded = (seq: number, id: string) =>
+      ({
+        ...claim(seq),
+        payload: { handoff_id: id, phase: "implement", version: 1 },
+        type: "handoff.recorded",
+      }) as DispatchEvent;
+    const restoreReads = stubHistoryReads([recorded(3, "alone"), recorded(2, "in-run"), claim(1)]);
+    stepsRead().mockResolvedValue(
+      stepsOf([stepRecord({ id: "reporter", report: "in-run", started_at: secondsAgo(12) })])
+    );
+    handoffsRead().mockResolvedValue([listedHandoff("in-run", 15), listedHandoff("alone", 10)]);
+    const getHandoff = spyOn(api, "getHandoff").mockImplementation(async (id) => ({
+      ...handoffRecord("Pass"),
+      id,
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    queryClient.setQueryData(["agents"], []);
+    const { unmount } = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <HeldHistory
+            activityFollowing={undefined}
+            issue={{ artifacts: [], key: KEY } as unknown as IssueDetails}
+            item={undefined}
+            state={{
+              [KEY]: {
+                dismissed: [pinnedItemMarker("event:2")],
+                last_read_seq: 99,
+                pinned: false,
+                seq: 0,
+              },
+            }}
+            visitMark={99}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() => expect(drawnRuns()).toEqual(["reporter"]));
+      expect(
+        [...runEntry("reporter").querySelectorAll("button")].filter(
+          (button) => button.getAttribute("aria-label") === CONTROL_LABELS.unpin
+        ),
+        "the run that holds the pinned handoff draws no Unpin"
+      ).toHaveLength(1);
+      const alone = document.querySelector<HTMLElement>('[data-history-entry="handoff:alone"]');
+      if (alone === null) throw new Error("the handoff no run reports has no entry");
+      expect(
+        [...alone.querySelectorAll("button")].filter(
+          (button) => button.getAttribute("aria-label") === CONTROL_LABELS.pin
+        )
+      ).toHaveLength(1);
+      expect(alone.getAttribute("data-event-seq")).toBe("3");
+      // No event of a recorded handoff is a line of its own.
+      expect(drawnIds()).toEqual(["handoff:alone", "run:reporter", "event:1"]);
+    } finally {
+      unmount();
+      queryClient.clear();
+      getHandoff.mockRestore();
+      restoreReads();
+    }
+  });
+
+  // Where the records of the newest run, the highest generation, name an experiment, the history
+  // draws its experiment and variant once, under its heading and above its list; the older
+  // generation's, which names another variant, is not drawn. Where no record of the newest run
+  // names one, though the older generation's does, it draws no such line.
+  test("T5: the experiment and the variant are named once under the heading", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(
+      stepsOf([
+        stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
+        stepRecord({ experiment: "planning", generation: 2, id: "newest-1", variant: "b" }),
+        stepRecord({
+          experiment: "planning",
+          generation: 2,
+          id: "newest-2",
+          role: "reviewer",
+          step: 4,
+          type: "review",
+          variant: "b",
+        }),
+      ])
+    );
+    let drawn = drawHistory(undefined);
+    try {
+      const history = screen.getByTestId("issue-history");
+      const line = await within(history).findByText("Experiment planning: variant b");
+      expect(within(history).getAllByText(/^Experiment /u)).toHaveLength(1);
+      expect(line.hasAttribute("data-step-variant")).toBe(true);
+      const heading = within(history).getByRole("heading", { level: 2 });
+      const list = await within(history).findByRole("list", {
+        name: CONTROL_LABELS.history_list,
+      });
+      expect(heading.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(line.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      drawn.unmount();
+      drawn.queryClient.clear();
+
+      stepsRead().mockResolvedValue(
+        stepsOf([
+          stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
+          stepRecord({ generation: 2, id: "newest-1" }),
+        ])
+      );
+      drawn = drawHistory(undefined);
+      await waitFor(() => expect(drawnRuns()).toHaveLength(2));
+      expect(screen.queryByText(/^Experiment /u)).toBeNull();
+      expect(document.querySelector("[data-step-variant]")).toBeNull();
+    } finally {
+      drawn.unmount();
+      restoreReads();
+    }
+  });
+
+  // Details draws no Steps section: the runs are the history's entries, and nothing else on it
+  // lists them.
+  test("T6: no Steps section is drawn", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(stepsOf([...Object.values(defaultRuns)]));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    queryClient.setQueryData(["agents"], []);
+    const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+    const issue = {
+      artifacts: [],
+      key: KEY,
+      status: "in_progress",
+      title: "Review the spec",
+    } as unknown as IssueDetails;
+    const { unmount } = render(
+      <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+        <QueryClientProvider client={queryClient}>
+          <MarginSlotProvider drawer={drawer}>
+            <DetailsHistory issue={issue} state={undefined} />
+          </MarginSlotProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() => expect(drawnRuns()).toHaveLength(4));
+      expect(screen.queryByTestId("issue-steps")).toBeNull();
+      expect(screen.queryByRole("region", { name: "Steps" })).toBeNull();
+      expect(
+        document.querySelectorAll("[data-step-run]"),
+        "a run is drawn outside the history"
+      ).toHaveLength(4);
+    } finally {
+      unmount();
+      queryClient.clear();
+      restoreReads();
+    }
+  });
+
+  // A body read for an entry above the one the reader reads grows that entry above Details'
+  // view. The history's anchor is told of the growth by the resize observer of its list, in the
+  // frame after the body's own commit, which is no commit of the anchor's, and scrolls Details by
+  // as much, so the reader's entry stays where it was on the screen.
+  test("T7: a body that arrives above the reader's entry leaves it in place", async () => {
+    // The newest entry is the handoff's; under it, twelve claims.
+    const restoreReads = stubHistoryReads(
+      Array.from({ length: 12 }, (_, index) => claimAgo(12 - index, 60 + index))
+    );
+    handoffsRead().mockResolvedValue([listedHandoff("handoff-1", 5)]);
+    const near = installIntersectionObserver();
+    // The bodies read is held out until the case lets it land.
+    const answer = Promise.withResolvers<HandoffBodies>();
+    const bodies = spyOn(api, "getHandoffBodies").mockImplementation(() => answer.promise);
+    // Details' own box, which the history scrolls in, at the top of the window.
+    const box = document.body.appendChild(document.createElement("div"));
+    box.style.overflowY = "auto";
+    Object.defineProperty(box, "clientHeight", { configurable: true, value: VIEW_HEIGHT });
+    // The handoff's entry is one row tall while its body is read, and 300 px once its fields are.
+    const restoreLayout = installDetailsLayout(box, (row) =>
+      row.querySelector("[data-handoff-field]") === null ? ROW_HEIGHT : 300
+    );
+    // The anchor hears a change of height outside its commits from resize observers, which
+    // happy-dom never calls back: the case calls them back as the frame after the change does.
+    const sizes = installResizeObserver();
+    let unmount: (() => void) | undefined;
+
+    try {
+      unmount = drawHistory(undefined, { container: box }).unmount;
+      await waitFor(() => expect(box.querySelectorAll("[data-event-seq]")).toHaveLength(13));
+      await showHandoffs(near);
+      expect(bodies).toHaveBeenCalledTimes(1);
+      // The reader scrolls down past the handoff's entry, and their focus goes to an entry
+      // below it, which names their place.
+      act(() => {
+        box.scrollTop = 200;
+        box.dispatchEvent(new Event("scroll"));
+      });
+      const reading = box.querySelectorAll<HTMLElement>("[data-event-seq]")[6];
+      if (reading === undefined) throw new Error("the history draws no seventh entry");
+      act(() => within(reading).getByRole("button").focus());
+      const before = reading.getBoundingClientRect().top;
+
+      await act(async () => answer.resolve(bodiesOf("Second pass")));
+      await screen.findByText("Second pass");
+      sizes.resize();
+
+      expect(
+        reading.getBoundingClientRect().top,
+        "the body that arrived above the reader's entry moved it"
+      ).toBe(before);
+      expect(box.scrollTop).toBe(200 + 300 - ROW_HEIGHT);
+    } finally {
+      unmount?.();
+      sizes.restore();
+      restoreLayout();
+      box.remove();
+      near.restore();
+      bodies.mockRestore();
+      restoreReads();
+    }
+  });
+
+  // The history draws its loading line, and no entry, until the runs and the list of handoffs
+  // have each answered, so the handoff a run reports is drawn in that run's entry from the first
+  // draw and never moves into it; a read that failed is an answer, after which the history draws.
+  test("T8: the history holds its first place only after the runs and the list of handoffs answered, and a failed read is an answer", async () => {
+    const restoreReads = stubHistoryReads([claim(2), claim(1)]);
+    const runs = Promise.withResolvers<IssueSteps>();
+    const handoffs = Promise.withResolvers<HandoffSummary[]>();
+    stepsRead().mockImplementation(() => runs.promise);
+    handoffsRead().mockImplementation(() => handoffs.promise);
+    const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Pass"));
+    let drawn: { queryClient: QueryClient; unmount: () => void } | undefined;
+    try {
+      drawn = drawHistory(undefined);
+      const history = screen.getByTestId("issue-history");
+      await waitFor(() => expect(stepsRead()).toHaveBeenCalled());
+      await act(async () => {});
+      expect(within(history).getByText(ANSWER_LINES.loading_history)).toBeDefined();
+      expect(drawnEntries(), "the history drew before the runs answered").toHaveLength(0);
+
+      await act(async () =>
+        runs.resolve(
+          stepsOf([stepRecord({ id: "reporter", report: "handoff-1", started_at: secondsAgo(5) })])
+        )
+      );
+      expect(within(history).getByText(ANSWER_LINES.loading_history)).toBeDefined();
+      expect(drawnEntries(), "the history drew before the handoffs answered").toHaveLength(0);
+
+      await act(async () => handoffs.resolve([listedHandoff("handoff-1", 30)]));
+      await waitFor(() => expect(drawnIds()).toEqual(["run:reporter", "event:2", "event:1"]));
+      expect(within(history).queryByText(ANSWER_LINES.loading_history)).toBeNull();
+      drawn.unmount();
+      drawn.queryClient.clear();
+
+      // A failed read of the runs is an answer: the history draws, and says so.
+      stepsRead().mockRejectedValue(new Error("the runs are down"));
+      handoffsRead().mockResolvedValue([listedHandoff("handoff-1", 5)]);
+      drawn = drawHistory(undefined);
+      await waitFor(() => expect(drawnIds()).toEqual(["handoff:handoff-1", "event:2", "event:1"]));
+      expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.steps_unreadable);
+      drawn.unmount();
+      drawn.queryClient.clear();
+
+      // So is a failed read of the list of handoffs.
+      stepsRead().mockResolvedValue(stepsOf([]));
+      handoffsRead().mockRejectedValue(new Error("the handoffs are down"));
+      drawn = drawHistory(undefined);
+      await waitFor(() => expect(drawnEntries()).toHaveLength(2));
+      expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.handoffs_unreadable);
+    } finally {
+      drawn?.unmount();
+      getHandoff.mockRestore();
+      restoreReads();
+    }
+  });
+
+  // D7: a handoff recorded while the history is drawn reaches it over the event feed: the event
+  // reads the list of handoffs again, and the new handoff's entry is drawn, though the event is
+  // no line of its own.
+  test("D7: a recorded handoff reads the list of handoffs again, and its entry is drawn", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    handoffsRead().mockResolvedValue([listedHandoff("first", 5)]);
+    const getHandoff = spyOn(api, "getHandoff").mockImplementation(async (id) => ({
+      ...handoffRecord("Pass"),
+      id,
+    }));
+    let unmount: (() => void) | undefined;
+    try {
+      const drawn = drawHistory(undefined);
+      unmount = drawn.unmount;
+      await waitFor(() => expect(drawnIds()).toEqual(["handoff:first", "event:1"]));
+      expect(handoffsRead()).toHaveBeenCalledTimes(1);
+
+      // The handoff is recorded two seconds on: the held `Date` never lets the refresh
+      // scheduler's second between two reads of one query pass on its own.
+      setSystemTime(new Date(NOON.getTime() + 2_000));
+      handoffsRead().mockResolvedValue([listedHandoff("first", 7), listedHandoff("second", 0, 2)]);
+      const event = {
+        ...claim(2),
+        created_at: new Date().toISOString(),
+        payload: { handoff_id: "second", phase: "implement", version: 2 },
+        type: "handoff.recorded",
+      } as DispatchEvent;
+      act(() => {
+        arriveInHistoryLog(drawn.queryClient, KEY, event);
+        refreshQueries(drawn.queryClient, eventRefreshTargets(event, "alice"));
+      });
+      await waitFor(() =>
+        expect(drawnIds()).toEqual(["handoff:second", "handoff:first", "event:1"])
+      );
+      expect(handoffsRead()).toHaveBeenCalledTimes(2);
+      expect(
+        document
+          .querySelector('[data-history-entry="handoff:second"]')
+          ?.getAttribute("data-event-seq")
+      ).toBe("2");
+    } finally {
+      unmount?.();
+      getHandoff.mockRestore();
+      restoreReads();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// What today's Steps tab draws of a task besides its runs (decision 559 of INFRA-1196), which
+// the Steps section drew and the history now draws: the group of each task under the History
+// heading, above the entries - the tasks it needs, the steps the plan gives it, and the line of a
+// task with no run. The cases are part M's of `DetailsSteps.test.tsx`, each assertion where the
+// thing it reads now stands.
+// ---------------------------------------------------------------------------------------------
+
+/** One task of a read of the steps, as the server answers it. */
+type StepTask = NonNullable<IssueSteps["tasks"]>[number];
+
+/** A task of the plan none of whose steps has run: its one step, a tester, not started. */
+function waitingTask(task: string, needs: string[] | null = []): StepTask {
+  return { needs, planned: [{ name: "tester", state: "not started", step: 1 }], steps: [], task };
+}
+
+/** `count` passed runs of the task `task`, each its own record, `<task>-1` and on. */
+function runsOf(task: string, count: number): StepRecord[] {
+  return Array.from({ length: count }, (_, index) =>
+    stepRecord({ id: `${task}-${index + 1}`, task })
+  );
+}
+
+/** The history of `KEY` over a log that holds no event, reading the runs `read` answers, as
+ *  `drawHistory` draws it; `restore` puts everything back. */
+function drawRuns(read: () => Promise<IssueSteps>): { restore: () => void } {
+  const restoreReads = stubHistoryReads([]);
+  stepsRead().mockImplementation(read);
+  const drawn = drawHistory(undefined);
+  return {
+    restore: () => {
+      drawn.unmount();
+      drawn.queryClient.clear();
+      restoreReads();
+    },
+  };
+}
+
+/** Waits until the history draws its list, as it does once the runs have answered, with `runs`
+ *  runs among its entries. */
+async function drawnWithRuns(runs: number): Promise<void> {
+  await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
+  await waitFor(() => expect(drawnRuns()).toHaveLength(runs));
+}
+
+/** The group of the task `task`, under the History heading. */
+function group(task: string): HTMLElement {
+  const section = document.querySelector<HTMLElement>(
+    `[data-testid="issue-history"] [data-step-task="${task}"]`
+  );
+  if (section === null) throw new Error(`the history draws no group of the task ${task}`);
+  return section;
+}
+
+/** The text of each element the group of `task` holds that `selector` finds, in its order. */
+function textsIn(task: string, selector: string): (string | null)[] {
+  return [...group(task).querySelectorAll(selector)].map((element) => element.textContent);
+}
+
+/** The tasks whose groups the history draws, in its order. */
+function drawnTasks(): (string | null)[] {
+  return [...document.querySelectorAll('[data-testid="issue-history"] [data-step-task]')].map(
+    (drawn) => drawn.getAttribute("data-step-task")
+  );
+}
+
+/** Whether `later` is drawn after `earlier`. */
+function drawnAfter(earlier: Node, later: Node): boolean {
+  return (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+}
+
+/** `value`, failing the case with `what` where it is null. */
+function found<T>(value: T | null, what: string): T {
+  if (value === null) throw new Error(what);
+  return value;
+}
+
+// Each task draws the tasks of the plan it needs on a line of its own in its group, above its
+// planned steps and its runs' entries, in the Steps tab's words (`taskNeedsLine`): `Needs docs,
+// default` for the task that needs two, and `Needs not recorded` for a task of the plan whose node
+// recorded no needs. A task that needs none, and one the plan does not hold, draw no such line:
+// the one the plan does not hold ran and has nothing else the plan says of a task, so it draws no
+// group, and the history draws it as its run's entry alone. The line holds the record's task
+// names inside the tab's words, so it is text the page did not author.
+test("each task names the tasks of the plan it needs above its runs, and says where its plan node recorded none", async () => {
+  const steps = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "docs-1", step: 1, task: "docs" })],
+        task: "docs",
+      },
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "default-1", step: 1 })],
+        task: "default",
+      },
+      {
+        needs: ["docs", "default"],
+        planned: [{ name: "tester", state: "running", step: 1 }],
+        steps: [
+          stepRecord({
+            ended_at: null,
+            id: "release-1",
+            result: "",
+            role: "tester",
+            step: 1,
+            task: "release",
+          }),
+        ],
+        task: "release",
+      },
+      waitingTask("cleanup", null),
+      {
+        needs: null,
+        steps: [stepRecord({ id: "earlier-1", step: 1, task: "earlier" })],
+        task: "earlier",
+      },
+    ],
+  }));
+  try {
+    await drawnWithRuns(4);
+    expect(
+      textsIn("release", "[data-step-needs]"),
+      "the task that needs two tasks of the plan does not name them"
+    ).toEqual(["Needs docs, default"]);
+    const needs = found(
+      group("release").querySelector("[data-step-needs]"),
+      "the task that needs two draws no line of needs"
+    );
+    const releasePlanned = found(
+      group("release").querySelector("[data-step-planned]"),
+      "the task that needs two draws no planned steps"
+    );
+    expect(
+      drawnAfter(needs, releasePlanned) && drawnAfter(needs, runEntry("release-1")),
+      "the line of needs is not above the task's planned steps and its runs"
+    ).toBe(true);
+    expect(
+      needs.hasAttribute(AUTHOR_TEXT_ATTRIBUTE),
+      "the line of needs is not marked as text the page did not author"
+    ).toBe(true);
+    expect(
+      textsIn("cleanup", "[data-step-needs]"),
+      "the task whose plan node recorded no needs does not say so"
+    ).toEqual(["Needs not recorded"]);
+    for (const task of ["docs", "default"]) {
+      expect(
+        textsIn(task, "[data-step-needs]"),
+        `${task}, which needs no task or which the plan does not hold, draws a line of needs`
+      ).toEqual([]);
+    }
+    // `earlier` stands in the history as its run's entry alone, with no group to hold a line.
+    runEntry("earlier-1");
+    expect(
+      drawnTasks(),
+      "earlier, which needs no task or which the plan does not hold, draws a line of needs"
+    ).not.toContain("earlier");
+  } finally {
+    steps.restore();
+  }
+});
+
+// Each task of the plan draws the steps the plan gives it in its group, above its runs' entries,
+// as a list named as the Steps tab names it (`plannedStepsName`), which names the task: each
+// step's place, its name and where it stands - `not started` before any run of it, else its newest
+// run's state, in the words a run's result is drawn in. The place and the name are the plan's, the
+// state the page's own words. A task the plan gives no step draws no such list.
+test("each task lists the steps the plan gives it, each with its place, its name and its state, above its runs", async () => {
+  const { step_not_started: notStarted, step_results: results } = CONTROL_LABELS;
+  const steps = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [
+          { name: "implementer", state: "passed", step: 1 },
+          { name: "reviewer", state: "failed", step: 2 },
+          { name: "tester", state: "not started", step: 3 },
+        ],
+        steps: [
+          stepRecord({ id: "implement-1", step: 1 }),
+          stepRecord({
+            id: "review-1",
+            result: "failed",
+            returned_to: 1,
+            role: "reviewer",
+            step: 2,
+            type: "review",
+          }),
+        ],
+        task: "default",
+      },
+      {
+        needs: null,
+        steps: [stepRecord({ id: "earlier-1", step: 1, task: "earlier" })],
+        task: "earlier",
+      },
+    ],
+  }));
+  try {
+    await drawnWithRuns(3);
+    const planned = found(
+      within(group("default")).queryByRole("list", { name: "Planned steps of task default" }),
+      "the task of the plan draws no list of its planned steps"
+    );
+    const items = within(planned).getAllByRole("listitem");
+    expect(
+      items.map((item) => item.textContent),
+      "the planned steps do not each read their place, their name and where they stand"
+    ).toEqual([
+      `1 implementer ${results.passed}`,
+      `2 reviewer ${results.failed}`,
+      `3 tester ${notStarted}`,
+    ]);
+    expect(planned.hasAttribute("data-step-planned")).toBe(true);
+    expect(
+      drawnAfter(planned, runEntry("implement-1")),
+      "the planned steps are not above the task's runs"
+    ).toBe(true);
+    expect(
+      items.map((item) =>
+        [...item.querySelectorAll(`[${AUTHOR_TEXT_ATTRIBUTE}]`)].map((text) => text.textContent)
+      ),
+      "a planned step's place and name are not marked as the plan's"
+    ).toEqual([
+      ["1", "implementer"],
+      ["2", "reviewer"],
+      ["3", "tester"],
+    ]);
+    expect(
+      items.map((item) =>
+        [...item.querySelectorAll(`[${PAGE_CHROME_ATTRIBUTE}]`)].map((word) => word.textContent)
+      ),
+      "a planned step's state is not the page's own word"
+    ).toEqual([[results.passed], [results.failed], [notStarted]]);
+    // `earlier` stands in the history as its run's entry alone, with no group to hold a list.
+    runEntry("earlier-1");
+    expect(
+      within(screen.getByTestId("issue-history")).queryByRole("list", {
+        name: "Planned steps of task earlier",
+      }),
+      "a task the plan gives no step lists planned steps"
+    ).toBeNull();
+  } finally {
+    steps.restore();
+  }
+});
+
+// A task none of whose steps has run draws the Steps tab's line saying so in its group
+// (`noRunLine`), under its planned steps, and a task with a run draws none. A read whose tasks
+// hold no run at all draws those tasks, each with that line, and no run entry: None stands only
+// for a read that holds no task.
+test("a task with no run says so in place of its runs, and a read whose tasks hold no run draws them rather than None", async () => {
+  const ran = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "default-1", step: 1 })],
+        task: "default",
+      },
+      waitingTask("review", ["default"]),
+    ],
+  }));
+  try {
+    await drawnWithRuns(1);
+    expect(
+      textsIn("review", "[data-step-no-run]"),
+      "the task none of whose steps has run does not say so"
+    ).toEqual(["No step of task review has run yet."]);
+    expect(
+      drawnAfter(
+        found(
+          group("review").querySelector("[data-step-planned]"),
+          "review draws no planned steps"
+        ),
+        found(group("review").querySelector("[data-step-no-run]"), "review draws no line of no run")
+      ),
+      "the line is not under the task's planned steps"
+    ).toBe(true);
+    expect(textsIn("default", "[data-step-no-run]"), "a task with a run says none ran").toEqual([]);
+  } finally {
+    ran.restore();
+  }
+
+  const none = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [waitingTask("default"), waitingTask("review", ["default"])],
+  }));
+  try {
+    await drawnWithRuns(0);
+    expect(drawnTasks(), "a read whose tasks hold no run does not draw its tasks").toEqual([
+      "default",
+      "review",
+    ]);
+    expect(
+      ["default", "review"].map((task) => textsIn(task, "[data-step-no-run]")),
+      "a task of a read that holds no run does not say none of its steps has run"
+    ).toEqual([["No step of task default has run yet."], ["No step of task review has run yet."]]);
+    expect(
+      within(screen.getByTestId("issue-history")).queryByText(CONTROL_LABELS.none, {
+        exact: true,
+      }),
+      "a read that holds tasks reads None"
+    ).toBeNull();
+  } finally {
+    none.restore();
+  }
+});
+
+// A task with no run holds no place among the entries the history draws 20 at a time: its group
+// stands with every other task's under the History heading, above the entries, in the server's
+// order, and is drawn on the first view whichever page the runs around it stand on. Show more
+// counts entries alone and still moves the focus into the first run it drew: the runs stand at
+// one instant, so by their ids (`comparePlaces`), and the first a press draws is `default-5`,
+// whose reported handoff gives its entry the control the focus is handed to.
+test("a task with no run is drawn where it stands, above every page of runs, and counts among no page of runs", async () => {
+  handoffsRead().mockResolvedValue([listedHandoff("default-handoff", 60)]);
+  const steps = drawRuns(async () => ({
+    issue: KEY,
+    tasks: [
+      { needs: [], steps: runsOf("docs", 15), task: "docs" },
+      waitingTask("first"),
+      {
+        needs: [],
+        steps: runsOf("default", 5).map((record) =>
+          record.id === "default-5" ? { ...record, report: "default-handoff" } : record
+        ),
+        task: "default",
+      },
+      waitingTask("second"),
+      { needs: [], steps: runsOf("release", 5), task: "release" },
+      waitingTask("third"),
+    ],
+  }));
+  try {
+    await drawnWithRuns(PAGE_SIZE);
+    expect(
+      drawnTasks(),
+      "the first view does not draw every task's group, each where it stands in the server's order"
+    ).toEqual(["first", "second", "third"]);
+    const more = within(screen.getByTestId("issue-history")).getByRole("button", {
+      name: SHOW_MORE,
+    });
+    expect(more.textContent, "Show more counts a task with no run").toBe(showMoreName(5));
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnTasks(), "Show more changed the tasks drawn").toEqual(["first", "second", "third"]);
+    expect(
+      runEntry("default-5").contains(document.activeElement),
+      "Show more did not move the focus to the first run it drew"
+    ).toBe(true);
+  } finally {
+    steps.restore();
+  }
+});
+
+// A run that reports no handoff holds no control, and before every entry of the history had one.
+// A keyboard press of Show more whose first new entry is such a run hands the focus to that
+// entry itself, out of the tab order and named by its task and its step, so the reader is where
+// the press drew and never sent back up the history.
+test("Show more whose first entry it draws is a run with no handoff moves the focus to that run's entry", async () => {
+  const records = Array.from({ length: PAGE_SIZE + 5 }, (_, index) =>
+    stepRecord({ id: `run-${index + 1}`, started_at: secondsAgo(index + 1) })
+  );
+  const steps = drawRuns(async () => stepsOf(records));
+  try {
+    await drawnWithRuns(PAGE_SIZE);
+    const more = within(screen.getByTestId("issue-history")).getByRole("button", {
+      name: SHOW_MORE,
+    });
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnRuns()).toHaveLength(PAGE_SIZE + 5);
+    const first = runEntry(`run-${PAGE_SIZE + 1}`);
+    expect(
+      first.querySelector("a[href], button"),
+      "the run drawn first holds a control"
+    ).toBeNull();
+    expect(
+      document.activeElement,
+      "Show more did not move the focus to the run with no handoff it drew first"
+    ).toBe(first);
+    expect(first.tabIndex, "the run's entry is in the tab order").toBe(-1);
+    expect(first.getAttribute("aria-label"), "the run's entry is not named by its run").toBe(
+      `${CONTROL_LABELS.history_run}: ${CONTROL_LABELS.steps_task} default, ${CONTROL_LABELS.step_fields.step} 2`
+    );
+  } finally {
+    steps.restore();
+  }
+});
+
+/** The handoffs the addresses of table E name, each id a UUID, as the server writes a handoff's. */
+const ADDRESSED = "0195f3a4-0000-7000-8000-000000000001";
+const NEWER = "0195f3a4-0000-7000-8000-000000000002";
+const NOT_LISTED = "0195f3a4-0000-7000-8000-000000000003";
+
+/** The page address of handoff `id` of `KEY`. */
+function handoffPath(id: string): string {
+  return buildIssuePath({ handoffId: id, key: KEY, kind: "handoff" });
+}
+
+/** What a row of table E holds of the page it draws (`drawAtAddress`): Details' drawer and the
+ *  page's router, every element the page brought into view, how many times the history's heading
+ *  landed, the bodies read, the band's observer, and what puts it all back. */
+interface AddressedPage {
+  readonly bodies: Mock<typeof api.getHandoffBodies>;
+  readonly headingLandings: () => number;
+  readonly hold: AddressHold;
+  readonly landed: readonly Element[];
+  readonly near: IntersectionControl;
+  readonly restore: () => void;
+}
+
+/** Details' drawer around the history, and the page's router, as `DetailsAtAddress` hands them
+ *  over: whether Details is open, what opens and shuts it, and what follows an address. */
+interface AddressHold {
+  isOpen?: boolean;
+  navigate?: NavigateFunction;
+  open?: (open: boolean) => void;
+}
+
+/** Details as the page draws it around the history (`DetailsHistory`), in its drawer, which
+ *  starts shut, so an address opens it. */
+function DetailsAtAddress({ hold }: { hold: AddressHold }): ReactNode {
+  const [open, setOpen] = useState(false);
+  hold.isOpen = open;
+  hold.navigate = useNavigate();
+  hold.open = setOpen;
+  const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
+  return (
+    <MarginSlotProvider drawer={drawer}>
+      <DetailsHistory
+        issue={{ artifacts: [], key: KEY, last_seq: 100000 } as unknown as IssueDetails}
+        state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
+      />
+    </MarginSlotProvider>
+  );
+}
+
+/** The page at `path`, its log answering `events`, and Details' history in a box of its own that
+ *  it scrolls in, as Details' drawer is; each handoff's body, once read, says whose it is. */
+function drawAtAddress(path: string, events: readonly DispatchEvent[] = [claim(1)]): AddressedPage {
+  const restoreReads = stubHistoryReads(events);
+  const sockets = installFakeLiveSockets();
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockImplementation(async (_key, ids) => ({
+    bodies: ids.map((id) => ({ body: handoffRecord(`The body of ${id}`).body, id })),
+    left: [],
+  }));
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  let headings = 0;
+  box.addEventListener(HISTORY_HEADING_LANDED_EVENT, () => {
+    headings += 1;
+  });
+  const landed: Element[] = [];
+  const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    landed.push(this);
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const hold: AddressHold = {};
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={queryClient}>
+        <DetailsAtAddress hold={hold} />
+      </QueryClientProvider>
+    </MemoryRouter>,
+    { container: box }
+  );
+  return {
+    bodies,
+    headingLandings: () => headings,
+    hold,
+    landed,
+    near,
+    restore: () => {
+      view.unmount();
+      liveSocketFor(queryClient).close();
+      queryClient.clear();
+      sockets.restore();
+      near.restore();
+      intoView.mockRestore();
+      bodies.mockRestore();
+      box.remove();
+      restoreReads();
+    },
+  };
+}
+
+/** How many times the page brought into view the entry `id` or a part of it. */
+function landingsOn(page: AddressedPage, id: string): number {
+  return page.landed.filter(
+    (element) => element.closest("[data-history-entry]")?.getAttribute("data-history-entry") === id
+  ).length;
+}
+
+/** Whether the history draws the entry `id` marked. */
+function entryMarked(id: string): boolean {
+  return (
+    document.querySelector(`[data-history-entry="${id}"]`)?.getAttribute("aria-current") === "true"
+  );
+}
+
+/** The control that folds and opens handoff `id`'s fields. */
+function handoffFold(id: string): HTMLElement {
+  const found = document
+    .querySelector(`[data-handoff-line="${id}"]`)
+    ?.parentElement?.querySelector<HTMLElement>("button[aria-expanded]");
+  if (found == null) throw new Error(`the history draws no handoff ${id}`);
+  return found;
+}
+
+/** Lets the reads a draw started answer, and the effects of what they drew run, so a row can say
+ *  that the page sent no other read. */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await act(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 10);
+      return promise;
+    });
+  }
+}
+
+// A handoff's page address and `/steps` open Details at the history (R3, the plan's D14): the
+// handoff's entry marked, its handoff drawn open and brought into view once for each following,
+// however old it is, with no page of the log read for it; an id the list does not hold says so;
+// and `/steps` lands on the newest run, else on the History heading.
+describe("an address lands as its table says", () => {
+  test("E1: a handoff's address marks its entry, draws the handoff open and brings it into view once for each following", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2), listedHandoff(ADDRESSED, 60)]);
+    const page = drawAtAddress(handoffPath(ADDRESSED));
+    const entry = `handoff:${ADDRESSED}`;
+    try {
+      await waitFor(() =>
+        expect(entryMarked(entry), "the handoff's address marked no entry").toBe(true)
+      );
+      expect(page.hold.isOpen, "the handoff's address left Details shut").toBe(true);
+      expect(entryMarked(`handoff:${NEWER}`), "an entry the address does not name is marked").toBe(
+        false
+      );
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "true");
+      await waitFor(() =>
+        expect(landingsOn(page, entry), "the address did not bring its entry into view").toBe(1)
+      );
+      expect(page.headingLandings()).toBe(0);
+      // The bodies are read once the history has landed, the addressed handoff's first (B12).
+      await showHandoffs(page.near);
+      await waitFor(() => expect(page.bodies).toHaveBeenCalled());
+      expect(
+        page.bodies.mock.calls[0]?.[1][0],
+        "the first read of bodies is not led by the handoff the address names"
+      ).toBe(ADDRESSED);
+      await within(
+        document.querySelector<HTMLElement>(`[data-history-entry="${entry}"]`) as HTMLElement
+      ).findByText(`The body of ${ADDRESSED}`);
+
+      act(() => page.hold.navigate?.(handoffPath(ADDRESSED)));
+      await waitFor(() =>
+        expect(
+          landingsOn(page, entry),
+          "the same address followed again did not bring the entry into view again"
+        ).toBe(2)
+      );
+      expect(entryMarked(entry)).toBe(true);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E2: the address of a handoff the reader folded opens it", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(ADDRESSED, 60)]);
+    const page = drawAtAddress(`/issues/${KEY}`);
+    try {
+      act(() => page.hold.open?.(true));
+      await waitFor(() => expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "true"));
+      await userEvent.click(handoffFold(ADDRESSED));
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "false");
+
+      act(() => page.hold.navigate?.(handoffPath(ADDRESSED)));
+      await waitFor(() =>
+        expect(
+          handoffFold(ADDRESSED),
+          "the address left the folded handoff folded"
+        ).toHaveAttribute("aria-expanded", "true")
+      );
+      expect(entryMarked(`handoff:${ADDRESSED}`)).toBe(true);
+    } finally {
+      page.restore();
+    }
+  });
+
+  // The log's first page is full, 200 claims of the last few minutes, and the handoff was written
+  // an hour ago, before every event of it: its entry is drawn under them all, and no older page of
+  // the log is read for it, so the requests of a first load stay bounded however long the log.
+  test("E3: a handoff older than the log read so far is drawn, and no page is read for it", async () => {
+    const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+    handoffsRead().mockResolvedValue([listedHandoff(ADDRESSED, 3600)]);
+    const page = drawAtAddress(handoffPath(ADDRESSED), firstPage);
+    const entry = `handoff:${ADDRESSED}`;
+    try {
+      await waitFor(() =>
+        expect(entryMarked(entry), "a handoff older than the log read is not drawn marked").toBe(
+          true
+        )
+      );
+      await waitFor(() => expect(landingsOn(page, entry)).toBe(1));
+      expect(drawnIds().at(-1), "the handoff does not stand under every entry read").toBe(entry);
+      expect(drawnEntries()).toHaveLength(201);
+      await settle();
+      const reads = (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mock.calls;
+      expect(
+        reads.filter(([, options]) => options?.before !== undefined),
+        "the history read an older page of the log for the handoff the address names"
+      ).toEqual([]);
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "true");
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E4: an id the list does not hold says that no such handoff exists", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2)]);
+    const page = drawAtAddress(handoffPath(NOT_LISTED));
+    try {
+      const history = await screen.findByTestId("issue-history");
+      await within(history).findByText(ANSWER_LINES.handoff_missing);
+      expect(page.hold.isOpen, "an address of no handoff of the issue left Details shut").toBe(
+        true
+      );
+      expect(document.querySelector('[data-history-entry][aria-current="true"]')).toBe(null);
+      await waitFor(() =>
+        expect(page.headingLandings(), "the address did not land on the History heading").toBe(1)
+      );
+      await showHandoffs(page.near);
+      await waitFor(() => expect(page.bodies).toHaveBeenCalled());
+      expect(
+        page.bodies.mock.calls.flatMap(([, ids]) => ids),
+        "the page asked for the body of a handoff the issue does not hold"
+      ).not.toContain(NOT_LISTED);
+    } finally {
+      page.restore();
+    }
+  });
+
+  // An id that is not in a handoff's form, mistyped or cut short to its first part, names no
+  // handoff of the issue either. The bodies route refuses a whole request that holds such an id
+  // (`400 HANDOFF_ID_INPUT`), as the read here does, so the page asks it for no such id, and the
+  // bodies of the entries in view still arrive.
+  test("E10: an id that is not a UUID says that no such handoff exists, and the bodies in view still arrive", async () => {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    for (const id of ["not-a-uuid", NEWER.slice(0, 8)]) {
+      handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2)]);
+      const page = drawAtAddress(handoffPath(id));
+      page.bodies.mockImplementation(async (_key, ids) => {
+        if (!ids.every((one) => uuid.test(one))) throw new Error("HANDOFF_ID_INPUT");
+        return {
+          bodies: ids.map((one) => ({ body: handoffRecord(`The body of ${one}`).body, id: one })),
+          left: [],
+        };
+      });
+      try {
+        const history = await screen.findByTestId("issue-history");
+        await within(history).findByText(ANSWER_LINES.handoff_missing);
+        expect(page.hold.isOpen, `the address of ${id} left Details shut`).toBe(true);
+        expect(document.querySelector('[data-history-entry][aria-current="true"]')).toBe(null);
+        await waitFor(() =>
+          expect(page.headingLandings(), "the address did not land on the History heading").toBe(1)
+        );
+        await showHandoffs(page.near);
+        await waitFor(() => expect(page.bodies).toHaveBeenCalled());
+        expect(
+          page.bodies.mock.calls.flatMap(([, ids]) => ids),
+          `the page asked the bodies route for ${id}, which no handoff of the issue has`
+        ).not.toContain(id);
+        await within(
+          document.querySelector<HTMLElement>(
+            `[data-history-entry="handoff:${NEWER}"]`
+          ) as HTMLElement
+        ).findByText(`The body of ${NEWER}`);
+      } finally {
+        page.restore();
+      }
+    }
+  });
+
+  test("E5: a list that did not read says so with a Retry, and not that the handoff is missing", async () => {
+    handoffsRead().mockRejectedValue(new Error("the handoffs are down"));
+    const page = drawAtAddress(handoffPath(ADDRESSED));
+    try {
+      const history = await screen.findByTestId("issue-history");
+      await waitFor(() =>
+        expect(within(history).getByRole("alert").textContent).toBe(
+          ANSWER_LINES.handoffs_unreadable
+        )
+      );
+      expect(
+        within(history).queryByText(ANSWER_LINES.handoff_missing),
+        "a list that did not read said the handoff is missing"
+      ).toBe(null);
+      await waitFor(() => expect(page.headingLandings()).toBe(1));
+
+      handoffsRead().mockResolvedValue([listedHandoff(ADDRESSED, 60)]);
+      await userEvent.click(within(history).getByRole("button", { name: CONTROL_LABELS.retry }));
+      await waitFor(() =>
+        expect(entryMarked(`handoff:${ADDRESSED}`), "the list read again marked no entry").toBe(
+          true
+        )
+      );
+      expect(within(history).queryByText(ANSWER_LINES.handoff_missing)).toBe(null);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E6: /steps lands on the newest run", async () => {
+    stepsRead().mockResolvedValue(
+      stepsOf(
+        [
+          stepRecord({ id: "plan-1", started_at: secondsAgo(300) }),
+          stepRecord({ id: "implement-1", started_at: secondsAgo(10) }),
+        ],
+        [stepRecord({ id: "other-1", started_at: secondsAgo(100), task: "other" })]
+      )
+    );
+    const page = drawAtAddress(buildIssuePath({ key: KEY, kind: "steps" }));
+    try {
+      await waitFor(() =>
+        expect(landingsOn(page, "run:implement-1"), "/steps did not land on the newest run").toBe(1)
+      );
+      expect(page.hold.isOpen, "/steps left Details shut").toBe(true);
+      expect(landingsOn(page, "run:plan-1") + landingsOn(page, "run:other-1")).toBe(0);
+      expect(page.headingLandings()).toBe(0);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E7: /steps with no run lands on the heading", async () => {
+    const page = drawAtAddress(buildIssuePath({ key: KEY, kind: "steps" }));
+    try {
+      await waitFor(() =>
+        expect(page.headingLandings(), "/steps with no run did not land on the heading").toBe(1)
+      );
+      expect(page.hold.isOpen).toBe(true);
+      expect(page.landed).toEqual([]);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E8: /steps whose runs did not read lands on the heading, beside the failure line", async () => {
+    stepsRead().mockRejectedValue(new Error("the runs are down"));
+    const page = drawAtAddress(buildIssuePath({ key: KEY, kind: "steps" }));
+    try {
+      const history = await screen.findByTestId("issue-history");
+      await waitFor(() =>
+        expect(within(history).getByRole("alert").textContent).toBe(ANSWER_LINES.steps_unreadable)
+      );
+      await waitFor(() =>
+        expect(page.headingLandings(), "/steps whose runs failed did not land on the heading").toBe(
+          1
+        )
+      );
+      expect(page.hold.isOpen).toBe(true);
+      expect(page.landed).toEqual([]);
+    } finally {
+      page.restore();
+    }
+  });
+
+  // Back to an address the history already landed at finds Details where the reader left it: the
+  // handoff's entry is not brought into view again, and the fold the reader made stays.
+  test("E9: coming back to an address already landed moves nothing", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2), listedHandoff(ADDRESSED, 60)]);
+    const page = drawAtAddress(handoffPath(ADDRESSED));
+    const entry = `handoff:${ADDRESSED}`;
+    try {
+      await waitFor(() => expect(landingsOn(page, entry)).toBe(1));
+      act(() => page.hold.navigate?.(`/issues/${KEY}`));
+      await waitFor(() => expect(entryMarked(entry)).toBe(false));
+      await userEvent.click(handoffFold(ADDRESSED));
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "false");
+
+      act(() => page.hold.navigate?.(-1));
+      await waitFor(() => expect(entryMarked(entry)).toBe(true));
+      await settle();
+      expect(landingsOn(page, entry), "Back to the address brought its entry into view again").toBe(
+        1
+      );
+      expect(
+        handoffFold(ADDRESSED),
+        "Back to the address opened the handoff the reader folded"
+      ).toHaveAttribute("aria-expanded", "false");
+      expect(page.headingLandings()).toBe(0);
+    } finally {
+      page.restore();
+    }
+  });
+});

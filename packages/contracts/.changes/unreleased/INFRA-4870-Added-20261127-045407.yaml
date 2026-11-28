@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The Dispatch API schema and its generated types describe `GET /api/v1/issues/{key}/handoffs/bodies`
+  (`HandoffBodies`, `HandoffBody`), and `dispatch-api-limits.ts` holds its two limits,
+  `HANDOFF_BODIES_MAX_IDS` (20) and `HANDOFF_BODIES_MAX_BYTES` (1,048,576), which `gen-go.ts` writes
+  into Go as `contracts.HandoffBodiesMaxIDs` and `contracts.HandoffBodiesMaxBytes`.
+  `build:dispatch` also builds `legion-api`, which the dashboard imports.
+time: 2026-11-27T04:54:07Z
+custom:
+    Issue: INFRA-4870

@@ -261,6 +261,10 @@ type eventListQuery struct {
 	Order string `query:"order"`
 	// Limit is how many events the page holds.
 	Limit int `query:"limit"`
+	// ExcludeTypes leaves these event types out of the page, comma-separated: at most 50 of the
+	// types Dispatch writes, before limit counts the page. Blank leaves out none; an unknown type
+	// or an empty item in the list is 400 INVALID_QUERY.
+	ExcludeTypes string `query:"exclude_types"`
 }
 
 // eventLogQuery is GET /api/v1/events/log's query: one page of the whole event log, which is
@@ -474,6 +478,13 @@ type knownSessionsQuery struct {
 	// ID is one session id asked about, repeated: 1 to contracts.KnownSessionsMax of them, each a
 	// session id (text.IsSessionID) of at most knownSessionIDMax bytes, the longest text names.
 	ID []string `query:"id"`
+}
+
+// handoffBodiesQuery is GET /api/v1/issues/{key}/handoffs/bodies's query.
+type handoffBodiesQuery struct {
+	// IDs is the handoffs whose bodies to read, once, separated by commas: 1 to
+	// contracts.HandoffBodiesMaxIDs whole uuids, each named once (parseHandoffBodyIDs).
+	IDs string `query:"ids"`
 }
 
 // issueAsksQuery is GET /api/v1/issues/{key}/asks's query.

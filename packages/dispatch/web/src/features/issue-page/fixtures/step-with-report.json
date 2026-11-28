@@ -1,0 +1,21 @@
+{
+  "id": "5d2c8a10-7e3b-5f40-9a61-000000000001",
+  "issue": "ACME-1",
+  "task": "default",
+  "step": 2,
+  "kind": "step",
+  "role": "implementer",
+  "type": "implementation",
+  "agent": "legion-acme-acme-1-implementer",
+  "session": "5d2c8a10-7e3b-4f40-9a61-0000000000b1",
+  "model": "anthropic/claude-opus-5-5",
+  "generation": 1,
+  "attempt": 1,
+  "started_at": "2026-11-21T15:22:16.973693Z",
+  "ended_at": "2026-11-21T23:13:14.379502255Z",
+  "result": "passed",
+  "returned_to": null,
+  "report": "0e9b6f1a-2c3d-4e5f-8a7b-000000000007",
+  "rating": null,
+  "rating_reason": null
+}

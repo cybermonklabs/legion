@@ -16,6 +16,11 @@ From it come `DISPATCH_EVENT_TYPES`, the types sorted, and `isEventType`, whethe
 `LegionIssueResponse`, generated from the OpenAPI document into `src/dispatch-api.generated.ts`, is the body of `GET /api/v1/issues/{key}/legion`: `{issue, project, configured, state, read, runs_revision}`, with `configured` a required boolean.
 `src/dispatch-api-live.ts` names the live view of that body: the kind `legion_issue` of `DeliveryLiveView`, which names one issue and nothing else, and `LegionIssueResponse` in `DeliveryLiveBody`, the union of the bodies a delivery view's snapshot and deltas carry.
 Dispatch never refuses such a view for a project that names no daemon: its body says `configured` `false`.
+Its `state.waiting_on` is `LegionIssueWaitingOn`, `{kind, ask, artifact_id, gate_version, since, answered_at, answered_by}`, generated from the Go type that names those members, and not the daemon's camelCase object.
+
+`HandoffBodies` and `HandoffBody` are the body of `GET /api/v1/issues/{key}/handoffs/bodies`.
+Its two limits are constants of `src/dispatch-api-limits.ts`, `HANDOFF_BODIES_MAX_IDS` (20) and `HANDOFF_BODIES_MAX_BYTES` (1,048,576), which `bun run gen:go` writes into the Go package as `contracts.HandoffBodiesMaxIDs` and `contracts.HandoffBodiesMaxBytes`, so the route's refusal and the page's batches are one number.
+`build:dispatch` builds `src/legion-api.ts` too, because the dashboard imports it: `features/issue-page/legion-block.ts` its `LegionPhase` and `LegionClaimState` types, and `legion-words.test.ts` its lists `LEGION_PHASES` and `LEGION_CLAIM_STATES`.
 
 Its `fixtures/daemon-api/` goldens are the daemon's own state answer, written by `packages/daemon/internal/api`'s golden test: `settings.repository_renames` is among them, the `{from, to}` pairs a deployment tells the daemon to treat as one repository, `[]` when it configures none. `src/legion-api.ts`'s `legionSettings` stays loose, so a new settings key needs no schema change.
 

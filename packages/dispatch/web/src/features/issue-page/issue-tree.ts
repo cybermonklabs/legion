@@ -18,6 +18,7 @@ import { storedReading } from "../decision-card/stored-reading";
 import type { ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import { isThreadsOnly } from "./agents-only";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { treeContext } from "./target-naming";
@@ -416,7 +417,8 @@ export interface IssueTreeReads {
   /** One entry per document of the issue whose blocks the page has read. */
   readonly documents?: readonly DocumentBlocks[];
   readonly issue: IssueDetails;
-  /** The issue's messages with their replies, each a node of the tree (`addTurns`). */
+  /** The issue's messages with their replies, each a node of the tree (`addTurns`) but those of a
+   *  thread only Threads draws (`buildIssueTree`). */
   readonly messages?: readonly MessageRead[];
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
@@ -545,10 +547,20 @@ export function firstBlockWordsRaw(reading: DisplayTree): string {
   return block === undefined ? "" : wordsOf(block);
 }
 
-/** The issue's whole tree, from the reads it was given. */
+/**
+ * The issue's whole tree, from the reads it was given.
+ *
+ * A message thread only Threads draws - a thread between agents, an agent's note no person
+ * answered (`agents-only.ts`'s `isThreadsOnly`) - is no node of it, neither its root nor any
+ * reply, so the drafts are made from the reads without those threads. The context reads the
+ * reads whole: it reads no message, and it is the one the page publishes its names from
+ * (`targetNaming`), so a chip and a link name one target from the same reads.
+ */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = treeContext(reads);
-  return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
+  const messages = reads.messages?.filter((thread) => !isThreadsOnly(thread));
+  const outline = messages === undefined ? reads : { ...reads, messages };
+  return assemble(reads.issue, [...treeDrafts(outline, context).values()], context.chipOf);
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

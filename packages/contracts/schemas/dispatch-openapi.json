@@ -1870,7 +1870,7 @@
     },
     "/api/v1/artifacts/{id}/events": {
       "get": {
-        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY.",
+        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; a blank exclude_types leaves out none, and an unknown type or an empty item in the list is 400 INVALID_QUERY.",
         "operationId": "getApiV1ArtifactsByIdEvents",
         "parameters": [
           {
@@ -1914,6 +1914,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -7208,7 +7215,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
+        "description": "Page an issue's event log (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; a blank exclude_types leaves out none, and an unknown type or an empty item in the list is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -7252,6 +7259,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -7333,6 +7347,60 @@
                     "$ref": "#/components/schemas/HandoffSummary"
                   },
                   "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/issues/{key}/handoffs/bodies": {
+      "get": {
+        "description": "The bodies of the issue's handoffs ?ids= names, comma-separated, 1 to 20 whole uuids, in one answer: {bodies: [{id, body}], left: [id]}. bodies holds one entry for each id answered, in the order asked, body the exact text written, or null for an id that is no handoff of this issue, another issue's handoff included. The answer adds each entry's size as sent to a count - its body as a JSON string, each \u003c, \u003e and \u0026 written as six bytes, and its field_trees where it carries them - and stops before the first entry that would take the count past 1048576 bytes: that id and each id after it are left, in the order asked, for a later request. The first id asked is always answered, whatever its size. With Dispatch-Trees: 1 each entry also carries field_trees, the tree of each text its card draws, as GET /api/v1/handoffs/{id} carries them, counted beside its body; a first entry whose body and trees together pass the limit is sent with its body and no trees. Refusals, in this order: ids absent, empty or given twice, an empty id, or an id asked twice, 400 INVALID_QUERY; more than 20 ids, 400 INVALID_QUERY; an id that is not a uuid, 400 HANDOFF_ID_INPUT; a key no issue has, 404 NOT_FOUND, as GET /api/v1/issues/{key} answers it. A closed issue's read too. The route writes nothing, and reads the issue and the bodies in one read-only transaction.",
+        "operationId": "getApiV1IssuesByKeyHandoffsBodies",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffBodies"
                 }
               }
             }
@@ -7464,7 +7532,7 @@
     },
     "/api/v1/issues/{key}/legion": {
       "get": {
-        "description": "One issue's Legion state, from what the Legion intake recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
+        "description": "One issue's Legion state, from what the Legion intake recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is what the issue waits on from a person, {kind, ask, artifact_id, gate_version, since, answered_at, answered_by}: the daemon's waitingOn under these names, each member but kind absent where the daemon wrote none, and no member of another name. It is null when the issue waits on nothing, and when the daemon's stored object does not decode or names no kind. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
         "operationId": "getApiV1IssuesByKeyLegion",
         "parameters": [
           {
@@ -23275,6 +23343,67 @@
         ],
         "type": "object"
       },
+      "HandoffBodies": {
+        "properties": {
+          "bodies": {
+            "items": {
+              "$ref": "#/components/schemas/HandoffBody"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "left": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "bodies",
+          "left"
+        ],
+        "type": "object"
+      },
+      "HandoffBody": {
+        "properties": {
+          "body": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "field_trees": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "body"
+        ],
+        "type": "object"
+      },
       "HandoffSummary": {
         "properties": {
           "author": {
@@ -26258,44 +26387,7 @@
           "waiting_on": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "description": "what the issue waits on from a person, the Legion daemon's waitingOn object exactly as Dispatch stored it; a field a later daemon adds is sent too",
-                "properties": {
-                  "answeredAt": {
-                    "description": "an RFC3339 timestamp",
-                    "format": "date-time",
-                    "type": "string"
-                  },
-                  "answeredBy": {
-                    "description": "how the wait was answered, once it was, and not always by a person",
-                    "type": "string"
-                  },
-                  "artifactId": {
-                    "description": "for a gate, the id of the document whose version no person has reviewed",
-                    "type": "string"
-                  },
-                  "ask": {
-                    "description": "for an ask, the id of the oldest question of the issue's tree still with a person",
-                    "type": "string"
-                  },
-                  "gateVersion": {
-                    "description": "for a gate, the spec version no person has reviewed",
-                    "type": "integer"
-                  },
-                  "kind": {
-                    "description": "the kind of wait: ask, gate, or a kind a later daemon names",
-                    "type": "string"
-                  },
-                  "since": {
-                    "description": "an RFC3339 timestamp",
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "kind"
-                ],
-                "type": "object"
+                "$ref": "#/components/schemas/LegionIssueWaitingOn"
               },
               {
                 "type": "null"
@@ -26327,6 +26419,37 @@
         "required": [
           "place",
           "length"
+        ],
+        "type": "object"
+      },
+      "LegionIssueWaitingOn": {
+        "properties": {
+          "answered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "answered_by": {
+            "type": "string"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "ask": {
+            "type": "string"
+          },
+          "gate_version": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
         ],
         "type": "object"
       },
