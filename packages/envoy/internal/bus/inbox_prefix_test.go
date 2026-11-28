@@ -2,10 +2,12 @@ package bus_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -19,7 +21,10 @@ const testInboxPrefix = "_INBOX_bus_test"
 // A client given an inbox prefix names every inbox under it, on its own connection and on the
 // session consumers', and takes JetStream's replies there, under a user that may subscribe that
 // prefix and no other inbox. The same user's client without the prefix asks and is answered
-// nothing: its replies come under _INBOX., which the server refuses it.
+// nothing: its replies come under _INBOX., which the server refuses it. That refusal is the fact
+// the second subtest waits for: the server's permissions violation on the client's connection
+// (nats.go keeps it as the connection's last error). After it no reply can reach the ask, so the
+// ask is then cancelled, and an ask answered before that fails the subtest.
 func TestAClientWithAnInboxPrefixTakesItsRepliesUnderIt(t *testing.T) {
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, testInboxPrefix+".>"), []string{"-js"}, false)
@@ -65,11 +70,16 @@ func TestAClientWithAnInboxPrefixTakesItsRepliesUnderIt(t *testing.T) {
 			t.Fatalf("connect: %v", err)
 		}
 		t.Cleanup(client.Close)
-		// A window, not a wait: no answer may come under _INBOX., and 3 s is how long the row
-		// waits for one.
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
-		if err := ask(ctx, client); err == nil {
+		asked := make(chan error, 1)
+		go func() { asked <- ask(ctx, client) }()
+		testwait.Until(t, "the server to refuse the client its _INBOX. reply subscription", func() (error, bool) {
+			err := client.Connection().LastError()
+			return err, errors.Is(err, nats.ErrPermissionViolation) && strings.Contains(err.Error(), "_INBOX.")
+		})
+		cancel()
+		if err := testwait.Receive(t, "the ask cancelled after the refusal to return", asked); err == nil {
 			t.Fatal("a client whose replies come under _INBOX. was answered by a server that refuses it that subscription")
 		}
 	})

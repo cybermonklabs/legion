@@ -40,7 +40,6 @@ import {
   type DispatchToolResult,
   dispatchRefFromUrl,
   dryRunAsksDispatch,
-  executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   linkBaseOf,
   positionText,
@@ -57,15 +56,18 @@ import {
   type DispatchWriteRetry,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
+import { messageFor } from "../errors";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
+import { executeDispatchTool as executeTool } from "./whoami-stand-in";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
 
 /**
- * The executor (`executeDispatchTool` of `dispatch-execute.ts`) against the stand-in of Dispatch
- * a row gives it (`fetchImpl`), put behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
+ * The executor (`executeDispatchTool` of `dispatch-execute.ts`, through `whoami-stand-in.ts`,
+ * which answers the whoami every read command reads first) against the stand-in of Dispatch a
+ * row gives it (`fetchImpl`), put behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
  * gives a write names the write's key back, as Dispatch's own answers do, unless the row's
  * `layer` says otherwise. Every row of this file runs the executor through here.
  */
@@ -1049,6 +1051,35 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
   });
 
+  // Under a token that carries a cut, Dispatch answers the issue read at that cut and leaves out
+  // the question of an ask whose wording the records at the cut cannot give. The refusal still
+  // lists the asks, naming that question as left out, and never throws on it in its place.
+  test("a reply_to_ask refusal names a question the issue's answer left out as left out", async () => {
+    const requests: string[] = [];
+    const unworded = openAsks.map((ask, index) => (index === 2 ? { id: ask.id } : ask));
+    const fetchImpl = (async (url: RequestInfo | URL): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      requests.push(pathname);
+      if (pathname === "/api/v1/issues/DSP-41") {
+        return response({ key: "DSP-41", open_asks: unworded });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    }) as typeof fetch;
+
+    const failure = await replyToAsk("deadbeef", fetchImpl).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError))
+      throw new Error(`expected ToolInputError: ${failure}`);
+    expect(failure.problems).toEqual([
+      `reply_to_ask deadbeef names no open ask of this issue. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… left out by Dispatch.`,
+    ]);
+    expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
+  });
+
   test("consumes every declared dispatch_ask argument", async () => {
     const fields = [
       "issue",
@@ -1986,6 +2017,35 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       })
     ).rejects.toThrow("it predates search paging and ignored offset 20");
+  });
+
+  // A search whose statement ran past Dispatch's bound answers 503 SEARCH_TIMEOUT, naming the
+  // bound. Asking again at once costs the database the bound again and finds nothing more, so
+  // the command asks once, and the line it prints is Dispatch's own with the bound in it: the
+  // command prints `messageFor` of what the call threw (dispatch-cli.ts).
+  test("dispatch_search answered 503 SEARCH_TIMEOUT asks once and prints the bound", async () => {
+    const refusal =
+      "the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query";
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(target.pathname + target.search);
+      return response({ code: "SEARCH_TIMEOUT", error: refusal }, 503);
+    };
+
+    const failure: unknown = await executeDispatchTool({
+      tool: "dispatch_search",
+      args: { query: "astrolabe" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).catch((error: unknown) => error);
+
+    expect(messageFor(failure)).toBe(`SEARCH_TIMEOUT: ${refusal}`);
+    expect(requests).toEqual(["/api/v1/search?q=astrolabe"]);
   });
 
   test("dispatch_search reports no results for an accepted stop-word query", async () => {
@@ -6969,6 +7029,60 @@ describe("executeDispatchTool", () => {
       ).toEqual([
         "version 1 and ref dispatch://DSP-42/artifact/notes-md@v2 name two versions; name the version once",
       ]);
+    });
+
+    // A tab of an issue's page that is a view of the issue (Verification, Plan, Steps, Artifacts,
+    // Collaborators) names no document. Each tool that takes `ref` as the owner it acts on would
+    // act on the issue, or on the issue's primary document, in the tab's place: doc-read and
+    // doc-edit read or write the spec, a comment writes on the issue, and a suggestion writes on a
+    // document. Each is refused before any request, by the tab's `dispatch://` reference and by the
+    // dashboard's URL alike. The hint names a document for every tool but the comment, which takes
+    // an issue alone.
+    test("the tools that act on a ref's owner refuse a view tab of an issue, by its link and by its reference", async () => {
+      const ops = [{ op: "replace", find: "old line", with: "new line" }];
+      const tools: {
+        tool: string;
+        named: string;
+        hint: string;
+        input: (ref: string) => Record<string, unknown>;
+      }[] = [
+        {
+          tool: "dispatch_doc_read",
+          named: "doc-read",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref }),
+        },
+        {
+          tool: "dispatch_doc_edit",
+          named: "doc-edit",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, ops }),
+        },
+        {
+          tool: "dispatch_comment",
+          named: "comment",
+          hint: "",
+          input: (ref) => ({ ref, body: "Seen." }),
+        },
+        {
+          tool: "dispatch_suggest",
+          named: "suggest",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, quote: "old line", replace_with: "new line" }),
+        },
+      ];
+      for (const tab of ["verification", "plan", "steps", "artifacts", "collaborators"]) {
+        for (const ref of [
+          `dispatch://DSP-42/${tab}`,
+          `http://dispatch.test/issues/DSP-42/${tab}`,
+        ]) {
+          for (const { tool, named, hint, input } of tools) {
+            expect(await problemsOf(tool, input(ref))).toEqual([
+              `ref dispatch://DSP-42/${tab} names the ${tab} tab on DSP-42; dispatch ${named} would act on DSP-42 and drop the tab: read it with dispatch read, or name DSP-42 with issue DSP-42${hint}`,
+            ]);
+          }
+        }
+      }
     });
   });
 

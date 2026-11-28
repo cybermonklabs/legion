@@ -54,6 +54,12 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 		"create function h() returns void language sql as 'delete from things';":                                                   nil,
 		"insert into notes (body) values ('update things set kind = null -- or /* */');":                                           {"notes"},
 		"do language plpgsql $body$ begin update things set kind = 'x'; end $body$;":                                               {"things"},
+		// A truncate trigger's event is followed by on or by or, never a table: the create trigger
+		// form reads its table, once, and the truncate form reads a truncate statement beside it.
+		"truncate t; create trigger x after truncate on t for each statement execute function f();": {"t"},
+		"create trigger x after truncate on public.t for each statement execute function f();":      {"t"},
+		"create trigger y after truncate or insert on t for each statement execute function f();":   {"t"},
+		"truncate orders, o, on_hold;": {"o", "on_hold", "orders"},
 	} {
 		if got := TouchedTables(sql); !slices.Equal(got, want) {
 			t.Errorf("TouchedTables(%q) = %v, want %v", sql, got, want)

@@ -235,6 +235,8 @@ export function predictTree(
     key: issue.key,
     parent: null,
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     status: issue.status,
     title: issue.title,
     updated_at: now,

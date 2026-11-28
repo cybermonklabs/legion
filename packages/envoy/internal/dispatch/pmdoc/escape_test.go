@@ -1091,7 +1091,7 @@ func TestRenderKeepsStruckTextBeginningWithATilde(t *testing.T) {
 		t.Fatalf("Parse(%q) = %d blocks, want both paragraphs", markdown, len(back.Children))
 	}
 	first := back.Children[0].Children
-	if len(first) != 2 || first[0].Text != "~200ms" || !nodeHasMark(first[0], "strike_through") || first[1].Text != " at p99" {
+	if len(first) != 2 || first[0].Text != "~200ms" || !HasMark(first[0], "strike_through") || first[1].Text != " at p99" {
 		t.Fatalf("Parse(%q) lost the struck text", markdown)
 	}
 	if again := mustRender(t, back); again != markdown {

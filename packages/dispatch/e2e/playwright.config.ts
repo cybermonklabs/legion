@@ -724,7 +724,7 @@ export default defineConfig({
   // which is why a run given one keeps its logs whatever it did, and why
   // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
   // this file in theirs. `shard-reporter.ts` does nothing in a run without `--shard`, and in one
-  // with it places the files on the legs by measured row time in place of Playwright's split by
+  // with it places the rows on the legs by measured row time in place of Playwright's split by
   // count (e2e/shard-split.ts says why), so a local `--shard` run holds the rows the CI leg of
   // that number holds; the shard job names it in its own list for the same reason as above. With
   // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list

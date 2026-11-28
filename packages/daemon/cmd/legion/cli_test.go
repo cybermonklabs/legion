@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/clitest"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -312,9 +313,9 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 // that deadline, as it is in this binary's own runs as `legion`. The linker takes an -X of a name
 // no package holds without a word, and a rename would give the built binary the product bounds
 // back and every row that runs it a race with them again. So this row runs the built `legion gh`
-// under a git whose configuration read answers past the product's 30 s for it (ghGitReadBound):
-// it passes only where the built binary took the linked deadline, and a built binary with the
-// product bound refuses the call, the read killed at 30 s.
+// under a git whose configuration read answers past the product's 30 s for it
+// (ghroute.GitReadBound): it passes only where the built binary took the linked deadline, and a
+// built binary with the product bound refuses the call, the read killed at 30 s.
 func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
 	t.Parallel()
 	if _, ok := os.LookupEnv(testDeadlineEnv); !ok {
@@ -334,7 +335,7 @@ func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
 	if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
+	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghroute.GitReadBound/time.Second)+1) + "; break; fi; done\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
 	if err := execfile.Write(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +349,7 @@ func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("the built legion gh %q under a git whose configuration read answers past %s: %v, stderr %s; want it to wait, its bound the linked deadline", args, ghGitReadBound, err, stderrOf(err))
+		t.Fatalf("the built legion gh %q under a git whose configuration read answers past %s: %v, stderr %s; want it to wait, its bound the linked deadline", args, ghroute.GitReadBound, err, stderrOf(err))
 	}
 	if got, want := string(out), strings.Join(args, " ")+"\n"; got != want {
 		t.Fatalf("the real gh received %q, want %q", got, want)

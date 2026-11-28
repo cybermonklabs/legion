@@ -15,7 +15,7 @@ import (
 
 // The files under testdata/resolved are the bodies Dispatch serves for the three reads the daemon
 // takes an issue's priority from (testdata/resolved/README). listing-acme-1549.json and
-// detail-acme-1549.json are real: each is the answer of one GET, read on 2026-11-25 with the
+// detail-acme-1549.json are real: each is the answer of one GET, read with the
 // deployment's Dispatch token from a Dispatch release that sends `priority` and no
 // `resolved_priority`, <P> being the project's key and <KEY> the issue's in that deployment:
 //
@@ -42,10 +42,32 @@ import (
 // `bunx biome format --write`. patch-acme-1549.json is no capture: it is detail-acme-1549.json with
 // the `advice` key a PATCH answer adds after the issue (patchIssue in
 // packages/envoy/internal/dispatch/api/issue_patch.go answers withAdvice(written.issue,
-// written.advice)). Every file named resolved-<v> is written by hand in the shape
-// dispatch://INFRA-5793/spec#b-j-inherit and #b-j-events give, which the README quotes.
+// written.advice)).
+//
+// Every file named resolved-<v> was captured on 2026-11-27 from a Dispatch stack of the
+// resolved-priority change, which serves `resolved_priority` and `priority_from` beside `priority`:
+// packages/dispatch's `bun e2e/harness-up.ts`, which seeds nothing, with DISPATCH_URL its server
+// and DISPATCH_TOKEN_FILE holding its shared token. For each <v> the stack's alice, whose
+// browser sign-in holds p0, made two projects, an OTHER-like one and an ACME-like one whose
+// default repository she set to acme/widgets, and filed issues in each, in order, until OTHER-5
+// and ACME-12 existed: OTHER-5 at its own priority <v> (none for null and own), ACME-7 under
+// OTHER-5, ACME-12 under ACME-7 (at its own priority 2 for own), every other issue a root. So
+// OTHER-5 had its priority before ACME-12 was filed. She then moved ACME-12 to todo, and the
+// listing and the detail were read with the two commands above, <P> and <KEY> being the stack's
+// keys. The PATCH body is the answer of the daemon's own status write that came next, under the
+// shared token, fenced on the sequence the detail read:
+//
+//	curl -sS -X PATCH -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") -H 'Content-Type: application/json' \
+//	  --data '{"status":"in_progress","expected_sequence":2,"actor":{"kind":"session","id":"legion-daemon:<P>"}}' "$DISPATCH_URL/api/v1/issues/<KEY>"
+//
+// The listing went through the first filter above, the detail through the second, and the PATCH
+// answer through the second with "advice" added to the keys it keeps. Then, in every string, the
+// stack's two project keys became ACME and OTHER (ACMEP0 and OTHERP0 for resolved-0, ACMEP1 to
+// ACMEP3 and OTHERP1 to OTHERP3 for resolved-1 to resolved-3, ACMENULL and OTHERNULL for
+// resolved-null, ACMEOWN and OTHEROWN for resolved-own), so each issue keeps its number; every
+// other value is as the stack served it, and the files were then formatted with
+// `bunx biome format --write`.
 
-// resolvedBody is the body testdata/resolved/<name> holds, as Dispatch serves it.
 func resolvedBody(t *testing.T, name string) []byte {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("testdata", "resolved", name))
@@ -55,10 +77,6 @@ func resolvedBody(t *testing.T, name string) []byte {
 	return body
 }
 
-// servedFields is what body, a listing's row or an issue Dispatch serves, says of the issue's own
-// fields, read as plain JSON apart from the client, as the Issue the client gives for it: no
-// resolved priority, which the test compares on its own, and no claim, which none of these bodies
-// shows.
 func servedFields(t *testing.T, body []byte) Issue {
 	t.Helper()
 	var served struct {
@@ -97,7 +115,6 @@ func TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes(t *testing.T) 
 	level := func(n int) *int { return &n }
 	for _, tc := range []struct {
 		name string
-		// file names the bodies a row serves, <read>-<file>.json for each read.
 		file string
 		// from and to change the body before it is served, for a value Dispatch writes none of.
 		from, to string
@@ -191,8 +208,6 @@ func TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes(t *testing.T) 
 	}
 }
 
-// describeResolved writes a read's resolved priority so that nil, a present none and a level read
-// apart in a failure.
 func describeResolved(resolved *ResolvedPriority) string {
 	switch {
 	case resolved == nil:

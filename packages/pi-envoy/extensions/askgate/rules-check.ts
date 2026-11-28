@@ -420,6 +420,8 @@ async function readAsks(
     const asks = first.map((ask): JudgedAsk => {
       if (ask.kind !== "retype") return ask;
       // The server does not strip a `#` from the block a retype names; the block list never holds one.
+      // A block whose id the answer left out (`DocumentBlock.id`) matches no id, so its retype is
+      // judged without its text.
       const block = blocks.find((held) => held.id === (ask.id ?? "").replace(/^#/, ""));
       if (block === undefined) {
         textMissing = true;

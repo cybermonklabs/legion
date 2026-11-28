@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The `dispatch_spec_form` spec: `issue`, `project`, `artifact`, `version` (an integer from 1, of
+  the document that `artifact` or `ref` names, and refused beside an issue alone), `root` (an issue
+  key, which goes with no other argument) and `ref`.
+custom:
+    Issue: pr4179

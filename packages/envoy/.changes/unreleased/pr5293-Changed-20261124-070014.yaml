@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  `GET /api/v1/search/coverage` reads counts that triggers on the seven counted tables keep as
+  delta rows (migration `20261124011834_search_coverage_counts`), so it reads a number of rows that
+  does not grow with the corpus, and it never runs the statement that counted every item. A counts
+  loop, which every start runs after the server listens, with or without an embedder, fills the
+  counts at the first start, folds the delta rows every 10 s and recounts every kind, each recount
+  starting at most 11 minutes less the recount's bound after the one before started, so a write
+  made with its table's triggers off is counted within 11 minutes. Until the first fill ends the
+  route answers `503 SEARCH_COVERAGE_NOT_FILLED`; with more than 100,000 delta rows not yet folded
+  it answers `503 SEARCH_COVERAGE_FOLD_BEHIND`. A fill that fails or reaches its timeout is logged
+  at `ERROR` and tried again after a capped exponential backoff with full jitter. Two indexes keyed
+  for the oldest lacking age, `embeddings_window_unembedded_since` and
+  `embeddings_window_embedded_since`, are built concurrently and replace
+  `embeddings_window_embedded` and `embeddings_window_unembedded`, which are dropped. The
+  `dispatch: listening` line gains `since_start_ms`.
+time: 2026-11-24T07:00:14Z
+custom:
+    Issue: pr5293

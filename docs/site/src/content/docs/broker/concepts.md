@@ -92,9 +92,10 @@ the narrowed word of the one it would have had: `read-named`, `read-person` or `
 holds `read`, and `person` beside it when it acts for a person, never `approve` and never
 `legion-status`, so a Legion daemon's read token writes no status either. The trade may
 also name a cut (`as_of`), the past time the token reads at: an RFC 3339 time no later than the
-trade. Until Dispatch serves reads at a past time, it refuses a token with a cut on every read but
-`GET /api/v1/whoami`, with `403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the
-token it always got (`packages/envoy/internal/cipher/oauth/exchange.go`, `decide`).
+trade. Dispatch answers a token with a cut as of its cut on each route that answers `as_of`, and
+`GET /api/v1/whoami` names the cut. Every other read refuses the token with
+`403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the token it always got
+(`packages/envoy/internal/cipher/oauth/exchange.go`, `decide`).
 
 A read trade makes, moves and extends no launcher credential, and its answer names none. A
 person's read trade still proves the sign-in with the box key. Its token names the launcher

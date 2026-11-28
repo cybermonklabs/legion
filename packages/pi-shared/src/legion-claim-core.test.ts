@@ -1,5 +1,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -7,8 +9,11 @@ import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./clai
 import { createLegionDaemonClient } from "./daemon-client";
 import {
   bootLegionClaim,
+  CLAIM_RECORD_FILE,
+  type ClaimStep,
   claimRoleAgainOnBusy,
   claimStandsWithoutHandover,
+  claimStepRecord,
   type LegionClaimHost,
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
@@ -601,10 +606,15 @@ test("the name is taken at the host's first-turn callback and not before it", as
 
 test("a boot that gets no first turn claims at the bound", async () => {
   // The bound is the boot's own timer, so the row holds its clock: a millisecond short of the
-  // bound the name is not taken, and at the bound it is.
+  // bound the name is not taken, and at the bound it is, and the boot's record holds the delay it
+  // armed and that the bound's timer began the claim.
   jest.useFakeTimers();
   try {
-    const waiting = claimHost({ overrides: { firstTurnBoundMs: 5 } });
+    const start = Date.now();
+    const record: ClaimStep[] = [];
+    const waiting = claimHost({
+      overrides: { firstTurnBoundMs: 5, recordClaimStep: (step) => record.push(step) },
+    });
     const booted = await bootLegionClaim(waiting.host);
     expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
 
@@ -623,9 +633,46 @@ test("a boot that gets no first turn claims at the bound", async () => {
       "onRoleRegained",
       `claimRole ${claimToken}`,
     ]);
+    // The held clock has not moved but for the row's 5 ms, so the record's moments are exact.
+    expect(record).toEqual([
+      { armed: start, boundMs: 5 },
+      { claimedBy: "bound", at: start + 5 },
+    ]);
     await booted.claimed;
   } finally {
     jest.useRealTimers();
+  }
+});
+
+// The record a test in another process is to read (`claimStepRecord`): one JSON line a step, in
+// the file `LEGION_CLAIM_RECORD_FILE` names, and no record at all where it names none. No host
+// builds it from its environment at this head: this row stands in for the pi-legion reader that
+// comes later, and builds the record from a literal environment.
+test("the claim record file holds the bound armed and the first turn that took the name", async () => {
+  expect(claimStepRecord({})).toBeUndefined();
+  expect(claimStepRecord({ [CLAIM_RECORD_FILE]: "" })).toBeUndefined();
+
+  const dir = await mkdtemp(path.join(tmpdir(), "legion-claim-record-"));
+  const file = path.join(dir, "claim-steps.jsonl");
+  // The steps are stamped on `Date.now()`, held here so each is read exactly.
+  jest.useFakeTimers();
+  try {
+    const start = Date.now();
+    const { host, firstTurn } = claimHost({
+      overrides: { recordClaimStep: claimStepRecord({ [CLAIM_RECORD_FILE]: file }) },
+    });
+    const booted = await bootLegionClaim(host);
+    firstTurn()?.();
+    await booted.claimed;
+
+    const lines = (await readFile(file, "utf8")).split("\n").filter(Boolean);
+    expect(lines.map((line): unknown => JSON.parse(line))).toEqual([
+      { armed: start, boundMs: 600_000 },
+      { claimedBy: "first-turn", at: start },
+    ]);
+  } finally {
+    jest.useRealTimers();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
