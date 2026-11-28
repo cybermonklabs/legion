@@ -726,12 +726,14 @@ func xidWindowIssueCloseUnderTheRule(t *testing.T, f *xidFixture) {
 // record is decided on comes before the first of them - the check's words, read before the
 // transaction opens; the two issues' owner locks, which assign no transaction id
 // (store.LockOwner, lockIssueOwners); whether each issue is open; the screenshots the result
-// names; and the version and digest the index holds for the check, read under those locks - and
-// the one read of the live document a moved version or digest needs runs with those locks given
-// back (recordResultWithFreshWords), so no read of a document is inside this window or behind
-// these locks.
+// names; the role the recording session holds (resultRoleOf); and the version and digest the
+// index holds for the check, read under those locks - and the one read of the live document a
+// moved version or digest needs runs with those locks given back (recordResultWithFreshWords),
+// so no read of a document is inside this window or behind these locks. The session is given its
+// role before the measure, since that publication is a transaction of its own.
 func xidWindowResultRecorded(t *testing.T, f *xidFixture) {
 	f.uploadVerification(t)
+	holdRole(t, f.handler, f.issueKey, "implementer", "ses-implementer")
 	f.measure(t, http.StatusCreated, storetest.XidWindowOf(3,
 		"the batch appending result.recorded, the result row's insert and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return recordResult(t, h, f.issueKey, resultBody("k1", "pass", headCommit, map[string]any{
