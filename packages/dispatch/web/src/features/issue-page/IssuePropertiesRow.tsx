@@ -435,15 +435,17 @@ function HeaderLabels({
         const now = entry.borderBoxSize[0]?.inlineSize ?? entry.contentRect.width;
         if (now === width) return;
         width = now;
-        const fitsNow = within(frameEnds, now);
-        if (fitsNow >= frameFit.shown) return;
-        // Reserve room for the measured count if it returns. Remove chips, but never add them.
-        const restoresCount = frameFit.countWidth === undefined;
-        const room = restoresCount ? now - countRoom : now;
-        const shown = Math.min(frameFit.shown, restoresCount ? within(frameEnds, room) : fitsNow);
-        // The next notification of the width with the count beside the box needs no reading.
-        if (restoresCount) width = room;
-        drawFit({ ...frameFit, shown, countWidth: frameFit.countWidth ?? countWidest });
+        if (within(frameEnds, now) >= frameFit.shown) return;
+        // Remove every chip that no longer fits and add none. Restore a missing count at its
+        // measured width. Reserve its room beside the box only if it fits there. Otherwise the
+        // count goes on the next line and the box keeps its width.
+        if (frameFit.countWidth === undefined && now + FIT_SLACK >= countRoom)
+          width = now - countRoom;
+        // When the count returns beside the box, the box narrows by the count's room after its
+        // notification. The browser reports "ResizeObserver loop completed with undelivered
+        // notifications" and delivers the new width next frame. By then the frame callback has
+        // cleared frameFit, and the branch above finds the expected width without a new reading.
+        drawFit({ ...frameFit, shown: within(frameEnds, width), countWidth: countWidest });
         return;
       }
       owed.current = null;
@@ -478,9 +480,9 @@ function HeaderLabels({
   }, [hasLabels]);
   // A commit that lays the chips out for a reading owes one, which the observer takes once the
   // browser has laid that commit out: the document's root, observed afresh, is notified after the
-  // next layout and before the paint. It is the shallowest element there is, so a size the fit
-  // drawn in that notification changes is notified in the same frame, the box's among them, and
-  // none is left over for a "ResizeObserver loop" error.
+  // next layout and before the paint. The root is the shallowest element, so the browser notifies
+  // every size change from the draw in the root's notification in the same frame. The only change
+  // it holds to the next frame is when the count returns beside the box as described above.
   useLayoutEffect(() => {
     const observer = sizes.current;
     if (drawn !== null || observer === null) return;

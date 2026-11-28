@@ -3919,6 +3919,48 @@ test("a box that narrows in the frame of a reading draws no chip it hides, and i
       afterCountReturns
     );
     expect(labelsDrawn(room.width), "the fit changed after the count came back").toEqual(withCount);
+
+    // Read all three chips at 150 px again. Narrow the box to 70 px in the same frame,
+    // where the count must move to the next row and the first chip still fits.
+    room.width = 150;
+    sizes.resize(box);
+    sizes.resize(box);
+    expect(labelsDrawn(room.width), "all three chips should fit again without a count").toEqual({
+      count: null,
+      hidden: [],
+      shown: shortLabels,
+    });
+    const afterNewReading = afterCountReturns + 1;
+    expect(measureCount(), "widening the box should take one reading").toBe(afterNewReading);
+
+    room.width = 70;
+    sizes.resize(box);
+    const belowCountRoom = labelsDrawn(room.width);
+    expect(belowCountRoom.shown, "the first chip should stay when the count wraps").toEqual([
+      "api",
+    ]);
+    expect(belowCountRoom.hidden, "the narrowed box should not clip any drawn chip").toEqual([]);
+    expect(belowCountRoom.count, "the count should include both chips that no longer fit").toBe(
+      "+2 labels"
+    );
+    expect(
+      screen.getByTestId("issue-labels-left").getBoundingClientRect().top,
+      "the count should be on the row below the box"
+    ).toBeGreaterThan(box.getBoundingClientRect().bottom);
+    expect(measureCount(), "narrowing the box should not take another reading").toBe(
+      afterNewReading
+    );
+
+    await act(nextFrame);
+    sizes.resize(box);
+    await act(nextFrame);
+    sizes.resize(box);
+    expect(measureCount(), "no reading should follow the return of the count below the box").toBe(
+      afterNewReading
+    );
+    expect(labelsDrawn(room.width), "the fit should not change after two frames").toEqual(
+      belowCountRoom
+    );
   } finally {
     view.unmount();
     restore();
