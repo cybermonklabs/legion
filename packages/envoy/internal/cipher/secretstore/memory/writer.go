@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -344,9 +345,21 @@ type create struct {
 	w    *Writer
 	id   string
 	tags map[string]string
-	// lost is set when Store's answer was lost, so Unsettled names what to check.
-	lost bool
+	// state is where Store is (createIdle, createOpen, createSettled), which Unsettled reads while
+	// Store may be in flight: a second signal ends the form without waiting for the call.
+	state atomic.Int32
 }
+
+// Where a create's Store is.
+const (
+	// createIdle: Store has not begun, so the create has made nothing.
+	createIdle int32 = iota
+	// createOpen: Store has begun and may have written the secret, which its answer has not
+	// settled: it is in flight, or it answered that it may hold the secret.
+	createOpen
+	// createSettled: Store answered, having written nothing or made the secret it says it made.
+	createSettled
+)
 
 // heldName refuses a name the store holds, a secret scheduled for deletion included.
 func heldName(id string) error {
@@ -369,9 +382,12 @@ func (c *create) Begin(context.Context) (secretstore.DiscardOutcome, error) {
 }
 
 // Store makes the secret with value, unless another writer made one of its name meanwhile, under
-// secretstore.CallDeadline as every store's create call is. A call that runs out of time may or
-// may not have made the secret, which the error says, naming the command that tells which.
+// secretstore.CallDeadline as every store's create call is. A call that ran out of time while
+// another writer held the file's lock wrote nothing and says so; one whose answer is lost may or
+// may not have made the secret, which the error and Unsettled say, naming the command that tells
+// which.
 func (c *create) Store(ctx context.Context, value string) error {
+	c.state.Store(createOpen)
 	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	lost, err := c.w.start(ctx, "create")
@@ -380,23 +396,28 @@ func (c *create) Store(ctx context.Context, value string) error {
 			return fmt.Errorf("%w; the memory store did not answer within %s, so the store may hold %s, made with its value, or no %s at all; %s says which",
 				err, secretstore.CallDeadlineText(), c.name(), c.name(), c.show())
 		}
+		c.state.Store(createSettled)
 		return err
 	}
 	now := time.Now().UTC()
-	_, err = c.w.edit(ctx, func(secrets []Secret) ([]Secret, error) {
+	written, err := c.w.edit(ctx, func(secrets []Secret) ([]Secret, error) {
 		if find(secrets, c.id) >= 0 {
 			return nil, heldName(c.id)
 		}
 		return append(secrets, Secret{Name: c.id, Tags: c.tags, Value: value, CreatedAt: &now}), nil
 	})
-	if err != nil {
+	switch {
+	case err != nil && !written:
+		c.state.Store(createSettled)
 		return err
+	case err != nil:
+		return fmt.Errorf("%w; %s", err, c.Unsettled())
 	}
 	c.w.didApply("create")
 	if lost {
-		c.lost = true
 		return lostAnswer("create")
 	}
+	c.state.Store(createSettled)
 	return nil
 }
 
@@ -413,9 +434,10 @@ func (c *create) Discard(context.Context) (secretstore.DiscardOutcome, error) {
 	return secretstore.MadeNothing, nil
 }
 
-// Unsettled names the check of a create whose answer was lost.
+// Unsettled names the secret Store may have made and the command that checks it, from the moment
+// Store begins until it answers that it wrote nothing or made the secret; "" before and after.
 func (c *create) Unsettled() string {
-	if !c.lost {
+	if c.state.Load() != createOpen {
 		return ""
 	}
 	return "the memory store may hold " + c.name() + "; check it with " + c.show()
