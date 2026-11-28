@@ -313,11 +313,15 @@ func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruptio
 // launch writes to PluginRelaunchFor as it starts the process replacing the stale one
 // (commitPluginRelaunch), and the wake kind that launch is reserved under, which is the lane
 // that raised it (relaunchStale, reserveWake). That kind is also the one a held try of the launch
-// waits under, and the one the retries relaunchAtProbe and relaunchRefused arm are recorded under,
-// so it is what keeps the refresh credit the launch was admitted on while the launch is owed
-// (waitsUnder, laneLaunchOwed). The retries of a start that waits for the session store or for
-// its pod's update round are the exception: they wait under the launch kind and keep no credit
-// (relaunchLater lists each caller and what it records).
+// waits under, and the one the retries relaunchAtProbe and relaunchRefused arm are recorded under —
+// relaunchRefused's for a lifecycle check the store did not answer and for the launch check's
+// refusal while a project release holds every start alike — so it is what keeps the refresh credit
+// the launch was admitted on while the launch is owed (waitsUnder, laneLaunchOwed). The retries of
+// a start that waits for the session store, for its pod's update round or for a project release
+// the runtime met are the exception (startWaitsForStore, startWaitsForPodRound,
+// startWaitsForRelease): they wait under the launch kind and keep no credit (relaunchLater lists
+// each caller and what it records, and why the release's refusal at the launch check costs the
+// lane nothing).
 //
 // The two are one value rather than two fields of the machine because they are one fact — this
 // launch is a stale-plugin relaunch of this lane, for this contract — and because they travel

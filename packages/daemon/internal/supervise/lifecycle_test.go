@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // epochStore is the in-memory store over one tree lifecycle: AdmitClaim binds the open epoch or
@@ -460,6 +462,97 @@ func TestADaemonSuspensionOfARelaunchWaitingForTheStoreRetiresThePhasesTask(t *t
 	}
 	h.wantCalls("Suspend", 1)
 	h.wantCalls("Resume", 0)
+}
+
+// heldCheckStore is the in-memory store whose launch check lets the next passes checks through
+// and answers refusal to every one after them, nil for none: a wait, as the daemon's launch check
+// answers while the project release holds every start (errReleaseHolds), or a store that did not
+// answer (errUnanswered).
+type heldCheckStore struct {
+	*memStore
+	passes  int
+	refusal error
+}
+
+func (s *heldCheckStore) CheckLaunch(context.Context, Claim) error {
+	if s.passes > 0 {
+		s.passes--
+		return nil
+	}
+	return s.refusal
+}
+
+// errReleaseHolds is the launch check's refusal while the project release holds every start, as
+// the daemon's launch check answers it (internal/daemon's launchGatedStore, errProjectReleased):
+// a wait, wrapped with the launch it refused.
+var errReleaseHolds = fmt.Errorf("launch %s: %w", testToken, wait.New("the project release holds every start until the daemon's next boot"))
+
+// A relaunch the launch check refuses with a wait, as it refuses every relaunch while the project
+// release holds every start, is logged at Info at the refusal that begins the wait and at Debug at
+// each probe interval's retry it refuses after that, never at Warn: the release holds for up to its
+// bound, and the operator who released the project asked for that. A refusal that is no wait, a
+// store that did not answer, is still logged at Warn at each retry, and it ends the wait, so the
+// next wait logs at Info again; so does a relaunch that runs (letGo).
+//
+// The negative control is relaunchRefused logging every refusal at Warn, a wait's included, as it
+// did before: the refusal that begins the wait then writes no line at Info.
+func TestARelaunchTheLaunchCheckRefusesWithAWaitLogsTheWaitOnceAtInfo(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateRegistered)
+	store := &heldCheckStore{memStore: h.store}
+	h.m.deps.Store = store
+	levels := func(message string) []slog.Level {
+		var got []slog.Level
+		for _, r := range h.records.of(message) {
+			got = append(got, r.level)
+		}
+		return got
+	}
+	want := func(when string, waits, refusals []slog.Level) {
+		t.Helper()
+		if got := levels(relaunchWaitLine); !slices.Equal(got, waits) {
+			t.Fatalf("%s, the wait's lines are at %v; want %v", when, got, waits)
+		}
+		if got := levels(relaunchRefusedLine); !slices.Equal(got, refusals) {
+			t.Fatalf("%s, the refusal's lines are at %v; want %v", when, got, refusals)
+		}
+	}
+	info, debug, warn := slog.LevelInfo, slog.LevelDebug, slog.LevelWarn
+
+	// The registration deadline's own check passes, and the release holds every start by the time
+	// its stop has landed, so the relaunch's check is refused.
+	store.passes, store.refusal = 1, errReleaseHolds
+	h.advance(deadline)
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the relaunch the release refused left the claim %s with locator %+v, want launching with no process", c.State, c.Locator)
+	}
+	want("at the refusal that begins the wait", []slog.Level{info}, nil)
+
+	h.advance(testProbe)
+	h.advance(testProbe)
+	h.wantCalls("Resume", 0)
+	want("after two retries the release refused", []slog.Level{info, debug, debug}, nil)
+
+	store.refusal = errUnanswered
+	h.advance(testProbe)
+	want("after a retry the store did not answer", []slog.Level{info, debug, debug}, []slog.Level{warn})
+
+	store.refusal = errReleaseHolds
+	h.advance(testProbe)
+	h.advance(testProbe)
+	want("after two retries the release refused again", []slog.Level{info, debug, debug, info, debug}, []slog.Level{warn})
+
+	store.refusal = nil
+	h.advance(testProbe)
+	h.wantCalls("Resume", 1)
+	h.wantState(StateLaunching)
+	h.connect()
+	h.register()
+
+	store.passes, store.refusal = 1, errReleaseHolds
+	h.advance(deadline)
+	h.wantCalls("Resume", 1)
+	want("at the refusal of the relaunched process's own relaunch", []slog.Level{info, debug, debug, info, debug, info}, []slog.Level{warn})
 }
 
 // A retirement whose relaunch is checked once the stop has landed, but whose launch the store does

@@ -2030,6 +2030,14 @@ type Machine struct {
 	// while it waits (laneLaunchOwed). It is memory only, as the timer is: a restart launches that
 	// claim again as an unfinished launch.
 	relaunch *waitingRelaunch
+	// checkWaiting is whether the relaunch relaunchRefused last left waiting was refused with a
+	// wait (wait.ErrWaiting), as the launch check refuses every relaunch while a project release
+	// holds every start: the wait is logged at Info at the refusal that begins it, and at Debug at
+	// each retry it refuses after that (relaunchWaitLine). A refusal that is no wait clears it, and
+	// so does letGo, which a relaunch that runs (launchNow), a suspension, a retirement and a
+	// failure all pass, so the next wait logs at Info again. Memory only, as relaunch is: a
+	// restarted daemon's first refusal logs at Info.
+	checkWaiting bool
 	// cancelStart cancels the start in flight, and is nil between starts; startStopped is whether
 	// a suspension cancelled one, read once by that suspension's own row (stoppedAStart). startMu
 	// is their own lock, held only to set, clear or call them, so a suspension can reach them
@@ -3595,8 +3603,8 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 // ended is recorded before the first try's write moves the generation and clears the process's
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
 // failed write's here, a session store's that could not answer (startWaitsForStore), a pod
-// round's (startWaitsForPodRound) — launch a claim that records no process any more, so they
-// pass noEnd.
+// round's (startWaitsForPodRound), a project release's that the runtime met
+// (startWaitsForRelease) — launch a claim that records no process any more, so they pass noEnd.
 //
 // Each try of a claim of an issue pod asks the pod's start gate right before it asks the runtime
 // for its process, so no role's process starts while another role of the pod starts or loads its
@@ -5051,7 +5059,8 @@ func (m *Machine) writeLeavingRound(ctx context.Context, drops bool) error {
 
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
-// (relaunchLater), no wait for a pod's update round stands, nor the pod it was for
+// (relaunchLater), nor is a wait the launch check answered such a relaunch remembered
+// (checkWaiting), no wait for a pod's update round stands, nor the pod it was for
 // (podRoundWaiting, awaitsPod: a suspension, a retirement or a failure of the waiting claim ends
 // that wait, and every launch, whatever raised it, keeps the pod through its own try, launchNow),
 // no wake of the pacing waits its turn (reserveWake), no launch waits at its issue pod's gate,
@@ -5113,7 +5122,7 @@ func (m *Machine) writeLeavingRound(ctx context.Context, drops bool) error {
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
-	m.relaunch, m.podRoundWaiting, m.awaitsPod = nil, false, nil
+	m.relaunch, m.checkWaiting, m.podRoundWaiting, m.awaitsPod = nil, false, false, nil
 	m.wake = nil
 	if m.sendUnproven() {
 		m.takeBackConfirmation(m.claim.Pending)
