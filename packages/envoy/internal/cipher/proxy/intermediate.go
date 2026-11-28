@@ -99,12 +99,17 @@ func NewPoolAuthority(o AuthorityOptions) *Authority { return newAuthority(o) }
 // (IntermediateRenewBefore; the local stack's negative control sets 0), but never sooner than
 // intermediateRetryMax after it took that one (renewalTime). Each failed request, the answers it
 // refuses included, is logged and asked again after the backoff. Each certificate it takes is
-// logged by take.
+// logged by take, and then, before the wait, the moment it will ask for the next and the serial
+// of the one it holds: a test of the binary on a moved clock reads when the pod will renew from
+// that line, as a test of this package reads it from its clock's sleeps.
 func (a *Authority) Intermediates(ctx context.Context, pool Pool, renewBefore time.Duration) {
 	var taken time.Time
 	for {
 		if current := a.Certificate(); current != nil {
-			if !a.clock.SleepUntil(ctx, renewalTime(current, renewBefore, taken)) {
+			at := renewalTime(current, renewBefore, taken)
+			a.log.Info("proxy intermediate renewal", "serial", fmt.Sprintf("%x", current.SerialNumber),
+				"at", at.UTC().Format(time.RFC3339Nano))
+			if !a.clock.SleepUntil(ctx, at) {
 				return
 			}
 		}

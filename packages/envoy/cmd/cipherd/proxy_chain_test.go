@@ -180,11 +180,13 @@ func TestABrokerWithADpopBlockIsReadyUnderTheLocalCAPolicy(t *testing.T) {
 }
 
 // TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft: the broker binary, on a pool that answers
-// 3-day intermediates and on the clock BROKER_PROXY_TEST_CLOCK_OFFSET_FILE moves, holds its first
-// intermediate a minute before 2 days of it remain, and takes the next once they do: a day after
-// the first's start, not halfway through its life.
+// 3-day intermediates and on the clock BROKER_PROXY_TEST_CLOCK_OFFSET_FILE moves, records that it
+// will ask for the next intermediate at the moment 2 days of its first remain, a day after the
+// first's start and not halfway through its life. Once its clock passes that moment it takes the
+// next, whose start, which the stand dates by the broker's clock at the request, says it asked no
+// sooner, and it records the moment it will renew that one in turn.
 func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
-	// Not parallel: it holds code to renewalHold's 5 s, a bound on a measured time that the load of the package's parallel tests could push past (no renewal may come while its clock stands a minute short of due for it).
+	t.Parallel()
 	rig := startRenewalRig(t)
 	if life := rig.first.NotAfter.Sub(rig.first.NotBefore); life != 3*24*time.Hour {
 		t.Fatalf("the stand answered an intermediate of %v; want 3 days", life)
@@ -193,26 +195,22 @@ func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
 		rig.first.SerialNumber.Text(16), rig.first.NotBefore.UTC().Format(time.RFC3339), rig.first.NotAfter.UTC().Format(time.RFC3339),
 		rig.due.UTC().Format(time.RFC3339), rig.due.Sub(rig.first.NotBefore))
 
-	// The clock stops a minute short of the due moment and stays there for renewalHold, and the
-	// broker reads its file at least once a second (proxy.offsetSleepStep), so a broker that
-	// renews while 2 days and a minute remain takes its next intermediate inside the hold. That
-	// the hold is long enough is not assumed: the control below is a broker whose renewal margin
-	// makes it renew exactly then, and it must take one inside the same hold, so a hold too short
-	// for a loaded runner fails the control rather than passing this test.
-	rig.setOffset(time.Until(rig.due.Add(-time.Minute)))
-	time.Sleep(renewalHold)
-	if got := len(rig.stand.Issued()); got != 1 {
-		t.Fatalf("with the broker's own clock a minute short of 2 days remaining, the stand has issued %d intermediates; want the first alone", got)
+	// What would make the broker renew is the moment its renewal loop waits for, and the broker
+	// records that moment, with the serial of the intermediate it holds, before it waits. A broker
+	// that would renew while 2 days and a minute remain records a moment a minute before due and
+	// fails here. That renewsWhenDue can refuse is not assumed: the control's broker, whose margin
+	// is 49 hours, records a moment an hour before due, and renewsWhenDue must answer no for it
+	// (TestTheRenewalMomentCheckFailsOnABrokerThatRenewsEarly).
+	if at := renewalAt(t, rig.broker, rig.first); !renewsWhenDue(at, rig.due) {
+		t.Errorf("the broker records that it will ask for the next intermediate after %s at %s; want %s, the moment 2 days of it remain",
+			rig.first.SerialNumber.Text(16), at.UTC().Format(time.RFC3339Nano), rig.due.UTC().Format(time.RFC3339Nano))
 	}
 
 	// A minute past due, the broker takes its next intermediate. The stand issues from this clock
-	// proxyrulestest.CABackdate (5 minutes) before its own reading of it, so a renewal made once 2
-	// days remained starts no earlier than due-5m, and one made while the clock stood a minute short
-	// would start at about due-6m. The control for this assertion is
-	// BROKER_PROXY_TEST_RENEWAL_MARGIN, which makes a broker renew at a moment of the test's
-	// choosing: with a margin of 2 days and 2 minutes the renewal comes while the clock is still
-	// short, its certificate starts before due-5m, and renewedOnceDue answers no
-	// (TestTheRenewalMomentCheckFailsOnABrokerThatRenewsEarly).
+	// proxyrulestest.CABackdate (5 minutes) before its own reading of it at the request, so the
+	// certificate's start is the record of when the broker asked, and a renewal made once 2 days
+	// remained starts no earlier than due-5m (renewedOnceDue). The control's broker renews with its
+	// clock an hour short of due, and renewedOnceDue must answer no for its certificate.
 	rig.setOffset(time.Until(rig.due.Add(time.Minute)))
 	var second *x509.Certificate
 	testwait.Until(t, "the broker to take its next intermediate once 2 days remain", func() (string, bool) {
@@ -233,13 +231,18 @@ func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
 	if got := len(rig.stand.Issued()); got != 2 {
 		t.Errorf("the stand has issued %d intermediates; want the first and its renewal", got)
 	}
+	// The loop goes on: what it waits for next is the moment 2 days of the second remain.
+	if next, due := renewalAt(t, rig.broker, second), second.NotAfter.Add(-2*24*time.Hour); !renewsWhenDue(next, due) {
+		t.Errorf("the broker records that it will ask for the next intermediate after %s at %s; want %s, the moment 2 days of it remain",
+			second.SerialNumber.Text(16), next.UTC().Format(time.RFC3339Nano), due.UTC().Format(time.RFC3339Nano))
+	}
 	requireHealthy(t, rig.broker.Addr)
 }
 
 // renewalRig is a broker on a pool that answers 3-day intermediates, on the clock
 // BROKER_PROXY_TEST_CLOCK_OFFSET_FILE moves, once it holds its first intermediate: the stand that
-// answers it, the broker, that clock and setOffset, which moves it, the first intermediate, and
-// due, the moment 2 days of it remain.
+// answers it, which issues from that clock too, the broker, that clock and setOffset, which moves
+// it, the first intermediate, and due, the moment 2 days of it remain.
 type renewalRig struct {
 	stand     *proxyrulestest.CAStand
 	broker    *brokerProcess
@@ -250,8 +253,9 @@ type renewalRig struct {
 }
 
 // startRenewalRig starts a renewalRig's broker, with env after its own settings, and waits for its
-// first intermediate. TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft and its control both
-// start from it, so the control's broker differs from the test's by env alone.
+// first intermediate and the broker's line of it.
+// TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft and its control both start from it, so
+// the control's broker differs from the test's by env alone.
 func startRenewalRig(t *testing.T, env ...string) renewalRig {
 	t.Helper()
 	clockFile := filepath.Join(t.TempDir(), "clock-offset")
@@ -289,48 +293,73 @@ func startRenewalRig(t *testing.T, env ...string) renewalRig {
 	}
 }
 
-// renewalHold is how long TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft holds its clock a
-// minute short of the renewal's due moment. The broker reads the offset file at least once a
-// second (proxy's offsetSleepStep), so a broker that renews then has several readings inside it.
-// The number is not trusted: the control test renews at that moment on purpose and fails unless
-// it sees the certificate inside the same hold.
-const renewalHold = 5 * time.Second
+// renewalAt waits for the broker's "proxy intermediate renewal" line of held, the intermediate it
+// holds, and answers the moment the line names: the moment the broker's renewal loop waits for
+// before it asks for the next intermediate.
+func renewalAt(t *testing.T, broker *brokerProcess, held *x509.Certificate) time.Time {
+	t.Helper()
+	record := broker.AwaitRecord(t, "proxy intermediate renewal", map[string]any{"serial": held.SerialNumber.Text(16)})
+	text, _ := record["at"].(string)
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		t.Fatalf("the broker's renewal line of %s names no moment: %v", held.SerialNumber.Text(16), record)
+	}
+	return at
+}
+
+// renewsWhenDue is whether at, the moment a broker records that it will ask for the next
+// intermediate (renewalAt), is due, the moment 2 days of the one it holds remain: a broker that
+// would renew early records an earlier moment, and one that would renew late a later one. It is a
+// predicate and takes no *testing.T, so the test that must pass it and the control that must fail
+// it read the moment by the same code.
+func renewsWhenDue(at, due time.Time) bool {
+	return at.Equal(due)
+}
 
 // renewedOnceDue is whether renewed was issued once the renewal was due, and the floor it reads
-// by. The ca stand issues proxyrulestest.CABackdate (5 minutes) before its reading of the test's
-// clock, which is the broker's, so a renewal made at due or later starts no earlier than due-5m,
-// and one made a minute early starts at about due-6m. It is a predicate and takes no *testing.T,
-// so the test that must pass it and the control that must fail it read the same floor by the same
-// code.
+// by. The ca stand issues proxyrulestest.CABackdate (5 minutes) before its reading, at the
+// request, of the test's clock, which is the broker's, so a renewal made at due or later starts no
+// earlier than due-5m, and one made an hour early, as the control's is, starts about an hour
+// before that. It is a predicate and takes no *testing.T, so the test that must pass it and the
+// control that must fail it read the same floor by the same code.
 func renewedOnceDue(renewed *x509.Certificate, due time.Time) (ok bool, earliest time.Time) {
 	earliest = due.Add(-proxyrulestest.CABackdate)
 	return !renewed.NotBefore.Before(earliest), earliest
 }
 
 // TestTheRenewalMomentCheckFailsOnABrokerThatRenewsEarly is the control of
-// TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft: a broker whose renewal margin is 2 days
-// and 2 minutes (BROKER_PROXY_TEST_RENEWAL_MARGIN) renews while the clock still stands a minute
-// short of the due moment, and renewedOnceDue, the floor both tests read by, answers no for it. It
-// proves two things that test rests on: the floor can refuse a certificate, and renewalHold is long
-// enough for a renewal made then to be seen inside it.
+// TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft: a broker whose renewal margin is 49 hours
+// (BROKER_PROXY_TEST_RENEWAL_MARGIN) records that it will renew an hour before the due moment, and
+// renews once its clock reaches the moment it recorded. It proves that both checks that test reads
+// by can refuse: renewsWhenDue answers no for the moment this broker records, and renewedOnceDue
+// answers no for the certificate it takes. That certificate starts at the recorded moment plus the
+// real time the renewal took, less the 5-minute backdate, so renewedOnceDue refuses it unless the
+// renewal took an hour or more; an hour is past the test binary's -timeout (20m in the unit step
+// of .github/workflows/ci-job-envoy-go.yaml), where testwait.Until gives up first, so no verdict
+// rests on how long the renewal took.
 func TestTheRenewalMomentCheckFailsOnABrokerThatRenewsEarly(t *testing.T) {
-	// Not parallel: it holds code to renewalHold's 5 s, a bound on a measured time that the load of the package's parallel tests could push past (the early broker's renewal must come inside it).
-	rig := startRenewalRig(t, "BROKER_PROXY_TEST_RENEWAL_MARGIN=48h2m")
+	t.Parallel()
+	rig := startRenewalRig(t, "BROKER_PROXY_TEST_RENEWAL_MARGIN=49h")
+	at := renewalAt(t, rig.broker, rig.first)
+	if renewsWhenDue(at, rig.due) {
+		t.Errorf("renewsWhenDue answers yes for %s, the moment a broker an hour early records against a due moment of %s: the record check in TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft cannot fail",
+			at.UTC().Format(time.RFC3339Nano), rig.due.UTC().Format(time.RFC3339Nano))
+	}
 
-	rig.setOffset(time.Until(rig.due.Add(-time.Minute)))
+	rig.setOffset(time.Until(at))
 	var second *x509.Certificate
-	testwait.WithinPolling(t, renewalHold, 50*time.Millisecond, "the early broker's renewal inside the hold", func() bool {
+	testwait.Until(t, "the early broker to renew once its clock reaches the moment it recorded", func() (string, bool) {
 		issued := rig.stand.Issued()
 		if len(issued) > 1 {
 			second = issued[1]
 		}
-		return second != nil
+		return fmt.Sprint(len(issued)), second != nil
 	})
 	t.Logf("the early broker renewed at a clock of %s: next intermediate %s to %s",
 		rig.clock.Now().UTC().Format(time.RFC3339),
 		second.NotBefore.UTC().Format(time.RFC3339), second.NotAfter.UTC().Format(time.RFC3339))
 	if ok, earliest := renewedOnceDue(second, rig.due); ok {
-		t.Errorf("renewedOnceDue answers yes for a renewal made a minute early, which starts at %s against a floor of %s: the check in TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft cannot fail",
+		t.Errorf("renewedOnceDue answers yes for a renewal made an hour early, which starts at %s against a floor of %s: the check in TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft cannot fail",
 			second.NotBefore.UTC().Format(time.RFC3339), earliest.UTC().Format(time.RFC3339))
 	}
 }
