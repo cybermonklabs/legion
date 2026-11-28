@@ -253,13 +253,14 @@ func (r *redirectedStderr) point(w io.Writer) {
 // to sign in to an IAM database (databaseSignIn) is the one whose logger is the broker's own
 // (awssdk.Log), whose lines are the broker's rather than the SDK's own log.Logger on stderr. The
 // minter it answers signs a token with the instance role's credentials, which a stand-in for the
-// instance metadata service serves with IMDSv1 alone, so the SDK logs its fall back to IMDSv1
-// through that configuration's logger, and the line is the broker's. A database that signs in as
-// its URL says gets no minter. The AWS store's own configuration is the AWS store package's
+// instance metadata service serves with IMDSv1 alone, refusing IMDSv2's token: the SDK logs that
+// it falls back, through that configuration's logger, so a line of the SDK's (awssdk.Message,
+// whatever its words) is in the broker's log. A database that signs in as its URL says gets no
+// minter. The AWS store's own configuration is the AWS store package's
 // (TestOpenStoreLogsThroughTheBrokersLogger there).
 //
 // The named revert: load the IAM database's configuration with the SDK's own LoadDefaultConfig,
-// and the fall-back line goes to stderr, not the broker's log.
+// and the SDK's line goes to stderr, not the broker's log.
 func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
 	isolateAWS(t)
 	imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -287,8 +288,8 @@ func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
 	if err != nil || token == "" {
 		t.Fatalf("the minter signed %q, %v; want a token over the instance role's credentials", token, err)
 	}
-	if got := logged.String(); !strings.Contains(got, awssdk.Message) || !strings.Contains(got, "falling back to IMDSv1") {
-		t.Fatalf("the broker's log after the IAM database's credentials were read:\n%s\nwant the SDK's IMDSv1 fall back as a %q line", got, awssdk.Message)
+	if got := logged.String(); !strings.Contains(got, `msg="`+awssdk.Message+`"`) {
+		t.Fatalf("the broker's log after the IAM database's credentials were read:\n%s\nwant a line of the SDK's, %q", got, awssdk.Message)
 	}
 	if mint, err := databaseSignIn(t.Context(), config.Config{}); err != nil || mint != nil {
 		t.Fatalf("databaseSignIn(a password database) = minter %t, %v; want none", mint != nil, err)
