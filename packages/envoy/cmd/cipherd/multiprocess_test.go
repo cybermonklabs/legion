@@ -551,20 +551,21 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 // never reached it at all is the row's failure rather than its observation.
 func mustRequest(t *testing.T, addr, path string) (int, string) {
 	t.Helper()
-	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, "http://"+addr+path, nil)
+	target := "http://" + addr + path
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, target, nil)
 	if err != nil {
-		t.Fatalf("GET http://%s%s: %v", addr, path, err)
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
 	resp, err := (&http.Client{Transport: transport}).Do(request)
 	if err != nil {
-		t.Fatalf("GET http://%s%s: %v", addr, path, err)
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("GET http://%s%s: %v", addr, path, err)
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	return resp.StatusCode, string(body)
 }
@@ -968,8 +969,9 @@ func TestTwoBrokers(t *testing.T) {
 			secondSignalEndedTheDrain = "broker: a second signal ended the drain early"
 		)
 		solo := startSoloBroker(t, binary, drain)
-		// A row that fails before its second SIGTERM leaves this broker in a two-minute drain, past
-		// startBroker's stopGrace: it is killed here, once the row has its verdict.
+		// A row that fails before its first SIGTERM leaves that signal to startBroker's cleanup,
+		// which would begin a two-minute drain, past its stopGrace: the broker is killed here, once
+		// the row has its verdict.
 		t.Cleanup(func() { _ = solo.Process.Cmd.Process.Kill() })
 		machineKey := ciphertest.NewSigningKey(t)
 		authorization := solo.Client.DeviceLogin(t, machineKey, multiprocessPerson, host)
@@ -1030,9 +1032,9 @@ func TestTwoBrokers(t *testing.T) {
 		}
 		// The drain ends here, on the row's word: a second SIGTERM, which the watchdog at the top
 		// of main hands to the drain. Readiness failing above shows the first signal was taken,
-		// so the two cannot merge into one pending signal. The broker logs which of its clock and
-		// this signal ended the drain, so the line read here says both answers above came inside
-		// the drain.
+		// so the two cannot merge into one pending signal. The broker logs a line only when this
+		// signal, and not its clock, ends the drain, so finding that line says both answers above
+		// came inside the drain.
 		if err := solo.Process.Cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Fatalf("send the broker at %s its second SIGTERM: %v", solo.Process.Addr, err)
 		}
@@ -1064,7 +1066,7 @@ func TestTwoBrokers(t *testing.T) {
 		if err := solo.Process.AwaitExit(t); err != nil {
 			t.Fatalf("the broker exited with %v after draining; want 0:\n%s", err, solo.Process.Log())
 		}
-		t.Logf("the broker exited 0 %s after its SIGTERM and %s after its shutdown began, having finished the refresh it was holding",
+		t.Logf("the broker exited 0 %s after its first SIGTERM and %s after its shutdown began, having finished the refresh it was holding",
 			time.Since(signalled).Round(time.Millisecond), time.Since(shutdownBegan).Round(time.Millisecond))
 		// The shutdown's own record says whether it finished that request inside its budget: stop
 		// logs "broker: shutdown" with the error when srv.Shutdown's budget runs out first
