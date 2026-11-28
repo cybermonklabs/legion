@@ -33,7 +33,8 @@ body: |-
   The migration `20261124192838_deployment_roles` widens the role and phase checks, and an
   earlier release cannot read a row at `step` or of such a role. Before a rollback past this
   release, finish or stop each issue whose plan names such a role. `docs/kubernetes.md`, "Rolling
-  back the release whose deployment defines roles", gives the way back. The migration
+  back the release whose deployment defines roles", gives the way back, with the SQL that clears
+  the project's queued outbox rows an earlier release cannot decode. The migration
   `20261127224354_observed_step_role` adds `issues.observed_step_role`, the step role an issue's
   last write served, and its header gives its way back.
 time: 2026-11-23T20:05:28Z

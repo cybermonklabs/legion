@@ -3180,6 +3180,69 @@ With no such row left, it writes the five checks again as the earlier release wr
 Run it with every project's daemon on that database stopped, before the earlier image is pinned: the checks are the database's, and so are the rows they read.
 The controller's claim and the release of an unowned pod, which names no role, pass the way back and stay.
 
+**A queued outbox row that names a role of the deployment must be cleared before the earlier image is pinned.**
+Finishing or stopping an issue does not take back a row queued for it before the finish.
+An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), refuses a controller notice of a kind it does not know, and holds the role a row names to Legion's six (its `claim.IsRole`), so each row below fails its decode at every attempt, logs the failure each time and never finishes.
+The block below clears those rows of one project, a statement for each kind of row.
+
+Its first statement deletes each `pod-wait-held` notice to the controller, a kind the earlier release does not know, which tells of a start that waits for its pod: the start of a role that release does not have.
+Its second takes `stepRole`, the role of an issue's running step, off each issue of a queued catch-up notice.
+A notice row that fails its decode costs more than its own delivery: while it waits on its backoff, `record.Store.WaitingNotices` returns it, `daemon.pacedCatchUps` returns its decode error, and `GET /legion/v1/state` answers an error for the whole project.
+The delivery replaces the issues of a catch-up with its own read of the tree, so the notice loses nothing.
+Its third takes `worker` off each queued merge-forward review, the role of the running step that the reviewer tells beside the architect, so the earlier release sends the review and the reviewer tells the architect alone.
+Its fourth deletes each queued pause's stop (a `supervise` row whose `op` is `pause_stop`), `phase_ended` message, hook prompt, update ask, and merge-forward hold or landed whose `role` is none of Legion's six.
+Each is work for a role the earlier release has no claim of: the way back in the migration's header refuses while an issue stands at such a role's step or a claim of such a role remains, so deleting the row loses nothing that release could do.
+
+Its fifth deletes each queued state event (`state_change`) that names `stepRole` or a claim of a role outside the six, which the earlier release's check of a state change refuses.
+Such a row holds back every later state row of its project, so Dispatch would hear no state event of the project again, the earlier release's own boot event included.
+The statement deletes the row rather than the change: a row whose one change it took out could not stand, since a state change names at least one field, and Dispatch would keep the role or the claim that a change taken out of a longer row moved.
+Dispatch reads each project's state events in sequence order (`stateMessage.unfollowed` in `packages/envoy/internal/dispatch/legion/state_message.go`).
+The first message after a deleted row starts past the sequence Dispatch expects, so Dispatch takes the daemon's whole state again (`GET /legion/v1/state`), which restates every field the deleted rows moved.
+A message that carried rows on both sides of a deleted row skips a sequence inside it: Dispatch refuses that message, logging `legion intake: decode a state message; acknowledging it` at ERROR, and the next message is then the gap that makes the whole read.
+The earlier release queues a boot event when it starts, after every row still queued, so that whole read comes at the latest with that event.
+What the deleted rows cost is the moment of each move they named, since a whole read stamps what it finds with Dispatch's clock at the read.
+
+Run this after the project's issues are finished or stopped and its daemon has stopped for the last time on this release, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`.
+A state row carries that key alone in place of an issue key, which the same predicate reads.
+The block touches no table the way back in the migration's header touches, so it runs before or after that way back:
+
+```sql
+-- The controller's notices one project still has queued of a pod a role of the deployment waits for.
+delete from outbox
+where kind = 'controller_notice' and payload->>'kind' = 'pod-wait-held'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The role of the running step on each issue of the catch-ups one project still has queued.
+update outbox set payload = jsonb_set(payload, '{catch_up,issues}', (
+    select jsonb_agg(listed.entry - 'stepRole' order by listed.place)
+    from jsonb_array_elements(payload->'catch_up'->'issues') with ordinality as listed(entry, place)))
+where kind = 'notice' and jsonb_path_exists(payload, '$.catch_up.issues[*].stepRole')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The worker each merge-forward review one project still has queued tells beside the architect.
+update outbox set payload = payload - 'worker'
+where kind = 'merge_forward' and payload ? 'worker'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The work one project still has queued for a role of the deployment.
+delete from outbox
+where (kind in ('phase_ended', 'hook_prompt', 'update_ask')
+    or (kind = 'supervise' and payload->>'op' = 'pause_stop')
+    or (kind = 'merge_forward' and payload->>'step' in ('hold', 'landed')))
+  and payload->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The state events one project still has queued that name the role of a running step or a claim
+-- of a role of the deployment.
+delete from outbox
+where kind = 'state_change' and exists (
+    select 1 from jsonb_array_elements(payload->'changes') as moved(change)
+    where moved.change->>'field' = 'stepRole'
+      or (moved.change->>'field' = 'claim'
+        and moved.change->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')))
+  and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+This block is the one source of its statements.
+`internal/store`'s `TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows of two projects, from the copy `internal/store/deployment_roles_way_back_extract.txt`, and reads each row of the project that rolls back as the release before this one reads it and each of the other project's as this release left it; `internal/textcheck`'s `TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+Each statement names the project, so a daemon of another project left on this release keeps its rows.
+
 #### Rolling back the release that names the variant on each step record
 
 This release adds no outbox kind and no migration.

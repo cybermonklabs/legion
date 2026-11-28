@@ -2620,9 +2620,11 @@ type MergeForwardMessage struct {
 	// which the review tells what the reviewer decided beside the architect (Tells): no phase names
 	// it, so the landing writes the worker it addressed into the row (workflow's
 	// mergeForwardLanded). Every other row carries none, and a review at step written before the key
-	// carries none either and tells the architect alone. Only an issue whose plan names a role of
-	// the deployment stands at step, and the rollback of the deployment-roles release finishes or
-	// stops each such issue first, so no release before the key reads a row that carries it.
+	// carries none either and tells the architect alone. A release before the key refuses a row that
+	// carries it (DecodeOutboxPayload, DisallowUnknownFields), and finishing or stopping the issue
+	// does not take a queued review back, so the rollback of the deployment-roles release takes the
+	// key off each queued row, leaving a review that tells the architect alone (docs/kubernetes.md,
+	// "Rolling back the release whose deployment defines roles").
 	Worker claim.Role `json:"worker,omitempty"`
 }
 
