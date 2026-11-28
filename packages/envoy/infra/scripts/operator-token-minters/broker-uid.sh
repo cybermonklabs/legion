@@ -61,7 +61,7 @@ if [ -n "$BROKER_WORKLOAD" ]; then
 fi
 
 # BROKER_UID_UNREAD: why a member by UID equal to the broker's in every part read cannot be told to
-# be it (broker_uid's note): the UID, the number or both not read. BROKER_UID_MEMBER: the broker's
+# be it (uid_note's reason): the UID, the number or both not read. BROKER_UID_MEMBER: the broker's
 # member by UID, once both are read, which then satisfies the broker check's witness as its name
 # member does (CHECK_WITNESS[broker], the two joined by $US). BROKER_NOTE: the broker check's PASS
 # note, naming the members it allows, or why the one by UID is not known.

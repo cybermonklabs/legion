@@ -346,9 +346,6 @@ if row fd; then
 fi
 
 # --- (fj) Who can become a credited grant's holder reaches the residual too, and is named. ---
-# The comment-delivery account's resource, whose minters the check reads once its credited exec
-# carries the residual.
-readonly comment_delivery_res="//iam.googleapis.com/projects/$project/serviceAccounts/$comment_delivery"
 residual_chain_row() {
   local want
   fence_world

@@ -77,8 +77,9 @@ fi
 
 # iam_verdict CHECK MEMBER ROLE ATTACHED HOW: sets VERDICT to ok (allowed), skip (a group judged by
 # its members), finding, or unknown (on the broker check, a member by UID that may be the broker's
-# ServiceAccount, which the run cannot tell: broker_uid), with NOTE beside a finding, and for unknown
-# the end of its line (uid_note). Each caller branches on all four, so unknown is never allowed.
+# ServiceAccount, which the run cannot tell: broker_uid_verdict), with NOTE beside a finding, and
+# for unknown the end of its line (uid_note). Each caller branches on all four, so unknown is never
+# allowed.
 # ATTACHED is the resource the binding is made on; HOW is `expanded` for a group the analysis lists
 # the members of, `code` for a member a preview declares (its group, if any, is the live steps' to
 # expand) or empty. On every other check a member by UID, the broker's too, is judged as any member
@@ -107,22 +108,30 @@ iam_verdict() {
       if [ -n "$BROKER_WI_MEMBER" ] && [ "$member" = "$BROKER_WI_MEMBER" ]; then
         VERDICT=ok
       else
-        broker_uid "$member"
-        case "$BROKER_UID_MATCH" in
-          yes) VERDICT=ok ;;
-          unread) VERDICT=unknown; uid_note "$member" ;;
-        esac
+        broker_uid_verdict "$member" || true
       fi
       ;;
     signing) if [ "$member" = "serviceAccount:$GSA" ]; then VERDICT=ok; fi ;;
     dm) NOTE="$NOTE, by which Deployment Manager creates a deployment's resources as the project's Google APIs service agent, which holds roles/editor there" ;;
   esac
 }
+# broker_uid_verdict MEMBER: whether MEMBER is the broker's member by UID (broker_uid): sets VERDICT
+# to ok when it is, or to unknown with NOTE (uid_note) when that cannot be told; returns 1, setting
+# neither, when MEMBER is no member by UID or names another object. The broker check's verdict
+# (iam_verdict) and a chain's link from a member by UID to --broker-account (live_iam) both ask it.
+broker_uid_verdict() {
+  broker_uid "$1"
+  case "$BROKER_UID_MATCH" in
+    yes) VERDICT=ok ;;
+    unread) VERDICT=unknown; uid_note "$1" ;;
+    *) return 1 ;;
+  esac
+}
 # uid_note MEMBER: sets NOTE to the end of the UNKNOWN line of a holder MEMBER that broker_uid read
 # as unread, after the finding's sentence: whether MEMBER names the broker's ServiceAccount by its
-# UID cannot be told, and why. The member and the right are in the line, so two such holders never
-# fold into one UNKNOWN.
-uid_note() { NOTE=", and whether $1 names the broker's ServiceAccount $BROKER_WORKLOAD by its UID cannot be told: $BROKER_UID_NOTE"; }
+# UID cannot be told, and why (BROKER_UID_UNREAD, broker-uid.sh). The member and the right are in
+# the line, so two such holders never fold into one UNKNOWN.
+uid_note() { NOTE=", and whether $1 names the broker's ServiceAccount $BROKER_WORKLOAD by its UID cannot be told: $BROKER_UID_UNREAD"; }
 # held_text CHECK PERMISSIONS_CSV: the check's permissions among PERMISSIONS, in the check's order.
 held_text() {
   local permission out=""

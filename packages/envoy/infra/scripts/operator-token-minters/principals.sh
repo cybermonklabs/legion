@@ -61,11 +61,11 @@ UID_MEMBER_FORM='^principal://iam\.googleapis\.com/projects/([^/]+)/locations/gl
 # UID), no (no --broker-workload, or a part the run read differs: the pool is not
 # $POOL_PROJECT.svc.id.goog, or the UID or the number is another, so MEMBER names another object), yes
 # (the UID and the number read, and every part equal) or unread (every part read equal, and the UID
-# or the number not read), and BROKER_UID_NOTE to why the last cannot be told. The broker check's
-# verdict (iam_verdict) and a chain's link from a member by UID to --broker-account (live_iam) both
-# ask it, so the rule is written here alone.
+# or the number not read, as BROKER_UID_UNREAD says). The broker check's verdict (iam_verdict) and a
+# chain's link from a member by UID to --broker-account (live_iam) both ask it, through
+# broker_uid_verdict (checks.sh), so the rule is written here alone.
 broker_uid() {
-  BROKER_UID_MATCH=none BROKER_UID_NOTE=""
+  BROKER_UID_MATCH=none
   [[ "$1" =~ $UID_MEMBER_FORM ]] || return 0
   BROKER_UID_MATCH=no
   [ -n "$BROKER_WORKLOAD" ] && [ "${BASH_REMATCH[2]}" = "$POOL_PROJECT.svc.id.goog" ] || return 0
@@ -74,7 +74,7 @@ broker_uid() {
   if [ -n "$BROKER_UID" ] && [ -n "$POOL_NUMBER" ]; then
     BROKER_UID_MATCH=yes
   else
-    BROKER_UID_MATCH=unread BROKER_UID_NOTE="$BROKER_UID_UNREAD"
+    BROKER_UID_MATCH=unread
   fi
 }
 

@@ -3,7 +3,7 @@
 # account holder through any number of service accounts, and one `error` for an answer that cannot
 # be read as complete. $wi, $gsa, $bwi and $broker name the designed links, as analyze says; a chain
 # whose outermost link is a member by UID ($uid_form, principals.sh's UID_MEMBER_FORM) acting as
-# $broker is `broker-uid`, which live_iam judges with broker_uid, deciding nothing here.
+# $broker is `broker-uid`, which live_iam judges with broker_uid_verdict, deciding nothing here.
 include "rec";
       def sa_email: if test("^serviceAccount:[^@\\[]+@") then sub("^serviceAccount:"; "") else empty end;
       if (.mainAnalysis | type) != "object" then ["error", "the answer holds no mainAnalysis"] | rec

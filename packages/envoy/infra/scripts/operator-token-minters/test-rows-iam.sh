@@ -417,7 +417,6 @@ if row bn; then
   base_world
   grade_member
   cluster_admin grade-cluster "$(user_subject "$grade_ci")"
-  grade_ci_res="//iam.googleapis.com/projects/example-grade/serviceAccounts/$grade_ci"
   iam "$grade_ci_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$worker_gsa"
   run
   want_status 1 "an agent's account that may mint grade-ci's token"
@@ -478,7 +477,6 @@ if row cd; then
   base_world
   grade_member
   cluster_admin grade-cluster "$(user_subject "$grade_ci")"
-  grade_ci_res="//iam.googleapis.com/projects/example-grade/serviceAccounts/$grade_ci"
   add_sa operator-cluster ci runner
   iam "$grade_ci_res" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[ci/runner]"
   subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" ci ""
@@ -897,12 +895,12 @@ if row uo; then
   passed "(uo) the broker's UID is read on --cluster's cluster alone: its pair on another cluster under another UID is that cluster's finding, and its member by UID is allowed"
 fi
 
-# --- (ut) The member by UID names the pool's project and number, not --project's: Wp, the run with
+# --- (ut) The member by UID names the pool's project and number, not --project's: the run with
 # --pool-project example-pool (number 333333333333, no cluster of its own), the operator's and the
 # broker's accounts bound to the pool's name members, and relay@ (a User) able to create pods in
 # envoy-operator, so its minters are read too. The pool's other steps read UNKNOWN (its fleet is not
 # listed, as row r shows), so each item holds the lines that name its member, the broker step's and,
-# for items 4 and 5, the follow's. ---
+# for the follow-* items, the follow's. ---
 uid_np="serviceAccount:example-pool.svc.id.goog[secrets-broker/secrets-broker]"
 uid_pool_row() {
   local member become up
@@ -918,7 +916,7 @@ uid_pool_row() {
     pool) member="$up" ;;
     project-number) member="$(uid_member "$broker_uid" example-pool.svc.id.goog "$number")" ;;
     project-pool) member="$uid_U" ;;
-    # Items 4 and 5, the follow's: ci/runner (its UID planted), which legion/worker may create pods
+    # The follow-* items: ci/runner (its UID planted), which legion/worker may create pods
     # to become, named by UID on relay@'s account by the pool's number and by --project's.
     follow-pool) member="$(uid_member "$ci_uid" example-pool.svc.id.goog 333333333333)" ;;
     follow-project) member="$(uid_member "$ci_uid" example-pool.svc.id.goog "$number")" ;;
@@ -976,8 +974,6 @@ fi
 # uid_N on its workload binding), residual (both hold Token Creator on comment-delivery's account in
 # the broker's pod fence's world), completeness (the steps a clean run passes are the checks listed)
 # and code (a preview gives both roles/owner on the project). ---
-uid_grade_ci_res="//iam.googleapis.com/projects/example-grade/serviceAccounts/$grade_ci"
-uid_comment_delivery_res="//iam.googleapis.com/projects/$project/serviceAccounts/$comment_delivery"
 uid_minter_perms="iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.actAs, iam.serviceAccounts.implicitDelegation, iam.serviceAccountKeys.create, iam.serviceAccounts.setIamPolicy"
 uid_owner_tail=" through roles/owner, granted at $org_res"
 uid_checks=(
@@ -992,7 +988,7 @@ uid_checks=(
   "fleet|live: who can register a cluster to, or write namespaces and RBAC on, the fleet of project $project|gkehub.memberships.create, gkehub.memberships.update| on $project_res$uid_owner_tail"
   "ancestor:organizations/$org|live: who can set IAM on organizations/$org|resourcemanager.organizations.setIamPolicy, iam.roles.update| on $org_res$uid_owner_tail"
   "gke:example-grade||container.namespaces.create, container.namespaces.update, | on $grade_res$uid_owner_tail"
-  "rbac-account:$grade_ci||$uid_minter_perms| on $uid_grade_ci_res$uid_owner_tail"
+  "rbac-account:$grade_ci||$uid_minter_perms| on $grade_ci_res$uid_owner_tail"
 )
 # uid_owner_lines WHAT PRINCIPAL [SKIP]: PRINCIPAL has a FINDING on each check uid_checks lists but
 # SKIP, found by the start and the end of its right.
@@ -1036,11 +1032,11 @@ uid_inventory_row() {
     residual)
       fence_world
       sa_uid operator-cluster dispatch envoy-broker "$broker_uid"
-      iam "$uid_comment_delivery_res" roles/iam.serviceAccountTokenCreator "$fence_wi_member" "$uid_U"
+      iam "$comment_delivery_res" roles/iam.serviceAccountTokenCreator "$fence_wi_member" "$uid_U"
       fence_run
       ! has_prefix "UNKNOWN run: " || fail "the broker's members minting comment-delivery's token: the run stopped"
       uid_parity "the broker's members minting comment-delivery's token" ALLOWANCE "$fence_wi_member" "$uid_U" \
-        " on $uid_comment_delivery_res through roles/iam.serviceAccountTokenCreator, granted at $uid_comment_delivery_res, so it can act as serviceAccount:$comment_delivery, "
+        " on $comment_delivery_res through roles/iam.serviceAccountTokenCreator, granted at $comment_delivery_res, so it can act as serviceAccount:$comment_delivery, "
       ;;
     completeness)
       uid_world
@@ -1079,7 +1075,7 @@ if row um; then
 fi
 
 # --- (un), (va) and (vc) to (vf): the follow of a ServiceAccount of the pool named by its UID. Each
-# item runs in W1 (uid_follow_world: row cd's world with ci/runner's UID, ci_uid, planted on the
+# item runs in uid_follow_world's world (row cd's world with ci/runner's UID, ci_uid, planted on the
 # operator's cluster) or, for (un), in that world with the broker's ServiceAccount in ci/runner's
 # place, with a member M holding roles/iam.workloadIdentityUser on grade-ci's account, an RBAC
 # finding's. uid_follow_run keeps each item's run; the row then holds each item, and an item by UID
@@ -1099,8 +1095,9 @@ uid_other_cluster="$project/us-east1/other-cluster"
 # and so acts as grade-ci, on CLUSTER (as a finding names a cluster; the operator's when empty, whose
 # lines name none).
 uid_become() { printf '%s\n' ", so it can become system:serviceaccount:$1, which can act as $grade_ci through Workload Identity${2:+ on cluster $2}"; }
-# The name member's follow lines in W1, as row cd prints them: legion/worker's on the operator's
-# cluster (Wf) and, once other-cluster holds ci/runner, apps/deployer's there (Df).
+# The name member's follow lines in uid_follow_world's world, as row cd prints them: legion/worker's
+# on the operator's cluster (uid_wf) and, once other-cluster holds ci/runner, apps/deployer's there
+# (uid_df).
 uid_wf="FINDING system:serviceaccount:legion:worker: create pods in ci$(uid_become ci:runner)"
 uid_df="FINDING system:serviceaccount:apps:deployer: create pods in ci$(uid_become ci:runner "$uid_other_cluster")"
 # uid_follow_unknown MEMBER REASON: the UNKNOWN grade-ci's minters step prints for MEMBER, a member by
@@ -1148,7 +1145,7 @@ uid_follow_run() {
       unbind "$project_res" roles/container.serviceAgent
       ;;
   esac
-  iam "$uid_grade_ci_res" roles/iam.workloadIdentityUser "$(uid_follow_member "$1")"
+  iam "$grade_ci_res" roles/iam.workloadIdentityUser "$(uid_follow_member "$1")"
   run
   printf '%s\n' "$status" >"$temporary_dir/uid-follow-$1.status"
   printf '%s\n' "$output" >"$temporary_dir/uid-follow-$1.out"

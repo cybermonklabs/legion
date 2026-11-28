@@ -53,7 +53,7 @@ fi
 # operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
 # token: its outermost principal is the account it acts as, already judged, so it is no finding.
 # A member by UID acting as --broker-account is designed when it is the broker's member by UID,
-# which live_iam asks broker_uid.
+# which live_iam asks broker_uid_verdict.
 analyze() {
   ANALYZE_ERROR=""
   if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
@@ -135,16 +135,12 @@ live_iam() {
       # The outermost impersonator, judged as a holder of what the holder holds; a designed link's
       # principal is the account it acts as, already judged. A member by UID acting as
       # --broker-account (broker-uid) is designed when it is the broker's member by UID, UNKNOWN
-      # when that cannot be told, and else judged as any impersonator is.
+      # when that cannot be told (broker_uid_verdict), and else judged as any impersonator is.
       chains=$((chains + 1))
       [ "$designed" != designed ] || continue
-      BROKER_UID_MATCH=none
-      [ "$designed" != broker-uid ] || broker_uid "$identity"
-      case "$BROKER_UID_MATCH" in
-        yes) continue ;;
-        unread) VERDICT=unknown; uid_note "$identity" ;;
-        *) iam_verdict "$check" "$identity" "$role" "$attached" "$how" ;;
-      esac
+      if [ "$designed" != broker-uid ] || ! broker_uid_verdict "$identity"; then
+        iam_verdict "$check" "$identity" "$role" "$attached" "$how"
+      fi
       right="on $resource: $text, granted at $hattached"
     else
       iam_verdict "$check" "$identity" "$role" "$attached" "$how"

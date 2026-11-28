@@ -98,6 +98,7 @@ readonly broker=secrets-broker@example-project.iam.gserviceaccount.com
 readonly worker_gsa=worker@example-project.iam.gserviceaccount.com
 readonly ci_gsa=ci-runner@example-project.iam.gserviceaccount.com
 readonly grade_ci=grade-ci@example-grade.iam.gserviceaccount.com
+readonly grade_ci_res="//iam.googleapis.com/projects/example-grade/serviceAccounts/$grade_ci"
 readonly grade_res="//cloudresourcemanager.googleapis.com/projects/example-grade"
 readonly applier=applier@example-project.iam.gserviceaccount.com
 readonly applier_res="//iam.googleapis.com/projects/example-project/serviceAccounts/applier@example-project.iam.gserviceaccount.com"
@@ -229,9 +230,10 @@ refuse_live() {
   : >"$world/refuse-analyze"
 }
 # The broker's pod fence's world (broker-fence.sh), which test-rows-fence.sh's rows and the report
-# fixture's (z) run in: comment-delivery's Google account, the broker's Workload Identity member,
-# and the contract the check under test carries.
+# fixture's (z) run in: comment-delivery's Google account and its resource, the broker's Workload
+# Identity member, and the contract the check under test carries.
 readonly comment_delivery=comment-delivery@example-project.iam.gserviceaccount.com
+readonly comment_delivery_res="//iam.googleapis.com/projects/$project/serviceAccounts/$comment_delivery"
 readonly fence_wi_member="serviceAccount:example-project.svc.id.goog[dispatch/envoy-broker]"
 fence_contract="$(dirname "$check")/operator-token-minters/broker-fence.json"
 readonly fence_contract
