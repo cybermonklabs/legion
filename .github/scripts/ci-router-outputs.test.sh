@@ -670,19 +670,20 @@ check "none of them runs" "$(is "$(running "$got")" "")"
 echo "case: an approval's run evaluates every output"
 # The comparisons below diff two lists; two empty lists would compare equal, so this reads the
 # review run's list on its own first.
+review_lines=$(outputs --event pull_request_review | wc -l)
 check "as many outputs as a merge group's" \
-  "$(is "$(outputs --event pull_request_review | wc -l)" "$(outputs --event merge_group | wc -l)")"
-check "and more than fifty" "$(is "$(($(outputs --event pull_request_review | wc -l) > 50))" 1)"
+  "$(is "$review_lines" "$(outputs --event merge_group | wc -l)")"
+check "and more than fifty" "$(is "$((review_lines > 50))" 1)"
 
 # verdicts_half <0|1>: a --verdict argument for every filter of the computed filters, every
 # other one true (starting at the first for 0, the second for 1), so the comparisons below cover
 # each filter both ways.
 verdicts_half() {
   local at=0 name
-  while read -r name; do
+  for name in "${names[@]}"; do
     if [ $(((at + $1) % 2)) -eq 0 ]; then echo "--verdict $name=true"; else echo "--verdict $name=false"; fi
     at=$((at + 1))
-  done < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' "$filters")
+  done
 }
 # review_differs <workflow> <argument>...: each output a pull_request_review run, the event
 # .github/workflows/large-pr-lanes.yaml calls ci.yaml under, holds differently from a merge
@@ -696,7 +697,7 @@ review_differs() {
 
 echo "case: an approval's run selects, value for value, what a merge group selects"
 # .github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head: the
-# approval-time run of a large pull request is this file called on pull_request_review, and it
+# approval-time run of a large pull request is ci.yaml called on pull_request_review, and it
 # must run exactly the slow suites the change's paths select, beside every fast job.
 check "every filter yes" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" --verdicts true)" "")"
 check "every filter no" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" --verdicts false)" "")"

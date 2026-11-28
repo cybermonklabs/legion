@@ -107,6 +107,7 @@ scripts=$(dirname "$(readlink -f "$0")")
 cd "$(dirname "$0")/../.."
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" WORKFLOW_CHECK_SCRIPTS="$scripts" python3 <<'PY'
+import copy
 import os
 import re
 import subprocess
@@ -145,6 +146,7 @@ targets = (
 
 problems: list[str] = []
 nodes: dict[Path, tuple[object, object]] = {}
+documents: dict[Path, object] = {}
 
 
 def escape_message(value: str) -> str:
@@ -193,6 +195,20 @@ def composed(path: Path) -> tuple[object, object]:
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
             nodes[path] = (None, error)
     return nodes[path]
+
+
+def loaded(path: Path) -> object:
+    """The file's document as yaml.safe_load builds it, constructed from composed()'s node tree
+    rather than read and parsed again, or None where there is no tree or no constructor takes one
+    of its tags. Cached beside that tree. The constructor rewrites the merge keys (`<<`) of the
+    tree it builds from, so it builds from a copy: every other rule reads the tree as written."""
+    if path not in documents:
+        node, _ = composed(path)
+        try:
+            documents[path] = None if node is None else yaml.SafeLoader("").construct_document(copy.deepcopy(node))
+        except yaml.YAMLError:
+            documents[path] = None
+    return documents[path]
 
 
 def mapping_get(node: object, key: str) -> object:
@@ -259,7 +275,7 @@ def granted(block: object) -> dict[str, int]:
     A scope written at no level GitHub takes is left out, so a caller is refused for it and a
     callee declares it not: this check holds nothing to a level it cannot read."""
     if isinstance(block, str):
-        level = {"read-all": 1, "write-all": 2}.get(block)
+        level = {"read-all": LEVELS["read"], "write-all": LEVELS["write"]}.get(block)
         return {} if level is None else {scope: level for scope in SCOPES}
     if isinstance(block, dict):
         return {str(scope): LEVELS[level] for scope, level in block.items() if isinstance(level, str) and level in LEVELS}
@@ -274,12 +290,10 @@ def check_call_permissions(path: Path, document: dict, jobs: dict) -> None:
         callee = local_callee(uses.strip()) if isinstance(uses, str) else None
         if callee is None or not callee.is_file():
             continue
-        try:
-            called = yaml.safe_load(callee.read_text())
-        except (OSError, UnicodeDecodeError, yaml.YAMLError):
-            continue  # that file's own read names it
-        # A callee that is no mapping (a file of comments alone loads as None, a list as a list)
-        # declares no scope; rule 3 lets such a file through, so it is read as declaring nothing.
+        # A callee that does not load is named by that file's own read. One that is no mapping (a
+        # file of comments alone loads as None, a list as a list) declares no scope; rule 3 lets
+        # such a file through, so it is read as declaring nothing.
+        called = loaded(callee)
         if not isinstance(called, dict):
             continue
         need: dict[str, int] = {}
@@ -326,7 +340,7 @@ def condition_text(value: object) -> str:
     text = str(value).strip()
     if text.startswith("${{") and text.endswith("}}"):
         text = text[3:-2]
-    return " ".join(text.split())
+    return one_line(text)
 
 
 def unquote(literal: str) -> str:
@@ -340,6 +354,7 @@ def check_one_condition(path: Path, jobs: dict) -> None:
     is the condition every job of the file that waits for nothing must write, whether or not its
     name agrees with it, so a drift of the name is reported beside a drift of the others."""
     held = holder = None
+    verdict_named = False
     for job_id, job in jobs.items():
         if not isinstance(job, dict):
             continue
@@ -368,6 +383,8 @@ def check_one_condition(path: Path, jobs: dict) -> None:
         check = unquote(match.group("check"))
         if check not in REQUIRED_CHECKS:
             continue  # it yields the check only where its condition fails (the header's rule 9)
+        if check == CI_VERDICT:
+            verdict_named = True
         wanted = condition_text(match.group("condition"))
         if wanted != own:
             problem(path, f"{path}: job '{job_id}' is named {check}, a check main's ruleset "
@@ -379,7 +396,7 @@ def check_one_condition(path: Path, jobs: dict) -> None:
         if holder is None:
             held, holder = own, str(job_id)
     calls_ci = any(isinstance(job, dict) and str(job.get("uses", "")).strip() == CI_WORKFLOW for job in jobs.values())
-    if calls_ci and holder is None:
+    if calls_ci and not verdict_named:
         problem(path, f"{path}: a job of this workflow calls {CI_WORKFLOW[2:]}, whose own verdict is "
                       f"posted as `<job> / {CI_VERDICT}`, which main's ruleset does not read, and no "
                       f"job of this workflow is named for {CI_VERDICT}, so nothing holds the pull "
@@ -726,12 +743,9 @@ for path in targets:
             f"single workflow file, counting every tree of nested calls, and a file over that cap "
             f"starts no run." + limits(path),
         )
-    # Rules 8 and 9 read the file's jobs as values, loaded once here; the file composed above, so a
+    # Rules 8 and 9 read the file's jobs as values, loaded once; the file composed above, so a
     # load that still fails (a tag no constructor takes) leaves them nothing to read.
-    try:
-        document = yaml.safe_load(path.read_text())
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        document = None
+    document = loaded(path)
     jobs = document.get("jobs") if isinstance(document, dict) else None
     if isinstance(jobs, dict):
         check_call_permissions(path, document, jobs)

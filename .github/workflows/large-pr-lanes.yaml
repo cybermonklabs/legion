@@ -21,9 +21,8 @@ name: Large PR lanes
 # lets any signed-in account approve one of its pull requests; without this term any account could
 # start these runs, a three-hour hold and every slow suite, as often as it liked. An App's
 # approvals carry author_association CONTRIBUTOR, as does any account with one merged commit, so
-# the association alone cannot admit the reviewer Legion uses (167 approvals by
-# legion-reviewer[bot] on pull requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person
-# MEMBER; review 6042186091 on #5346 reads CONTRIBUTOR too).
+# the association alone cannot admit the reviewer Legion uses
+# (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
 # That condition is written three times: in ci-ok's `name:`, in its `if:` and in `lead`'s `if:`.
 # The three must be one text, and rule 9 of .github/scripts/check-workflow-files.sh holds them
 # equal: a `lead` that admitted an approval ci-ok did not would run every suite with no ci-ok
@@ -44,13 +43,13 @@ name: Large PR lanes
 #
 # No concurrency group, on a job or the run: no approval-time run is ever cancelled. A cancelled
 # or failed ci-ok an older approval's run left on a head stays beside the newer run's, and GitHub's
-# rollup reads FAILURE: test pull request #5347 at 3a30f85f12a (ci-ok check runs 138437935113
-# cancelled, 138438707923 success) and at 9749b52fcd2 (138468630340 failure, 138469054547
-# success). A run whose verdict was a flake is re-run once it has ended (`gh run rerun <run>
-# --failed`; GitHub refuses a run still running), which replaces its check runs. A run that
-# followed it does not take that new verdict: it concluded on the first verdict it saw. So re-run
-# the run that ran the suites first, then each run that followed it, oldest first; each failure's
-# message prints those commands in that order.
+# rollup reads FAILURE
+# (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+# A run whose verdict was a flake is re-run once it has ended (`gh run rerun <run> --failed`;
+# GitHub refuses a run still running), which replaces its check runs. A run that followed it does
+# not take that new verdict: it concluded on the first verdict it saw. So re-run the run that ran
+# the suites first, then each run that followed it, oldest first; each failure's message prints
+# those commands in that order.
 on:
   pull_request_review:
     types: [submitted]

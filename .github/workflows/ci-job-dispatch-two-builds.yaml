@@ -367,11 +367,11 @@ jobs:
   # A row that fails only in this job holds a version assumption it never stated: that is a finding
   # for the row's owning tree, which fixes the row, and no ground for a skip.
   #
-  # A merge-group run runs it, and so does the approval-time run of a large pull request
-  # (`pull_request_review`, .github/workflows/large-pr-lanes.yaml), which runs what the queue
-  # would, as a job of its own beside the one above, so the group fails before the merge, its
-  # wall time does not grow, and a pull request's run (`full-ci`) or a dispatched run costs what it
-  # did. The `if:` reads the caller's event: a called workflow's `github` context is its caller's.
+  # A merge-group run runs it, as a job of its own beside the one above, so the group fails before
+  # the merge and its wall time does not grow; so does the approval-time run of a large pull request
+  # (`pull_request_review`, .github/workflows/large-pr-lanes.yaml), which runs what the queue would.
+  # A pull request's run (`full-ci`) or a dispatched run costs what it did. The `if:` reads the
+  # caller's event: a called workflow's `github` context is its caller's.
   dispatch-two-builds-same:
     if: (github.event_name == 'merge_group' || github.event_name == 'pull_request_review') && inputs.dispatch_two_builds_go == 'true'
     runs-on: ubuntu-24.04

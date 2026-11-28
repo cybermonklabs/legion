@@ -18,9 +18,12 @@
 #          additions, deletions or changed_files) and the workflow's jobs must be decided from the
 #          event alone, before any runner starts: see `hold`. The size and the labels are read
 #          from the pull_request event's payload (GITHUB_EVENT_PATH), and from the pull request
-#          itself only where the payload leaves a size out. A fork's pull request is passed over:
-#          its token cannot write a label, and its change reaches the queue only once a maintainer
-#          takes the branch into this repository, where it is labelled at the next push.
+#          itself only where the payload leaves a size out. large-pr-label.yaml's job `if:`
+#          compares those same payload fields, a missing one as 0, so a payload that leaves every
+#          size out reaches that read only for a pull request that already carries the label. A
+#          fork's pull request is passed over: its token cannot write a label, and its change
+#          reaches the queue only once a maintainer takes the branch into this repository, where it
+#          is labelled at the next push.
 #
 #   lead   the `lead` job of large-pr-lanes.yaml: decides whether this approval runs the suites
 #          (`run=true` in GITHUB_OUTPUT) or follows the approval-time run already at this head
@@ -77,6 +80,7 @@ source "$script_dir/gh-read.sh"
 LABEL='large-pr'
 LARGE_FILES=100
 LARGE_LINES=10000
+WORKFLOW_PATH='.github/workflows/large-pr-lanes.yaml'
 # The hold's three settings, read once: how long it sleeps between reads, how many reads in a row
 # of a run with every job ended and no verdict fail it, and how long after `lead` ended it waits
 # for the caller to list a job. `lead`'s warning quotes the last.
@@ -166,7 +170,7 @@ earlier_runs() {
     --jq ".workflow_runs[] | select(.path == \"$WORKFLOW_PATH\" and .id < $GITHUB_RUN_ID) | .id") || return 1
   while read -r id; do
     [ -n "$id" ] || continue
-    state=$(gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100" \
+    state=$(gh_read gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100" \
       --jq '.jobs[] | select(.name == "ci-ok") | "\(.status) \(.conclusion // "-")"') || return 1
     echo "$id $state"
   done < <(sort -n <<<"$runs")
@@ -293,7 +297,7 @@ hold_caller() {
 # hold_follow: `lead` chose to follow the approval-time run already at this head, so this job
 # concludes as that run's ci-ok does. The run is chosen once, by to_follow, and kept.
 hold_follow() {
-  local followed='' rows verdict status conclusion url
+  local followed rows jobs status conclusion url
   until rows=$(earlier_runs); do
     echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made; reading again in $HOLD_POLL s"
     sleep "$HOLD_POLL"
@@ -305,8 +309,8 @@ hold_follow() {
   fi
   echo "following run $followed, the approval-time run at $HEAD_SHA"
   while true; do
-    if verdict=$(read_jobs "$followed"); then
-      IFS=$'\t' read -r _ status conclusion _ url < <(awk -F'\t' '$1 == "ci-ok"' <<<"$verdict") || status=''
+    if jobs=$(read_jobs "$followed"); then
+      IFS=$'\t' read -r _ status conclusion _ url < <(awk -F'\t' '$1 == "ci-ok"' <<<"$jobs") || status=''
       if [ "$status" = completed ]; then
         conclude "the ci-ok of run $followed" "$conclusion" "$url" "the approval-time run at this head that this approval follows"
         return
@@ -325,7 +329,7 @@ hold() {
   echo "waiting for this approval's verdict at $HEAD_SHA (attempt $GITHUB_RUN_ATTEMPT)"
   while true; do
     if jobs=$(read_jobs "$GITHUB_RUN_ID"); then
-      if [ "$(caller_rows "$jobs" 1)" -gt 0 ] || [ -n "$(awk -F'\t' -v want="$CALLER / ci-ok" '$1 == want' <<<"$jobs")" ]; then
+      if [ -n "$(awk -F'\t' -v caller="$CALLER / " 'index($1, caller) == 1' <<<"$jobs")" ]; then
         hold_caller "$jobs"
         return
       fi
@@ -348,7 +352,6 @@ hold() {
   done
 }
 
-WORKFLOW_PATH='.github/workflows/large-pr-lanes.yaml'
 mode=${1:-}
 case $mode in
   label) label ;;

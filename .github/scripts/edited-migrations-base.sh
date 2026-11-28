@@ -4,8 +4,9 @@
 # may have run is edited without its replaces line"), fetches it into the checkout, and prints
 # its sha. actions/checkout leaves the tree one commit deep, and the check reads the base's files
 # with git, so the base has to be fetched before the check runs.
-# ci.yaml's changes job runs it too, on a pull request and on a dispatch of a branch that selects
-# by its diff, and hands the base it prints to the filter generation as CI_FILTERS_BASE
+# ci.yaml's changes job runs it too, on a pull request, on the approval-time run of a large pull
+# request (pull_request_review) and on a dispatch of a branch that selects by its diff, and hands
+# the base it prints to the filter generation as CI_FILTERS_BASE
 # (.github/ci-notes/ci.md#the-commit-a-change-is-measured-against).
 #
 # The base is the commit the run's tree lands onto:

@@ -1439,7 +1439,8 @@ and it reports under names of its own
 workflow_call is .github/workflows/large-pr-lanes.yaml's: it calls this file on an approval's
 pull_request_review event, which the called run keeps as its own event, so `changes` selects as
 on a merge group (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
-It passes no input, and the one input this file reads, `migration-base`, is a dispatch's.
+It passes no input, and the two inputs this file reads, `migration-base` and `every-job`, are a
+dispatch's.
 
 ## What a dispatched run of a branch selects, and when to ask for every job
 
@@ -1520,7 +1521,7 @@ checks out the same merge commit
 merge commit the run checked out, which is main as GitHub merged the branch into it; on a
 dispatch of a branch, its merge base with main
 (#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job). The step "Find the
-commit this run's change is measured against" finds the last three with
+commit this run's change is measured against" finds the last two with
 .github/scripts/edited-migrations-base.sh, which picks the base of envoy-go-build's migration
 check by the same rule.
 
@@ -2059,7 +2060,7 @@ defect and the costliest to rebuild behind. The two lines are from the 360 pull 
 from 2026-11-21: changed files p95 98 and p99 340, changed lines p95 8,702, so about 7 pull
 requests a day cross one of them.
 
-Three pieces make it:
+Two workflows make it:
 
 - .github/workflows/large-pr-label.yaml runs `.github/scripts/large-pr-lanes.sh label` at every
   push of a pull request that may be large: its job's `if:` admits 100 changed files or more,
@@ -2086,8 +2087,9 @@ Three pieces make it:
   every slow suite with this repository's secrets, as often as it liked. An App's approvals carry
   author_association CONTRIBUTOR, as does any account with one merged commit, so the association
   alone cannot admit the reviewer Legion uses (167 approvals by legion-reviewer[bot] on pull
-  requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person MEMBER; the hold step prints
-  the type and association of the approval it runs for).
+  requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person MEMBER, and review
+  6042186091 on #5346 reads CONTRIBUTOR too; the hold step prints the type and association of the
+  approval it runs for).
   Every other review's run is decided by the `if:`s, from the event alone, before any runner
   starts, and leaves no check named ci-ok.
   - `lead` decides whether this approval runs the suites or follows the approval-time run
@@ -2133,10 +2135,18 @@ its `if:` the draft term alone, and it gates nothing (CI_OK_EXEMPT); the daemon 
 step of lint runs on a pull request and on a merge group (ci-job-lint.yaml), and
 dispatch-browser-pr and the dispatch-references preview on a pull request, so an approval's run
 skips all three, and each ran at the same head on that head's push run; worker-image runs on a
-pull request alone, so an approval's run skips it as
-a merge group does; cancel-started, ci-ok's two refusal steps and every ci-ok-report post are
-merge-group mechanics. The tree an approval's run tests is the head merged with its base as GitHub
-last merged it, not with the entries ahead of it in the queue.
+pull request alone, so an approval's run skips it as a merge group does; ci-ok's step "Refuse a
+draft pull request" runs on a draft's run alone, and an approval's run is of a pull request that
+is no draft, so it skips that step as a merge group does; cancel-started, ci-ok's steps "Refuse a
+re-run attempt of a merge-group run" and "Hold a failing verdict until this group is the front of
+the queue", and every ci-ok-report post are merge-group mechanics; ci-ok's step "Set every other
+ci-ok on this head to this job's conclusion" runs on an approval's run, as on a pull request's;
+and two payload reads take the pull request's values on an approval's run, where a merge group's
+take the group's: browser-image.yaml's BUILT_SHA
+(`github.event.pull_request.head.sha || github.sha`) builds the pull request's head, and
+ci-job-tool-fallback.yaml's checkout of the base checks out the pull request's `base.sha`. The
+tree an approval's run tests is the head merged with its base as GitHub last merged it, not with
+the entries ahead of it in the queue.
 
 What keeps the pull request out of the queue while the run is going, and what is not known. A
 required check of the pull request's own event that exists and is pending makes GitHub refuse

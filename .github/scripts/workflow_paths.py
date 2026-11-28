@@ -18,8 +18,9 @@ import yaml
 
 # Directories a walk never enters: version control and installed dependencies.
 SKIP_DIRS = {".git", ".jj", "node_modules", ".venv", "vendor"}
-# The checks main's ruleset requires, by check run name (.github/ci-notes/ci.md, the paragraph that
-# begins "Main's ruleset requires ci-ok and pr-title"): the one list every checker reads them from.
+# The checks main's ruleset requires, by check run name: the one list every checker reads them
+# from (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, the
+# sentence "Main's ruleset requires ci-ok and pr-title").
 REQUIRED_CHECKS = ("ci-ok", "pr-title")
 
 

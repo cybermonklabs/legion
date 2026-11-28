@@ -2352,7 +2352,7 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # either. pr-title needs no job, so it cannot read that output, and its name carries the event
 # alone: on a dispatch of main too it is `pr-title (dispatch)`, which main's ruleset does not read.
 # What keeps a skipped pr-title from posting a pass named pr-title is that its name is an
-# expression at all. REQUIRED_CHECKS, the names main's ruleset requires, is workflow_paths.py's.
+# expression at all.
 VERDICT_JOB = "ci-ok"
 REF_OUTPUT = "ref_is_main"
 REF_OUTPUT_VALUE = "${{ steps.ref.outputs.is_main }}"
