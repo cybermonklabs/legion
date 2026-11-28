@@ -1,13 +1,19 @@
 /** The reader's own texts a field keeps beside itself while it shows another person's: none. */
 export const NOTHING_KEPT: readonly string[] = [];
 
-/** A text a field wrote that no read of the server's has shown it yet, and whether the page said
- *  its write landed (`answered`): one that did is the server's text, and no write of the reader's
- *  still out. */
+/** A text a field wrote that no read of the server's has shown it yet, and what the page said of
+ *  its write (`answered`): `false` while it is out; `true` where it landed, so the text is the
+ *  server's, and no write of the reader's still out; `"unknown"` where it ended with no verdict of
+ *  Dispatch's - stopped, or refused after an attempt that went unanswered - so it may have landed,
+ *  or may land still, and is no write still out either. */
 export interface SentText {
   readonly text: string;
-  readonly landed: boolean;
+  readonly landed: boolean | "unknown";
 }
+
+/** What the page answers of a write of a field's text (`onSave`): whether it landed, or
+ *  `undefined` where it ended with no verdict of Dispatch's and may land still. */
+export type WriteAnswer = boolean | undefined;
 
 /** Where a field of a priority stands against the server's text. */
 export interface FieldStand {
@@ -16,7 +22,8 @@ export interface FieldStand {
   readonly base: string;
   /** The texts the field wrote that the server has not answered with yet, oldest first: the
    *  server's answer with one of them is the reader's own write coming back. A text whose write
-   *  ended without landing leaves it (`answered`): no answer brings it back. */
+   *  Dispatch refused leaves it (`answered`): no answer brings it back. One whose write ended with
+   *  no verdict stays, since it may land still. */
   readonly sent: readonly SentText[];
   /** The reader's own texts kept beside the field while it shows another person's
    *  (`ChangedMeanwhile`), newest first, none twice. */
@@ -47,19 +54,20 @@ function without(kept: readonly string[], text: string): readonly string[] {
  * is the one thing that moves that, and a write never does.
  *
  * - The answer to one of the field's own writes is the reader's text coming back: it answers
- *   that write and each one sent before it, and no later one. The field then compares the
- *   reader's text with the last write still out, so a write waiting for the typing to rest
- *   writes the reader's text again where it differs from that. With none out, it compares with
- *   the answer, unless the reader still holds the text it compared with: one that differs from
- *   the answer is the text of a write that ended without landing (refused, stopped or
- *   discarded), which no save writes again on its own, since the reader discarded it, or the
- *   shell's line holds it, with its Retry. Nothing is taken in, so the reader never sees their
- *   text undone while it travels.
+ *   that write and each one sent before it, and no later one. So is the text of a write of hers
+ *   that ended with no verdict and lands late, or landed unseen: it is hers, whatever a read
+ *   showed meanwhile. The field then compares the reader's text with the last write still out,
+ *   so a write waiting for the typing to rest writes the reader's text again where it differs
+ *   from that. With none out, it compares with the answer, unless the reader still holds the
+ *   text it compared with: one that differs from the answer is the text of a write that ended
+ *   without landing (refused, stopped or discarded), which no save writes again on its own,
+ *   since the reader discarded it, or the shell's line holds it, with its Retry. Nothing is taken
+ *   in, so the reader never sees their text undone while it travels.
  * - The text the field holds is no change: nothing is left to write. Nor is the text the field
  *   compares with, with no write of the field's out over it: the reader's typing over it is still
  *   theirs to write.
  * - Any other text is another person's, and is taken in. Where the reader holds typing not yet
- *   written, or a write of theirs is still out - one the page has not said landed - their text is
+ *   written, or a write of theirs is still out - one the page has not answered - their text is
  *   kept beside the field, ahead of any kept there already. One that landed was the server's text
  *   until theirs replaced it, as one a read had shown would have been.
  *
@@ -79,7 +87,7 @@ export function arrival(server: string, held: string, stand: FieldStand): Arriva
   if (server === held) return { base: server, kept, made: server, sent: [], take: false };
   // Here the reader holds typing not yet written over `base`: it began on `made`, which stays.
   if (server === stand.base) return { ...stand, kept, take: false };
-  const holding = held !== stand.base || stand.sent.some((one) => !one.landed);
+  const holding = held !== stand.base || stand.sent.some((one) => one.landed === false);
   return {
     base: server,
     kept: holding ? [held, ...without(kept, held)] : kept,
@@ -90,18 +98,20 @@ export function arrival(server: string, held: string, stand: FieldStand): Arriva
 }
 
 /** `sent` once the page answered the write that pushed `entry` - that very entry, never another of
- *  the same text: landed, the text stays until a read shows it, and is no write still out; any
- *  other way, it goes, since no answer of the server's brings it back. An entry `sent` no longer
- *  holds - a read answered it, or another person's text ended it - changes nothing. */
+ *  the same text: landed, the text stays until a read shows it, and is no write still out; ended
+ *  with no verdict (`undefined`), it stays the same way, since it may land still; refused, it
+ *  goes, since no answer of the server's brings it back. An entry `sent` no longer holds - a read
+ *  answered it, or another person's text ended it - changes nothing. */
 export function answered(
   sent: readonly SentText[],
   entry: SentText,
-  landed: boolean
+  landed: WriteAnswer
 ): readonly SentText[] {
   const at = sent.indexOf(entry);
   if (at === -1) return sent;
-  if (!landed) return [...sent.slice(0, at), ...sent.slice(at + 1)];
-  return sent.map((one, place) => (place === at ? { ...one, landed } : one));
+  if (landed === false) return [...sent.slice(0, at), ...sent.slice(at + 1)];
+  const state = landed ?? "unknown";
+  return sent.map((one, place) => (place === at ? { ...one, landed: state } : one));
 }
 
 /** The text Use my text of `text`, one of the reader's kept texts `kept`, is made on, where the

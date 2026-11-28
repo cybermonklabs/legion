@@ -18,7 +18,14 @@ import { createDoc, type EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { compiledBlockSchema } from "../doc/schema";
 import { watchPicturePath } from "../refs/reference-target";
-import { answered, arrival, NOTHING_KEPT, type SentText, usedOn } from "./field-arrival";
+import {
+  answered,
+  arrival,
+  NOTHING_KEPT,
+  type SentText,
+  usedOn,
+  type WriteAnswer,
+} from "./field-arrival";
 import { ChangedMeanwhile, SAVE_AFTER_MS } from "./InPlaceField";
 
 const NONE_WRITTEN = "No description is written.";
@@ -58,7 +65,8 @@ interface Held {
   from: string;
   /** The texts written that the server has not answered with yet, oldest first: its answer
    *  with one of them is the reader's own write coming back, not another person's text. The
-   *  page's answer marks one that landed, and takes out one that did not (`answered`). */
+   *  page's answer marks one that landed or ended with no verdict, and takes out one Dispatch
+   *  refused (`answered`). */
   sent: readonly SentText[];
   /** The write waiting for the typing to rest. */
   timer: number | undefined;
@@ -169,14 +177,16 @@ function redraw(
 
 /** Moves an open editor between the server's text as its markdown and the server's reading of
  *  it, as `latest` draws it now (`redraw`, and the component's own doc), once the writer is
- *  settled: no write of theirs is out, and none of their typing is unwritten. So the answer to a
- *  write of theirs comes back to the markdown it was written from, never to a reading drawn over
- *  it, and a reading is drawn over nothing they typed that is not written. The editor asks it
- *  again whenever one of those may have changed - the server's text or the form it is drawn in,
- *  the typing at rest, the editor or the page left, and a write of theirs ending without landing
- *  - so a move held back is made once the writer is settled. */
+ *  settled: no write of theirs waits for an answer, and none of their typing is unwritten. So the
+ *  answer to a write of theirs comes back to the markdown it was written from, never to a reading
+ *  drawn over it, and a reading is drawn over nothing they typed that is not written. A write
+ *  that ended with no verdict waits for none: no answer is coming. The editor asks it again
+ *  whenever one of those may have changed - the server's text or the form it is drawn in, the
+ *  typing at rest, the editor or the page left, and a write of theirs ending without landing - so
+ *  a move held back is made once the writer is settled. */
 function follow(held: Held, latest: Latest, fail: (failure: Failure) => void): void {
-  if (held.fromTree === (latest.reading !== undefined) || held.sent.length > 0) return;
+  if (held.fromTree === (latest.reading !== undefined)) return;
+  if (held.sent.some((one) => one.landed !== "unknown")) return;
   if (heldText(held) !== held.base) return;
   redraw(held, latest.description, latest.reading, fail);
 }
@@ -314,8 +324,9 @@ export function PriorityDescription({
    *  which the write names as the text it goes over (`expected`) unless a write of the page's own
    *  goes before it, made on `on`: the text the editor held as the edit began, or, for Use my text
    *  of a text whose own write is known, what that write was made on. Answers whether the write
-   *  landed: until it does, the editor counts the write as out (`sent`). */
-  onSave: (next: string, from: string, on: string) => Promise<boolean>;
+   *  landed, or `undefined` where it ended with no verdict and may land still (`WriteAnswer`):
+   *  until it lands, or comes back, the editor counts the write as its own (`sent`). */
+  onSave: (next: string, from: string, on: string) => Promise<WriteAnswer>;
 }): ReactNode {
   const root = useRef<HTMLDivElement>(null);
   const held = useRef<Held | undefined>(undefined);
@@ -344,14 +355,15 @@ export function PriorityDescription({
   const [editor, setEditor] = useState<EditorHandle | undefined>(undefined);
   // A text the editor could not take in, with the reason, until the server's text changes.
   const [failure, setFailure] = useState<Failure>();
-  // Each write the editor makes goes through the page (`onSave`), which answers whether that very
-  // write landed (`answered`): one that did not never comes back, so the editor waits for no
-  // answer with it, and moves to the form the server's text is drawn in where that waited on it
-  // (`follow`), while it is still the editor drawn.
+  // Each write the editor makes goes through the page (`onSave`), which answers that very write
+  // (`answered`): one Dispatch refused never comes back, so the editor waits for no answer with
+  // it, and moves to the form the server's text is drawn in where that waited on it (`follow`),
+  // while it is still the editor drawn; one that ended with no verdict may come back still, as
+  // the reader's own.
   const send = (current: Held, entry: SentText, on: string) => {
     void onSave(entry.text, current.from, on).then((landed) => {
       current.sent = answered(current.sent, entry, landed);
-      if (!landed && held.current === current) follow(current, latest.current, setFailure);
+      if (landed !== true && held.current === current) follow(current, latest.current, setFailure);
     });
   };
   const latest = useRef({ description, kept, reading, send, setKept, writes });
