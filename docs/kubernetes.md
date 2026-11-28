@@ -5530,7 +5530,7 @@ It prints each loader warning after that line too, and exits 0:
 What it does not do is what boot writes or runs: the state directory, secretsd's provider keys, the plugin gate and the image probe.
 
 The NATS nkey seed is optional, as on tmux:
-`nats_nkey_seed_file` (relative to `legion.yaml`'s directory), else `NATS_NKEY_SEED_FILE`, else `NATS_NKEY_SEED` in the daemon's environment, is the `legion-pane` user every pod connects as, and the user the daemon's own NATS connection authenticates as when it has no seed of its own (below).
+`nats_nkey_seed_file` (relative to `legion.yaml`'s directory), else `NATS_NKEY_SEED_FILE`, else `NATS_NKEY_SEED` in the daemon's environment, is the `legion-pane` user every pod connects as, and the user the daemon's own NATS connection authenticates as when it has neither a service token nor a seed of its own (below).
 A set source that is empty, missing, unreadable, blank, readable by more than its owner, or not an nkey user seed refuses boot, naming the key; a file that could not be read is named by the key and the system's reason, never by its path, and only a file that was opened is named by its path too.
 One exception: when root owns the file and the daemon is not root, its group may read it, since a daemon running as a non-root uid in a pod reads a mounted Secret
 — always root's — only through the pod's `fsGroup`.
@@ -5564,7 +5564,7 @@ The stored-message get reaches a deployment with the envoy-infra release that ca
 until then the daemon runs as before, except that a reconcile's holds wait for the poller, and the lag's oldest message is `unavailable`.
 The daemon's seed is read by the same rule and refusals as the pane seed, the group-readable mount included, and neither seed falls back to the other:
 an unusable daemon seed refuses boot even beside a good pane seed.
-Unset, the daemon connects as the pane seed, and with neither, with no credential.
+Unset, the daemon connects with its service token when one is set (the paragraph below), else as the pane seed, and with none of them, with no credential.
 Keep it out of the providers Secret, which every pod mounts:
 in-cluster, put it in a Secret of its own, mounted into the daemon's pod alone with `defaultMode: 0440` (0400 with no `fsGroup` for a daemon running as root, as above;
 on a host, a 0600 file the daemon's uid owns), and name that file in `nats_daemon_nkey_seed_file`.
@@ -5584,7 +5584,7 @@ connection closed` with its `error`.
 Reconnects never run out: the connection never drops a server from its pool for having failed too many times, so an outage mid-run shows as `NATS
 connection lost` and then, once NATS answers again, `NATS connection restored` — never a close — at nats.go's own default 2 s reconnect wait.
 A server that keeps refusing to reconnect for any reason short of the two shapes that do close it
-— an unrecognized server `-ERR`, or the same authorization error twice in a row (nats.go's own terminal-close rules)
+— an unrecognized server `-ERR`, or, for a seed or no credential, the same authorization error twice in a row (nats.go's own terminal-close rules)
 — never closes the connection and so never logs either of those two lines again:
 a repeating handshake failure, say a server that accepts the TCP connection but never completes the protocol handshake, retries silently behind the one `NATS connection lost` line.
 A separate warn, `NATS has not
@@ -5596,6 +5596,32 @@ transiently; waiting to run it again` with its `probe` (naming which:
 A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks no TLS version the daemon does, is an answer and not an outage, so it refuses the boot at once (`tlsalert.In`, `packages/daemon/internal/tlsalert`).
 So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot probe of Dispatch, the catch-up of the roots that run or wait on a person included, which stops rather than skip the root.
 The two NATS refusals hold for one `nats_urls` entry: with several, nats.go answers with the last server's error, so a refusal from an earlier server followed by a refused dial on the last one reads as no servers available, and the boot waits (the LEGION-580 limit below).
+
+The daemon's own NATS connection can present the daemon's projected ServiceAccount token in place of a seed, to a hub whose connections the secrets broker's NATS auth service admits:
+`nats_daemon_service_token_file` (relative to `legion.yaml`'s directory), else `NATS_DAEMON_SERVICE_TOKEN_FILE` in the daemon's environment (its path taken as given), names the token's file, and every connect then presents user `service` with that token as its password.
+Mount it into the daemon's pod as a projected ServiceAccount token whose `audience` is the broker's `BROKER_NATS_K8S_AUDIENCE`, with an `expirationSeconds` of at most 3600:
+the auth service refuses a token that lives longer than an hour from its issue (`longestServiceToken`, `packages/envoy/internal/cipher/natscallout/decide.go`: a token login's hour, beside a minute of clock skew).
+The broker lists the daemon's ServiceAccount under a `daemon/-/*` entry of `BROKER_NATS_SERVICES` (`daemon/-/*=system:serviceaccount:<namespace>:<name>`), which the auth service answers with the daemon's whole grant, the subjects above.
+No mode is held against the file, since the kubelet mounts a projected token 0644 unless its volume says otherwise.
+The daemon reads the file at boot, for the account its token names, and again at every connect and reconnect, so a reconnect presents the token the kubelet wrote last.
+The token is refused beside any setting of the daemon's own seed (`nats_daemon_nkey_seed_file`, `NATS_DAEMON_NKEY_SEED_FILE` or `NATS_DAEMON_NKEY_SEED`, a variable set but empty included) before any seed is read, the pane seed's file included, naming the setting that wins on each side:
+`nats_daemon_service_token_file and nats_daemon_nkey_seed_file are both set; the daemon's own NATS connection presents one credential, so set one`.
+The pane seed's settings stay allowed beside the token: the daemon still hands the pane seed to every pod, and its own connection presents no seed, neither its own nor the pane's.
+Boot is also refused, naming the setting and never the token, when `NATS_DAEMON_SERVICE_TOKEN_FILE` is set but empty (`NATS_DAEMON_SERVICE_TOKEN_FILE is set but empty`; the loader refuses the key empty as `nats_daemon_service_token_file must not be empty`);
+when a `nats_urls` entry carries a user name, with or without a password, which nats.go would present in place of user `service` and the token (named by its position alone: `the NATS server URL <n> of <m> carries a user name, …`);
+when the file cannot be read (named by its setting and the system's reason, never by its path);
+when it is empty (named by its path too);
+and when its token names no account (named by its setting and its path).
+The auth service refuses a token while it cannot read the key set of the token's issuer, and the server answers that refusal as it answers every other, with `Authorization Violation`, so the daemon cannot tell it from an account the broker does not list, or from a token that lives too long, and waits out each of them.
+At boot the `connect Envoy NATS` probe waits out a refusal of the token as it waits out an unreachable NATS (above: one second doubling to one minute, forever), each try logged at warn as `boot probe failed transiently; waiting to run it again` with the refusal in its `detail`, and the daemon is not ready until the auth service admits the token;
+a refusal of a seed, or of no credential, still refuses the boot at once.
+After the connect, a refused reconnect is tried again at nats.go's reconnect wait and never closes the connection (nats.go's `IgnoreAuthErrorAbort`, which `natscred.Service` sets);
+each refusal reaches the log at warn as `NATS reported an asynchronous error` naming the authorization violation, the first of an outage and then at most one a minute until a reconnect ends that outage, and `NATS has not reconnected` covers the outage as it covers any other.
+The connection moves to a later token 10 minutes before the one it presented lapses (`natscred.ServiceRenewBefore`):
+once the kubelet has written a later token, the daemon dials a throwaway connection with it, and only once the auth service admits that dial does it reconnect its own connection, which logs one `NATS connection restored` line and no `NATS connection lost` line, since nats.go reports a reconnect the client forced with no cause.
+At boot the daemon logs `legion daemon connects to NATS user=<account> paneUser=false seed=service-token`, where `<account>` is the account the token names (`system:serviceaccount:<namespace>:<name>`, read without verifying the token, which the auth service verifies for itself), never the token;
+`legion config check` reads the token as boot does and adds ` nats-daemon-service-account=<account>` to its OK line, where a daemon seed would add `nats-daemon-nkey-user=`.
+No launch carries the token or its variable, and a tmux pane's environment drops `NATS_DAEMON_SERVICE_TOKEN_FILE` with every other credential-shaped name.
 
 The store opens outside the 30-second budget the boot's first steps share, and the steps after the open get a budget of their own.
 A connection error the next attempt can clear is tried again (`store.OpenRetryable`): a refused connection, a reset, a connection closed before an answer, a timeout, a host name that does not resolve, and the SQLSTATE codes of class 08, 53300, 57P01, 57P02 and 57P03.
@@ -5615,7 +5641,7 @@ The fill of a record that lacks its repository columns does not wait out GitHub'
 A stop during a wait ends the boot at once.
 
 A malformed seed refuses the boot immediately at startup, before any network connection is attempted.
-A NATS authorization violation at connect time is the same: the server said no synchronously, and the boot refuses it at once.
+A NATS authorization violation at connect time with a seed, or with no credential, is the same: the server said no synchronously, and the boot refuses it at once (a refusal of the daemon's service token is waited out, above).
 An EOF during the NATS handshake also refuses at once
 — the connection simply closed, and nats.go returns that synchronously too
 — though no crash in the audited journal took this shape, so refusing rather than waiting here is a judgment call.
@@ -12448,7 +12474,7 @@ In order, and keeping nothing until the daemon has answered, the command:
 
 6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one `--append-system-prompt` naming the file `<state_dir>/secrets/<controller claim>-<run>-system-prompt.md`, this run's own, which the command writes first and removes when Oh My Pi exits, and which holds the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
    it sends it once the controller is registered, right before the role claim and the live wake subscription, so the controller's first turn runs its start procedure deterministically, with nothing typed, rather than racing a card or a wake for the session's one first-turn slot
-   — LEGION-392), its grant and secret files, `LEGION_GH_OWNERS_DIR` naming `<state_dir>/gh` (the bundle step 5 wrote), `GH_CONFIG_DIR` its default owner's directory (the bundle's root, empty, when the daemon has no GitHub App), `LEGION_GH_PATH` the real gh, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` emptied, so nothing inherited outranks the files, the Envoy and Dispatch endpoints, `PERSON_SIGNIN_TRADE=off` (the controller's own broker credentials trade this machine, never its operator's sign-in), and `NATS_NKEY_SEED_FILE` naming `nats_nkey_seed_file` when the file sets it) on top of the operator's own environment, less `NATS_DAEMON_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED_FILE` (the controller is pane-side, and never gets the daemon's seed) and less `LEGION_BOOT_TOKEN` and `LEGION_BOOT_TOKEN_FILE` (a start from inside a Legion pane inherits that pane's, and the plugin takes a controller carrying one for a daemon-launched controller), and exits with Oh My Pi's exit code.
+   — LEGION-392), its grant and secret files, `LEGION_GH_OWNERS_DIR` naming `<state_dir>/gh` (the bundle step 5 wrote), `GH_CONFIG_DIR` its default owner's directory (the bundle's root, empty, when the daemon has no GitHub App), `LEGION_GH_PATH` the real gh, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` emptied, so nothing inherited outranks the files, the Envoy and Dispatch endpoints, `PERSON_SIGNIN_TRADE=off` (the controller's own broker credentials trade this machine, never its operator's sign-in), and `NATS_NKEY_SEED_FILE` naming `nats_nkey_seed_file` when the file sets it) on top of the operator's own environment, less `NATS_DAEMON_NKEY_SEED`, `NATS_DAEMON_NKEY_SEED_FILE` and `NATS_DAEMON_SERVICE_TOKEN_FILE` (the controller is pane-side, and never gets the daemon's seed or its service token) and less `LEGION_BOOT_TOKEN` and `LEGION_BOOT_TOKEN_FILE` (a start from inside a Legion pane inherits that pane's, and the plugin takes a controller carrying one for a daemon-launched controller), and exits with Oh My Pi's exit code.
 
 A refusal before the secret is written removes the directories made for the probe, so the state directory is as it was.
 

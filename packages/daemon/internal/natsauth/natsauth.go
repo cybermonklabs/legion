@@ -1,5 +1,6 @@
-// Package natsauth resolves the NATS nkey user a Legion process connects to Envoy's NATS as, and
-// connects as it.
+// Package natsauth resolves the NATS credential a Legion process connects to Envoy's NATS with (an
+// nkey user's seed, or the daemon's platform identity token, which the NATS auth service admits),
+// and connects with it.
 package natsauth
 
 import (
@@ -35,8 +36,9 @@ const (
 
 // DaemonSeedFileKey, DaemonSeedFileVariable and DaemonSeedVariable name the seed the daemon's own
 // connection authenticates with, the same three ways: a `legion.yaml` key, a variable naming a file,
-// and a variable holding the seed. No pane is ever handed it; unset, the daemon connects as the pane
-// seed.
+// and a variable holding the seed. No pane is ever handed it; unset, the daemon connects with its
+// service token when one is set (ServiceTokenFileKey), else as the pane seed, else with no
+// credential.
 const (
 	DaemonSeedFileKey      = "nats_daemon_nkey_seed_file"
 	DaemonSeedFileVariable = "NATS_DAEMON_NKEY_SEED_FILE"
@@ -86,7 +88,8 @@ func Seed(file string, lookup func(string) (string, bool)) (string, error) {
 // DaemonSeed is Seed of the daemon's own seed, under its own names: the file the configuration's
 // DaemonSeedFileKey names ("" when it names none), else the file NATS_DAEMON_NKEY_SEED_FILE names,
 // else NATS_DAEMON_NKEY_SEED, with Seed's refusals and file mode rule. None set is "": the daemon
-// then connects as the pane seed. It never falls back to the pane seed's names, nor they to it.
+// then connects with its service token when one is set (DaemonCredential), else as the pane seed,
+// else with no credential. It never falls back to the pane seed's names, nor they to it.
 func DaemonSeed(file string, lookup func(string) (string, bool)) (string, error) {
 	src, ok := resolve(daemonSeed, file, lookup, config.ReadGroupSecretPointer)
 	if !ok {
@@ -102,47 +105,48 @@ func SeedFile(file string) (string, error) {
 	return fileSource(paneSeed.fileKey, file, config.ReadPrivateSecretPointer).seed()
 }
 
-// source is one place a seed is read from: its name, which every refusal carries, and read, which
-// answers the seed or why the source holds none.
-type source struct {
-	name string
-	read func() (string, error)
+// seedSource is one place a seed is read from: the key or variable that names it (setting), its
+// name, which every refusal of what it holds carries (the setting, and a file's path), and read,
+// which answers the seed or why the source holds none.
+type seedSource struct {
+	setting, name string
+	read          func() (string, error)
 }
 
 // resolve is the one precedence every reader of a seed shares, under n's names: file when the
 // configuration names one, else the file variable when set, else the seed variable when set,
 // whatever each holds; ok is false when none is. read reads a file source (the key or variable
 // naming it, and its path).
-func resolve(n names, file string, lookup func(string) (string, bool), read func(key, path string) (string, error)) (source, bool) {
+func resolve(n names, file string, lookup func(string) (string, bool), read func(key, path string) (string, error)) (seedSource, bool) {
 	if file != "" {
 		return fileSource(n.fileKey, file, read), true
 	}
 	if path, set := lookup(n.fileVariable); set {
 		if path == "" {
-			return source{n.fileVariable, func() (string, error) {
+			return seedSource{n.fileVariable, n.fileVariable, func() (string, error) {
 				return "", fmt.Errorf("%s is set but empty", n.fileVariable)
 			}}, true
 		}
 		return fileSource(n.fileVariable, path, read), true
 	}
 	if value, set := lookup(n.variable); set {
-		return source{n.variable, func() (string, error) {
+		return seedSource{n.variable, n.variable, func() (string, error) {
 			if seed := strings.TrimSpace(value); seed != "" {
 				return seed, nil
 			}
 			return "", fmt.Errorf("%s is set but empty", n.variable)
 		}}, true
 	}
-	return source{}, false
+	return seedSource{}, false
 }
 
 // fileSource is the file path that key (a configuration key or a variable) names, which read reads.
-func fileSource(key, path string, read func(key, path string) (string, error)) source {
-	return source{fmt.Sprintf("%s (%s)", key, path), func() (string, error) { return read(key, path) }}
+func fileSource(key, path string, read func(key, path string) (string, error)) seedSource {
+	return seedSource{key, fmt.Sprintf("%s (%s)", key, path), func() (string, error) { return read(key, path) }}
 }
 
 // seed is the source's seed, refused unless it is a user's nkey seed.
-func (s source) seed() (string, error) {
+func (s seedSource) seed() (string, error) {
 	seed, err := s.read()
 	if err != nil {
 		return "", err
@@ -154,8 +158,9 @@ func (s source) seed() (string, error) {
 }
 
 // Connect dials urls as the nkey user seed is the seed of, a seed Seed answered; "" connects
-// without a credential. Every connection it opens pings as detectSilentCuts sets, because the
-// daemon dials NATS here and nowhere else: the pings are this package's, not a caller's to pass.
+// without a credential. Every connection it opens pings as detectSilentCuts sets, as every one
+// ConnectService opens does, because the daemon dials NATS through these two alone and both dial
+// the one way (dial): the pings are this package's, not a caller's to pass.
 //
 // name is what the connection calls itself to the server, and it is a parameter rather than an
 // option because an option can be forgotten and an unnamed connection is one nobody can place:
@@ -167,11 +172,15 @@ func (s source) seed() (string, error) {
 // (unreadableURL), before any dial. A connect that fails prints as its class alone
 // (natsconn.ConnectionError), never nats.go's text, which names the server it failed at by its host
 // and port; errors.Is and errors.As still read the error beneath it.
+//
+// It leaves nats.go's IgnoreAuthErrorAbort at its default, so a connection with a seed, or with no
+// credential, that the server refuses the same way twice while reconnecting closes: that refusal
+// is a misconfiguration no wait fixes. The credential the NATS auth service decides, the daemon's
+// service token, is ConnectService's, which retries a refusal.
 func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
 	if err := unreadableURL(urls); err != nil {
 		return nil, err
 	}
-	servers := strings.Join(urls, ",")
 	if seed != "" {
 		user, err := userKey(seed, "the NATS nkey seed")
 		if err != nil {
@@ -183,9 +192,17 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 		}
 		options = append(options, nats.Nkey(public, user.Sign))
 	}
-	// Last, so these pings and this name hold whatever a caller passed before them.
+	return dial(urls, name, options)
+}
+
+// dial is the dial Connect and ConnectService share, once each has refused what it refuses and
+// added its credential to options: urls joined with commas, the server list nats.go reads, with
+// options and then detectSilentCuts and nats.Name(name), last, so these pings and this name hold
+// whatever the options before them set. A connect that fails prints as its class alone
+// (natsconn.ConnectionError).
+func dial(urls []string, name string, options []nats.Option) (*nats.Conn, error) {
 	options = append(options, detectSilentCuts, nats.Name(name))
-	conn, err := nats.Connect(servers, options...)
+	conn, err := nats.Connect(strings.Join(urls, ","), options...)
 	if err != nil {
 		return nil, natsconn.ConnectionError(err)
 	}
@@ -252,11 +269,12 @@ const (
 	silentCutMaxPingsOut  = 2
 )
 
-// detectSilentCuts is the connection option, set by Connect itself, that finds a server which
-// stops answering without closing the connection: packets that stop, with no reset. nats.go's own
-// defaults (a ping every two minutes, two outstanding) leave the daemon reading connected for
-// minutes into such a cut, and the daemon reads nothing in those minutes. A connection declared
-// lost here reconnects as one whose server closed it does.
+// detectSilentCuts is the connection option, set by dial itself on every connection Connect and
+// ConnectService open, that finds a server which stops answering without closing the connection:
+// packets that stop, with no reset. nats.go's own defaults (a ping every two minutes, two
+// outstanding) leave the daemon reading connected for minutes into such a cut, and the daemon reads
+// nothing in those minutes. A connection declared lost here reconnects as one whose server closed
+// it does.
 func detectSilentCuts(o *nats.Options) error {
 	o.PingInterval = silentCutPingInterval
 	o.MaxPingsOut = silentCutMaxPingsOut
@@ -361,6 +379,11 @@ func WithLastError(err error, conn *nats.Conn) error {
 // unanswered call takes (a clustered JetStream that is itself unavailable, say): this package has
 // no way to tell that shape from an unjoined permission violation, so both are refused rather
 // than waited on.
+// It knows nothing of the credential, so an authorization violation is a misconfiguration here
+// whatever was presented, as it is for a seed and for no credential; the start's wait with the
+// daemon's service token waits one out (Credential.WaitsOut, Refused), since the NATS auth service
+// refuses a token while it cannot read the key set of the token's issuer, and the server answers
+// that refusal as it answers every other.
 func Unreachable(err error) bool {
 	if errors.Is(err, nats.ErrPermissionViolation) || errors.Is(err, nats.ErrAuthorization) || tlsalert.In(err) {
 		return false
